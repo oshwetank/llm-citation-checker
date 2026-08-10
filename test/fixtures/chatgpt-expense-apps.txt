@@ -1,0 +1,77 @@
+# LCFC raw capture 2698e1c7-27ac-4b75-bc97-dddd1cf560c5
+# url: https://chatgpt.com/backend-api/f/conversation
+# reqBody: {"action":"next","messages":[{"id":"e5cd9f56-0ace-4db0-b66f-4946c9117fd5","author":{"role":"user"},"create_time":1786220269.217,"content":{"content_type":"text","parts":["best platform to track your expenses"]},"metadata":{"serialization_metadata":{"custom_symbol_offsets":[]}}}],"parent_message_id":"client-created-root","model":"auto","client_prepare_state":"success","timezone_offset_min":-330,"timezone":"Asia/Calcutta","conversation_mode":{"kind":"primary_assistant"},"enable_message_followups":true,"system_hints":[],"supports_buffering":true,"supported_encodings":["v1"],"client_contextual_info":{"is_dark_mode":true,"time_since_loaded":550,"page_height":1094,"page_width":2304,"pixel_ratio":0.8333333730697632,"screen_height":864,"screen_width":1536,"app_name":"chatgpt.com","has_web_push_capabilities":true,"web_push_notification_permission":"default"},"paragen_cot_summary_display_override":"allow","force_parallel_switch":"auto","local_function_names":["local.continue_in_work"]}
+
+event: delta_encoding
+data: "v1"
+
+data: {"type":"resume_conversation_token","kind":"topic","token":"eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJjb25kdWl0X3V1aWQiOiJjYjZhNjQ5MzU3Zjc0M2Q0YmZhYzNiZDdkODE0NTBhOCIsImNvbmR1aXRfbG9jYXRpb24iOiIxMC4xMzAuMy4xNDo4MzA4IiwiY2x1c3RlciI6InVuaWZpZWQtOTciLCJpYXQiOjE3ODYyMjAyNjksImV4cCI6MTc4NjIzNDY2OSwidHVybl90b3BpY19pZCI6ImNvbnZlcnNhdGlvbi10dXJuLWNkYjdmMWY3LWU1ZTgtNDFhMy05MTczLTkzZDk0ODEzOGU4YiJ9.NY0uEpqIIdID8zSoYALmPVQLVKEj2Pv_LHXgYu-HssRGbpRKFnlf5vuPvQkpYTKnhCZvRmIhivLE_ClmCKyveQ","conversation_id":"6a778edb-bdd8-83ee-83de-c41f0d163eab"}
+
+event: delta
+data: {"p":"","o":"add","v":{"message":{"id":"848d7f18-26a8-45e4-bc25-dc832c3c20f3","author":{"role":"system","name":null,"metadata":{}},"create_time":null,"update_time":null,"content":{"content_type":"text","parts":[""]},"status":"finished_successfully","end_turn":true,"weight":0.0,"metadata":{"model_switcher_deny":[],"is_visually_hidden_from_conversation":true},"recipient":"all","channel":null},"conversation_id":"6a778edb-bdd8-83ee-83de-c41f0d163eab","error":null,"error_code":null},"c":0}       
+
+event: delta
+data: {"v":{"message":{"id":"a6c1b658-8ff9-4ac1-994e-8b35e39962e6","author":{"role":"system","name":null,"metadata":{}},"create_time":null,"update_time":null,"content":{"content_type":"text","parts":[""]},"status":"finished_successfully","end_turn":true,"weight":0.0,"metadata":{"rebase_developer_message":true,"model_switcher_deny":[],"is_visually_hidden_from_conversation":true},"recipient":"all","channel":null},"conversation_id":"6a778edb-bdd8-83ee-83de-c41f0d163eab","error":null,"error_code":null},"c":1}
+
+event: delta
+data: {"v":{"message":{"id":"e5cd9f56-0ace-4db0-b66f-4946c9117fd5","author":{"role":"user","name":null,"metadata":{}},"create_time":1786220269.217,"update_time":null,"content":{"content_type":"text","parts":["best platform to track your expenses"]},"status":"finished_successfully","end_turn":null,"weight":1.0,"metadata":{"serialization_metadata":{"custom_symbol_offsets":[]},"request_id":"60a4c796-41e1-4828-8611-f8b3b21a43d3","message_source":null,"turn_exchange_id":"cdb7f1f7-e5e8-41a3-9173-93d948138e8b","working_turn_id":"cdb7f1f7-e5e8-41a3-9173-93d948138e8b","resolved_model_slug":"gpt-5-6","model_switcher_deny":[]},"recipient":"all","channel":null},"conversation_id":"6a778edb-bdd8-83ee-83de-c41f0d163eab","error":null,"error_code":null},"c":2}     
+
+data: {"type":"input_message","input_message":{"id":"e5cd9f56-0ace-4db0-b66f-4946c9117fd5","author":{"role":"user","name":null,"metadata":{}},"create_time":1786220269.217,"update_time":null,"content":{"content_type":"text","parts":["best platform to track your expenses"]},"status":"finished_successfully","end_turn":null,"weight":1.0,"metadata":{"serialization_metadata":{"custom_symbol_offsets":[]},"request_id":"60a4c796-41e1-4828-8611-f8b3b21a43d3","otrace_id":"6a778eec00000000c0f549129f99ab99","message_source":null,"turn_exchange_id":"cdb7f1f7-e5e8-41a3-9173-93d948138e8b","working_turn_id":"cdb7f1f7-e5e8-41a3-9173-93d948138e8b","turn_trace_id":"83d4b6a1-4680-4bec-a1f6-d04683f88603","useragent":{"client_type":"web","is_mobile":false,"is_mobile_app":false,"is_desktop_app":false,"is_native_app":false,"is_native_app_apple":false,"is_mobile_app_ios":false,"is_desktop_app_macos":false,"is_aura_app_macos":false,"is_aura_web":false,"is_sora_ios":false,"is_agora_ios":false,"is_agora_android":false,"is_desktop_app_windows":false,"is_electron_app":false,"is_mobile_app_android":false,"is_mobile_web":false,"is_mobile_web_ios":false,"is_mobile_web_android":false,"is_ios":false,"is_android":false,"is_macos":false,"is_windows":true,"is_linux":false,"is_chatgpt_client":false,"is_moshi_client":false,"is_sora_client":false,"is_agora_client":false,"is_browserbased_app":true,"is_chatgpt_api":false,"is_slack":false,"is_chatkit_web":false,"is_chatkit_synthetic":false,"is_kakao_talk":false,"is_codex_desktop":false,"is_offline_caching":false,"app_version":null,"build_number":null,"user_agent":"mozilla/5.0 (windows nt 10.0; win64; x64) applewebkit/537.36 (khtml, like gecko) chrome/151.0.0.0 safari/537.36","app_environment":null,"os_version":null,"device_model":null,"user_client_type":"desktop_web"},"parent_id":"a6c1b658-8ff9-4ac1-994e-8b35e39962e6"},"recipient":"all","channel":null},"conversation_id":"6a778edb-bdd8-83ee-83de-c41f0d163eab"}
+
+event: delta
+data: {"v":{"message":{"id":"501aeb66-39a3-4c87-a184-778a5aa55d39","author":{"role":"system","name":null,"metadata":{}},"create_time":1786220268.935897,"update_time":null,"content":{"content_type":"text","parts":[""]},"status":"finished_successfully","end_turn":null,"weight":1.0,"metadata":{"is_visually_hidden_from_conversation":true,"cot_version":"v5","request_id":"60a4c796-41e1-4828-8611-f8b3b21a43d3","message_type":"next","turn_exchange_id":"cdb7f1f7-e5e8-41a3-9173-93d948138e8b","working_turn_id":"cdb7f1f7-e5e8-41a3-9173-93d948138e8b","model_slug":"gpt-5-6","default_model_slug":"auto","parent_id":"e5cd9f56-0ace-4db0-b66f-4946c9117fd5","model_switcher_deny":[]},"recipient":"all","channel":null},"conversation_id":"6a778edb-bdd8-83ee-83de-c41f0d163eab","error":null,"error_code":null},"c":3}     
+
+event: delta
+data: {"v":{"message":{"id":"40daa4f2-3d19-46ef-881c-581c4eabf0cf","author":{"role":"assistant","name":null,"metadata":{}},"create_time":1786220269.1383755,"update_time":null,"content":{"content_type":"model_editable_context","model_set_context":"","repository":null,"repo_summary":null,"structured_context":null},"status":"finished_successfully","end_turn":null,"weight":1.0,"metadata":{"search_result_groups":[],"cot_version":"v5","request_id":"60a4c796-41e1-4828-8611-f8b3b21a43d3","message_type":"next","turn_exchange_id":"cdb7f1f7-e5e8-41a3-9173-93d948138e8b","working_turn_id":"cdb7f1f7-e5e8-41a3-9173-93d948138e8b","resolved_model_slug":"gpt-5-6","model_slug":"gpt-5-6","default_model_slug":"auto","can_save":false,"parent_id":"501aeb66-39a3-4c87-a184-778a5aa55d39","model_switcher_deny":[]},"recipient":"all","channel":null},"conversation_id":"6a778edb-bdd8-83ee-83de-c41f0d163eab","error":null,"error_code":null},"c":4}      
+
+event: delta
+data: {"v":{"message":{"id":"24952579-c630-4bdd-b894-2774d17c8c54","author":{"role":"assistant","name":null,"metadata":{}},"create_time":1786220269.182407,"update_time":null,"content":{"content_type":"text","parts":[""]},"status":"in_progress","end_turn":null,"weight":1.0,"metadata":{"citations":[],"content_references":[],"story_events":[],"resolved_model_slug":"gpt-5-6","cot_version":"v5","request_id":"60a4c796-41e1-4828-8611-f8b3b21a43d3","message_type":"next","turn_exchange_id":"cdb7f1f7-e5e8-41a3-9173-93d948138e8b","working_turn_id":"cdb7f1f7-e5e8-41a3-9173-93d948138e8b","model_slug":"gpt-5-6","default_model_slug":"auto","parent_id":"40daa4f2-3d19-46ef-881c-581c4eabf0cf","model_switcher_deny":[]},"recipient":"all","channel":"final"},"conversation_id":"6a778edb-bdd8-83ee-83de-c41f0d163eab","error":null,"error_code":null},"c":5}    
+
+data: {"type":"message_marker","conversation_id":"6a778edb-bdd8-83ee-83de-c41f0d163eab","message_id":"24952579-c630-4bdd-b894-2774d17c8c54","marker":"user_visible_token","event":"first"}
+
+data: {"type":"message_marker","conversation_id":"6a778edb-bdd8-83ee-83de-c41f0d163eab","message_id":"24952579-c630-4bdd-b894-2774d17c8c54","marker":"final_channel_token","event":"first"}
+
+event: delta
+data: {"p":"/message/content/parts/0","o":"append","v":"If you\u2019re looking for an"}       
+
+event: delta
+data: {"v":" **expense-tracking app in India**,"}     
+
+data: {"type":"title_generation","title":"Expense Tracking Platforms","conversation_id":"6a778edb-bdd8-83ee-83de-c41f0d163eab"}
+
+event: delta
+data: {"v":" my top picks are:\n\n1. **Money Manager** \u2014 \u2b50 Best overall for manual tracking  \n   - Simple and"}    
+
+event: delta
+data: {"v":" fast\n   - Categories, budgets, charts\n   - Good if you want control without linking bank accounts\n\n2. **Wallet by BudgetBakers** \u2014 \u2b50 Best"}
+
+event: delta
+data: {"v":" for detailed budgeting  \n   - Expense tracking + budgets\n   - Bank synchronization in supported regions\n   - Good reports and spending insights"}     
+
+event: delta
+data: {"v":"\n\n3. **Goodbudget** \u2014 \u2b50 Best for envelope budgeting  \n   - Great for planning monthly spending\n   - Useful if you want to control spending by category\n\n4. **Axio** \u2014 \u2b50 Best for automated expense tracking in India  \n"}      
+
+event: delta
+data: {"v":"   - Designed around Indian users\n   - Can help organize spending from SMS/financial data\n   - Convenient if you don't want to enter every transaction manually\n\n5. **Google"}
+
+event: delta
+data: {"v":" Sheets / Excel** \u2014 \u2b50 Best free option  \n   - Maximum flexibility\n   - Excellent if you want to build your own monthly budget and investment tracker\n\n### My"}      
+
+event: delta
+data: {"v":" recommendation\n\n**For most people: Money Manager.**  \n**For detailed budgeting: Wallet.**  \n**For automatic tracking in India: Ax"}  
+
+event: delta
+data: {"p":"","o":"patch","v":[{"p":"/message/content/parts/0","o":"append","v":"io.**  \n**For completely free/custom tracking: Google Sheets.**\n\nIf you tell me **whether you want automatic bank/UPI tracking or are okay entering expenses manually**, I can narrow it down to the **best 2\u20133 options for you**."},{"p":"/message/status","o":"replace","v":"finished_successfully"},{"p":"/message/end_turn","o":"replace","v":true},{"p":"/message/metadata","o":"append","v":{"can_save":true,"finish_details":{"type":"stop","stop_tokens":[200002]},"search_result_groups":[],"is_complete":true}}]}  
+
+data: {"type":"message_marker","conversation_id":"6a778edb-bdd8-83ee-83de-c41f0d163eab","message_id":"24952579-c630-4bdd-b894-2774d17c8c54","marker":"last_token","event":"last"}
+
+data: {"type":"title_generation","title":"Best Expense Tracking Apps","conversation_id":"6a778edb-bdd8-83ee-83de-c41f0d163eab"}
+
+data: {"type":"server_ste_metadata","metadata":{"server_ttfvt_ms":852.8942021075636,"conduit_prewarmed":true,"plan_type":"free","plan_type_bucket":"free","harness":"harmony","user_agent":"web_desktop","service":null,"tool_name":null,"tool_invoked":false,"fast_convo":true,"warmup_state":"warm","is_first_turn":true,"cluster_region":"centralindia","model_slug":"gpt-5-6","region":null,"is_multimodal":null,"did_auto_switch_to_reasoning":false,"auto_switcher_race_winner":null,"is_autoswitcher_enabled":false,"is_search":null,"did_prompt_contain_image":false,"search_tool_call_count":null,"search_tool_query_types":null,"message_id":"e5cd9f56-0ace-4db0-b66f-4946c9117fd5","request_id":"60a4c796-41e1-4828-8611-f8b3b21a43d3","turn_exchange_id":"cdb7f1f7-e5e8-41a3-9173-93d948138e8b","turn_trace_id":"83d4b6a1-4680-4bec-a1f6-d04683f88603","a32e6ebcb":1,"resume_with_websockets":true,"low_turn_topic_ttl":false,"streaming_async_status":false,"replace_stream_status":true,"temporal_conversation_turn":false,"pro_mode_turn_topic_streaming":true,"turn_use_case":"text","turn_mode":"default"},"conversation_id":"6a778edb-bdd8-83ee-83de-c41f0d163eab"}
+
+data: {"type":"message_stream_complete","conversation_id":"6a778edb-bdd8-83ee-83de-c41f0d163eab"}
+
+data: {"type":"conversation_detail_metadata","banner_info":null,"blocked_features":[],"model_limits":[],"limits_progress":[{"feature_name":"deep_research","remaining":5,"reset_after":"2026-09-07T20:17:52.222073+00:00"},{"feature_name":"file_upload","remaining":15,"reset_after":"2026-08-09T20:17:52.222089+00:00"},{"feature_name":"paste_text_to_file","remaining":3,"reset_after":"2026-08-09T20:17:52.222096+00:00"},{"feature_name":"image_gen","remaining":25,"reset_after":"2026-08-09T20:17:52.222101+00:00"}],"default_model_slug":"auto","atlas_mode_enabled":null,"conversation_id":"6a778edb-bdd8-83ee-83de-c41f0d163eab"}
+
+data: [DONE]
+

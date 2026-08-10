@@ -1,0 +1,18 @@
+# Per-developer local tool config — not shared
+.claude/settings.local.json
+
+# code-review-graph local cache (already self-excluded, belt-and-suspenders here too)
+.code-review-graph/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+*.swp
+
+# Scratch/temp files this project's assistant sessions sometimes leave behind
+_*.mjs
+_*.html

@@ -1,0 +1,559 @@
+/*
+ * background.js — MV3 service worker. The only place that touches storage.
+ *
+ * Flow:
+ *   raw-conversation  → gzip + persist RAW (immutable) → run adapter → persist DERIVED
+ *   get-records       → derived records for list/aggregate views (heavy fields stripped)
+ *   get-record        → ONE full derived record (includes answerText) for Analyze
+ *   get-raw           → decompressed raw payload for a capture (debug view)
+ *   reprocess-all     → re-run adapters over the raw store (after adapter upgrades)
+ *   clear-all         → wipe both stores
+ *
+ * No network calls. Nothing leaves the device.
+ */
+
+import { db } from "./lib/db.js";
+import { gzipString, gunzipToString } from "./lib/gzip.js";
+import { adapt as adaptChatGpt } from "./adapters/chatgpt.js";
+import { adapt as adaptGemini } from "./adapters/gemini.js";
+
+const ADAPTERS = { chatgpt: adaptChatGpt, gemini: adaptGemini };
+
+const AI_TAB_MATCHES = [
+  "https://chatgpt.com/*",
+  "https://chat.openai.com/*",
+  "https://gemini.google.com/*",
+];
+
+/* ---------- Settings ---------- */
+const DEFAULT_SETTINGS = {
+  // Who the user is tracking. This does NOT drive brand detection — detection is
+  // automatic and industry-agnostic (see lib/brands.js). These entries only LABEL
+  // detected brands as own/competitor so share-of-voice can be reported, and the
+  // URLs let cited domains be attributed to the right brand.
+  myBrand: { name: "", url: "" },
+  competitors: [], // [{ name, url }]
+  debugCapture: false, // diagnostic channel is OFF by default (it is chatty)
+  maxCaptureMB: 8, // skip storing a single raw payload larger than this
+  retentionMax: 2000, // keep at most N captures; oldest pruned first
+};
+
+// Flatten settings into the label list the adapters take.
+function trackedFrom(settings) {
+  const out = [];
+  if (settings.myBrand && settings.myBrand.name) {
+    out.push({ name: settings.myBrand.name, url: settings.myBrand.url || "", relation: "own" });
+  }
+  (settings.competitors || []).forEach((c) => {
+    if (c && c.name) out.push({ name: c.name, url: c.url || "", relation: "competitor" });
+  });
+  return out;
+}
+
+// Cached: getSettings() runs on every capture, and settings change rarely.
+let settingsCache = null;
+async function getSettings() {
+  if (settingsCache) return settingsCache;
+  const got = await chrome.storage.local.get("lcfcSettings");
+  settingsCache = { ...DEFAULT_SETTINGS, ...(got.lcfcSettings || {}) };
+  return settingsCache;
+}
+async function setSettings(patch) {
+  const next = { ...(await getSettings()), ...(patch || {}) };
+  await chrome.storage.local.set({ lcfcSettings: next });
+  settingsCache = next;
+  return next;
+}
+// Keep the cache honest if settings are changed from another context.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.lcfcSettings) settingsCache = null;
+});
+
+// Reloading the extension orphans content scripts already running in open tabs
+// (they can no longer reach the new service worker — capture goes silent).
+// Auto-refresh the AI tabs on install/update so their scripts re-inject.
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.tabs.query({ url: AI_TAB_MATCHES }, (tabs) => {
+    for (const t of tabs || []) {
+      try {
+        chrome.tabs.reload(t.id);
+      } catch (_) {
+        /* tab may be discarded/closed */
+      }
+    }
+  });
+});
+
+function platformFromUrl(url) {
+  if (/gemini\.google\.com|BardChatUi|StreamGenerate/.test(url || "")) return "gemini";
+  if (/chatgpt\.com|chat\.openai\.com/.test(url || "")) return "chatgpt";
+  return "chatgpt";
+}
+
+// Does a derived record carry anything worth keeping/counting? ChatGPT races
+// parallel requests per turn; the losing racer still POSTs and streams almost
+// nothing. Those captures are real but empty — they must not advance the Loader.
+export function hasSignal(r) {
+  if (!r) return false;
+  const f = r.fanout || {};
+  const fan = (f.search?.length || 0) + (f.shopping?.length || 0) + (f.image?.length || 0);
+  return !!(
+    r.userPrompt ||
+    fan ||
+    r.sources?.length ||
+    r.products?.length ||
+    r.places?.length ||
+    r.answerChars
+  );
+}
+
+/* ---------- Capture ---------- */
+async function storeCapture(payload, meta) {
+  const platform = platformFromUrl(payload.pageUrl || payload.url);
+  const settings = await getSettings();
+  const rawText = payload.raw || "";
+
+  // Gemini emits many small RPCs; only the assistant generation is substantial.
+  if (platform === "gemini" && rawText.length < 2000) return null;
+
+  // Guard against pathological payloads (Gemini local/map answers have been seen
+  // at 25MB raw / ~5MB stored). Without a cap the store grows ~1GB per 1k captures.
+  const capBytes = Math.max(1, settings.maxCaptureMB) * 1024 * 1024;
+  if (rawText.length > capBytes) {
+    return { skipped: "too-large", bytes: rawText.length };
+  }
+
+  const captureId = crypto.randomUUID();
+  const rawRow = {
+    captureId,
+    platform,
+    url: payload.url,
+    reqBody: payload.reqBody,
+    transport: payload.transport,
+    pageUrl: payload.pageUrl,
+    capturedAt: payload.capturedAt,
+    projectId: (meta && meta.projectId) || null, // on raw so reprocess preserves it
+    runId: (meta && meta.runId) || null,
+    gz: await gzipString(rawText),
+    rawSchema: 1,
+  };
+  await db.put("raw", rawRow);
+
+  const record = await deriveAndStore(rawRow, rawText, settings);
+  await enforceRetention(settings);
+  return { captureId, record };
+}
+
+// Build a derived record from a raw row. `rawText` optional (avoids re-gunzip).
+async function deriveAndStore(rawRow, rawText, settings) {
+  const raw = rawText ?? (await gunzipToString(rawRow.gz));
+  const cfg = settings || (await getSettings());
+  const adapter = ADAPTERS[rawRow.platform] || ADAPTERS.chatgpt;
+  const record = adapter(
+    {
+      captureId: rawRow.captureId,
+      raw,
+      reqBody: rawRow.reqBody,
+      capturedAt: rawRow.capturedAt,
+      pageUrl: rawRow.pageUrl,
+    },
+    { tracked: trackedFrom(cfg) }
+  );
+  record.projectId = rawRow.projectId || null;
+  record.runId = rawRow.runId || null;
+  await db.put("derived", record);
+  return record;
+}
+
+// Keep the store bounded: prune oldest captures beyond the retention limit.
+async function enforceRetention(settings) {
+  const cfg = settings || (await getSettings());
+  const limit = Math.max(50, cfg.retentionMax || DEFAULT_SETTINGS.retentionMax);
+  const count = await db.count("derived");
+  if (count <= limit) return;
+  const keys = await db.getAllKeysSortedByTime("derived", count - limit);
+  for (const id of keys) {
+    await db.delete("raw", id);
+    await db.delete("derived", id);
+  }
+}
+
+// Re-derive every stored capture. Uses a cursor + chunking so a large store
+// doesn't pull every gzipped blob into memory at once (SW OOM risk).
+async function reprocessAll() {
+  const settings = await getSettings();
+  const ids = await db.getAllKeys("raw");
+  let ok = 0;
+  for (const id of ids) {
+    try {
+      const row = await db.get("raw", id);
+      if (row) {
+        await deriveAndStore(row, undefined, settings);
+        ok++;
+      }
+    } catch (_) {
+      /* keep going; one bad payload shouldn't stop the batch */
+    }
+  }
+  return { total: ids.length, reprocessed: ok };
+}
+
+/* ---------- Loader orchestration ----------
+ * Fires a list of prompts, one per fresh chat. A capture WITH SIGNAL from the
+ * loader tab is the "turn done" signal. Empty race-loser captures are ignored,
+ * and a watchdog advances the run if a turn never completes (rate limit, error,
+ * closed tab) instead of hanging forever.
+ */
+const TURN_TIMEOUT_MS = 90000; // give a turn this long before declaring it failed
+const MIN_ADVANCE_GAP_MS = 2500; // ignore a second "done" arriving right after one
+
+let loader = newLoaderState();
+function newLoaderState() {
+  return { running: false, paused: false, options: {}, done: 0, errors: 0, total: 0, platforms: {}, runId: null };
+}
+
+// Diagnostic ring buffer (in-memory) for the Debug view.
+const DEBUG = [];
+function pushDebug(event) {
+  DEBUG.push(event);
+  if (DEBUG.length > 200) DEBUG.shift();
+}
+
+function loaderStatus() {
+  if (!loader.running) return { running: false, total: loader.total, done: loader.done, errors: loader.errors };
+  let totalTasks = 0;
+  let totalIdx = 0;
+  const platStats = {};
+  const current = [];
+  for (const plat of Object.keys(loader.platforms)) {
+    const p = loader.platforms[plat];
+    totalTasks += p.prompts.length;
+    totalIdx += p.idx;
+    platStats[plat] = { done: p.idx, total: p.prompts.length, failed: p.failed || 0 };
+    if (p.idx < p.prompts.length) current.push(p.prompts[p.idx]);
+  }
+  return {
+    running: loader.running,
+    paused: loader.paused,
+    total: totalTasks,
+    done: loader.done,
+    idx: totalIdx,
+    errors: loader.errors,
+    current: current.length ? current[0] : null,
+    runId: loader.runId,
+    platStats,
+  };
+}
+
+function clearWatchdog(p) {
+  if (p && p.watchdog) {
+    clearTimeout(p.watchdog);
+    p.watchdog = null;
+  }
+}
+
+async function loaderRunPlatform(plat) {
+  if (!loader.running || loader.paused) return;
+  const p = loader.platforms[plat];
+  if (!p) return;
+
+  clearWatchdog(p);
+
+  if (p.idx >= p.prompts.length) {
+    if (Object.values(loader.platforms).every((x) => x.idx >= x.prompts.length)) loader.running = false;
+    return;
+  }
+
+  const prompt = p.prompts[p.idx];
+  const q = encodeURIComponent(prompt);
+  // A one-time token proves to the content script that THIS navigation came from
+  // the Loader — so a crafted ?lcfc=1&q=… link can't make ChatGPT run a prompt.
+  p.token = crypto.randomUUID();
+  p.expectedPrompt = prompt;
+  p.startedAt = Date.now();
+
+  const search = plat === "chatgpt" && loader.options.forceSearch ? "&lcfcsearch=1" : "";
+  const base = plat === "gemini" ? "https://gemini.google.com/app" : "https://chatgpt.com/";
+  const url = `${base}?q=${q}&lcfc=1&lcfctok=${p.token}${search}`;
+
+  try {
+    await chrome.tabs.update(p.tabId, { url });
+  } catch (_) {
+    // Tab was closed — fail this prompt and move on rather than hanging.
+    loader.errors++;
+    p.failed = (p.failed || 0) + 1;
+    p.idx++;
+    setTimeout(() => loaderRunPlatform(plat), 500);
+    return;
+  }
+
+  // Watchdog: if no signal-bearing capture arrives in time, record a failure and
+  // continue. Without this a rate-limited or errored turn stalls the whole run.
+  p.watchdog = setTimeout(() => {
+    if (!loader.running || loader.paused) return;
+    if (p.idx >= p.prompts.length) return;
+    loader.errors++;
+    p.failed = (p.failed || 0) + 1;
+    p.idx++;
+    p.lastAdvanceAt = Date.now();
+    loaderRunPlatform(plat);
+  }, TURN_TIMEOUT_MS);
+}
+
+async function loaderStart(prompts, options) {
+  const clean = (prompts || []).map((p) => String(p).trim()).filter(Boolean);
+  if (!clean.length) return { ok: false, error: "No prompts provided." };
+
+  const platforms = (options && options.platforms) || ["chatgpt"];
+  const supported = platforms.filter((p) => p === "chatgpt" || p === "gemini");
+  if (!supported.length) return { ok: false, error: "Select ChatGPT and/or Gemini." };
+
+  loader = newLoaderState();
+  loader.running = true;
+  loader.options = options || {};
+  loader.total = clean.length * supported.length;
+  loader.runId = crypto.randomUUID();
+
+  let windowId;
+  if (options && options.incognito) {
+    const allowed = await new Promise((res) => chrome.extension.isAllowedIncognitoAccess(res));
+    if (!allowed) {
+      loader.running = false;
+      return { ok: false, error: "Enable 'Allow in Incognito' for this extension at chrome://extensions first." };
+    }
+    try {
+      const win = await chrome.windows.create({ incognito: true });
+      windowId = win.id;
+    } catch (_) {
+      loader.running = false;
+      return { ok: false, error: "Failed to create Incognito window." };
+    }
+  }
+
+  // Record the run so the Compare view can diff it later.
+  await db.put("runs", {
+    id: loader.runId,
+    projectId: (options && options.projectId) || null,
+    startedAt: Date.now(),
+    platforms: supported,
+    promptCount: clean.length,
+  });
+
+  for (const plat of supported) {
+    const created = windowId
+      ? await chrome.tabs.create({ windowId, url: "about:blank" })
+      : await chrome.tabs.create({ url: "about:blank", active: false });
+    loader.platforms[plat] = { tabId: created.id, prompts: clean, idx: 0, failed: 0, lastAdvanceAt: 0 };
+    loaderRunPlatform(plat);
+  }
+
+  return { ok: true, total: loader.total, runId: loader.runId };
+}
+
+// Called after each capture; advances the loader only for a real, completed turn.
+function loaderOnCapture(tabId, record) {
+  if (!loader.running) return;
+  for (const plat of Object.keys(loader.platforms)) {
+    const p = loader.platforms[plat];
+    if (p.tabId !== tabId) continue;
+
+    // Ignore empty race-loser captures — advancing on those silently SKIPS prompts.
+    if (!hasSignal(record)) return;
+    // Ignore a second completion arriving immediately after one we already counted.
+    if (p.lastAdvanceAt && Date.now() - p.lastAdvanceAt < MIN_ADVANCE_GAP_MS) return;
+
+    clearWatchdog(p);
+    p.lastAdvanceAt = Date.now();
+    loader.done++;
+    p.idx++;
+    const delay = 3000 + Math.random() * 3000; // human-paced gap
+    if (!loader.paused) setTimeout(() => loaderRunPlatform(plat), delay);
+    return;
+  }
+}
+
+// Strip heavy fields for list/aggregate views. The full record (with answerText)
+// is fetched per capture by `get-record` when Analyze opens it.
+function toLight(r) {
+  const { answerText, platformSpecific, ...rest } = r;
+  const ps = platformSpecific || {};
+  const { reasoning, ...psLight } = ps;
+  return { ...rest, platformSpecific: psLight, hasAnswerText: !!(answerText && answerText.length) };
+}
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  (async () => {
+    try {
+      switch (msg?.type) {
+        case "raw-conversation": {
+          const tabId = sender?.tab?.id;
+          let meta = null;
+          if (loader.running) {
+            for (const p of Object.values(loader.platforms)) {
+              if (p.tabId === tabId) {
+                meta = { projectId: loader.options.projectId || null, runId: loader.runId };
+                break;
+              }
+            }
+          }
+          const res = await storeCapture(msg.payload, meta);
+          if (res && res.captureId) {
+            loaderOnCapture(tabId, res.record);
+            // Notify the popup if it's open. Use a callback so a missing receiver
+            // doesn't surface as an unhandled promise rejection.
+            try {
+              chrome.runtime.sendMessage({ type: "new-capture", captureId: res.captureId }, () => void chrome.runtime.lastError);
+            } catch (_) {}
+          }
+          sendResponse({ ok: true, captureId: res?.captureId || null, skipped: res?.skipped || null });
+          break;
+        }
+
+        // Content script asks whether this ?lcfc=1 navigation is a genuine Loader
+        // run for this tab. Without this, any link could auto-submit a prompt.
+        case "loader-verify": {
+          let ok = false;
+          const tabId = sender?.tab?.id;
+          if (loader.running && tabId != null) {
+            for (const p of Object.values(loader.platforms)) {
+              if (p.tabId === tabId && p.token && p.token === msg.token) {
+                ok = true;
+                break;
+              }
+            }
+          }
+          sendResponse({ ok });
+          break;
+        }
+
+        case "settings-get":
+          sendResponse({ ok: true, settings: await getSettings() });
+          break;
+        case "settings-set":
+          sendResponse({ ok: true, settings: await setSettings(msg.patch) });
+          break;
+
+        case "project-save": {
+          const id = msg.id || crypto.randomUUID();
+          const existing = msg.id ? await db.get("projects", msg.id) : null;
+          await db.put("projects", {
+            id,
+            name: msg.name || "Untitled",
+            prompts: msg.prompts || [],
+            createdAt: existing ? existing.createdAt : Date.now(),
+            updatedAt: Date.now(),
+          });
+          sendResponse({ ok: true, id });
+          break;
+        }
+        case "project-list": {
+          const projects = await db.getAll("projects");
+          projects.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+          sendResponse({ ok: true, projects });
+          break;
+        }
+        case "project-delete":
+          await db.delete("projects", msg.id);
+          sendResponse({ ok: true });
+          break;
+
+        case "run-list": {
+          const runs = await db.getAll("runs");
+          runs.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+          sendResponse({ ok: true, runs });
+          break;
+        }
+
+        case "loader-start":
+          sendResponse(await loaderStart(msg.prompts, msg.options));
+          break;
+        case "loader-pause":
+          loader.paused = true;
+          for (const p of Object.values(loader.platforms)) clearWatchdog(p);
+          sendResponse({ ok: true, ...loaderStatus() });
+          break;
+        case "loader-resume":
+          if (loader.running && loader.paused) {
+            loader.paused = false;
+            for (const plat of Object.keys(loader.platforms)) loaderRunPlatform(plat);
+          }
+          sendResponse({ ok: true, ...loaderStatus() });
+          break;
+        case "loader-stop":
+          for (const p of Object.values(loader.platforms)) clearWatchdog(p);
+          loader.running = false;
+          loader.paused = false;
+          sendResponse({ ok: true, ...loaderStatus() });
+          break;
+        case "loader-status":
+          sendResponse({ ok: true, ...loaderStatus() });
+          break;
+
+        case "debug":
+          pushDebug(msg.event);
+          sendResponse({ ok: true });
+          break;
+        case "get-debug":
+          sendResponse({ ok: true, events: DEBUG.slice(-120) });
+          break;
+        case "clear-debug":
+          DEBUG.length = 0;
+          sendResponse({ ok: true });
+          break;
+
+        case "get-records": {
+          const records = await db.getAll("derived");
+          records.sort((a, b) => b.capturedAt - a.capturedAt);
+          sendResponse({ ok: true, records: records.map(toLight) });
+          break;
+        }
+        case "get-record": {
+          const rec = await db.get("derived", msg.captureId);
+          sendResponse({ ok: true, record: rec || null });
+          break;
+        }
+        case "get-raw": {
+          const row = await db.get("raw", msg.captureId);
+          const raw = row ? await gunzipToString(row.gz) : null;
+          sendResponse({ ok: true, raw, meta: row ? { url: row.url, reqBody: row.reqBody } : null });
+          break;
+        }
+        case "reprocess-all":
+          sendResponse({ ok: true, ...(await reprocessAll()) });
+          break;
+        case "delete-record":
+          await db.delete("raw", msg.captureId);
+          await db.delete("derived", msg.captureId);
+          sendResponse({ ok: true });
+          break;
+        case "clear-all":
+          await db.clear("raw");
+          await db.clear("derived");
+          await db.clear("runs");
+          sendResponse({ ok: true });
+          break;
+        case "stats": {
+          let usage = null;
+          try {
+            if (navigator.storage && navigator.storage.estimate) {
+              const est = await navigator.storage.estimate();
+              usage = { usedBytes: est.usage || 0, quotaBytes: est.quota || 0 };
+            }
+          } catch (_) {}
+          sendResponse({
+            ok: true,
+            raw: await db.count("raw"),
+            derived: await db.count("derived"),
+            usage,
+          });
+          break;
+        }
+        default:
+          sendResponse({ ok: false, error: "unknown message type" });
+      }
+    } catch (e) {
+      sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+    }
+  })();
+  return true; // async response
+});

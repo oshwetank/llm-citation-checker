@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LLM Citation &amp; Fan-Out Checker</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="panel.css" />
+  </head>
+  <body>
+    <div class="app-wrapper">
+      <header class="app-header">
+        <div class="header-brand">
+          <div class="brand-logo-group">
+            <div class="brand-icon">
+              <img src="../icons/icon48.png" width="24" height="24" style="object-fit: contain; display: block;" alt="Logo" />
+            </div>
+            <div class="brand-text">
+              <span class="brand-title">LLM Citation &amp; Fan-Out Checker</span>
+              <span class="version-badge">v0.23</span>
+              <span class="brand-sub">ChatGPT &amp; Gemini</span>
+            </div>
+          </div>
+          <button id="openTab" class="nav-tab tab ghost popout-btn" title="Open in full browser tab">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+          </button>
+        </div>
+
+        <nav class="nav-tabs">
+          <button class="nav-tab tab active" data-tab="analyze">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12h10M12 2v20M20 12h-2M18 6l-1.4 1.4M18 18l-1.4-1.4"></path></svg>
+            <span>Analyze</span>
+          </button>
+          <button class="nav-tab tab" data-tab="dashboard">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+            <span>Dashboard</span>
+          </button>
+          <button class="nav-tab tab" data-tab="loader">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+            <span>Loader</span>
+          </button>
+          <button class="nav-tab tab" data-tab="compare">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>
+            <span>Compare</span>
+          </button>
+          <button class="nav-tab tab" data-tab="about">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+            <span>About</span>
+          </button>
+        </nav>
+      </header>
+
+      <main class="app-content">
+        <section id="analyze" class="panel active"></section>
+        <section id="dashboard" class="panel"></section>
+        <section id="loader" class="panel">
+          <div class="card">
+            <div class="card-header">
+              <h3>Prompt Loader — Automated Audit</h3>
+            </div>
+            <p class="muted">
+              Automates sending prompts to ChatGPT in sequence and captures fan-out queries and cited sources in real-time. Open a ChatGPT tab first, then click Start.
+            </p>
+            <div class="warn-box">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+              <span>Automating ChatGPT submits prompts on your behalf. Use sparingly at human pace to keep your account safe.</span>
+            </div>
+            <div class="proj-row">
+              <input id="loaderProjectName" type="text" placeholder="Project name (e.g. Camera phones)" />
+              <select id="loaderProjectPick"><option value="">— load saved —</option></select>
+              <button id="loaderProjectSave" class="btn sm ghost">Save Project</button>
+              <button id="loaderProjectDelete" class="btn sm ghost danger" title="Delete selected project">Delete</button>
+            </div>
+            <textarea id="loaderPrompts" rows="7" placeholder="One prompt per line…&#10;best camera phone under 40000&#10;best foldable phone 2026"></textarea>
+            <div class="loader-settings" style="margin: 12px 0;">
+              <div style="font-weight: bold; margin-bottom: 6px; font-size: 12px;">Target Platforms:</div>
+              <div style="display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px;">
+                <label class="chk"><input type="checkbox" class="loader-platform" value="chatgpt" checked /> ChatGPT</label>
+                <label class="chk"><input type="checkbox" class="loader-platform" value="gemini" /> Gemini</label>
+              </div>
+              <div style="display: flex; gap: 16px;">
+                <label class="chk" title="Only works for ChatGPT currently"><input type="checkbox" id="loaderForceSearch" /> Force Web Search (ChatGPT)</label>
+                <label class="chk" title="Run browser in Incognito mode for unbiased results. Make sure to 'Allow in Incognito' for this extension in Chrome settings."><input type="checkbox" id="loaderIncognito" /> Run in Incognito Window</label>
+              </div>
+            </div>
+            <div class="loader-meta-row" style="margin-top: 8px;">
+              <div id="loaderCount" class="muted">0 prompts</div>
+            </div>
+            <div class="ft-actions" style="margin-top: 14px">
+              <button id="loaderStart" class="btn primary">▶ Start Audit</button>
+              <button id="loaderPause" class="btn ghost">⏸ Pause</button>
+              <button id="loaderResume" class="btn ghost">▶ Resume</button>
+              <button id="loaderStop" class="btn danger">■ Stop</button>
+            </div>
+            <div id="loaderStatus" class="status-msg"></div>
+          </div>
+        </section>
+
+        <section id="compare" class="panel">
+          <div class="card">
+            <div class="card-header">
+              <h3>Track a prompt over time</h3>
+            </div>
+            <p class="muted">
+              Pick one prompt you have captured more than once. This shows every time
+              it ran, side by side, so you can see which brands and domains gained or
+              lost ground between runs.
+            </p>
+            <div class="proj-row">
+              <select id="cmpPrompt" class="filter" style="flex:2"><option value="">Choose a prompt…</option></select>
+              <select id="cmpProject" class="filter"><option value="">All projects</option></select>
+              <select id="cmpModel" class="filter">
+                <option value="">All models</option>
+                <option value="chatgpt">ChatGPT</option>
+                <option value="gemini">Gemini</option>
+              </select>
+            </div>
+            <div id="cmpHint" class="muted" style="margin-top:8px"></div>
+          </div>
+          <div id="cmpOut"></div>
+        </section>
+
+        <section id="about" class="panel">
+          <div class="card">
+            <div class="card-header">
+              <h3>Your brand &amp; competitors</h3>
+            </div>
+            <p class="muted">
+              Brand detection is <b>fully automatic</b> for every industry — you don't
+              need to configure anything for the tool to find brands. Setting your brand
+              and competitors here simply labels them in results, so you can see your
+              share of voice against theirs. The URL lets cited domains be matched to
+              the right brand.
+            </p>
+            <div class="proj-row">
+              <input id="setMyName" type="text" placeholder="Your brand name" />
+              <input id="setMyUrl" type="text" placeholder="yourbrand.com" />
+            </div>
+            <label class="muted" style="display:block;margin-top:10px">Competitors — one per line, as <code>name, url</code></label>
+            <textarea id="setCompetitors" rows="4" placeholder="Competitor Inc, competitor.com&#10;Rival Co, rival.io"></textarea>
+            <div class="chk-row">
+              <label class="chk"><input type="checkbox" id="setDebug" /> Enable capture debugger (verbose; off by default)</label>
+            </div>
+            <div class="proj-row">
+              <label class="muted" for="setRetention">Keep at most</label>
+              <input id="setRetention" type="number" min="50" step="50" style="max-width:110px" />
+              <label class="muted" for="setMaxMB">captures · skip payloads over</label>
+              <input id="setMaxMB" type="number" min="1" step="1" style="max-width:90px" />
+              <span class="muted">MB</span>
+              <button id="setSave" class="btn sm">Save settings</button>
+            </div>
+            <div id="setStatus" class="muted" style="margin-top:6px"></div>
+            <div id="storageInfo" class="muted" style="margin-top:6px"></div>
+            <div class="proj-row" style="margin-top:12px">
+              <button id="reprocess" class="btn sm ghost">↻ Reprocess all captures</button>
+              <span class="muted">Re-runs the current extraction logic over everything already captured — use this after an extension update to pick up adapter fixes (brand detection, citation links, etc.) on old data.</span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <h3>How it works</h3>
+            </div>
+            <p>
+              Open ChatGPT or Gemini in a browser tab and run a prompt. This extension passively inspects network responses already received by your browser, extracts search fan-out queries, citations, and product entities, and stores them <b>on your local device only</b>.
+            </p>
+            <p class="muted">
+              Raw captures are kept locally so analytics can be re-derived without re-running requests.
+            </p>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <h3>Capture Debugger</h3>
+            </div>
+            <p class="muted">
+              Inspects observed network events and payloads for ChatGPT and Gemini.
+            </p>
+            <div class="ft-actions" style="margin-bottom: 10px;">
+              <button id="dbgRefresh" class="btn sm ghost">Refresh Log</button>
+              <button id="dbgClear" class="btn sm ghost danger">Clear Log</button>
+            </div>
+            <div id="dbgLog" class="dbglog"></div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="credit-footer">
+        Made by <a href="https://oshwetank.com" target="_blank" rel="noreferrer">Shwetank</a> for all
+      </footer>
+    </div>
+
+    <script type="module" src="panel.js"></script>
+  </body>
+</html>

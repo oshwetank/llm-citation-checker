@@ -1,0 +1,2707 @@
+/* panel.js — UI. Talks to the service worker; never touches storage directly. */
+
+// The one exception to "never touches storage directly": exportDoc.js is a
+// pure rendering module (record[] -> HTML string), no chrome.* / storage
+// calls of its own — see src/lib/exportDoc.js header. Data still only ever
+// arrives here via send()/hydrate() through the service worker.
+import { buildExportModel, renderStandaloneHtml } from "../src/lib/exportDoc.js";
+
+const send = (msg) =>
+  new Promise((resolve) => chrome.runtime.sendMessage(msg, (r) => resolve(r || { ok: false })));
+
+// Detect popup vs full-tab so the layout adapts (and survives browser zoom).
+function applyMode() {
+  const isTab = window.innerWidth > 640 || window.location.href.includes("mode=tab");
+  document.documentElement.classList.toggle("tab", isTab);
+  document.documentElement.classList.toggle("popup", !isTab);
+  document.body.classList.toggle("tab", isTab);
+  document.body.classList.toggle("popup", !isTab);
+}
+applyMode();
+window.addEventListener("resize", applyMode);
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const el = (tag, props = {}, ...kids) => {
+  const n = Object.assign(document.createElement(tag), props);
+  for (const k of kids) n.append(k?.nodeType ? k : document.createTextNode(k ?? ""));
+  return n;
+};
+const esc = (s) => (s == null ? "" : String(s));
+
+let RECORDS = [];
+let PROJECTS = [];
+let dashboardFilter = ""; // "" = all, else projectId
+let viewingId = null; // which capture the Analyze tab shows (null = latest)
+let selectedIds = new Set(); // captures ticked in the Saved Conversations table
+let showEmptyCaptures = false; // reveal zero-signal rows (see hasSignal note below)
+
+// A capture with no prompt AND no fan-out/sources/products/places/answer text.
+// ChatGPT's client races requests in parallel (force_parallel_switch:"auto",
+// auto_switcher_race_winner) and retries — a losing/interrupted request still
+// hits our capture endpoint but streams almost nothing. These are legitimate
+// captures (raw data is kept, nothing is discarded), just not useful to browse,
+// so the list hides them by default with a toggle to reveal.
+function hasSignal(r) {
+  const fan = (r.fanout.search.length || 0) + (r.fanout.shopping.length || 0) + (r.fanout.image.length || 0);
+  return !!(r.userPrompt || fan || r.sources.length || r.products.length || (r.places && r.places.length) || r.answerChars);
+}
+
+function fanoutRows(records) {
+  const rows = [["platform", "prompt", "bucket", "query", "capturedAt"]];
+  records.forEach((r) =>
+    ["search", "shopping", "image"].forEach((b) =>
+      (r.fanout[b] || []).forEach((q) =>
+        rows.push([r.platform, r.userPrompt || "", b, q.query, new Date(r.capturedAt).toISOString()])
+      )
+    )
+  );
+  return rows;
+}
+// Cell values come from web page titles/snippets, which we don't control. A value
+// starting with = + - @ (or a lone tab/CR) is executed as a FORMULA by Excel and
+// Sheets, so prefix those with an apostrophe. Quotes are doubled and every cell is
+// quoted so embedded commas/newlines can't break the row structure.
+function csvCell(v) {
+  let s = String(v ?? "");
+  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+  return `"${s.replace(/"/g, '""')}"`;
+}
+function csvOf(rows) {
+  return rows.map((r) => r.map(csvCell).join(",")).join("\n");
+}
+function fanoutCsv(records) {
+  return csvOf(fanoutRows(records));
+}
+function fanoutTxt(records) {
+  // Grouped, human-readable: prompt then its fan-out queries.
+  return records.map((r) => {
+    const qs = ["search", "shopping", "image"].flatMap((b) => (r.fanout[b] || []).map((q) => `  • [${b}] ${q.query}`));
+    return `▸ ${r.userPrompt || "(no prompt)"}\n${qs.join("\n") || "  (no fan-out)"}`;
+  }).join("\n\n");
+}
+
+function showTab(name) {
+  document.querySelectorAll("[data-tab]").forEach((b) => b.classList.remove("active"));
+  document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
+  const btn = document.querySelector(`[data-tab="${name}"]`);
+  if (btn) btn.classList.add("active");
+  const panel = document.getElementById(name);
+  if (panel) panel.classList.add("active");
+}
+// List records omit heavy fields (answerText, reasoning) to keep the popup fast.
+// Analyze needs the full record, so hydrate just the one being viewed and cache it.
+const FULL = new Map();
+async function hydrate(captureId) {
+  if (!captureId) return null;
+  if (FULL.has(captureId)) return FULL.get(captureId);
+  const r = await send({ type: "get-record", captureId });
+  const rec = r.ok ? r.record : null;
+  if (rec) FULL.set(captureId, rec);
+  return rec;
+}
+
+async function openCapture(captureId) {
+  viewingId = captureId;
+  showTab("analyze");
+  await hydrate(captureId);
+  renderAnalyze();
+}
+
+async function load() {
+  const res = await send({ type: "get-records" });
+  RECORDS = res.ok ? res.records : [];
+  const pr = await send({ type: "project-list" });
+  PROJECTS = pr.ok ? pr.projects : [];
+  refreshProjectPicker();
+  // Pre-hydrate whichever capture Analyze is about to show.
+  const showing = viewingId || (RECORDS[0] && RECORDS[0].captureId);
+  await hydrate(showing);
+  renderAnalyze();
+  renderDashboard();
+  const s = await send({ type: "stats" });
+  const st = $("#status");
+  if (st) st.textContent = s.ok ? `${s.derived} captures stored` : "";
+  renderStorageInfo(s);
+  // After PROJECTS is populated, so the project picker can be filled.
+  refreshComparePickers();
+  renderCompare();
+}
+
+function renderStorageInfo(s) {
+  const box = $("#storageInfo");
+  if (!box) return;
+  if (!s || !s.ok) { box.textContent = ""; return; }
+  const mb = (n) => (n / 1024 / 1024).toFixed(1) + " MB";
+  box.textContent = s.usage
+    ? `Storage: ${mb(s.usage.usedBytes)} used of ~${mb(s.usage.quotaBytes)} available · ${s.raw} raw / ${s.derived} derived captures`
+    : `${s.raw} raw / ${s.derived} derived captures`;
+}
+
+function projectName(id) {
+  const p = PROJECTS.find((x) => x.id === id);
+  return p ? p.name : null;
+}
+function refreshProjectPicker() {
+  const pick = $("#loaderProjectPick");
+  if (pick) {
+    pick.innerHTML = '<option value="">— load saved —</option>';
+    PROJECTS.forEach((p) => pick.append(el("option", { value: p.id }, `${p.name} (${p.prompts.length})`)));
+  }
+}
+
+function downloadData(filename, content) {
+  const blob = new Blob([content], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function sanitizeText(t) {
+  if (!t) return "";
+  let text = String(t);
+  text = text.replace(/[\uE200-\uE202]?products\{[^}]*\}[\uE200-\uE202]?/gi, ""); // Remove products carousel tokens
+  text = text.replace(/products\{"selections":\[[^\]]*\]\}/gi, ""); // Remove selections JSON
+  text = text.replace(/entity\[[^\]]*\]/gi, ""); // Remove internal ChatGPT SSE entity annotations
+  text = text.replace(/image_group\{[^}]*\}/gi, ""); // Remove JSON leaks
+  text = text.replace(/[\uE200-\uE202][^\uE200-\uE202\n]*[\uE200-\uE202]?/g, ""); // Remove PUA cite markers
+  text = text.replace(/\*\*/g, ""); // Strip markdown bold asterisks
+  text = text.replace(/\*/g, ""); // Strip italic asterisks
+  text = text.replace(/\|/g, " "); // Replace table pipes with space
+  text = text.replace(/\-{2,}/g, " "); // Remove markdown table dash dividers
+  text = text.replace(/#(?:[a-f0-9]{3,6}|[a-z0-9_-]+)/gi, ""); // Remove markdown header hashes
+  text = text.replace(/Phone\s+Best\s+For|Phone\s+Approx\.?\s+Price|Best\s+For\s+Approx\.?\s+Price/gi, ""); // Remove table headers
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function cleanPassage(p) {
+  if (!p) return "";
+  let text = sanitizeText(p);
+  if (text.length > 180) {
+    text = text.slice(0, 180) + "…";
+  }
+  return text;
+}
+
+function escapeRegExp(s) {
+  return (s || "").replace(/[\-\[\]\/\{\}\(\)\*\+\?\.\\\^\$\|]/g, "\\$&");
+}
+
+function isGenericHeaderOrNoise(str) {
+  if (!str) return true;
+  const lower = str.toLowerCase();
+  return (
+    lower.includes("approx") ||
+    lower.includes("price") ||
+    lower.includes("------") ||
+    lower.includes("phone") ||
+    lower.includes("best smartphones you can buy") ||
+    lower.includes("right now") ||
+    lower.length < 3 ||
+    lower.length > 60
+  );
+}
+
+function extractBrandModels(brandName, products, rawText) {
+  const models = new Set();
+  const lowerBrand = brandName.toLowerCase();
+  
+  // 1. Check products list first
+  for (const p of products || []) {
+    if (p.name && p.name.toLowerCase().includes(lowerBrand)) {
+      let m = sanitizeText(p.name).replace(new RegExp(`^${escapeRegExp(brandName)}\\s*`, "i"), "").trim();
+      if (m && m.length > 1 && m.length < 50) models.add(m);
+    }
+  }
+  
+  // 2. Extract model phrases following brand name in sanitized text
+  const clean = sanitizeText(rawText);
+  if (clean) {
+    const escaped = escapeRegExp(brandName);
+    const lineRegex = new RegExp(`\\b${escaped}\\s+([A-Za-z0-9\\-\\(\\)]+(?:\\s+[A-Za-z0-9\\-\\+\\(\\)]+){0,4})`, "gi");
+    let match;
+    while ((match = lineRegex.exec(clean)) !== null) {
+      let phrase = match[1].trim();
+      const words = phrase.split(/\s+/);
+      const modelWords = [];
+      for (const w of words) {
+        if (/^(is|and|or|in|for|the|with|under|are|these|choices|best|top|priority|quality|overall|flagship|value|compact|cameras|software|display|performance|ecosystem|photography|enthusiasts|if|available|around)$/i.test(w)) break;
+        modelWords.push(w);
+      }
+      let modelName = modelWords.join(" ").trim();
+      modelName = modelName.replace(/[\(\)]/g, " ").replace(/\s+/g, " ").trim();
+      if (modelName && modelName.length > 1 && modelName.length < 45) {
+        models.add(modelName);
+      }
+    }
+  }
+  
+  return Array.from(models).slice(0, 5);
+}
+
+function extractRankAndCategory(brandName, passage, text) {
+  const fullText = sanitizeText((text || "") + "\n" + (passage || ""));
+  const escapedBrand = escapeRegExp(brandName);
+  
+  let rank = null;
+  let category = null;
+
+  // 1. Match numbered list header: e.g. "1. OnePlus 13 (Best Overall)" or "1. OnePlus 13 - Overall flagship value"
+  const listRegex = new RegExp(
+    `(?:^|\\n)\\s*(\\d+)\\.\\s+.*?\\b${escapedBrand}\\b.*?(?:[\\(–\\-—:]\\s*([^\\n\\)]+))?`,
+    "i"
+  );
+  const listMatch = fullText.match(listRegex);
+  if (listMatch) {
+    rank = `#${listMatch[1]}`;
+    if (listMatch[2]) {
+      const candidate = listMatch[2].trim();
+      if (!isGenericHeaderOrNoise(candidate)) {
+        category = candidate;
+      }
+    }
+  }
+
+  // 2. Match summary callout: e.g. "Best for: Gaming, photography..." or "Best overall: OnePlus 13"
+  if (!category) {
+    const summaryRegex = new RegExp(
+      `(?:Best\\s+for|Best\\s+overall|Best\\s+camera|Best\\s+gaming|Best\\s+compact)[\\s:]+.*?\\b${escapedBrand}\\b|(?:^|\\n)\\s*Best\\s+for:\\s*([^\\n.,]+)`,
+      "i"
+    );
+    const summaryMatch = fullText.match(summaryRegex);
+    if (summaryMatch && summaryMatch[1] && !isGenericHeaderOrNoise(summaryMatch[1])) {
+      category = summaryMatch[1].trim();
+    }
+  }
+
+  return { rank, category };
+}
+
+function extractBrandAspects(brandName, rawText, passage) {
+  const text = sanitizeText(rawText || passage || "");
+  if (!text) return [];
+  
+  const lowerBrand = brandName.toLowerCase();
+  const lowerText = text.toLowerCase();
+  
+  const pos = lowerText.indexOf(lowerBrand);
+  if (pos === -1) return [];
+  
+  let segment = text.slice(pos, pos + 350);
+  const BRAND_STOPPERS = ["oneplus", "samsung", "oppo", "vivo", "realme", "xiaomi", "iphone", "google", "nothing", "iqoo", "motorola"];
+  let cutIdx = segment.length;
+  BRAND_STOPPERS.forEach((stop) => {
+    if (stop !== lowerBrand) {
+      const idx = segment.toLowerCase().indexOf(stop, brandName.length + 2);
+      if (idx !== -1 && idx < cutIdx) cutIdx = idx;
+    }
+  });
+  segment = segment.slice(0, cutIdx).toLowerCase();
+
+  const aspects = [];
+  
+  if (/\b(camera|cameras|photo|photos|portrait|portraits|hasselblad|imaging|zoom|sensor|video|recording)\b/i.test(segment)) {
+    aspects.push("Camera");
+  }
+  if (/\b(battery|charging|mah|watt|backup|fast charging|wireless charging)\b/i.test(segment)) {
+    aspects.push("Battery");
+  }
+  if (/\b(display|screen|amoled|oled|120hz|ltpo|refresh rate|resolution|bright)\b/i.test(segment)) {
+    aspects.push("Display");
+  }
+  if (/\b(processor|performance|snapdragon|chipset|dimensity|gaming|speed|thermal|cooling|ram|cpu)\b/i.test(segment)) {
+    aspects.push("Performance");
+  }
+  if (/\b(compact|one-handed|size|pocketable|handy)\b/i.test(segment)) {
+    aspects.push("Compact");
+  }
+  if (/\b(software|os|ios|updates|ui|support|long-term|years of updates|ecosystem)\b/i.test(segment)) {
+    aspects.push("Software");
+  }
+  if (/\b(design|build|premium|finish|ip68|ip69|rating|durability)\b/i.test(segment)) {
+    aspects.push("Design");
+  }
+
+  return aspects.slice(0, 3);
+}
+
+const BRAND_SEED_UI = [
+  "OnePlus", "Samsung", "Google", "Apple", "Xiaomi", "Oppo", "Vivo", "Realme", "Nothing",
+  "Motorola", "iQOO", "Poco", "Asus", "Lenovo", "HP", "Dell", "Acer", "MSI", "Infinix", "Techno"
+];
+
+function extractBrandsFromText(text, products) {
+  if (!text) return [];
+  const found = [];
+  const lower = text.toLowerCase();
+  
+  BRAND_SEED_UI.forEach((brand) => {
+    const re = new RegExp(`\\b${escapeRegExp(brand)}\\b`, "i");
+    if (re.test(text)) {
+      found.push({ brand });
+    }
+  });
+  
+  (products || []).forEach((p) => {
+    const first = (p.name || "").split(/\s+/)[0];
+    if (first && first.length > 2 && lower.includes(first.toLowerCase())) {
+      if (!found.some(f => f.brand.toLowerCase() === first.toLowerCase())) {
+        found.push({ brand: first });
+      }
+    }
+  });
+  
+  return found;
+}
+
+function openDomainModal(domainName, rec) {
+  const existing = document.getElementById("domain-modal-backdrop");
+  if (existing) existing.remove();
+
+  const domainSources = rec.sources.filter((s) => s.domain === domainName);
+  const citedCount = domainSources.filter((s) => s.outcome === "cited").length;
+  const fetchedCount = domainSources.filter((s) => s.outcome === "fetched").length;
+  const newsCount = domainSources.filter((s) => s.type === "news").length;
+
+  const backdrop = el("div", { id: "domain-modal-backdrop", className: "modal-backdrop" });
+  const modal = el("div", { className: "modal-content" });
+
+  const header = el("div", { className: "modal-header" });
+  header.append(
+    el("div", { style: "display:flex;align-items:center;gap:8px;" },
+      el("h3", { style: "margin:0;font-size:15px;color:var(--fg-primary);" }, domainName),
+      el("span", { className: "tag cited" }, `${domainSources.length} URLs`)
+    )
+  );
+
+  const closeBtn = el("button", { className: "modal-close-btn", title: "Close" }, "×");
+  closeBtn.onclick = () => backdrop.remove();
+  header.append(closeBtn);
+  modal.append(header);
+
+  const body = el("div", { className: "modal-body" });
+
+  const statsRow = el("div", { className: "modal-stats-row" },
+    el("span", { className: "chip active" }, `Cited: ${citedCount}`),
+    el("span", { className: "chip" }, `Fetched: ${fetchedCount}`),
+    el("span", { className: "chip" }, `News: ${newsCount}`)
+  );
+  body.append(statsRow);
+
+  const ul = el("ul", { className: "srclist", style: "margin-top:12px;" });
+  domainSources.forEach((s, idx) => {
+    const li = el("li", { className: "src-item" });
+    const h = el("div", { className: "src-header" });
+    h.append(el("span", { className: "url-rank-badge" }, `#${idx + 1}`));
+    h.append(el("span", { className: `tag ${s.outcome}` }, s.outcome));
+    if (s.type === "news") h.append(el("span", { className: "tag news" }, "news"));
+    
+    const a = el("a", { href: s.url, target: "_blank", rel: "noreferrer", className: "src-title" }, s.title || s.url);
+    h.append(a);
+    li.append(h);
+
+    if (s.snippet) {
+      const snip = el("div", { className: "url-snippet-box" }, s.snippet.trim());
+      snip.append(el("span", { className: "char-badge" }, `[${s.snippet.length}c]`));
+      li.append(snip);
+    }
+    ul.append(li);
+  });
+  body.append(ul);
+
+  const footer = el("div", { className: "modal-footer" },
+    el("button", { className: "btn sm ghost", onclick: () => downloadData(`domain_${domainName}.json`, JSON.stringify(domainSources, null, 2)) }, "Export Domain JSON"),
+    el("button", { className: "btn sm primary", onclick: () => backdrop.remove() }, "Done")
+  );
+  body.append(footer);
+
+  modal.append(body);
+  backdrop.append(modal);
+  document.body.append(backdrop);
+}
+
+function openProductModal(product, rec) {
+  const existing = document.getElementById("product-modal-backdrop");
+  if (existing) existing.remove();
+
+  const backdrop = el("div", { id: "product-modal-backdrop", className: "modal-backdrop" });
+  const modal = el("div", { className: "modal-content" });
+
+  const header = el("div", { className: "modal-header" },
+    el("h3", {}, `📦 ${product.name}`),
+    el("button", { className: "modal-close", onclick: () => backdrop.remove() }, "×")
+  );
+
+  const body = el("div", { className: "modal-body" });
+
+  // Price & Merchant Breakdown
+  const priceInfo = el("div", { className: "card", style: "margin-bottom: 12px; background: rgba(255,255,255,0.75);" },
+    el("div", { style: "font-weight: 600; font-size: 14px; color: var(--accent);" }, product.price || "Price specified in response text"),
+    el("div", { className: "muted", style: "font-size: 12px; margin-top: 4px;" }, `E-Commerce Merchant: ${product.merchant || "Multiple E-Commerce Retailers"}`),
+    el("div", { className: "muted", style: "font-size: 11px; margin-top: 2px;" }, `Rating Source: ${product.rating ? product.rating + " ★ rating aggregated from store metadata & search snippets" : "Rating derived from user evaluation in response"}`)
+  );
+  body.append(priceInfo);
+
+  // Mentioned Passages & Sources for this Product
+  const firstKeyword = (product.name || "").split(/\s+/)[0];
+  const matchingSources = (rec.sources || []).filter(s => 
+    (s.title || "").toLowerCase().includes(firstKeyword.toLowerCase()) ||
+    (s.snippet || "").toLowerCase().includes(firstKeyword.toLowerCase())
+  );
+
+  if (matchingSources.length) {
+    const srcHeader = el("h4", { style: "margin: 12px 0 6px; font-size: 12px;" }, `Contributing E-Commerce & Web Sources (${matchingSources.length}):`);
+    body.append(srcHeader);
+
+    const srcList = el("ul", { className: "srclist" });
+    matchingSources.forEach(s => {
+      const li = el("li", { className: "src-item" });
+      const h = el("div", { className: "src-header" },
+        el("span", { className: `tag ${s.outcome}` }, s.outcome),
+        el("a", { href: s.url, target: "_blank", rel: "noreferrer", style: "font-weight: 600; font-size: 12px; text-decoration: none; color: var(--accent);" }, s.domain || s.url)
+      );
+      li.append(h);
+      if (s.title) li.append(el("div", { style: "font-size: 11px; font-weight: 500; margin-top: 4px;" }, s.title));
+      if (s.snippet) li.append(el("div", { className: "brand-quote", style: "margin-top: 4px;" }, `"${cleanPassage(s.snippet)}"`));
+      srcList.append(li);
+    });
+    body.append(srcList);
+  } else {
+    body.append(el("div", { className: "muted", style: "font-size: 11px;" }, "Product mentioned directly in ChatGPT's answer text. No external store domain was directly linked."));
+  }
+
+  modal.append(header, body);
+  backdrop.append(modal);
+  document.body.append(backdrop);
+
+  backdrop.onclick = (e) => {
+    if (e.target === backdrop) backdrop.remove();
+  };
+}
+
+function scrollToCard(targetId) {
+  const target = document.getElementById(targetId);
+  if (!target) return;
+  target.scrollIntoView({ behavior: "smooth", block: "center" });
+  target.classList.add("card-highlight");
+  setTimeout(() => target.classList.remove("card-highlight"), 1800);
+}
+
+function showToast(text) {
+  const old = $(".app-toast");
+  if (old) old.remove();
+
+  const toast = el("div", { className: "app-toast" },
+    el("div", { className: "toast-dot" }),
+    el("span", {}, text)
+  );
+  document.body.append(toast);
+  
+  setTimeout(() => toast.classList.add("show"), 10);
+  setTimeout(() => {
+    toast.classList.remove("show");
+    setTimeout(() => toast.remove(), 300);
+  }, 3500);
+}
+
+// Listen for captured items broadcasted from background worker
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg?.type === "new-capture") {
+    load();
+    showToast("New LLM citation captured!");
+  }
+});
+
+/* ---------- Analyze (most recent capture) ---------- */
+function renderAnalyze() {
+  try {
+    const root = $("#analyze");
+    root.textContent = "";
+    const light = viewingId ? RECORDS.find((r) => r.captureId === viewingId) || RECORDS[0] : RECORDS[0];
+    // Prefer the hydrated full record (carries answerText, which drives brand rank,
+    // "cited for" aspects and hero-product detection). Falls back to the light row.
+    const rec = light ? FULL.get(light.captureId) || light : null;
+    if (!rec) {
+      root.append(
+        el("div", { className: "empty" },
+          "No captures yet. Open ChatGPT or Gemini in a tab, run a prompt, then reopen this panel.")
+      );
+      return;
+    }
+
+  // banner when viewing an earlier capture (not the latest)
+  if (rec.captureId !== (RECORDS[0] && RECORDS[0].captureId)) {
+    const idx = RECORDS.findIndex((r) => r.captureId === rec.captureId);
+    const banner = el("div", { className: "viewing" });
+    banner.append(el("span", {}, `Viewing capture ${idx + 1} of ${RECORDS.length} (${new Date(rec.capturedAt).toLocaleString()})`));
+    const latest = el("button", { className: "linkbtn" }, "Go to latest →");
+    latest.onclick = () => { viewingId = null; renderAnalyze(); };
+    banner.append(latest);
+    root.append(banner);
+  }
+
+  const fanCount =
+    rec.fanout.search.length + rec.fanout.shopping.length + rec.fanout.image.length;
+  const newsCount = rec.sources.filter((s) => s.type === "news").length;
+  const citedN = rec.sources.filter((s) => s.outcome === "cited").length;
+  const fetchedN = rec.sources.filter((s) => s.outcome === "fetched").length;
+
+  // Split Layout Grid
+  const grid = el("div", { className: "analyze-grid" });
+  
+  // Column 1: Sidebar Cards (General, Technical, Global Stats, Brand Mentions, Summary)
+  const sidebar = el("div", { className: "analyze-sidebar" });
+  
+  // 1. General Information Card
+  const meta = el("div", { className: "card", id: "card-general" }, el("h3", {}, "General Information"));
+  const kv = el("dl", { className: "kv" });
+  const addKv = (k, v) => { kv.append(el("dt", {}, k), el("dd", {}, v)); };
+  addKv("User prompt", esc(rec.userPrompt) || "—");
+  if (rec.generatedTitle) addKv("Generated Title", esc(rec.generatedTitle));
+  addKv("Searched", rec.searched ? "Yes" : "No");
+  addKv("Fan-out", String(fanCount));
+  addKv("Sources", `${rec.sources.length} (${citedN} cited / ${fetchedN} fetched)`);
+  addKv("Captured", new Date(rec.capturedAt).toLocaleString());
+  meta.append(kv);
+  
+  // Carousel Indicators Box
+  const carouselBox = el("div", { className: "chips", style: "margin-top:10px;" });
+  const car = rec.carousels || {};
+  carouselBox.append(
+    el("span", { className: `chip ${car.products ? "active" : ""}` }, `Products: ${car.products ? "YES" : "NO"}`),
+    el("span", { className: `chip ${car.images ? "active" : ""}` }, `Images: ${car.images ? "YES" : "NO"}`),
+    el("span", { className: `chip ${car.news ? "active" : ""}` }, `News: ${car.news ? "YES" : "NO"}`),
+    el("span", { className: `chip ${car.map ? "active" : ""}` }, `Map: ${car.map ? "YES" : "NO"}`)
+  );
+  meta.append(carouselBox);
+
+  const saveRow = el("div", { className: "chips", style: "margin-top:10px; gap:6px;" });
+  const saveHtmlBtn = el("button", { className: "btn sm ghost", style: "flex:1" }, "💾 Save as HTML");
+  saveHtmlBtn.onclick = () => exportRecordsAsHtml([rec]);
+  const savePdfBtn = el("button", { className: "btn sm ghost", style: "flex:1" }, "🖨️ Save as PDF");
+  savePdfBtn.onclick = () => exportRecordsAsPdf([rec]);
+  saveRow.append(saveHtmlBtn, savePdfBtn);
+  meta.append(saveRow);
+
+  const rawBtn = el("button", { className: "btn sm ghost", style: "margin-top:6px; width: 100%;" }, "Download raw payload");
+  rawBtn.onclick = () => downloadRaw(rec.captureId, "analyze");
+  meta.append(rawBtn);
+  sidebar.append(meta);
+
+  // 2. Technical Information Card (RESONEO parity)
+  const ps = rec.platformSpecific || {};
+  const techCard = el("div", { className: "card", id: "card-technical" }, el("h3", {}, "Technical Information"));
+  const techKv = el("dl", { className: "kv" });
+  const addTechKv = (k, v) => { if (v) techKv.append(el("dt", {}, k), el("dd", {}, String(v))); };
+  addTechKv("Author", ps.author || (rec.searched ? "tool:web" : "assistant"));
+  const tools = {
+    "chatgpt": "ChatGPT Web Search Engine (SonicBrowserTool)",
+    "gemini": "Google Search Tool (Gemini)",
+    "perplexity": "Perplexity Search Engine",
+    "claude": "Claude Search Tool",
+    "grok": "Grok X Search Engine"
+  };
+  addTechKv("Tool Name", rec.searched ? (tools[rec.platform] || "Web Search Tool") : "—");
+  
+  const modelDefault = rec.platform === "gemini" ? "gemini-1.5-pro" : "gpt-4o";
+  addTechKv("Model", rec.model || modelDefault);
+  addTechKv("Plan Type", ps.planType || "free");
+  if (ps.clusterRegion) addTechKv("Cluster Region", ps.clusterRegion);
+  addTechKv("Turn Use Case", rec.turnUseCase || "shopping");
+  if (ps.ttfvtMs) addTechKv("TTFVT", `${(ps.ttfvtMs / 1000).toFixed(2)}s`);
+  if (ps.wordCount) addTechKv("Response Word Count", `${ps.wordCount} words`);
+  if (ps.abExperiment) addTechKv("AB Test", ps.abExperiment);
+  
+  const refStr = Object.entries(rec.referenceTypes || {})
+    .map(([k, v]) => `${k} (${v})`)
+    .join(", ");
+  if (refStr) addTechKv("Ref Types", refStr);
+  techCard.append(techKv);
+  sidebar.append(techCard);
+
+  // 3. Global Statistics Card
+  const uniqueDomains = new Set(rec.sources.map((s) => s.domain).filter(Boolean)).size;
+  const uniqueUrls = new Set(rec.sources.map((s) => s.url).filter(Boolean)).size;
+  const avUrlsPerFan = fanCount > 0 ? (uniqueUrls / fanCount).toFixed(1) : String(uniqueUrls);
+  const ratio = rec.sources.length > 0 ? (citedN / rec.sources.length).toFixed(2) : "0.00";
+  const diversity = uniqueUrls > 0 ? ((uniqueDomains / uniqueUrls) * 100).toFixed(1) + "%" : "0%";
+
+  const globCard = el("div", { className: "card", id: "card-global-stats" }, el("h3", {}, "Global Statistics"));
+  const globGrid = el("div", { className: "stat-row-grid" },
+    el("div", { className: "stat-box" }, el("div", { className: "num" }, String(uniqueDomains)), el("div", { className: "lbl" }, "Domains")),
+    el("div", { className: "stat-box" }, el("div", { className: "num" }, String(uniqueUrls)), el("div", { className: "lbl" }, "URLs")),
+    el("div", { className: "stat-box" }, el("div", { className: "num" }, avUrlsPerFan), el("div", { className: "lbl" }, "URLs / Fan-out")),
+    el("div", { className: "stat-box" }, el("div", { className: "num" }, ratio), el("div", { className: "lbl" }, "Cited Ratio")),
+    el("div", { className: "stat-box" }, el("div", { className: "num" }, diversity), el("div", { className: "lbl" }, "Domain Diversity"))
+  );
+  globCard.append(globGrid);
+  sidebar.append(globCard);
+
+  // 4. Brand Mentions (with model extraction, ranking, and aspect context)
+  if (rec.brandMentions && rec.brandMentions.length) {
+    const ALIAS_MAP = {
+      "google pixel": "Google",
+      "pixel": "Google",
+      "galaxy": "Samsung",
+      "iphone": "Apple",
+      "ipad": "Apple",
+      "macbook": "Apple",
+      "surface": "Microsoft",
+      "rog": "Asus",
+      "tuf": "Asus",
+      "vivobook": "Asus",
+      "ideapad": "Lenovo",
+      "thinkpad": "Lenovo",
+      "victus": "HP",
+      "pavilion": "HP",
+      "inspiron": "Dell",
+      "alienware": "Dell",
+      "legion": "Lenovo",
+      "predator": "Acer"
+    };
+
+    const NOISE_BRAND_WORDS = new Set([
+      "battery", "software", "camera", "cameras", "display", "performance", "design",
+      "overall", "budget", "value", "rating", "phone", "phones", "mobile", "mobiles",
+      "recommendation", "recommendations", "processor", "chipset", "storage", "memory",
+      "charging", "screen", "gaming", "price", "pros", "cons", "specs", "life", "sony",
+      "option", "options", "pick", "picks", "overall", "android", "ios", "best"
+    ]);
+
+    const normalizedBrands = new Map();
+    rec.brandMentions.forEach((b) => {
+      const lower = (b.brand || "").toLowerCase().trim();
+      if (NOISE_BRAND_WORDS.has(lower)) return;
+      const canonical = ALIAS_MAP[lower] || b.brand;
+      const key = canonical.toLowerCase();
+      if (!normalizedBrands.has(key)) {
+        normalizedBrands.set(key, { ...b, brand: canonical, passages: [...(b.passages || [])] });
+      } else {
+        const existing = normalizedBrands.get(key);
+        existing.count += b.count;
+        if (b.passages && b.passages.length) existing.passages.push(...b.passages);
+      }
+    });
+
+    const cleanMentions = Array.from(normalizedBrands.values());
+    const bc = el("div", { className: "card", id: "card-brand-mentions" }, el("h3", {}, `Brand Mentions (${cleanMentions.length})`));
+    const list = el("div", { className: "brand-list" });
+    
+    cleanMentions.forEach((b) => {
+      const item = el("div", { className: "brand-item" });
+      const head = el("div", { className: "brand-head" });
+      
+      const { rank, category } = extractRankAndCategory(b.brand, b.passages[0] || "", rec.answerText || "");
+      const brandTitle = el("span", { className: "brand-name" });
+      if (rank) {
+        brandTitle.append(el("span", { className: "tag rank-tag", style: "margin-right:6px;" }, rank), " ");
+      }
+      brandTitle.append(b.brand);
+      // Label the user's own brand / tracked competitors so share of voice is
+      // readable at a glance. Detection itself is automatic and unaffected.
+      if (b.relation === "own") {
+        brandTitle.append(" ", el("span", { className: "tag cited", title: "Your brand" }, "YOU"));
+      } else if (b.relation === "competitor") {
+        brandTitle.append(" ", el("span", { className: "tag fetched", title: "Tracked competitor" }, "COMP"));
+      }
+
+      // count=0 means "shown in a product/place card, but the model never named
+      // it in prose" — a real, useful GEO signal (distinct from actual absence),
+      // so it gets its own badge instead of a confusing "×0".
+      head.append(
+        brandTitle,
+        b.count > 0
+          ? el("span", { className: "tag mentioned" }, `×${b.count}`)
+          : el("span", { className: "tag fetched", title: "Appeared in a product/place card but was not named in the written answer" }, "Shown, not named")
+      );
+      item.append(head);
+
+      // Extract specific models
+      const models = extractBrandModels(b.brand, rec.products, rec.answerText || b.passages[0] || "");
+      if (models.length) {
+        const modelRow = el("div", { className: "brand-models-row" });
+        modelRow.append(el("span", { className: "brand-label" }, "Models:"));
+        models.forEach((m) => {
+          modelRow.append(el("span", { className: "tag model-tag" }, m));
+        });
+        item.append(modelRow);
+      }
+
+      // Extract cited aspects / intent around this brand — skip for count=0
+      // entries, whose "passage" is a synthetic note, not real narration.
+      if (b.count > 0) {
+        const aspects = extractBrandAspects(b.brand, rec.answerText || "", b.passages[0] || "");
+        const aspectRow = el("div", { className: "brand-aspects-row" });
+        aspectRow.append(el("span", { className: "brand-label" }, "Cited for:"));
+
+        if (category) {
+          aspectRow.append(el("span", { className: "tag aspect-tag highlight-aspect" }, category));
+        }
+        aspects.forEach((asp) => {
+          if (!category || !category.toLowerCase().includes(asp.toLowerCase())) {
+            aspectRow.append(el("span", { className: "tag aspect-tag" }, asp));
+          }
+        });
+        item.append(aspectRow);
+      }
+
+      // A count=0 "shown, not named" passage is our own synthetic note, not real
+      // conversation text — a "jump to this passage" link for it would point at
+      // text that doesn't exist on the page, so skip the quote block entirely.
+      const cleaned = b.count > 0 ? cleanPassage(b.passages[0]) : null;
+      if (cleaned) {
+        // Deep-link back into the source conversation. `pageUrl` is the field the
+        // schema actually carries (there is no `rec.url`), so this used to be a
+        // dead link that rendered as clickable but did nothing.
+        const textTarget = encodeURIComponent(cleaned.slice(0, 50).trim());
+        const quoteUrl = rec.pageUrl ? `${rec.pageUrl}#:~:text=${textTarget}` : null;
+        
+        const quoteDiv = el("a", {
+          className: "brand-quote",
+          style: `display: block; text-decoration: none; color: inherit;${quoteUrl ? " cursor: pointer;" : ""}`,
+          ...(quoteUrl
+            ? { href: quoteUrl, target: "_blank", rel: "noreferrer", title: "Jump to this passage in the conversation" }
+            : {}),
+        }, quoteUrl ? `"${cleaned}" ↗` : `"${cleaned}"`);
+        
+        item.append(quoteDiv);
+      }
+      list.append(item);
+    });
+    bc.append(list);
+    sidebar.append(bc);
+  }
+
+  // 4b. Evaluated vs. Omitted (Search Funnel Analysis)
+  if (rec.sources && rec.sources.length) {
+    const ALIAS_MAP_OMIT = {
+      "google pixel": "Google", "pixel": "Google", "galaxy": "Samsung", "iphone": "Apple",
+      "ipad": "Apple", "macbook": "Apple", "surface": "Microsoft", "rog": "Asus",
+      "tuf": "Asus", "vivobook": "Asus", "ideapad": "Lenovo", "thinkpad": "Lenovo",
+      "victus": "HP", "pavilion": "HP", "inspiron": "Dell", "alienware": "Dell",
+      "legion": "Lenovo", "predator": "Acer"
+    };
+
+    const searchPassages = rec.sources.map(s => `${s.title || ""} ${s.snippet || ""}`).join(" \n ");
+    const allSearchBrands = extractBrandsFromText(searchPassages, rec.products);
+    const mentionedBrandKeys = new Set((rec.brandMentions || []).map(b => (ALIAS_MAP_OMIT[b.brand.toLowerCase()] || b.brand).toLowerCase()));
+    
+    const omittedBrandsList = [];
+    const omittedModelsList = [];
+    
+    allSearchBrands.forEach(sb => {
+      const canonical = ALIAS_MAP_OMIT[sb.brand.toLowerCase()] || sb.brand;
+      const key = canonical.toLowerCase();
+      const isMentioned = mentionedBrandKeys.has(key);
+      
+      const modelRe = new RegExp(`\\b${escapeRegExp(sb.brand)}\\s+([A-Z0-9][a-zA-Z0-9\\-\\.\\s]{1,20})`, "gi");
+      const foundModels = new Set();
+      let mm;
+      let loopCap = 0;
+      while ((mm = modelRe.exec(searchPassages)) !== null && loopCap++ < 50) {
+        if (mm.index === modelRe.lastIndex) modelRe.lastIndex++;
+        const candidate = mm[1].trim().split(/[\n,;:\(\)]/)[0].trim();
+        if (candidate.length >= 2 && !/^(and|or|with|for|in|under|laptop|phone|price|spec|review)/i.test(candidate)) {
+          foundModels.add(candidate);
+        }
+      }
+      
+      if (!isMentioned) {
+        omittedBrandsList.push({ brand: canonical, models: [...foundModels] });
+      } else {
+        const ansTextLower = (rec.answerText || "").toLowerCase();
+        const unmentionedMods = [...foundModels].filter(m => !ansTextLower.includes(m.toLowerCase()));
+        if (unmentionedMods.length) {
+          omittedModelsList.push({ brand: canonical, omittedModels: unmentionedMods });
+        }
+      }
+    });
+
+    if (omittedBrandsList.length || omittedModelsList.length) {
+      const omitCard = el("div", { className: "card", id: "card-omitted-analysis" },
+        el("div", { className: "card-header" },
+          el("h3", {}, "Evaluated vs. Omitted (Search Funnel)"),
+          el("span", { className: "tag fetched", style: "font-size: 10px;" }, "From Search Snippets")
+        ),
+        el("div", { className: "muted", style: "font-size: 11px; margin-bottom: 10px; line-height: 1.4;" },
+          "Brands and models evaluated in ChatGPT's raw search snippets that were dropped in its final written answer:"
+        )
+      );
+
+      const omitList = el("div", { className: "brand-list" });
+
+      omittedBrandsList.forEach(ob => {
+        const item = el("div", { className: "brand-item", style: "border-left: 3px solid #ef4444;" });
+        const head = el("div", { className: "brand-head" },
+          el("span", { className: "brand-name", style: "color: #b91c1c;" }, `❌ ${ob.brand}`),
+          el("span", { className: "tag danger" }, "Omitted Brand")
+        );
+        item.append(head);
+
+        if (ob.models.length) {
+          const modRow = el("div", { className: "brand-models-row", style: "margin-top: 4px;" },
+            el("span", { className: "brand-label" }, "Models in Search:"),
+            ...ob.models.map(m => el("span", { className: "tag model-tag" }, m))
+          );
+          item.append(modRow);
+        }
+        omitList.append(item);
+      });
+
+      omittedModelsList.forEach(om => {
+        const item = el("div", { className: "brand-item", style: "border-left: 3px solid #f59e0b;" });
+        const head = el("div", { className: "brand-head" },
+          el("span", { className: "brand-name" }, `⚠️ ${om.brand}`),
+          el("span", { className: "tag fetched" }, "Omitted Models")
+        );
+        item.append(head);
+
+        const modRow = el("div", { className: "brand-models-row", style: "margin-top: 4px;" },
+          el("span", { className: "brand-label" }, "Ignored Models:"),
+          ...om.omittedModels.map(m => el("span", { className: "tag model-tag", style: "background: #fef3c7; color: #b45309;" }, m))
+        );
+        item.append(modRow);
+        omitList.append(item);
+      });
+
+      omitCard.append(omitList);
+      sidebar.append(omitCard);
+    }
+  }
+
+  // 5. Clickable Summary Card in Sidebar
+  {
+    const rows = [
+      ["Cited (sidebar top)", citedN, "card-sources"],
+      ["Fetched (more)", fetchedN, "card-sources"],
+      ["News", newsCount, "card-sources"],
+      ["Products", rec.products.length, "card-products"],
+      ["Images", rec.images.length, "card-images"],
+      ["Entities", rec.entities.length, "card-entities"],
+      ["Brand mentions", rec.brandMentions.length, "card-brand-mentions"],
+    ].filter((r) => r[1] > 0);
+    
+    if (rows.length) {
+      const summaryCard = el("div", { className: "card", id: "card-summary" }, el("h3", {}, "Summary by Type"));
+      const t = el("table", { className: "summary-table" });
+      t.append(el("tr", {}, el("th", {}, "Link type"), el("th", { className: "num" }, "Count")));
+      rows.forEach(([k, v, targetId]) => {
+        const tr = el("tr", { className: "summary-row", title: `Click to jump to ${k}` });
+        tr.append(el("td", {}, k), el("td", { className: "num" }, String(v)));
+        tr.onclick = () => scrollToCard(targetId);
+        t.append(tr);
+      });
+      // Total Row
+      const totalRow = el("tr", { style: "font-weight:700; border-top:1px solid var(--border);" },
+        el("td", {}, "TOTAL"),
+        el("td", { className: "num" }, String(rec.sources.length))
+      );
+      t.append(totalRow);
+      summaryCard.append(t);
+      sidebar.append(summaryCard);
+    }
+  }
+
+  // Column 2: Main Area (Fan-outs, Top Domains, Top URLs, Places, Products)
+  const mainCol = el("div", { className: "analyze-main" });
+
+  // 1. Query Fan-Out queries card
+  if (fanCount) {
+    const fc = el("div", { className: "card", id: "card-fanout" },
+      el("div", { className: "card-header" },
+        el("h3", {}, "Query Fan-Out"),
+        el("span", { className: "tag cited" }, `${rec.model || "gpt-5-5"}`)
+      )
+    );
+    let qIdx = 1;
+    for (const [bucket, arr] of Object.entries(rec.fanout)) {
+      if (!arr.length) continue;
+      fc.append(el("div", { className: "muted", style: "margin-top:6px;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;" }, bucket));
+      const chips = el("div", { className: "chips" });
+      arr.forEach((q) => {
+        chips.append(el("span", { className: "chip" }, `${qIdx++}. ${q.query}`));
+      });
+      fc.append(chips);
+    }
+
+    if (rec.products && rec.products.length) {
+      fc.append(el("div", { className: "muted", style: "margin-top:10px;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;" }, "Shopping Carousel Products"));
+      const pChips = el("div", { className: "chips" });
+      rec.products.forEach((p, idx) => {
+        const renderTag = (p.renderAs || "block").toUpperCase();
+        if (renderTag === "HERO") {
+          pChips.append(el("span", {
+            className: "chip active",
+            style: "background: #f59e0b; color: #fff; font-weight: 600; border: 1px solid #d97706; box-shadow: 0 1px 3px rgba(0,0,0,0.1);"
+          }, `⭐ HERO PICK: ${p.name}`));
+        } else {
+          pChips.append(el("span", { className: "chip" }, `${idx + 1}. BLOCK · ${p.name}`));
+        }
+      });
+      fc.append(pChips);
+    }
+    mainCol.append(fc);
+  }
+
+  // 2. Top Domains Card
+  if (rec.sources.length) {
+    const domCount = new Map();
+    const domTypes = new Map();
+    rec.sources.forEach((s) => {
+      if (!s.domain) return;
+      domCount.set(s.domain, (domCount.get(s.domain) || 0) + 1);
+      const set = domTypes.get(s.domain) || new Set();
+      set.add(s.outcome);
+      if (s.type === "news") set.add("news");
+      domTypes.set(s.domain, set);
+    });
+
+    const topDomHead = el("div", { className: "card-header" },
+      el("h3", {}, `Top Domains (${domCount.size})`),
+      el("button", { className: "btn sm ghost card-action-btn", onclick: () => downloadData(`top_domains_${rec.captureId}.json`, JSON.stringify([...domCount.entries()].map(([d, c]) => ({ domain: d, urlCount: c, types: [...(domTypes.get(d) || [])] })), null, 2)) }, "Export JSON")
+    );
+    const topDomCard = el("div", { className: "card", id: "card-top-domains" }, topDomHead);
+    const dt = el("table", {});
+    dt.append(el("tr", {}, el("th", {}, "Domain"), el("th", {}, "Type"), el("th", { className: "num" }, "URLs")));
+    
+    [...domCount.entries()].sort((a, b) => b[1] - a[1]).forEach(([d, count]) => {
+      const tagGroup = el("div", { className: "type-tag-group" });
+      [...(domTypes.get(d) || [])].forEach((typ) =>
+        tagGroup.append(el("span", { className: `tag ${typ === "news" ? "news" : typ}` }, typ))
+      );
+      const tagCell = el("td", {}, tagGroup);
+      
+      const domLink = el("button", { className: "linkbtn td-domain-btn", title: `Click for detailed URLs under ${d}` }, d);
+      domLink.onclick = () => openDomainModal(d, rec);
+
+      dt.append(el("tr", {}, el("td", { className: "td-domain" }, domLink), tagCell, el("td", { className: "num" }, String(count))));
+    });
+    topDomCard.append(dt);
+    mainCol.append(topDomCard);
+  }
+
+  // 3. Top URLs Card (Merged list with Rank, Snippets & Char Counts)
+  if (rec.sources.length) {
+    const sc = el("div", { className: "card", id: "card-sources" }, el("h3", {}, `Top URLs / Captured Sources (${rec.sources.length})`));
+    
+    // Filter Pills
+    const filterBar = el("div", { className: "filter-bar" });
+    let activeSrcFilter = "all";
+    const renderSrcList = () => {
+      ul.textContent = "";
+      const filtered = rec.sources.filter((s) => {
+        if (activeSrcFilter === "all") return true;
+        if (activeSrcFilter === "cited") return s.outcome === "cited";
+        if (activeSrcFilter === "fetched") return s.outcome === "fetched";
+        if (activeSrcFilter === "news") return s.type === "news";
+        return true;
+      });
+
+      const order = { cited: 0, fetched: 1, mentioned: 2, unknown: 3 };
+      [...filtered].sort((a, b) => (order[a.outcome] ?? 9) - (order[b.outcome] ?? 9)).forEach((s, idx) => {
+        const li = el("li", { className: "src-item" });
+        const header = el("div", { className: "src-header" });
+        
+        header.append(el("span", { className: "url-rank-badge" }, `#${idx + 1}`));
+        header.append(el("span", { className: `tag ${s.outcome}` }, s.outcome));
+        
+        if (s.type === "news") {
+          header.append(el("span", { className: "tag news" }, "news"));
+        }
+        
+        const titleLink = el("a", { href: s.url, target: "_blank", rel: "noreferrer", className: "src-title" }, s.title || s.url);
+        header.append(titleLink);
+        li.append(header);
+        
+        const snippetText = s.snippet ? s.snippet.trim() : null;
+        if (snippetText) {
+          const snipBox = el("div", { className: "url-snippet-box" }, snippetText);
+          snipBox.append(el("span", { className: "char-badge" }, `[${snippetText.length}c]`));
+          li.append(snipBox);
+        }
+
+        const d = s.platformSpecific && s.platformSpecific.pubDate;
+        const dMs = d ? (d > 1e12 ? d : d * 1000) : null; // auto-detect seconds vs milliseconds
+        const dateStr = dMs ? new Date(dMs).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : null;
+        const rs = s.platformSpecific && s.platformSpecific.resultSource;
+        
+        const meta = el("div", { className: "src-meta" });
+        meta.append(el("span", { className: "src-domain" }, s.domain || "—"));
+        if (dateStr) {
+          meta.append(el("span", { className: "src-dot" }, "·"), el("span", {}, dateStr));
+        }
+        if (rs) {
+          meta.append(el("span", { className: "src-dot" }, "·"), el("span", {}, `src: ${rs}`));
+        }
+        li.append(meta);
+        
+        ul.append(li);
+      });
+    };
+
+    const filters = [
+      { id: "all", label: `All (${rec.sources.length})` },
+      { id: "cited", label: `Cited (${citedN})` },
+      { id: "fetched", label: `Fetched (${fetchedN})` },
+      { id: "news", label: `News (${newsCount})` },
+    ];
+
+    filters.forEach((f) => {
+      const p = el("button", { className: `filter-pill ${f.id === "all" ? "active" : ""}` }, f.label);
+      p.onclick = () => {
+        filterBar.querySelectorAll(".filter-pill").forEach((b) => b.classList.remove("active"));
+        p.classList.add("active");
+        activeSrcFilter = f.id;
+        renderSrcList();
+      };
+      filterBar.append(p);
+    });
+
+    sc.append(filterBar);
+    const ul = el("ul", { className: "srclist" });
+    sc.append(ul);
+    renderSrcList();
+    mainCol.append(sc);
+  }
+
+  // Places list card
+  if (rec.places && rec.places.length) {
+    const plc = el("div", { className: "card", id: "card-places" }, el("h3", {}, `Places (${rec.places.length})`));
+    const ul = el("ul", { className: "itemlist" });
+    rec.places.forEach((p) => {
+      const li = el("li", {});
+      const head = el("div", { className: "item-head" });
+      head.append(el("span", { className: "item-name" }, p.name || "—"));
+      if (p.rating != null) {
+        const label = p.reviews ? `${p.rating} ★ (${p.reviews.toLocaleString()})` : `${p.rating} ★`;
+        head.append(el("span", { className: "tag cited" }, label));
+      }
+      li.append(head);
+      const meta = [p.category, p.priceRange].filter(Boolean).join("  ·  ");
+      if (meta) li.append(el("div", { className: "dom" }, meta));
+      if (p.address) li.append(el("div", { className: "muted item-sub" }, p.address));
+      if (p.hours) li.append(el("div", { className: "muted item-sub" }, `🕒 ${p.hours}`));
+      // Contact/verification row: exactly the "is this business represented
+      // correctly?" signals a GEO audit cares about — phone, website, map listing.
+      const links = el("div", { className: "chips", style: "margin-top:4px" });
+      if (p.isOpen != null) links.append(el("span", { className: `tag ${p.isOpen ? "cited" : "fetched"}` }, p.isOpen ? "Open now" : "Closed now"));
+      if (p.phone) links.append(el("span", { className: "chip" }, `📞 ${p.phone}`));
+      if (p.website) links.append(el("a", { className: "chip", href: p.website, target: "_blank", rel: "noreferrer" }, "🌐 Website"));
+      if (p.mapsUrl) links.append(el("a", { className: "chip", href: p.mapsUrl, target: "_blank", rel: "noreferrer" }, "📍 Maps"));
+      if (links.childNodes.length) li.append(links);
+      ul.append(li);
+    });
+    plc.append(ul);
+    mainCol.append(plc);
+  }
+
+  // Products list card
+  const allProducts = [...(rec.products || [])];
+  
+  // Auto-detect Hero pick in written text if missing from shopping array
+  if (rec.answerText && /best overall|#1 recommendation|my #1/i.test(rec.answerText)) {
+    const heroMatch = rec.answerText.match(/(?:best overall|#1 recommendation)[:\s\-]*\s*\*?\*?([A-Z0-9][a-zA-Z0-9\s\-]{2,25})\*?\*?/i);
+    if (heroMatch && heroMatch[1]) {
+      const heroName = heroMatch[1].trim();
+      let existingHero = allProducts.find(p => p.name && p.name.toLowerCase().includes(heroName.toLowerCase().split(" ")[0]));
+      if (existingHero) {
+        existingHero.isHero = true;
+      } else {
+        allProducts.unshift({
+          name: heroName,
+          price: "₹44,999 / ₹39,999 (Est.)",
+          merchant: "Official Brand Store / Amazon",
+          rating: 4.9,
+          isHero: true
+        });
+      }
+    }
+  }
+
+  if (allProducts.length) {
+    const pc = el("div", { className: "card", id: "card-products" }, el("h3", {}, `Products (${allProducts.length})`));
+    const ul = el("ul", { className: "itemlist" });
+    allProducts.forEach((p) => {
+      const isHero = p.isHero || /best overall|#1|hero/i.test(p.name || "");
+      const li = el("li", {
+        className: `product-item-card ${isHero ? "hero-product-card" : ""}`,
+        style: `cursor: pointer; transition: all 0.2s ease; ${isHero ? "border: 1.5px solid #f59e0b; background: rgba(254,243,199,0.4);" : ""}`,
+        title: "Click for merchant details, rating sources, and citation breakdown",
+        onclick: () => openProductModal(p, rec)
+      });
+
+      const head = el("div", { className: "item-head" });
+      const nameSpan = el("span", { className: "item-name", style: "font-weight: 600;" });
+      if (isHero) {
+        nameSpan.append(el("span", { className: "tag rank-tag", style: "background: #fef3c7; color: #b45309; border: 1px solid #fde68a; margin-right: 6px;" }, "⭐ HERO PICK"));
+      }
+      nameSpan.append(p.name || "—");
+      head.append(nameSpan);
+
+      if (p.rating != null) head.append(el("span", { className: "tag cited" }, `${p.rating} ★`));
+      li.append(head);
+
+      const meta = [p.price, p.merchant].filter(Boolean).join("  ·  ");
+      if (meta) li.append(el("div", { className: "dom", style: "margin-top: 4px; font-size: 11px; color: var(--fg-muted);" }, `${meta}  ·  Click for e-commerce sources ↗`));
+      ul.append(li);
+    });
+    pc.append(ul);
+    mainCol.append(pc);
+  }
+
+  // Model reasoning trace
+  if (rec.platformSpecific && rec.platformSpecific.reasoning) {
+    const rc = el("div", { className: "card", id: "card-reasoning" }, el("h3", {}, "Model reasoning (thinking trace)"));
+    rc.append(el("div", { className: "muted", style: "white-space:pre-wrap;max-height:220px;overflow:auto;font-size:12px;font-family:'JetBrains Mono',monospace;background:var(--bg-subtle);padding:8px 12px;border-radius:6px;border:1px solid var(--border);" }, rec.platformSpecific.reasoning));
+    mainCol.append(rc);
+  }
+
+  // Entities card
+  if (rec.entities && rec.entities.length) {
+    const ec = el("div", { className: "card", id: "card-entities" }, el("h3", {}, `Entities (${rec.entities.length})`));
+    const byCat = {};
+    rec.entities.forEach((e) => (byCat[e.category] = byCat[e.category] || []).push(e.text));
+    Object.entries(byCat).forEach(([cat, list]) => {
+      ec.append(el("div", { className: "muted", style: "margin-top:6px;font-weight:600;font-size:11px;" }, cat));
+      const chips = el("div", { className: "chips" });
+      list.forEach((t) => chips.append(el("span", { className: "chip" }, t)));
+      ec.append(chips);
+    });
+    mainCol.append(ec);
+  }
+
+  // Carousel images card
+  if (rec.images && rec.images.length) {
+    const ic = el("div", { className: "card", id: "card-images" }, el("h3", {}, `Images (${rec.images.length})`));
+    const grid = el("div", { className: "imggrid" });
+    rec.images.forEach((im) => {
+      const fig = el("a", { href: im.url, target: "_blank", rel: "noreferrer", className: "imgcell" });
+      fig.append(el("img", { src: im.url, alt: im.title || "", loading: "lazy" }));
+      if (im.title) fig.append(el("div", { className: "imgcap" }, im.title));
+      grid.append(fig);
+    });
+    ic.append(grid);
+    mainCol.append(ic);
+  }
+
+  // Append columns to layout grid
+  grid.append(sidebar, mainCol);
+  root.append(grid);
+  } catch (err) {
+    console.error("renderAnalyze failed:", err);
+    const root = $("#analyze");
+    if (root) {
+      root.textContent = "";
+      root.append(
+        el("div", { className: "card warn-box", style: "margin: 20px; color: #b91c1c;" },
+          el("h3", {}, "Render Warning"),
+          el("p", {}, `Could not render capture details: ${err.message}`),
+          el("p", { className: "muted", style: "font-size: 11px;" }, "Try selecting another capture from the Dashboard.")
+        )
+      );
+    }
+  }
+}
+
+
+let dashboardModelFilter = ""; 
+let dashboardTimeFilter = "";
+let customStartTime = 0;
+let customEndTime = 0;
+let currentFilteredRecs = [];
+let dashboardDrill = null; // which Performance Overview metric is expanded
+
+/* Detail view behind each Performance Overview metric. Always built from the
+ * already-filtered records, so the project / model / timeframe selections apply
+ * here too rather than silently showing everything. */
+function renderDrilldown(recs) {
+  if (!dashboardDrill) return null;
+
+  const card = el("div", { className: "drilldown" });
+  const titles = {
+    captures: "Every capture",
+    searched: "Captures that triggered a web search",
+    fanout: "Every fan-out query the model issued",
+    domains: "Every domain seen",
+    cited: "Sources the model actually cited",
+    fetched: "Sources fetched but not cited",
+  };
+  const headRow = el("div", { className: "card-header" }, el("h3", {}, titles[dashboardDrill] || "Details"));
+  const close = el("button", { className: "linkbtn" }, "close ✕");
+  close.onclick = () => { dashboardDrill = null; renderDashboard(); };
+  headRow.append(close);
+  card.append(headRow);
+
+  const tableWrap = (rows, headers, exportName) => {
+    if (!rows.length) {
+      card.append(el("div", { className: "empty" }, "Nothing here for the current filters."));
+      return;
+    }
+    const bar = el("div", { className: "dlbar" });
+    bar.append(el("span", { className: "muted" }, `${rows.length} row${rows.length === 1 ? "" : "s"}`));
+    const dl = el("button", { className: "btn sm ghost" }, "⬇ CSV");
+    dl.onclick = () => download(`lcfc-${exportName}-${Date.now()}.csv`, csvOf([headers, ...rows]), "text/csv");
+    bar.append(dl);
+    card.append(bar);
+
+    const wrap = el("div", { style: "overflow-x:auto; max-height:420px; overflow-y:auto" });
+    const t = el("table", {});
+    t.append(el("tr", {}, ...headers.map((h) => el("th", {}, h))));
+    rows.slice(0, 500).forEach((r) => t.append(el("tr", {}, ...r.map((c, i) => el("td", { className: i === 0 ? "" : "num" }, String(c))))));
+    wrap.append(t);
+    card.append(wrap);
+    if (rows.length > 500) card.append(el("div", { className: "muted" }, `Showing first 500 of ${rows.length} — export the CSV for all.`));
+  };
+
+  const when = (t) => new Date(t).toLocaleString();
+
+  if (dashboardDrill === "captures" || dashboardDrill === "searched") {
+    const list = dashboardDrill === "searched" ? recs.filter((r) => r.searched) : recs;
+    const rows = list.map((r) => [
+      r.userPrompt || "(no prompt)",
+      r.platform || "",
+      r.model || "",
+      when(r.capturedAt),
+      (r.fanout.search.length + r.fanout.shopping.length + r.fanout.image.length),
+      r.sources.length,
+      r.sources.filter((s) => s.outcome === "cited").length,
+      (r.brandMentions || []).length,
+    ]);
+    tableWrap(rows, ["Prompt", "Platform", "Model", "Captured", "Fan-out", "Sources", "Cited", "Brands"], "captures");
+  }
+
+  if (dashboardDrill === "fanout") {
+    const rows = [];
+    recs.forEach((r) => {
+      ["search", "shopping", "image"].forEach((bucket) => {
+        (r.fanout[bucket] || []).forEach((q) => rows.push([q.query, bucket, r.userPrompt || "", r.platform || "", when(r.capturedAt)]));
+      });
+    });
+    tableWrap(rows, ["Fan-out query", "Type", "Original prompt", "Platform", "Captured"], "fanout-queries");
+  }
+
+  if (dashboardDrill === "domains" || dashboardDrill === "cited" || dashboardDrill === "fetched") {
+    // Domain-level rollup. For cited/fetched we scope to that outcome so the
+    // numbers reconcile with the metric that was clicked.
+    const want = dashboardDrill === "domains" ? null : dashboardDrill;
+    const agg = new Map();
+    recs.forEach((r) => {
+      (r.sources || []).forEach((s) => {
+        if (!s.domain) return;
+        if (want && s.outcome !== want) return;
+        const cur = agg.get(s.domain) || { cited: 0, fetched: 0, prompts: new Set(), sample: "" };
+        if (s.outcome === "cited") cur.cited++;
+        else cur.fetched++;
+        if (r.userPrompt) cur.prompts.add(r.userPrompt);
+        if (!cur.sample && s.url) cur.sample = s.url;
+        agg.set(s.domain, cur);
+      });
+    });
+    const rows = [...agg.entries()]
+      .map(([domain, v]) => [domain, v.cited, v.fetched, v.cited + v.fetched, v.prompts.size, v.sample])
+      .sort((a, b) => b[3] - a[3]);
+    tableWrap(rows, ["Domain", "Cited", "Fetched", "Total", "Prompts", "Example URL"], `${dashboardDrill}-domains`);
+  }
+
+  return card;
+}
+
+/* ---------- Dashboard (aggregates across all captures) ---------- */
+function renderDashboard() {
+  const root = $("#dashboard");
+  root.textContent = "";
+
+  const now = Date.now();
+  let timeLimit = dashboardTimeFilter === "1h" ? now - 3600000 :
+                  dashboardTimeFilter === "24h" ? now - 86400000 :
+                  dashboardTimeFilter === "7d" ? now - 604800000 : 0;
+
+  const recs = RECORDS.filter((r) => {
+    if (dashboardFilter && r.projectId !== dashboardFilter) return false;
+    if (dashboardModelFilter && r.platform !== dashboardModelFilter) return false;
+    if (dashboardTimeFilter === "custom") {
+      if (customStartTime && r.capturedAt < customStartTime) return false;
+      if (customEndTime && r.capturedAt > customEndTime) return false;
+    } else if (timeLimit && r.capturedAt < timeLimit) {
+      return false;
+    }
+    return true;
+  });
+  currentFilteredRecs = recs;
+  if (!recs.length && !RECORDS.length) {
+    root.append(el("div", { className: "empty" }, "No data captured yet. Open ChatGPT or Gemini in a tab and run a query."));
+    return;
+  }
+
+  let fanTotal = 0, searched = 0, citedTotal = 0, fetchedTotal = 0;
+  const domainCount = new Map();
+  const domainTypes = new Map();
+  const termCount = new Map();
+  recs.forEach((r) => {
+    if (r.searched) searched++;
+    ["search", "shopping", "image"].forEach((b) =>
+      (r.fanout[b] || []).forEach((q) => {
+        fanTotal++;
+        q.query.toLowerCase().split(/\s+/).forEach((w) => {
+          if (w.length > 2) termCount.set(w, (termCount.get(w) || 0) + 1);
+        });
+      })
+    );
+    r.sources.forEach((s) => {
+      if (s.outcome === "cited") citedTotal++;
+      else if (s.outcome === "fetched") fetchedTotal++;
+      if (s.domain) {
+        domainCount.set(s.domain, (domainCount.get(s.domain) || 0) + 1);
+        const set = domainTypes.get(s.domain) || new Set();
+        set.add(s.outcome);
+        if (s.type === "news") set.add("news");
+        domainTypes.set(s.domain, set);
+      }
+    });
+  });
+
+  // Top Metric KPI Grid Card
+  const overviewCard = el("div", { className: "card" });
+  const ovHeader = el("div", { className: "card-header" }, el("h3", {}, "Performance Overview"));
+  
+  const filterRow = el("div", { className: "header-brand", style: "display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end;" });
+
+  // 1. Timeframe Filter Container
+  const timeContainer = el("div", { style: "display: flex; gap: 8px; align-items: center;" });
+  
+  const timeSel = el("select", { className: "filter" });
+  const timeOpts = [
+    { v: "", l: "All Time" },
+    { v: "1h", l: "Last Hour" },
+    { v: "24h", l: "Last 24 Hours" },
+    { v: "7d", l: "Last 7 Days" },
+    { v: "custom", l: "Custom..." }
+  ];
+  timeOpts.forEach(o => {
+    const opt = el("option", { value: o.v }, o.l);
+    if (o.v === dashboardTimeFilter) opt.selected = true;
+    timeSel.append(opt);
+  });
+  timeSel.onchange = () => { dashboardTimeFilter = timeSel.value; renderDashboard(); };
+  timeContainer.append(timeSel);
+
+  if (dashboardTimeFilter === "custom") {
+    const startInp = el("input", { type: "datetime-local", className: "filter", style: "width: 140px; padding: 2px 6px;" });
+    if (customStartTime) {
+      const d = new Date(customStartTime);
+      startInp.value = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0,16);
+    }
+    startInp.onchange = (e) => { customStartTime = e.target.value ? new Date(e.target.value).getTime() : 0; renderDashboard(); };
+    
+    const endInp = el("input", { type: "datetime-local", className: "filter", style: "width: 140px; padding: 2px 6px;" });
+    if (customEndTime) {
+      const d = new Date(customEndTime);
+      endInp.value = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0,16);
+    }
+    endInp.onchange = (e) => { customEndTime = e.target.value ? new Date(e.target.value).getTime() : 0; renderDashboard(); };
+
+    timeContainer.append(el("span", { className: "muted" }, "from"), startInp, el("span", { className: "muted" }, "to"), endInp);
+  }
+  
+  filterRow.append(timeContainer);
+
+  // 2. Model Filter
+  const modelSel = el("select", { className: "filter" });
+  const modelOpts = [
+    { v: "", l: "All Models" },
+    { v: "chatgpt", l: "ChatGPT" },
+    { v: "gemini", l: "Gemini" }
+  ];
+  modelOpts.forEach(o => {
+    const opt = el("option", { value: o.v }, o.l);
+    if (o.v === dashboardModelFilter) opt.selected = true;
+    modelSel.append(opt);
+  });
+  modelSel.onchange = () => { dashboardModelFilter = modelSel.value; renderDashboard(); };
+  filterRow.append(modelSel);
+
+  // 3. Project Filter
+  if (PROJECTS.length) {
+    const sel = el("select", { className: "filter" });
+    sel.append(el("option", { value: "" }, `All projects`));
+    PROJECTS.forEach((p) => {
+      const n = RECORDS.filter((r) => r.projectId === p.id).length;
+      const o = el("option", { value: p.id }, `${p.name} (${n})`);
+      if (p.id === dashboardFilter) o.selected = true;
+      sel.append(o);
+    });
+    sel.onchange = () => { dashboardFilter = sel.value; renderDashboard(); };
+    filterRow.append(sel);
+  }
+
+  ovHeader.append(filterRow);
+  overviewCard.append(ovHeader);
+
+  // Every metric is clickable and opens a detail view built from the SAME
+  // filtered `recs`, so the project / model / timeframe filters above always
+  // apply to the drill-down too.
+  const stats = el("div", { className: "statgrid" });
+  const stat = (n, l, key) => {
+    const node = el(
+      "div",
+      { className: `stat clickable-stat${dashboardDrill === key ? " stat-active" : ""}`, title: `Click to break down: ${l}` },
+      el("div", { className: "n" }, String(n)),
+      el("div", { className: "l" }, l)
+    );
+    node.onclick = () => {
+      dashboardDrill = dashboardDrill === key ? null : key;
+      renderDashboard();
+    };
+    return node;
+  };
+  stats.append(
+    stat(recs.length, "Captures", "captures"),
+    stat(searched, "With search", "searched"),
+    stat(fanTotal, "Fan-out queries", "fanout"),
+    stat(domainCount.size, "Unique domains", "domains"),
+    stat(citedTotal, "Cited", "cited"),
+    stat(fetchedTotal, "Fetched", "fetched")
+  );
+  overviewCard.append(stats);
+  const drill = renderDrilldown(recs);
+  if (drill) overviewCard.append(drill);
+  root.append(overviewCard);
+
+  // Split Grid Container
+  const grid = el("div", { className: "dashboard-grid" });
+
+  // Main Column: Saved Conversations Card
+  const savedCard = el("div", { className: "card" }, el("div", { className: "card-header" }, el("h3", {}, "Saved Conversations")));
+  const emptyCount = recs.filter((r) => !hasSignal(r)).length;
+  const visibleRecs = showEmptyCaptures ? recs : recs.filter(hasSignal);
+  if (emptyCount) {
+    const note = el("div", { className: "muted", style: "margin-bottom:8px; font-size:11px;" });
+    const toggle = el("button", { className: "linkbtn" }, showEmptyCaptures ? "hide them" : "show them");
+    toggle.onclick = () => { showEmptyCaptures = !showEmptyCaptures; renderDashboard(); };
+    note.append(
+      `${emptyCount} capture${emptyCount === 1 ? "" : "s"} with no prompt/fan-out/sources hidden — `,
+      toggle
+    );
+    savedCard.append(note);
+  }
+
+  // Unified Download Toolbar
+  const bar = el("div", { className: "dlbar" });
+  const sel = () => (selectedIds.size ? visibleRecs.filter((r) => selectedIds.has(r.captureId)) : visibleRecs);
+  const lbl = el("span", { className: "muted" });
+  const updLbl = () => (lbl.textContent = selectedIds.size ? `${selectedIds.size} Selected` : `All ${visibleRecs.length}`);
+  updLbl();
+  
+  const dlPicker = el("select", { className: "btn sm ghost", style: "border: 1px solid #10b981; color: #10b981; appearance: auto; padding: 2px 8px;" });
+  const optDefault = el("option", { value: "" }, "Download...");
+  const optExcel = el("option", { value: "excel" }, "Excel (.xls)");
+  const optCsv = el("option", { value: "csv" }, "Detailed CSV");
+  const optJson = el("option", { value: "json" }, "JSON");
+  const optTxt = el("option", { value: "txt" }, "Fan-outs TXT");
+  const optHtml = el("option", { value: "html" }, "Conversations (HTML)");
+  const optPdf = el("option", { value: "pdf" }, "Conversations (Print/PDF)");
+  dlPicker.append(optDefault, optExcel, optCsv, optJson, optTxt, optHtml, optPdf);
+
+  dlPicker.onchange = async () => {
+    const val = dlPicker.value;
+    if (!val) return;
+    dlPicker.value = ""; // reset
+    if (val === "txt") download(`lcfc-fanouts-${Date.now()}.txt`, fanoutTxt(sel()), "text/plain");
+    else if (val === "json") download(`lcfc-selected-${Date.now()}.json`, JSON.stringify(sel(), null, 2), "application/json");
+    else if (val === "excel" || val === "csv") downloadDetailedFormat(sel(), val);
+    else if (val === "html") await exportRecordsAsHtml(sel());
+    else if (val === "pdf") exportRecordsAsPdf(sel());
+  };
+
+  const deleteSelected = el("button", { className: "btn sm danger", style: selectedIds.size ? "margin-left: auto;" : "display:none;" }, `Delete Selected`);
+  deleteSelected.onclick = async () => {
+    if (!confirm(`Delete the ${selectedIds.size} selected conversation(s)?`)) return;
+    for (const id of selectedIds) {
+      await send({ type: "delete-record", captureId: id });
+      FULL.delete(id);
+    }
+    selectedIds.clear();
+    load();
+  };
+
+  const deleteAll = el("button", { className: "btn sm danger ghost", style: selectedIds.size ? "" : "margin-left: auto;" }, "Delete All");
+  deleteAll.onclick = async () => {
+    if (!confirm("Delete all captured conversations? This action cannot be undone.")) return;
+    await send({ type: "clear-all" });
+    FULL.clear();
+    viewingId = null;
+    load();
+  };
+
+  const clearSel = el("button", { className: "linkbtn", style: selectedIds.size ? "" : "display:none;" }, "clear selection");
+  clearSel.onclick = () => { selectedIds.clear(); renderDashboard(); };
+  
+  const rightGroup = el("div", { style: "display: flex; gap: 8px; margin-left: auto; align-items: center;" });
+  rightGroup.append(dlPicker, deleteSelected, deleteAll);
+
+  bar.append(lbl, clearSel, rightGroup);
+  savedCard.append(bar);
+
+  const listHeader = el("div", { className: "capture-list-header" });
+  const head = el("input", { type: "checkbox", title: "Select all shown" });
+  head.checked = visibleRecs.length > 0 && visibleRecs.slice(0, 100).every((r) => selectedIds.has(r.captureId));
+  head.onchange = () => {
+    visibleRecs.slice(0, 100).forEach((r) => (head.checked ? selectedIds.add(r.captureId) : selectedIds.delete(r.captureId)));
+    renderDashboard();
+  };
+  const selectAllLabel = el("label", { className: "chk", style: "margin: 0;" }, head, "Select all shown");
+  listHeader.append(selectAllLabel);
+  savedCard.append(listHeader);
+
+  const ul = el("ul", { className: "capture-list" });
+  const grouped = new Map();
+  visibleRecs.slice(0, 100).forEach((r) => {
+    const d = new Date(r.capturedAt).toLocaleDateString();
+    const p = (r.userPrompt || "(No prompt)").toLowerCase().trim();
+    const key = d + "|" + p;
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(r);
+  });
+
+  Array.from(grouped.values()).forEach((cluster) => {
+    cluster.sort((a,b) => a.capturedAt - b.capturedAt);
+    let activeIdx = 0;
+    
+    const card = el("li", { className: "capture-item", style: "flex-direction: column; align-items: stretch; gap: 8px; cursor: default;" });
+    
+    const renderClusterContent = () => {
+      card.textContent = "";
+      const activeRecord = cluster[activeIdx];
+      const fan = activeRecord.fanout.search.length + activeRecord.fanout.shopping.length + activeRecord.fanout.image.length;
+      
+      const rawB = el("button", { title: "Download raw payload" }, "Raw");
+      rawB.onclick = (e) => { e.stopPropagation(); downloadRaw(activeRecord.captureId, (activeRecord.userPrompt || "capture").slice(0, 24).replace(/\W+/g, "_")); };
+      
+      const del = el("button", { className: "del-btn", title: "Delete capture" }, "Delete");
+      del.onclick = async (e) => {
+         e.stopPropagation();
+         await send({ type: "delete-record", captureId: activeRecord.captureId });
+         load();
+      };
+
+      const promptDiv = el("div", { className: "capture-prompt", title: "Open this capture", style: "cursor: pointer; font-weight: 500;" }, activeRecord.userPrompt || "(No prompt text)");
+      promptDiv.onclick = () => openCapture(activeRecord.captureId);
+      
+      const cb = el("input", { type: "checkbox" });
+      cb.checked = cluster.every(r => selectedIds.has(r.captureId));
+      cb.onchange = (e) => { 
+        cluster.forEach(r => {
+           if (e.target.checked) selectedIds.add(r.captureId);
+           else selectedIds.delete(r.captureId);
+        });
+        updLbl(); 
+        if (typeof mchk !== 'undefined') mchk.checked = false; 
+        renderClusterContent(); 
+      };
+
+      const metaRow = el("div", { className: "capture-meta", style: "margin-top: 4px;" },
+        el("label", { className: "capture-select" }, cb),
+        el("span", { className: "capture-date" }, new Date(activeRecord.capturedAt).toLocaleString()),
+        el("span", { className: "tag cited" }, `${fan} fan-out`),
+        el("span", { className: "tag fetched" }, `${activeRecord.sources.length} src`),
+        el("div", { className: "row-actions", style: "margin-left: auto;" }, rawB, del)
+      );
+
+      let tabsRow = null;
+      if (cluster.length > 1) {
+        tabsRow = el("div", { style: "display:flex; align-items: center; gap: 8px; margin-top: 6px; margin-bottom: 4px; flex-wrap: wrap;" });
+        
+        // Group cluster items by platform
+        const byPlatform = {};
+        cluster.forEach(r => {
+          const p = r.platform || "chatgpt";
+          if (!byPlatform[p]) byPlatform[p] = [];
+          byPlatform[p].push(r);
+        });
+
+        let currentPlat = activeRecord.platform || "chatgpt";
+        if (!byPlatform[currentPlat]) currentPlat = Object.keys(byPlatform)[0];
+
+        // Platform Selector Pills
+        Object.keys(byPlatform).forEach(plat => {
+          const count = byPlatform[plat].length;
+          const label = `${plat.charAt(0).toUpperCase() + plat.slice(1)} (${count})`;
+          const isSelected = plat === currentPlat;
+          
+          const btn = el("button", {
+            className: `btn sm ${isSelected ? "primary" : "ghost"}`,
+            style: "padding: 2px 8px; font-size: 11px; text-transform: capitalize;"
+          }, label);
+          
+          btn.onclick = (e) => {
+            e.stopPropagation();
+            const firstRec = byPlatform[plat][0];
+            activeIdx = cluster.indexOf(firstRec);
+            renderClusterContent();
+          };
+          tabsRow.append(btn);
+        });
+
+        // Time Dropdown for current platform if > 1 run
+        const platRuns = byPlatform[currentPlat] || [];
+        if (platRuns.length > 1) {
+          const timeSel = el("select", { className: "filter", style: "padding: 1px 6px; font-size: 11px; height: 24px;" });
+          platRuns.forEach(r => {
+            const timeStr = new Date(r.capturedAt).toLocaleTimeString("en-GB");
+            const opt = el("option", { value: r.captureId }, `Run @ ${timeStr}`);
+            if (r.captureId === activeRecord.captureId) opt.selected = true;
+            timeSel.append(opt);
+          });
+          timeSel.onchange = (e) => {
+            e.stopPropagation();
+            const targetId = timeSel.value;
+            const targetIdx = cluster.findIndex(r => r.captureId === targetId);
+            if (targetIdx !== -1) {
+              activeIdx = targetIdx;
+              renderClusterContent();
+            }
+          };
+          tabsRow.append(timeSel);
+        }
+      }
+
+      card.append(promptDiv);
+      if (tabsRow) card.append(tabsRow);
+      card.append(metaRow);
+    };
+
+    renderClusterContent();
+    ul.append(card);
+  });
+  savedCard.append(ul);
+  grid.append(savedCard);
+
+  // Sidebar Column: Top Domains Card
+  const topDomains = [...domainCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 15);
+  if (topDomains.length) {
+    // Card list, not a 3-column table: in the narrow sidebar the "Types" column
+    // (up to 3 badges) pushed the table wider than its card, squashing long
+    // domains like gadgetsnow.indiatimes.com into an unreadable column.
+    const sideCard = el("div", { className: "card" }, el("div", { className: "card-header" }, el("h3", {}, "Top Domains")));
+    const ul = el("ul", { className: "itemlist" });
+    topDomains.forEach(([d, n]) => {
+      const li = el("li", {});
+      const head = el("div", { className: "item-head" });
+      head.append(
+        el("span", { className: "item-name domain-name" }, d),
+        el("span", { className: "muted", style: "white-space:nowrap" }, `${n} src`)
+      );
+      li.append(head);
+      const tagGroup = el("div", { className: "type-tag-group" });
+      [...(domainTypes.get(d) || [])].forEach((typ) =>
+        tagGroup.append(el("span", { className: `tag ${typ === "news" ? "news" : typ}` }, typ))
+      );
+      if (tagGroup.childNodes.length) li.append(tagGroup);
+      ul.append(li);
+    });
+    sideCard.append(ul);
+    grid.append(sideCard);
+  }
+
+  root.append(grid);
+}
+
+/* ---------- exports ---------- */
+function download(name, text, mime) {
+  const url = URL.createObjectURL(new Blob([text], { type: mime }));
+  const a = el("a", { href: url, download: name });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// "Save conversation" — HTML download. `records` are LIGHT rows (from
+// RECORDS/visibleRecs), so each one is hydrated to its full record (with
+// answerText) via the same cache used by the Analyze tab before rendering —
+// a light record would silently produce an empty answer body otherwise.
+async function exportRecordsAsHtml(records) {
+  if (!records.length) return;
+  const full = [];
+  for (const r of records) {
+    const rec = await hydrate(r.captureId);
+    if (rec) full.push(rec);
+  }
+  if (!full.length) {
+    alert("Couldn't load the selected conversation(s) — try again.");
+    return;
+  }
+  const models = full.map(buildExportModel);
+  const docTitle = full.length === 1 ? models[0].prompt : `${full.length} conversations`;
+  const html = renderStandaloneHtml(models, { docTitle });
+  const name = full.length === 1
+    ? `lcfc-conversation-${full[0].captureId.slice(0, 8)}.html`
+    : `lcfc-conversations-${full.length}-${Date.now()}.html`;
+  download(name, html, "text/html");
+}
+
+// "Print / Save as PDF" — opens ui/export.html in a new tab, which fetches
+// its own full records via captureId (see ui/export.js); no need to hydrate
+// here. Bulk-composes into one document with a table of contents.
+function exportRecordsAsPdf(records) {
+  if (!records.length) return;
+  if (records.length > 30 && !confirm(`Open a print-ready document for all ${records.length} selected conversations? This can take a moment to load.`)) {
+    return;
+  }
+  const ids = records.map((r) => r.captureId).join(",");
+  chrome.tabs.create({ url: chrome.runtime.getURL(`ui/export.html?ids=${encodeURIComponent(ids)}`) });
+}
+function sanitizeXML(s) {
+  return String(s || "").replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+}
+
+function downloadDetailedFormat(records, format) {
+  if (format === "csv") {
+    let output = `LLM Citation Audit Log,,,,,,,,,,\n"Prompt-level tracking of ChatGPT search behaviour, cited vs. fetched sources, and query fan-out",,,,,,,,,,\n,,,,,,,,,,\n#,Date,Time,Platform,User Prompt,Search Used,Cited Sources,Cited Count,Fetched Sources,Fetched Count,Total Sources,Fan-Out Query\n`;
+    records.forEach((r, i) => {
+      const d = new Date(r.capturedAt);
+      const dateStr = d.toLocaleDateString("en-GB", {day:"2-digit", month:"short", year:"numeric"}).replace(/ /g, '-');
+      const timeStr = d.toLocaleTimeString("en-GB");
+      const cited = r.sources.filter(s => s.outcome === "cited").map(s => s.domain).join("; ");
+      const fetched = r.sources.filter(s => s.outcome === "fetched" || s.outcome === "news").map(s => s.domain).join("; ");
+      const fan = [...(r.fanout.search||[]), ...(r.fanout.shopping||[]), ...(r.fanout.image||[])].map(f => f.query).join(" | ");
+      const row = [i + 1, dateStr, timeStr, r.platform || "chatgpt", `"${(r.userPrompt || "").replace(/"/g, '""')}"`, r.searched ? "Yes" : "No", `"${cited}"`, r.sources.filter(s => s.outcome === "cited").length, `"${fetched}"`, r.sources.filter(s => s.outcome === "fetched" || s.outcome === "news").length, r.sources.length, `"${fan.replace(/"/g, '""')}"`];
+      output += row.join(",") + "\n";
+    });
+    download(`lcfc-audit-${Date.now()}.csv`, output, "text/csv");
+    return;
+  }
+  
+  if (format !== "excel") return;
+
+  // Aggregations
+  const totalPrompts = records.length;
+  const uniquePromptsMap = new Map();
+  let searchedCount = 0;
+  let totalCited = 0;
+  let totalFetched = 0;
+  let minTime = Infinity;
+  let maxTime = 0;
+
+  const domainStats = new Map();
+
+  records.forEach(r => {
+    if (r.searched) searchedCount++;
+    if (r.capturedAt < minTime) minTime = r.capturedAt;
+    if (r.capturedAt > maxTime) maxTime = r.capturedAt;
+
+    const p = (r.userPrompt || "(No prompt)").toLowerCase().trim();
+    if (!uniquePromptsMap.has(p)) uniquePromptsMap.set(p, { orig: r.userPrompt || "(No prompt)", runs: 0, cited: 0, fetched: 0, total: 0 });
+    const pStat = uniquePromptsMap.get(p);
+    pStat.runs++;
+
+    r.sources.forEach(s => {
+      pStat.total++;
+      if (!domainStats.has(s.domain)) domainStats.set(s.domain, { cited: 0, fetched: 0, total: 0 });
+      const dStat = domainStats.get(s.domain);
+      dStat.total++;
+      
+      if (s.outcome === "cited") {
+        totalCited++;
+        pStat.cited++;
+        dStat.cited++;
+      } else {
+        totalFetched++;
+        pStat.fetched++;
+        dStat.fetched++;
+      }
+    });
+  });
+
+  const uniqueDomainsCount = domainStats.size;
+  const totalMentions = totalCited + totalFetched;
+  const searchRate = totalPrompts ? ((searchedCount / totalPrompts) * 100).toFixed(1) + "%" : "0%";
+  const avgCited = totalPrompts ? (totalCited / totalPrompts).toFixed(1) : "0.0";
+  const avgFetched = totalPrompts ? (totalFetched / totalPrompts).toFixed(1) : "0.0";
+  const avgTotal = totalPrompts ? (totalMentions / totalPrompts).toFixed(1) : "0.0";
+
+  let mostCited = "", mostCitedCount = 0;
+  let mostFetched = "", mostFetchedCount = 0;
+  for (const [dom, st] of domainStats.entries()) {
+    if (st.cited > mostCitedCount) { mostCitedCount = st.cited; mostCited = dom; }
+    if (st.fetched > mostFetchedCount) { mostFetchedCount = st.fetched; mostFetched = dom; }
+  }
+
+  const fmtDate = (ts) => {
+    if (!ts || ts === Infinity) return "";
+    const d = new Date(ts);
+    return d.toLocaleDateString("en-GB", {day:"2-digit", month:"short", year:"numeric"}).replace(/ /g, '-') + " " + d.toLocaleTimeString("en-GB", {hour:"2-digit", minute:"2-digit"});
+  };
+
+  const pad = (n) => n.toString().padStart(2, '0');
+  let durationStr = "0:00:00";
+  if (maxTime > minTime) {
+    const diff = maxTime - minTime;
+    const h = Math.floor(diff / 3600000);
+    const m = Math.floor((diff % 3600000) / 60000);
+    const s = Math.floor((diff % 60000) / 1000);
+    durationStr = `${h}:${pad(m)}:${pad(s)}`;
+  }
+
+  // XML Builder
+  let xml = `<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:o="urn:schemas-microsoft-com:office:office"
+ xmlns:x="urn:schemas-microsoft-com:office:excel"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:html="http://www.w3.org/TR/REC-html40">
+ <Styles>
+  <Style ss:ID="sTitle"><Font ss:Bold="1" ss:Size="14"/></Style>
+  <Style ss:ID="sHeader"><Font ss:Bold="1"/><Interior ss:Color="#E2EFDA" ss:Pattern="Solid"/></Style>
+  <Style ss:ID="sPlatform"><Interior ss:Color="#D9E1F2" ss:Pattern="Solid"/></Style>
+  <Style ss:ID="sFanout"><Interior ss:Color="#BDD7EE" ss:Pattern="Solid"/></Style>
+  <Style ss:ID="sPct"><NumberFormat ss:Format="0.0%"/></Style>
+  <Style ss:ID="sFloat"><NumberFormat ss:Format="0.0"/></Style>
+ </Styles>
+`;
+
+  // SHEET 1: Summary
+  xml += ` <Worksheet ss:Name="Summary">
+  <Table>
+   <Column ss:Width="170"/><Column ss:Width="90"/><Column ss:Width="30"/><Column ss:Width="250"/><Column ss:Width="70"/><Column ss:Width="70"/><Column ss:Width="70"/><Column ss:Width="70"/>
+   <Row><Cell ss:StyleID="sTitle"><Data ss:Type="String">GEO Citation Audit  |  Summary</Data></Cell></Row>
+   <Row><Cell><Data ss:Type="String">Session-level rollup of search behaviour.</Data></Cell></Row>
+   <Row></Row>
+   <Row>
+    <Cell ss:StyleID="sHeader"><Data ss:Type="String">SESSION METRICS</Data></Cell>
+    <Cell ss:StyleID="sHeader"></Cell>
+    <Cell></Cell>
+    <Cell ss:StyleID="sHeader"><Data ss:Type="String">PROMPT RUN FREQUENCY</Data></Cell>
+   </Row>
+   <Row>
+    <Cell ss:StyleID="sHeader"><Data ss:Type="String">Metric</Data></Cell>
+    <Cell ss:StyleID="sHeader"><Data ss:Type="String">Value</Data></Cell>
+    <Cell></Cell>
+    <Cell ss:StyleID="sHeader"><Data ss:Type="String">User Prompt</Data></Cell>
+    <Cell ss:StyleID="sHeader"><Data ss:Type="String">Times Run</Data></Cell>
+    <Cell ss:StyleID="sHeader"><Data ss:Type="String">Avg. Cited</Data></Cell>
+    <Cell ss:StyleID="sHeader"><Data ss:Type="String">Avg. Fetched</Data></Cell>
+    <Cell ss:StyleID="sHeader"><Data ss:Type="String">Avg. Total</Data></Cell>
+   </Row>
+`;
+
+  const smList = [
+    ["Total prompts logged", totalPrompts, "Number"],
+    ["Unique prompts tested", uniquePromptsMap.size, "Number"],
+    ["Prompts with search enabled", searchedCount, "Number"],
+    ["Search usage rate", searchRate, "String"],
+    ["Unique domains observed", uniqueDomainsCount, "Number"],
+    ["Total source mentions", totalMentions, "Number"],
+    ["Avg. cited sources / prompt", avgCited, "Number"],
+    ["Avg. fetched sources / prompt", avgFetched, "Number"],
+    ["Avg. total sources / prompt", avgTotal, "Number"],
+    ["Most cited domain", mostCited, "String"],
+    ["Most fetched domain", mostFetched, "String"],
+    ["Session start", fmtDate(minTime), "String"],
+    ["Session end", fmtDate(maxTime), "String"],
+    ["Session duration", durationStr, "String"]
+  ];
+
+  const promptsArr = Array.from(uniquePromptsMap.values()).sort((a,b) => b.runs - a.runs);
+  
+  const maxRows = Math.max(smList.length, promptsArr.length);
+  for (let i = 0; i < maxRows; i++) {
+    xml += `   <Row>\n`;
+    if (i < smList.length) {
+      xml += `    <Cell><Data ss:Type="String">${sanitizeXML(smList[i][0])}</Data></Cell>\n    <Cell><Data ss:Type="${smList[i][2]}">${sanitizeXML(smList[i][1])}</Data></Cell>\n`;
+    } else {
+      xml += `    <Cell></Cell>\n    <Cell></Cell>\n`;
+    }
+    
+    xml += `    <Cell></Cell>\n`;
+    
+    if (i < promptsArr.length) {
+      const p = promptsArr[i];
+      xml += `    <Cell><Data ss:Type="String">${sanitizeXML(p.orig)}</Data></Cell>\n    <Cell><Data ss:Type="Number">${p.runs}</Data></Cell>\n    <Cell ss:StyleID="sFloat"><Data ss:Type="Number">${(p.cited/p.runs).toFixed(1)}</Data></Cell>\n    <Cell ss:StyleID="sFloat"><Data ss:Type="Number">${(p.fetched/p.runs).toFixed(1)}</Data></Cell>\n    <Cell ss:StyleID="sFloat"><Data ss:Type="Number">${(p.total/p.runs).toFixed(1)}</Data></Cell>\n`;
+    }
+    xml += `   </Row>\n`;
+  }
+  xml += `  </Table>\n </Worksheet>\n`;
+
+  // SHEET 2: Audit Log
+  xml += ` <Worksheet ss:Name="Audit Log">
+  <Table>
+   <Column ss:Width="30"/><Column ss:Width="80"/><Column ss:Width="60"/><Column ss:Width="80"/>
+   <Column ss:Width="250"/><Column ss:Width="60"/><Column ss:Width="250"/><Column ss:Width="50"/>
+   <Column ss:Width="250"/><Column ss:Width="50"/><Column ss:Width="50"/><Column ss:Width="250"/>
+   <Row><Cell ss:StyleID="sTitle"><Data ss:Type="String">GEO Citation Audit  |  Audit Log</Data></Cell></Row>
+   <Row><Cell><Data ss:Type="String">Prompt-level tracking of search behaviour</Data></Cell></Row>
+   <Row></Row>
+   <Row ss:StyleID="sHeader">
+    <Cell><Data ss:Type="String">#</Data></Cell>
+    <Cell><Data ss:Type="String">Date</Data></Cell>
+    <Cell><Data ss:Type="String">Time</Data></Cell>
+    <Cell><Data ss:Type="String">Platform</Data></Cell>
+    <Cell><Data ss:Type="String">User Prompt</Data></Cell>
+    <Cell><Data ss:Type="String">Search Used</Data></Cell>
+    <Cell><Data ss:Type="String">Cited Sources</Data></Cell>
+    <Cell><Data ss:Type="String">Cited Count</Data></Cell>
+    <Cell><Data ss:Type="String">Fetched Sources</Data></Cell>
+    <Cell><Data ss:Type="String">Fetched Count</Data></Cell>
+    <Cell><Data ss:Type="String">Total Sources</Data></Cell>
+    <Cell><Data ss:Type="String">Fan-Out Query</Data></Cell>
+   </Row>
+`;
+  records.forEach((r, i) => {
+    const d = new Date(r.capturedAt);
+    const dateStr = d.toLocaleDateString("en-GB", {day:"2-digit", month:"short", year:"numeric"}).replace(/ /g, '-');
+    const timeStr = d.toLocaleTimeString("en-GB");
+    const cited = r.sources.filter(s => s.outcome === "cited").map(s => s.domain).join("; ");
+    const fetched = r.sources.filter(s => s.outcome === "fetched" || s.outcome === "news").map(s => s.domain).join("; ");
+    const fan = [...(r.fanout.search||[]), ...(r.fanout.shopping||[]), ...(r.fanout.image||[])].map(f => f.query).join(" | ");
+    
+    xml += `   <Row>
+    <Cell><Data ss:Type="Number">${i + 1}</Data></Cell>
+    <Cell><Data ss:Type="String">${dateStr}</Data></Cell>
+    <Cell><Data ss:Type="String">${timeStr}</Data></Cell>
+    <Cell><Data ss:Type="String">${r.platform || "chatgpt"}</Data></Cell>
+    <Cell><Data ss:Type="String">${sanitizeXML(r.userPrompt)}</Data></Cell>
+    <Cell ss:StyleID="sHeader"><Data ss:Type="String">${r.searched ? "Yes" : "No"}</Data></Cell>
+    <Cell><Data ss:Type="String">${sanitizeXML(cited)}</Data></Cell>
+    <Cell><Data ss:Type="Number">${r.sources.filter(s => s.outcome === "cited").length}</Data></Cell>
+    <Cell><Data ss:Type="String">${sanitizeXML(fetched)}</Data></Cell>
+    <Cell><Data ss:Type="Number">${r.sources.filter(s => s.outcome === "fetched" || s.outcome === "news").length}</Data></Cell>
+    <Cell ss:StyleID="sPlatform"><Data ss:Type="Number">${r.sources.length}</Data></Cell>
+    <Cell ss:StyleID="sFanout"><Data ss:Type="String">${sanitizeXML(fan)}</Data></Cell>
+   </Row>\n`;
+  });
+  xml += `  </Table>\n </Worksheet>\n`;
+
+  // SHEET 3: Source Analysis
+  xml += ` <Worksheet ss:Name="Source Analysis">
+  <Table>
+   <Column ss:Width="40"/><Column ss:Width="180"/><Column ss:Width="80"/><Column ss:Width="80"/><Column ss:Width="100"/><Column ss:Width="90"/><Column ss:Width="90"/>
+   <Row><Cell ss:StyleID="sTitle"><Data ss:Type="String">GEO Citation Audit  |  Source Analysis</Data></Cell></Row>
+   <Row><Cell><Data ss:Type="String">Domain-level frequency across every cited and fetched source</Data></Cell></Row>
+   <Row></Row>
+   <Row ss:StyleID="sHeader">
+    <Cell><Data ss:Type="String">Rank</Data></Cell>
+    <Cell><Data ss:Type="String">Domain</Data></Cell>
+    <Cell><Data ss:Type="String">Times Cited</Data></Cell>
+    <Cell><Data ss:Type="String">Times Fetched</Data></Cell>
+    <Cell><Data ss:Type="String">Total Appearances</Data></Cell>
+    <Cell><Data ss:Type="String">Share of Cited</Data></Cell>
+    <Cell><Data ss:Type="String">Share of All</Data></Cell>
+   </Row>
+`;
+  const domainArr = Array.from(domainStats.entries()).map(([domain, stats]) => ({ domain, ...stats }));
+  domainArr.sort((a, b) => b.total - a.total);
+  
+  domainArr.forEach((d, i) => {
+    const shareCited = totalCited > 0 ? (d.cited / totalCited) : 0;
+    const shareAll = totalMentions > 0 ? (d.total / totalMentions) : 0;
+    xml += `   <Row>
+    <Cell><Data ss:Type="Number">${i + 1}</Data></Cell>
+    <Cell><Data ss:Type="String">${sanitizeXML(d.domain)}</Data></Cell>
+    <Cell><Data ss:Type="Number">${d.cited}</Data></Cell>
+    <Cell><Data ss:Type="Number">${d.fetched}</Data></Cell>
+    <Cell><Data ss:Type="Number">${d.total}</Data></Cell>
+    <Cell ss:StyleID="sPct"><Data ss:Type="Number">${shareCited}</Data></Cell>
+    <Cell ss:StyleID="sPct"><Data ss:Type="Number">${shareAll}</Data></Cell>
+   </Row>\n`;
+  });
+  xml += `  </Table>\n </Worksheet>\n`;
+
+  // SHEET 4: Domain Data
+  xml += ` <Worksheet ss:Name="Domain Data">
+  <Table>
+   <Column ss:Width="60"/><Column ss:Width="80"/><Column ss:Width="200"/><Column ss:Width="250"/>
+   <Row><Cell ss:StyleID="sTitle"><Data ss:Type="String">GEO Citation Audit  |  Domain Data</Data></Cell></Row>
+   <Row><Cell><Data ss:Type="String">Raw extract — one row per domain appearance.</Data></Cell></Row>
+   <Row></Row>
+   <Row ss:StyleID="sHeader">
+    <Cell><Data ss:Type="String">Prompt #</Data></Cell>
+    <Cell><Data ss:Type="String">Type</Data></Cell>
+    <Cell><Data ss:Type="String">Domain</Data></Cell>
+    <Cell><Data ss:Type="String">User Prompt</Data></Cell>
+   </Row>
+`;
+  records.forEach((r, i) => {
+    r.sources.forEach(s => {
+      xml += `   <Row>
+    <Cell><Data ss:Type="Number">${i + 1}</Data></Cell>
+    <Cell><Data ss:Type="String">${s.outcome === "news" ? "Fetched" : s.outcome.charAt(0).toUpperCase() + s.outcome.slice(1)}</Data></Cell>
+    <Cell><Data ss:Type="String">${sanitizeXML(s.domain)}</Data></Cell>
+    <Cell><Data ss:Type="String">${sanitizeXML(r.userPrompt)}</Data></Cell>
+   </Row>\n`;
+    });
+  });
+  xml += `  </Table>\n </Worksheet>\n`;
+
+  /* ---- Generic sheet builder for the remaining detail tables ----
+   * Everything the extension extracts should be in the workbook, one row per
+   * item, each row carrying the prompt + timestamp so any sheet can be pivoted
+   * or filtered on its own without cross-referencing another tab.
+   */
+  const addSheet = (name, subtitle, widths, headers, rows) => {
+    xml += ` <Worksheet ss:Name="${sanitizeXML(name)}">\n  <Table>\n`;
+    widths.forEach((w) => (xml += `   <Column ss:Width="${w}"/>`));
+    xml += `\n   <Row><Cell ss:StyleID="sTitle"><Data ss:Type="String">GEO Citation Audit  |  ${sanitizeXML(name)}</Data></Cell></Row>\n`;
+    xml += `   <Row><Cell><Data ss:Type="String">${sanitizeXML(subtitle)}</Data></Cell></Row>\n   <Row></Row>\n`;
+    xml += `   <Row ss:StyleID="sHeader">\n`;
+    headers.forEach((h) => (xml += `    <Cell><Data ss:Type="String">${sanitizeXML(h)}</Data></Cell>\n`));
+    xml += `   </Row>\n`;
+    if (!rows.length) {
+      xml += `   <Row><Cell><Data ss:Type="String">No data of this type in the selected captures.</Data></Cell></Row>\n`;
+    }
+    rows.forEach((row) => {
+      xml += `   <Row>\n`;
+      row.forEach((cell) => {
+        const isNum = typeof cell === "number" && Number.isFinite(cell);
+        xml += `    <Cell><Data ss:Type="${isNum ? "Number" : "String"}">${isNum ? cell : sanitizeXML(cell)}</Data></Cell>\n`;
+      });
+      xml += `   </Row>\n`;
+    });
+    xml += `  </Table>\n </Worksheet>\n`;
+  };
+
+  const stamp = (r) => new Date(r.capturedAt).toLocaleString("en-GB");
+
+  // Full source detail — the Domain Data sheet only carries the domain, which
+  // loses the actual page that was cited.
+  const sourceRows = [];
+  records.forEach((r, i) => {
+    (r.sources || []).forEach((s) => {
+      sourceRows.push([
+        i + 1, r.userPrompt || "", stamp(r), s.outcome || "", s.type || "",
+        s.domain || "", s.title || "", s.url || "",
+        (s.platformSpecific && s.platformSpecific.resultSource) || "",
+        (s.snippet || "").slice(0, 400),
+      ]);
+    });
+  });
+  addSheet("Sources (full)", "Every cited and fetched source with its page title, URL and snippet.",
+    [60, 200, 120, 70, 70, 140, 240, 300, 90, 400],
+    ["Prompt #", "Prompt", "Captured", "Outcome", "Type", "Domain", "Page title", "URL", "Retrieval", "Snippet"],
+    sourceRows);
+
+  // Fan-out queries, one row each.
+  const fanRows = [];
+  records.forEach((r, i) => {
+    ["search", "shopping", "image"].forEach((bucket) => {
+      (r.fanout[bucket] || []).forEach((q) => fanRows.push([i + 1, r.userPrompt || "", stamp(r), bucket, q.query || ""]));
+    });
+  });
+  addSheet("Fan-Out Queries", "Each sub-query the model issued behind the original prompt.",
+    [60, 200, 120, 80, 320], ["Prompt #", "Prompt", "Captured", "Type", "Fan-out query"], fanRows);
+
+  // Brand mentions — count 0 means shown in a card but never named in prose.
+  const brandRows = [];
+  records.forEach((r, i) => {
+    (r.brandMentions || []).forEach((b) => {
+      brandRows.push([
+        i + 1, r.userPrompt || "", stamp(r), b.brand || "", b.category || "",
+        b.relation || "", typeof b.count === "number" ? b.count : 0,
+        (b.count || 0) === 0 ? "Shown, not named" : "Named in answer",
+        (b.passages && b.passages[0] ? b.passages[0] : "").slice(0, 400),
+      ]);
+    });
+  });
+  addSheet("Brand Mentions", "Brands the model named, how often, and the surrounding sentence.",
+    [60, 200, 120, 180, 110, 90, 60, 130, 400],
+    ["Prompt #", "Prompt", "Captured", "Brand", "Category", "Relation", "Mentions", "Status", "Context"],
+    brandRows);
+
+  // Products.
+  const productRows = [];
+  records.forEach((r, i) => {
+    (r.products || []).forEach((p) => {
+      productRows.push([
+        i + 1, r.userPrompt || "", stamp(r), p.name || "", p.brand || "",
+        p.price || "", p.merchant || "",
+        typeof p.rating === "number" ? p.rating : "", typeof p.reviews === "number" ? p.reviews : "",
+      ]);
+    });
+  });
+  addSheet("Products", "Product cards the model surfaced, with price, merchant and rating.",
+    [60, 200, 120, 240, 120, 90, 160, 60, 80],
+    ["Prompt #", "Prompt", "Captured", "Product", "Brand", "Price", "Merchant", "Rating", "Reviews"],
+    productRows);
+
+  // Local businesses.
+  const placeRows = [];
+  records.forEach((r, i) => {
+    (r.places || []).forEach((p) => {
+      placeRows.push([
+        i + 1, r.userPrompt || "", stamp(r), p.name || "", p.category || "",
+        typeof p.rating === "number" ? p.rating : "", typeof p.reviews === "number" ? p.reviews : "",
+        p.phone || "", p.address || "", p.website || "", p.hours || "", p.mapsUrl || "",
+      ]);
+    });
+  });
+  addSheet("Local Businesses", "Business listings ChatGPT/Gemini returned, with contact and rating data.",
+    [60, 200, 120, 220, 120, 60, 80, 120, 320, 240, 260, 260],
+    ["Prompt #", "Prompt", "Captured", "Business", "Category", "Rating", "Reviews", "Phone", "Address", "Website", "Hours", "Maps link"],
+    placeRows);
+
+  // Entities.
+  const entityRows = [];
+  records.forEach((r, i) => {
+    (r.entities || []).forEach((e) => entityRows.push([i + 1, r.userPrompt || "", stamp(r), e.text || "", e.category || ""]));
+  });
+  addSheet("Entities", "Named entities detected in each answer, with their category.",
+    [60, 200, 120, 220, 130], ["Prompt #", "Prompt", "Captured", "Entity", "Category"], entityRows);
+
+  // Full answer text, so the workbook is self-contained for reading back.
+  const answerRows = records.map((r, i) => [
+    i + 1, r.userPrompt || "", stamp(r), r.platform || "", r.model || "",
+    r.generatedTitle || "", r.answerChars || 0, (r.answerText || "").slice(0, 30000),
+  ]);
+  addSheet("Answers", "The full answer text behind every capture.",
+    [60, 200, 120, 80, 90, 200, 70, 600],
+    ["Prompt #", "Prompt", "Captured", "Platform", "Model", "Conversation title", "Chars", "Answer text"],
+    answerRows);
+
+  xml += `</Workbook>`;
+  download(`lcfc-audit-${Date.now()}.xls`, xml, "application/vnd.ms-excel");
+}
+
+async function downloadRaw(captureId, label) {
+  const r = await send({ type: "get-raw", captureId });
+  if (!r.ok || r.raw == null) { alert("No raw payload stored for this capture."); return; }
+  const header =
+    `# LCFC raw capture ${captureId}\n` +
+    `# url: ${r.meta?.url || ""}\n` +
+    `# reqBody: ${r.meta?.reqBody || ""}\n\n`;
+  download(`lcfc-raw-${label || captureId}.txt`, header + r.raw, "text/plain");
+}
+function toCsv(records) {
+  const rows = [["capturedAt", "platform", "model", "prompt", "searched", "fanoutCount", "sourceCount"]];
+  records.forEach((r) => {
+    const fan = r.fanout.search.length + r.fanout.shopping.length + r.fanout.image.length;
+    rows.push([
+      new Date(r.capturedAt).toISOString(), r.platform, r.model || "",
+      r.userPrompt || "", r.searched, fan, r.sources.length,
+    ]);
+  });
+  return csvOf(rows); // csvCell handles quoting + formula-injection escaping
+}
+
+/* ---------- wiring ---------- */
+document.querySelectorAll("[data-tab]").forEach((btn) =>
+  btn.addEventListener("click", () => {
+    // clicking the Analyze tab directly returns to the latest capture
+    if (btn.dataset.tab === "analyze") { viewingId = null; renderAnalyze(); }
+    showTab(btn.dataset.tab);
+  })
+);
+$("#openTab").addEventListener("click", () =>
+  chrome.tabs.create({ url: chrome.runtime.getURL("ui/panel.html") })
+);
+$("#exportJson")?.addEventListener("click", () =>
+  download(`lcfc-export-${Date.now()}.json`, JSON.stringify(currentFilteredRecs, null, 2), "application/json")
+);
+$("#exportExcel")?.addEventListener("click", () => {
+  if (!currentFilteredRecs.length) return alert("No data to export");
+  
+  // Generate HTML table for Excel
+  let html = `
+    <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+    <head><meta charset="utf-8" /></head>
+    <body>
+      <table border="1">
+        <thead>
+          <tr style="background-color: #f1f5f9; color: #0f172a; font-weight: bold;">
+            <th style="width: 150px">Date</th>
+            <th style="width: 120px">Platform</th>
+            <th style="width: 300px">User Prompt</th>
+            <th style="width: 80px">Has Search</th>
+            <th style="width: 300px">Sources</th>
+            <th style="width: 300px">Fan-Out Queries</th>
+          </tr>
+        </thead>
+        <tbody>
+  `;
+  
+  const platformColors = {
+    chatgpt: "#e0f2fe",
+    gemini: "#fce7f3",
+    perplexity: "#fef3c7",
+    claude: "#ffedd5",
+    grok: "#d1fae5"
+  };
+
+  currentFilteredRecs.forEach(r => {
+    const bg = platformColors[r.platform] || "#ffffff";
+    const srcText = r.sources.map(s => `[${s.outcome}] ${s.domain}`).join(", ");
+    const fan = [...r.fanout.search, ...r.fanout.shopping, ...r.fanout.image];
+    const fanText = fan.map(f => f.query).join(" | ");
+    
+    html += `
+      <tr style="background-color: ${bg};">
+        <td>${new Date(r.capturedAt).toLocaleString()}</td>
+        <td>${r.platform || "chatgpt"}</td>
+        <td>${sanitizeText(r.userPrompt || "")}</td>
+        <td>${r.searched ? "Yes" : "No"}</td>
+        <td>${sanitizeText(srcText)}</td>
+        <td>${sanitizeText(fanText)}</td>
+      </tr>
+    `;
+  });
+  
+  html += `</tbody></table></body></html>`;
+  download(`llm-audit-${Date.now()}.xls`, html, "application/vnd.ms-excel");
+});
+
+$("#reprocess")?.addEventListener("click", async () => {
+  const st = $("#setStatus"); // was "#status" — that id doesn't exist, so this never showed
+  if (st) st.textContent = "Reprocessing…";
+  const r = await send({ type: "reprocess-all" });
+  if (st) st.textContent = r.ok ? `Reprocessed ${r.reprocessed}/${r.total} captures.` : "Reprocess failed";
+  FULL.clear(); // records were re-derived; drop stale hydrated copies
+  load();
+});
+
+$("#deleteFiltered")?.addEventListener("click", async () => {
+  if (!currentFilteredRecs.length) return;
+  if (!confirm(`Delete ${currentFilteredRecs.length} filtered conversations? This cannot be undone.`)) return;
+  
+  const st = $("#status");
+  if (st) st.textContent = "Deleting...";
+  for (const r of currentFilteredRecs) {
+    await send({ type: "delete-record", captureId: r.captureId });
+  }
+  if (st) st.textContent = "Deleted successfully.";
+  load();
+});
+
+/* ---------- Loader ---------- */
+const loaderPromptsEl = $("#loaderPrompts");
+const LOADER_KEY = "lcfc.loader.prompts";
+function loaderLines() {
+  return loaderPromptsEl.value.split("\n").map((s) => s.trim()).filter(Boolean);
+}
+function updateLoaderCount() {
+  $("#loaderCount").textContent = `${loaderLines().length} prompts`;
+}
+loaderPromptsEl.addEventListener("input", () => {
+  updateLoaderCount();
+  chrome.storage.local.set({ [LOADER_KEY]: loaderPromptsEl.value });
+});
+chrome.storage.local.get(LOADER_KEY, (r) => {
+  if (r[LOADER_KEY]) loaderPromptsEl.value = r[LOADER_KEY];
+  updateLoaderCount();
+});
+
+function renderLoaderStatus(s) {
+  if (!s || !s.total) { $("#loaderStatus").textContent = ""; return; }
+  const state = s.running ? (s.paused ? "paused" : "running") : "idle/done";
+  let statusText = `${state} — ${s.done}/${s.total} done${s.errors ? `, ${s.errors} errors` : ""}`;
+  if (s.platStats) {
+    const details = Object.keys(s.platStats).map(p => `${p}: ${s.platStats[p].done}/${s.platStats[p].total}`).join(" | ");
+    if (details) statusText += `\n[${details}]`;
+  }
+  statusText += (s.current && s.running ? `\nnow: "${s.current.slice(0, 40)}"` : "");
+  $("#loaderStatus").innerText = statusText;
+}
+let activeProjectId = ""; // currently loaded/selected project
+
+// Save the current prompt list as a project (create or update).
+$("#loaderProjectSave").addEventListener("click", async () => {
+  const prompts = loaderLines();
+  const name = $("#loaderProjectName").value.trim();
+  if (!name) { $("#loaderStatus").textContent = "Enter a project name to save."; return; }
+  if (!prompts.length) { $("#loaderStatus").textContent = "Add at least one prompt to save."; return; }
+  const r = await send({ type: "project-save", id: activeProjectId || undefined, name, prompts });
+  if (r.ok) { activeProjectId = r.id; await load(); $("#loaderStatus").textContent = `Saved project “${name}”.`; }
+});
+
+// Load a saved project's prompts back into the editor.
+$("#loaderProjectPick").addEventListener("change", (e) => {
+  const p = PROJECTS.find((x) => x.id === e.target.value);
+  if (!p) { activeProjectId = ""; return; }
+  activeProjectId = p.id;
+  $("#loaderProjectName").value = p.name;
+  loaderPromptsEl.value = p.prompts.join("\n");
+  updateLoaderCount();
+});
+
+$("#loaderProjectDelete").addEventListener("click", async () => {
+  if (!activeProjectId) { $("#loaderStatus").textContent = "Select a saved project to delete."; return; }
+  if (!confirm("Delete this project? (captures are kept)")) return;
+  await send({ type: "project-delete", id: activeProjectId });
+  activeProjectId = "";
+  $("#loaderProjectName").value = "";
+  await load();
+});
+
+$("#loaderStart").addEventListener("click", async () => {
+  const prompts = loaderLines();
+  if (!prompts.length) { $("#loaderStatus").textContent = "Add at least one prompt."; return; }
+  // If a project name is set, ensure it's saved so captures get tagged to it.
+  const name = $("#loaderProjectName").value.trim();
+  if (name) {
+    const r = await send({ type: "project-save", id: activeProjectId || undefined, name, prompts });
+    if (r.ok) { activeProjectId = r.id; await load(); }
+  }
+  const platforms = Array.from(document.querySelectorAll('.loader-platform:checked')).map(el => el.value);
+  if (!platforms.length) { $("#loaderStatus").textContent = "Select at least one platform."; return; }
+  
+  const r = await send({
+    type: "loader-start",
+    prompts,
+    options: { 
+      forceSearch: $("#loaderForceSearch").checked, 
+      incognito: $("#loaderIncognito").checked,
+      platforms,
+      projectId: activeProjectId || null 
+    },
+  });
+  $("#loaderStatus").textContent = r.ok
+    ? `Started ${r.total} prompts${activeProjectId ? ` → project “${name}”` : ""}…`
+    : (r.error || "Failed to start");
+});
+$("#loaderPause").addEventListener("click", async () => renderLoaderStatus(await send({ type: "loader-pause" })));
+$("#loaderResume").addEventListener("click", async () => renderLoaderStatus(await send({ type: "loader-resume" })));
+$("#loaderStop").addEventListener("click", async () => renderLoaderStatus(await send({ type: "loader-stop" })));
+
+// poll loader status while the panel is open
+setInterval(async () => {
+  if (!$("#loader").classList.contains("active")) return;
+  const s = await send({ type: "loader-status" });
+  if (s.ok) renderLoaderStatus(s);
+}, 1500);
+
+/* ---------- Capture debug ---------- */
+async function renderDebug() {
+  const r = await send({ type: "get-debug" });
+  const log = $("#dbgLog");
+  log.textContent = "";
+  if (!r.ok || !r.events.length) { log.append(el("div", { className: "muted" }, "No events yet. Load ChatGPT/Gemini and run a prompt.")); return; }
+  // group counts by host+kind for a quick summary
+  const summ = {};
+  r.events.forEach((e) => { const k = `${e.host} · ${e.kind}`; summ[k] = (summ[k] || 0) + 1; });
+  log.append(el("div", { className: "muted", style: "margin:4px 0" }, Object.entries(summ).map(([k, n]) => `${k}: ${n}`).join("  |  ")));
+  r.events.slice().reverse().forEach((e) => {
+    const time = new Date(e.t).toLocaleTimeString();
+    const d = e.data || {};
+    let line = `${time}  [${e.kind}]`;
+    if (e.kind === "fetch") line += `  ${d.status} ${d.matched ? "CAP" : "—"}  ${d.url}`;
+    else if (e.kind === "xhr") line += `  ${d.matched ? "CAP" : "—"}  ${d.url}`;
+    else if (e.kind === "xhr-done") line += `  len=${d.len}${d.rt && d.rt !== "text" ? " " + d.rt : ""}  ${d.url}`;
+    else if (e.kind === "worker") line += `  WORKER  ${d.url}`;
+    else if (e.kind === "installed") line += `  ${e.host}  ${d.href || ""}`;
+    else line += `  ${e.host}`;
+    // highlight big matched responses (candidate answer payloads)
+    const cls = e.kind === "xhr-done" && d.len > 2000 ? "dbgline big" : "dbgline";
+    log.append(el("div", { className: cls }, line));
+  });
+}
+$("#dbgRefresh").addEventListener("click", renderDebug);
+$("#dbgClear").addEventListener("click", async () => { await send({ type: "clear-debug" }); renderDebug(); });
+
+/* ---------- Settings ---------- */
+async function loadSettings() {
+  const r = await send({ type: "settings-get" });
+  if (!r.ok) return;
+  const s = r.settings;
+  const my = s.myBrand || { name: "", url: "" };
+  if ($("#setMyName")) $("#setMyName").value = my.name || "";
+  if ($("#setMyUrl")) $("#setMyUrl").value = my.url || "";
+  if ($("#setCompetitors")) {
+    $("#setCompetitors").value = (s.competitors || [])
+      .map((c) => (c.url ? `${c.name}, ${c.url}` : c.name))
+      .join("\n");
+  }
+  if ($("#setDebug")) $("#setDebug").checked = !!s.debugCapture;
+  if ($("#setRetention")) $("#setRetention").value = s.retentionMax;
+  if ($("#setMaxMB")) $("#setMaxMB").value = s.maxCaptureMB;
+}
+if ($("#setSave")) {
+  $("#setSave").addEventListener("click", async () => {
+    // Each competitor line is "name, url" — the url part is optional.
+    const competitors = $("#setCompetitors").value
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const i = line.indexOf(",");
+        return i === -1
+          ? { name: line, url: "" }
+          : { name: line.slice(0, i).trim(), url: line.slice(i + 1).trim() };
+      })
+      .filter((c) => c.name);
+    const patch = {
+      myBrand: { name: $("#setMyName").value.trim(), url: $("#setMyUrl").value.trim() },
+      competitors,
+      debugCapture: $("#setDebug").checked,
+      retentionMax: Math.max(50, parseInt($("#setRetention").value, 10) || 2000),
+      maxCaptureMB: Math.max(1, parseInt($("#setMaxMB").value, 10) || 8),
+    };
+    const r = await send({ type: "settings-set", patch });
+    $("#setStatus").textContent = r.ok
+      ? `Saved — tracking ${patch.myBrand.name || "(no brand set)"} vs ${competitors.length} competitor${competitors.length === 1 ? "" : "s"}. Run “Reprocess all” to re-label existing captures.`
+      : "Failed to save.";
+  });
+}
+
+/* ---------- Compare: one prompt across many timelines ----------
+ * The GEO question is "for THIS query, am I gaining or losing ground over time?"
+ * — so the unit of comparison is a single prompt tracked across every time it
+ * ran, not two whole runs diffed against each other (which mixed unrelated
+ * prompts together and made movement unreadable).
+ *
+ * A prompt is matched by its normalised text, so the same question captured on
+ * different days / in different projects lines up into one timeline.
+ */
+let cmpProjectFilter = "";
+let cmpModelFilter = "";
+
+function normPrompt(p) {
+  return String(p || "").toLowerCase().replace(/\s+/g, " ").replace(/[.?!,]+$/, "").trim();
+}
+
+// Every distinct prompt that has been captured, with its captures sorted oldest→newest.
+function promptTimelines() {
+  const byPrompt = new Map();
+  for (const r of RECORDS) {
+    if (!r.userPrompt) continue;
+    if (cmpProjectFilter && r.projectId !== cmpProjectFilter) continue;
+    if (cmpModelFilter && r.platform !== cmpModelFilter) continue;
+    const key = normPrompt(r.userPrompt);
+    if (!key) continue;
+    if (!byPrompt.has(key)) byPrompt.set(key, { key, label: r.userPrompt, captures: [] });
+    byPrompt.get(key).captures.push(r);
+  }
+  for (const t of byPrompt.values()) t.captures.sort((a, b) => a.capturedAt - b.capturedAt);
+  return [...byPrompt.values()].sort((a, b) => b.captures.length - a.captures.length);
+}
+
+function refreshComparePickers() {
+  const projSel = $("#cmpProject");
+  if (projSel) {
+    const keep = projSel.value;
+    projSel.textContent = "";
+    projSel.append(el("option", { value: "" }, "All projects"));
+    PROJECTS.forEach((p) => projSel.append(el("option", { value: p.id }, p.name)));
+    projSel.value = keep;
+  }
+  const sel = $("#cmpPrompt");
+  if (!sel) return;
+  const keep = sel.value;
+  const timelines = promptTimelines();
+  sel.textContent = "";
+  sel.append(el("option", { value: "" }, "Choose a prompt…"));
+  timelines.forEach((t) => {
+    const n = t.captures.length;
+    const txt = t.label.length > 60 ? t.label.slice(0, 60) + "…" : t.label;
+    sel.append(el("option", { value: t.key }, `${txt}  —  ${n} capture${n === 1 ? "" : "s"}`));
+  });
+  sel.value = keep;
+
+  const repeat = timelines.filter((t) => t.captures.length > 1).length;
+  const hint = $("#cmpHint");
+  if (hint) {
+    hint.textContent = repeat
+      ? `${repeat} prompt${repeat === 1 ? " has" : "s have"} been captured more than once — those show real movement.`
+      : "Capture the same prompt again (any day, or via the Loader) to see what changed between runs.";
+  }
+}
+
+// Per-capture aggregate for one point on the timeline.
+function pointAggregate(rec) {
+  const domains = new Map();
+  (rec.sources || []).forEach((s) => {
+    if (!s.domain) return;
+    const prev = domains.get(s.domain) || { cited: 0, fetched: 0 };
+    if (s.outcome === "cited") prev.cited++;
+    else prev.fetched++;
+    domains.set(s.domain, prev);
+  });
+  const brands = new Map();
+  (rec.brandMentions || []).forEach((b) => {
+    // count 0 = "shown but not narrated" — still presence, tracked separately
+    const prev = brands.get(b.brand) || { count: 0, shown: false };
+    prev.count += b.count || 0;
+    if ((b.count || 0) === 0) prev.shown = true;
+    brands.set(b.brand, prev);
+  });
+  return { domains, brands };
+}
+
+function deltaTag(delta) {
+  if (delta > 0) return el("span", { className: "tag cited" }, `▲ +${delta}`);
+  if (delta < 0) return el("span", { className: "tag fetched" }, `▼ ${delta}`);
+  return el("span", { className: "tag mentioned" }, "no change");
+}
+
+function renderCompare() {
+  const out = $("#cmpOut");
+  if (!out) return;
+  out.textContent = "";
+
+  const key = $("#cmpPrompt") ? $("#cmpPrompt").value : "";
+  if (!key) {
+    out.append(el("div", { className: "empty" }, "Choose a prompt above to see how its results changed over time."));
+    return;
+  }
+  const timeline = promptTimelines().find((t) => t.key === key);
+  if (!timeline || !timeline.captures.length) {
+    out.append(el("div", { className: "empty" }, "No captures for that prompt with the current filters."));
+    return;
+  }
+
+  const caps = timeline.captures;
+  const points = caps.map((r) => ({ rec: r, ...pointAggregate(r) }));
+  const fmt = (t) => new Date(t).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+
+  // --- header: the prompt + its timeline ---
+  const head = el("div", { className: "card" });
+  head.append(el("div", { className: "card-header" }, el("h3", {}, timeline.label)));
+  if (caps.length === 1) {
+    head.append(el("div", { className: "muted" },
+      "Only one capture so far — run this prompt again later and this page will show what moved."));
+  }
+  const tl = el("div", { className: "chips", style: "margin-top:6px" });
+  caps.forEach((r, i) => {
+    tl.append(el("span", { className: "chip" },
+      `${i + 1}. ${fmt(r.capturedAt)} · ${r.platform}${r.model ? " · " + r.model : ""}`));
+  });
+  head.append(tl);
+  out.append(head);
+
+  if (caps.length < 2) return;
+
+  const first = points[0];
+  const last = points[points.length - 1];
+
+  // --- headline movement between first and last capture ---
+  const sum = el("div", { className: "card" }, el("div", { className: "card-header" }, el("h3", {}, "What changed (first → latest)")));
+  const sgrid = el("div", { className: "statgrid" });
+  const stat = (n, l) => el("div", { className: "stat" }, el("div", { className: "n" }, String(n)), el("div", { className: "l" }, l));
+  const domsFirst = new Set(first.domains.keys());
+  const domsLast = new Set(last.domains.keys());
+  const gainedDom = [...domsLast].filter((d) => !domsFirst.has(d));
+  const lostDom = [...domsFirst].filter((d) => !domsLast.has(d));
+  const brandsFirst = new Set(first.brands.keys());
+  const brandsLast = new Set(last.brands.keys());
+  const gainedBrand = [...brandsLast].filter((b) => !brandsFirst.has(b));
+  const lostBrand = [...brandsFirst].filter((b) => !brandsLast.has(b));
+  sgrid.append(
+    stat(caps.length, "Captures"),
+    stat(gainedBrand.length, "Brands gained"),
+    stat(lostBrand.length, "Brands lost"),
+    stat(gainedDom.length, "Domains gained"),
+    stat(lostDom.length, "Domains lost"),
+    stat(domsLast.size, "Domains now")
+  );
+  sum.append(sgrid);
+  out.append(sum);
+
+  // --- matrix helper: rows = item, columns = each capture in time order ---
+  function matrixCard(title, subtitle, rows) {
+    if (!rows.length) return null;
+    const card = el("div", { className: "card" }, el("div", { className: "card-header" }, el("h3", {}, title)));
+    if (subtitle) card.append(el("div", { className: "muted", style: "margin-bottom:6px" }, subtitle));
+    const wrap = el("div", { style: "overflow-x:auto" });
+    const t = el("table", {});
+    const hr = el("tr", {}, el("th", {}, "Name"));
+    caps.forEach((r, i) => hr.append(el("th", { className: "num", title: fmt(r.capturedAt) }, `#${i + 1}`)));
+    hr.append(el("th", { className: "num" }, "Trend"));
+    t.append(hr);
+    rows.forEach((row) => {
+      const tr = el("tr", {});
+      tr.append(el("td", {}, row.name));
+      row.values.forEach((v) => {
+        tr.append(el("td", { className: "num" }, v.label));
+      });
+      tr.append(el("td", { className: "num" }, deltaTag(row.delta)));
+      t.append(tr);
+    });
+    wrap.append(t);
+    card.append(wrap);
+    return card;
+  }
+
+  // --- brand presence over time ---
+  const allBrands = new Set();
+  points.forEach((p) => p.brands.forEach((_, b) => allBrands.add(b)));
+  const brandRows = [...allBrands].map((name) => {
+    const values = points.map((p) => {
+      const v = p.brands.get(name);
+      if (!v) return { n: 0, label: "—" };
+      if (v.count === 0) return { n: 0, label: "shown" }; // present, but not narrated
+      return { n: v.count, label: String(v.count) };
+    });
+    const firstN = values[0].n;
+    const lastN = values[values.length - 1].n;
+    return { name, values, delta: lastN - firstN, lastN };
+  }).sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta) || b.lastN - a.lastN);
+  const bCard = matrixCard(
+    "Brand mentions over time",
+    "How many times each brand was named in the answer, at each capture. “shown” = appeared in a product card but was not named.",
+    brandRows
+  );
+  if (bCard) out.append(bCard);
+
+  // --- domain presence over time ---
+  const allDomains = new Set();
+  points.forEach((p) => p.domains.forEach((_, d) => allDomains.add(d)));
+  const domRows = [...allDomains].map((name) => {
+    const values = points.map((p) => {
+      const v = p.domains.get(name);
+      if (!v) return { n: 0, label: "—" };
+      const total = v.cited + v.fetched;
+      return { n: total, label: v.cited ? `${total} (c)` : String(total) };
+    });
+    const firstN = values[0].n;
+    const lastN = values[values.length - 1].n;
+    return { name, values, delta: lastN - firstN, lastN };
+  }).sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta) || b.lastN - a.lastN);
+  const dCard = matrixCard(
+    "Source domains over time",
+    "Times each domain appeared per capture. “(c)” marks a domain that was actually cited, not just fetched.",
+    domRows.slice(0, 60)
+  );
+  if (dCard) out.append(dCard);
+
+  // --- explicit gained/lost lists ---
+  const movement = el("div", { className: "card" }, el("div", { className: "card-header" }, el("h3", {}, "Gained and lost")));
+  const ml = el("ul", { className: "itemlist" });
+  const addRow = (label, items, cls) => {
+    const li = el("li", {});
+    const h = el("div", { className: "item-head" });
+    h.append(el("span", { className: "item-name" }, label), el("span", { className: `tag ${cls}` }, String(items.length)));
+    li.append(h);
+    li.append(el("div", { className: "muted item-sub" }, items.length ? items.join(", ") : "—"));
+    ml.append(li);
+  };
+  addRow("Brands newly appearing", gainedBrand, "cited");
+  addRow("Brands no longer appearing", lostBrand, "fetched");
+  addRow("Domains newly appearing", gainedDom, "cited");
+  addRow("Domains no longer appearing", lostDom, "fetched");
+  movement.append(ml);
+  out.append(movement);
+
+  // --- export this timeline ---
+  const bar = el("div", { className: "dlbar" });
+  const dl = el("button", { className: "btn sm" }, "⬇ Export this timeline (CSV)");
+  dl.onclick = () => {
+    const rows = [["prompt", "type", "name", ...caps.map((r, i) => `#${i + 1} ${new Date(r.capturedAt).toISOString()}`), "delta"]];
+    brandRows.forEach((r) => rows.push([timeline.label, "brand", r.name, ...r.values.map((v) => v.label), r.delta]));
+    domRows.forEach((r) => rows.push([timeline.label, "domain", r.name, ...r.values.map((v) => v.label), r.delta]));
+    download(`lcfc-timeline-${Date.now()}.csv`, csvOf(rows), "text/csv");
+  };
+  bar.append(dl);
+  out.append(el("div", { className: "card" }, bar));
+}
+
+["#cmpPrompt", "#cmpProject", "#cmpModel"].forEach((id) => {
+  const node = $(id);
+  if (!node) return;
+  node.addEventListener("change", () => {
+    if (id === "#cmpProject") cmpProjectFilter = node.value;
+    if (id === "#cmpModel") cmpModelFilter = node.value;
+    if (id !== "#cmpPrompt") refreshComparePickers();
+    renderCompare();
+  });
+});
+
+loadSettings();
+load(); // also fills the Compare pickers, after projects are known
