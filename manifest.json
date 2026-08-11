@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LLM Citation & Fan-Out Checker",
-  "version": "0.23.0",
+  "version": "0.24.0",
   "description": "Capture ChatGPT & Gemini search fan-out, cited/fetched sources, products & brand mentions. Local-only — nothing leaves your device.",
   "permissions": [
     "storage",

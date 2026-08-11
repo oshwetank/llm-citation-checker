@@ -16,6 +16,10 @@ import { db } from "./lib/db.js";
 import { gzipString, gunzipToString } from "./lib/gzip.js";
 import { adapt as adaptChatGpt } from "./adapters/chatgpt.js";
 import { adapt as adaptGemini } from "./adapters/gemini.js";
+import {
+  MAX_PROFILES, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
+  selectTracked, computeMetrics, computeSeries,
+} from "./lib/geo.js";
 
 const ADAPTERS = { chatgpt: adaptChatGpt, gemini: adaptGemini };
 
@@ -134,6 +138,8 @@ async function storeCapture(payload, meta) {
     capturedAt: payload.capturedAt,
     projectId: (meta && meta.projectId) || null, // on raw so reprocess preserves it
     runId: (meta && meta.runId) || null,
+    geo: (meta && meta.geo) || null, // ditto: tracking provenance must survive reprocess
+
     gz: await gzipString(rawText),
     rawSchema: 1,
   };
@@ -161,6 +167,7 @@ async function deriveAndStore(rawRow, rawText, settings) {
   );
   record.projectId = rawRow.projectId || null;
   record.runId = rawRow.runId || null;
+  record.geo = rawRow.geo || null;
   await db.put("derived", record);
   return record;
 }
@@ -350,6 +357,63 @@ async function loaderStart(prompts, options) {
   return { ok: true, total: loader.total, runId: loader.runId };
 }
 
+/*
+ * Start a GEO tracking run for one profile.
+ *
+ * This deliberately REUSES the Loader rather than building a second automation
+ * path: the Loader already has the pieces that took real debugging to get
+ * right — the hasSignal advance guard (so a race-loser capture doesn't skip a
+ * prompt), the per-turn watchdog, human-paced jitter, and pause/resume. A
+ * parallel implementation would re-earn all of those bugs.
+ *
+ * The only addition is provenance: `options.geo` + `options.geoPrompts` (index-
+ * aligned with the prompt list) so each capture is stamped with the profile,
+ * run, prompt and tags it belongs to.
+ */
+async function geoRunStart(profileId) {
+  const profile = await db.get("profiles", profileId);
+  if (!profile) return { ok: false, error: "Profile not found." };
+  if (!profile.brand || !profile.brand.name) {
+    return { ok: false, error: "Set your brand name on this profile before running." };
+  }
+
+  const all = await db.getAll("trackedPrompts");
+  const prompts = all
+    .filter((p) => p.profileId === profileId && p.active !== false)
+    .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+  if (!prompts.length) return { ok: false, error: "Add at least one tracked prompt first." };
+
+  const engines = (profile.engines || []).filter((e) => e === "chatgpt" || e === "gemini");
+  if (!engines.length) return { ok: false, error: "Select at least one engine that has an adapter." };
+
+  const vol = runVolume(prompts, engines);
+  const geoRunId = crypto.randomUUID();
+
+  const res = await loaderStart(
+    prompts.map((p) => p.text),
+    {
+      platforms: engines,
+      geo: { profileId, runId: geoRunId },
+      geoPrompts: prompts.map((p) => ({ id: p.id, tags: p.tags || [] })),
+    }
+  );
+  if (!res.ok) return res;
+
+  await db.put("geoRuns", makeGeoRun({
+    id: geoRunId,
+    profileId,
+    engines,
+    promptIds: prompts.map((p) => p.id),
+    expected: vol.submissions,
+    status: "running",
+  }));
+  // Stamp the cadence clock now rather than on completion: the "run due today"
+  // reminder should not keep nagging through a run that is already in flight.
+  await db.put("profiles", { ...profile, lastRunAt: Date.now() });
+
+  return { ok: true, geoRunId, ...vol, loaderRunId: res.runId };
+}
+
 // Called after each capture; advances the loader only for a real, completed turn.
 function loaderOnCapture(tabId, record) {
   if (!loader.running) return;
@@ -392,6 +456,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             for (const p of Object.values(loader.platforms)) {
               if (p.tabId === tabId) {
                 meta = { projectId: loader.options.projectId || null, runId: loader.runId };
+                // A GEO tracking run stamps per-prompt provenance so the metrics
+                // engine can attribute each response to the right tracked prompt
+                // and its tags. p.idx is the prompt this tab is currently on.
+                const g = loader.options.geo;
+                if (g) {
+                  const tp = (loader.options.geoPrompts || [])[p.idx] || {};
+                  meta.geo = {
+                    profileId: g.profileId,
+                    runId: g.runId,
+                    promptId: tp.id || null,
+                    tags: tp.tags || [],
+                  };
+                }
                 break;
               }
             }
@@ -456,6 +533,112 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           await db.delete("projects", msg.id);
           sendResponse({ ok: true });
           break;
+
+        /* ---------- GEO brand tracking ---------- */
+        case "geo-profile-list": {
+          const profiles = await db.getAll("profiles");
+          profiles.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+          sendResponse({ ok: true, profiles });
+          break;
+        }
+        case "geo-profile-save": {
+          const all = await db.getAll("profiles");
+          const existing = msg.profile?.id ? all.find((p) => p.id === msg.profile.id) : null;
+          // Cap enforced in the service worker, not just the UI — the UI is not
+          // a security or integrity boundary and a stale popup could resubmit.
+          if (!existing && all.length >= MAX_PROFILES) {
+            sendResponse({ ok: false, error: `You can track at most ${MAX_PROFILES} brand profiles.` });
+            break;
+          }
+          if (existing && existing.locked && !msg.unlockOverride) {
+            sendResponse({ ok: false, error: "This profile is locked. Unlock it before editing." });
+            break;
+          }
+          const profile = makeProfile({ ...(existing || {}), ...msg.profile });
+          await db.put("profiles", profile);
+          sendResponse({ ok: true, profile });
+          break;
+        }
+        case "geo-profile-delete": {
+          // Deleting a profile orphans its prompts and its captured responses.
+          // Prompts go with it; captures are LEFT ALONE deliberately — they are
+          // real captured data the user may still want, and silently deleting
+          // history because a profile was removed would be a nasty surprise.
+          const prompts = await db.getAll("trackedPrompts");
+          for (const p of prompts) if (p.profileId === msg.id) await db.delete("trackedPrompts", p.id);
+          await db.delete("profiles", msg.id);
+          sendResponse({ ok: true });
+          break;
+        }
+
+        case "geo-prompt-list": {
+          const prompts = await db.getAll("trackedPrompts");
+          const scoped = msg.profileId ? prompts.filter((p) => p.profileId === msg.profileId) : prompts;
+          scoped.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+          sendResponse({ ok: true, prompts: scoped });
+          break;
+        }
+        case "geo-prompt-save": {
+          const existing = msg.prompt?.id ? await db.get("trackedPrompts", msg.prompt.id) : null;
+          const prompt = makeTrackedPrompt({ ...(existing || {}), ...msg.prompt });
+          if (!prompt.text) { sendResponse({ ok: false, error: "Prompt text is required." }); break; }
+          await db.put("trackedPrompts", prompt);
+          sendResponse({ ok: true, prompt });
+          break;
+        }
+        case "geo-prompt-bulk-add": {
+          // One prompt per line, shared tags — the fast way to seed a profile.
+          const lines = String(msg.text || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+          const tags = msg.tags || [];
+          const added = [];
+          for (const text of lines) {
+            const p = makeTrackedPrompt({ profileId: msg.profileId, text, tags });
+            await db.put("trackedPrompts", p);
+            added.push(p);
+          }
+          sendResponse({ ok: true, added: added.length });
+          break;
+        }
+        case "geo-prompt-delete":
+          await db.delete("trackedPrompts", msg.id);
+          sendResponse({ ok: true });
+          break;
+
+        case "geo-run-list": {
+          const runs = await db.getAll("geoRuns");
+          const scoped = msg.profileId ? runs.filter((r) => r.profileId === msg.profileId) : runs;
+          scoped.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+          sendResponse({ ok: true, runs: scoped });
+          break;
+        }
+        case "geo-run-start": {
+          sendResponse(await geoRunStart(msg.profileId));
+          break;
+        }
+        case "geo-metrics": {
+          // Computed HERE, not in the panel, because Position needs the full
+          // answerText to rank brands by first appearance — and `get-records`
+          // deliberately strips answerText to keep the popup fast. Computing
+          // this UI-side would have silently produced null/─ positions for
+          // every brand. Only the small aggregate crosses the message boundary.
+          const profile = await db.get("profiles", msg.profileId);
+          if (!profile) { sendResponse({ ok: false, error: "Profile not found." }); break; }
+          const all = await db.getAll("derived");
+          const scoped = selectTracked(all, {
+            profileId: msg.profileId,
+            engines: msg.engines,
+            tags: msg.tags,
+            since: msg.since,
+            until: msg.until,
+          });
+          sendResponse({
+            ok: true,
+            metrics: computeMetrics(scoped, profile),
+            series: computeSeries(scoped, profile, msg.bucket || "day"),
+            responses: scoped.length,
+          });
+          break;
+        }
 
         case "run-list": {
           const runs = await db.getAll("runs");

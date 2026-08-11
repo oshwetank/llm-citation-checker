@@ -1,16 +1,26 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 :root {
-  /* ── Apple Glass Surface & Background ── */
-  --bg: #f1f5f9;
-  --bg-subtle: rgba(241, 245, 249, 0.85);
-  --card-bg: rgba(255, 255, 255, 0.85);
-  --card-hover: #ffffff;
-  --border: #cbd5e1;                     /* crisp slate border for sharp separation */
-  --border-hover: #94a3b8;               /* dark slate border on hover */
-  --glass-blur: blur(20px) saturate(180%);
-  --glass-shadow: 0 4px 20px -2px rgba(15, 23, 42, 0.06), 0 2px 6px -1px rgba(15, 23, 42, 0.03);
-  --glass-shadow-hover: 0 8px 30px -4px rgba(15, 23, 42, 0.1), 0 4px 12px -2px rgba(15, 23, 42, 0.05);
+  /* ── Glass Surface & Background ──
+     Glass only reads as glass when there is something COLOURFUL behind it to
+     refract. Previously every surface was ~0.85 opaque white stacked on a very
+     pale backdrop, so `backdrop-filter` had nothing to work with and the whole
+     UI flattened to plain white cards on a plain white page. The fix is on both
+     sides: a genuinely saturated backdrop (below, on body) AND translucent
+     surfaces that let it through, plus the inner top highlight that reads as a
+     lit glass edge. */
+  --bg: #eef2f7;
+  --bg-subtle: rgba(241, 245, 249, 0.7);
+  --card-bg: linear-gradient(160deg, rgba(255, 255, 255, 0.78) 0%, rgba(255, 255, 255, 0.58) 100%);
+  --card-hover: linear-gradient(160deg, rgba(255, 255, 255, 0.92) 0%, rgba(255, 255, 255, 0.74) 100%);
+  --border: rgba(148, 163, 184, 0.38);   /* translucent so the backdrop tints it */
+  --border-hover: rgba(0, 122, 255, 0.42);
+  --glass-blur: blur(22px) saturate(190%);
+  /* The inset highlight is the single detail that sells "glass" — a bright 1px
+     top edge, like light catching the lip of a pane. */
+  --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+  --glass-shadow: 0 4px 20px -2px rgba(15, 23, 42, 0.07), 0 2px 6px -1px rgba(15, 23, 42, 0.04), var(--glass-highlight);
+  --glass-shadow-hover: 0 12px 32px -6px rgba(15, 23, 42, 0.14), 0 4px 12px -2px rgba(0, 122, 255, 0.1), var(--glass-highlight);
 
   /* ── Typography (SF Pro Display / Text) ── */
   --fg-primary: #0f172a;
@@ -57,11 +67,15 @@
 html, body {
   margin: 0;
   padding: 0;
-  background: radial-gradient(at 0% 0%, rgba(219, 234, 254, 0.65) 0px, transparent 55%),
-              radial-gradient(at 100% 0%, rgba(220, 252, 231, 0.55) 0px, transparent 55%),
-              radial-gradient(at 100% 100%, rgba(254, 243, 199, 0.55) 0px, transparent 55%),
-              radial-gradient(at 0% 100%, rgba(238, 242, 255, 0.65) 0px, transparent 55%),
-              #f5f7fa;
+  /* Saturated colour blobs — this is the layer every glass surface refracts.
+     Deliberately stronger than the old near-white wash: at the previous
+     opacity there was effectively nothing behind the glass to see. */
+  background: radial-gradient(at 8% 0%, rgba(129, 178, 255, 0.55) 0px, transparent 45%),
+              radial-gradient(at 100% 4%, rgba(126, 231, 191, 0.42) 0px, transparent 42%),
+              radial-gradient(at 92% 92%, rgba(255, 214, 137, 0.42) 0px, transparent 45%),
+              radial-gradient(at 0% 100%, rgba(178, 168, 255, 0.5) 0px, transparent 45%),
+              radial-gradient(at 50% 45%, rgba(255, 255, 255, 0.55) 0px, transparent 60%),
+              #eaf0f8;
   background-attachment: fixed;
   color: var(--fg-primary);
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Inter, sans-serif;
@@ -116,9 +130,14 @@ body.popup .app-wrapper, html:not(.tab) .app-wrapper {
   border: 1px solid #94a3b8 !important;
   box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12) !important;
   overflow: hidden !important;
-  background: rgba(255, 255, 255, 0.85);
-  backdrop-filter: blur(28px) saturate(200%);
-  -webkit-backdrop-filter: blur(28px) saturate(200%);
+  /* Was rgba(255,255,255,0.85) + its own backdrop-filter. That painted a nearly
+     opaque white sheet over the whole popup, so the colourful page backdrop was
+     gone before any card could refract it, and every nested backdrop-filter
+     inside was just blurring flat white. Now it's a light tint only — the cards
+     do the glass work against real colour. */
+  background: linear-gradient(165deg, rgba(255, 255, 255, 0.42) 0%, rgba(255, 255, 255, 0.24) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.6) !important;
+  box-shadow: 0 10px 34px rgba(15, 23, 42, 0.14), var(--glass-highlight) !important;
 }
 
 body.tab .app-wrapper {
@@ -248,13 +267,13 @@ body.tab .popout-btn {
   display: flex;
   align-items: center;
   gap: 2px;
-  background: rgba(203, 213, 225, 0.45);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.42) 0%, rgba(203, 213, 225, 0.34) 100%);
+  backdrop-filter: blur(20px) saturate(190%);
+  -webkit-backdrop-filter: blur(20px) saturate(190%);
   padding: 3px;
   border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.7);
-  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.06);
 }
 
 body.popup .nav-tabs {
@@ -345,21 +364,45 @@ body.popup .app-content {
 
 /* Enterprise Cards (Glassmorphism) */
 .card {
+  position: relative;
   background: var(--card-bg);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: 16px;
   padding: 16px;
   margin-bottom: 16px;
   box-shadow: var(--glass-shadow);
-  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.25s cubic-bezier(0.16, 1, 0.3, 1),
+              border-color 0.25s ease,
+              background 0.25s ease;
+}
+
+/* A faint colour wash across the top of each pane — the tint a real glass edge
+   picks up from what's behind it. Sits under the content, never intercepts
+   clicks. */
+.card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 40%;
+  border-radius: 16px 16px 0 0;
+  background: linear-gradient(180deg, rgba(0, 122, 255, 0.05) 0%, transparent 100%);
+  pointer-events: none;
 }
 
 .card:hover {
   background: var(--card-hover);
   border-color: var(--border-hover);
   box-shadow: var(--glass-shadow-hover);
+  transform: translateY(-1px);
+}
+
+/* Respect users who've asked the OS to reduce motion — no lift, no fades. */
+@media (prefers-reduced-motion: reduce) {
+  .card, .card:hover { transition: none; transform: none; }
+  .panel.active { animation: none; }
 }
 
 .card-header {
@@ -1568,13 +1611,117 @@ body.popup .type-tag-group .tag {
   padding-top: 12px;
   border-top: 1px solid var(--border);
 }
-.drilldown table { width: 100%; }
+/* The scroll container must be allowed to shrink (min-width:0) or a wide table
+   forces the whole flex/grid parent wider instead of scrolling — that's what
+   crushed these columns in the 540px popup. The table then gets a min-width so
+   overflow-x genuinely engages rather than squeezing text to one word per line. */
+.drill-scroll {
+  overflow-x: auto;
+  overflow-y: auto;
+  max-height: 420px;
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.5);
+}
+.drill-table {
+  width: 100%;
+  min-width: 620px;          /* below this, scroll instead of crush */
+  border-collapse: collapse;
+}
+.drill-table th,
+.drill-table td {
+  white-space: nowrap;        /* keep every cell on one line… */
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;    /* …and truncate rather than wrap to a column of words */
+  vertical-align: top;
+}
+/* The long free-text columns (prompt / query / URL) get room and may wrap to a
+   couple of lines; the short metadata columns stay compact. */
+.drill-table td:first-child,
+.drill-table th:first-child {
+  white-space: normal;
+  min-width: 220px;
+  max-width: 420px;
+}
 .drilldown th {
   position: sticky;
   top: 0;
-  background: var(--bg);
+  background: rgba(248, 250, 252, 0.97);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   z-index: 1;
 }
+/* In the narrow popup the table can't be readable at any column count, so let
+   it scroll wider and give the free-text column a smaller floor. */
+body.popup .drill-table { min-width: 560px; }
+body.popup .drill-table td:first-child,
+body.popup .drill-table th:first-child { min-width: 180px; }
+
+/* ---------- GEO brand tracking ---------- */
+.geo-switcher { display: flex; gap: 6px; flex-wrap: wrap; }
+.geo-chip {
+  font: inherit; font-size: 12px; padding: 6px 12px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.6);
+  color: var(--fg-secondary);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.geo-chip:hover { border-color: var(--border-hover); background: rgba(255, 255, 255, 0.85); }
+.geo-chip.active {
+  background: var(--accent-gradient); color: #fff; border-color: transparent; font-weight: 600;
+  box-shadow: 0 3px 10px rgba(0, 122, 255, 0.28);
+}
+.geo-chip.add { border-style: dashed; color: var(--fg-muted); }
+
+/* An engine with no adapter is visible but unmistakably not selectable, so a
+   metric can never quietly under-count because a checkbox did nothing. */
+.geo-engines { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 6px; }
+.chk.unavailable { opacity: 0.55; cursor: not-allowed; }
+.chk.unavailable .soon {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--fg-muted); border: 1px solid var(--border); border-radius: 5px;
+  padding: 1px 5px; margin-left: 4px;
+}
+
+.geo-due {
+  background: linear-gradient(135deg, rgba(0, 122, 255, 0.1), rgba(0, 122, 255, 0.04));
+  border: 1px solid rgba(0, 122, 255, 0.28);
+  color: #0051a8; border-radius: 10px; padding: 9px 12px; font-size: 12px; margin-bottom: 10px;
+}
+
+.geo-kpis {
+  display: grid; gap: 10px; margin-top: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+}
+.geo-kpi {
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.85), rgba(255, 255, 255, 0.6));
+  border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px;
+  box-shadow: var(--glass-highlight);
+}
+.geo-kpi .k-label {
+  font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--fg-muted);
+}
+.geo-kpi .k-value { font-size: 24px; font-weight: 700; line-height: 1.2; margin-top: 4px; color: var(--fg-primary); }
+.geo-kpi .k-sub { font-size: 11px; margin-top: 2px; }
+
+.tagline { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin-top: 5px; }
+.tag {
+  font-size: 10.5px; padding: 2px 8px; border-radius: 999px;
+  background: var(--indigo-bg); color: var(--indigo-fg); border: 1px solid var(--indigo-border);
+}
+.tag.clickable { cursor: pointer; font: inherit; font-size: 10.5px; }
+.tag.clickable.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.taginput {
+  font: inherit; font-size: 10.5px; width: 74px; padding: 2px 8px; border-radius: 999px;
+  border: 1px dashed var(--border); background: transparent; color: var(--fg-muted);
+}
+.item.inactive { opacity: 0.5; }
+tr.own-brand td { background: var(--accent-subtle); font-weight: 600; }
+.geo-note { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--border); }
 
 /* Own class, NOT .app-footer — that one is a flex row with
    justify-content:space-between, which spreads "Made by / Shwetank / for all"

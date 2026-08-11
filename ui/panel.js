@@ -5,6 +5,10 @@
 // calls of its own — see src/lib/exportDoc.js header. Data still only ever
 // arrives here via send()/hydrate() through the service worker.
 import { buildExportModel, renderStandaloneHtml } from "../src/lib/exportDoc.js";
+import {
+  ENGINES, availableEngines, MAX_PROFILES, SENTIMENT_NOTE,
+  partitionRecords, allTags, runDue, runVolume, makeProfile,
+} from "../src/lib/geo.js";
 
 const send = (msg) =>
   new Promise((resolve) => chrome.runtime.sendMessage(msg, (r) => resolve(r || { ok: false })));
@@ -34,6 +38,17 @@ let dashboardFilter = ""; // "" = all, else projectId
 let viewingId = null; // which capture the Analyze tab shows (null = latest)
 let selectedIds = new Set(); // captures ticked in the Saved Conversations table
 let showEmptyCaptures = false; // reveal zero-signal rows (see hasSignal note below)
+// Tracking-run captures are hidden from the ad-hoc views by default so brand
+// measurements and casual browsing never contaminate each other's numbers.
+let includeTrackedInAdhoc = false;
+let TRACKED_COUNT = 0;
+// GEO tab state
+let GEO_PROFILES = [];
+let GEO_PROMPTS = [];
+let geoActiveId = null;
+let geoTagFilter = [];
+let geoEngineFilter = [];
+let geoRangeDays = 30;
 
 // A capture with no prompt AND no fan-out/sources/products/places/answer text.
 // ChatGPT's client races requests in parallel (force_parallel_switch:"auto",
@@ -109,7 +124,17 @@ async function openCapture(captureId) {
 
 async function load() {
   const res = await send({ type: "get-records" });
-  RECORDS = res.ok ? res.records : [];
+  // ISOLATION — the one place tracking data is separated from browsing data.
+  // Everything downstream (Analyze, Dashboard, Compare, every export, the
+  // drill-downs) reads RECORDS, so filtering here means a brand-tracking run
+  // can never inflate the ad-hoc Dashboard's counts or pollute the Compare
+  // prompt list. Tracking responses are reached only through the Tracking tab,
+  // which asks the service worker for computed metrics instead. Do not add a
+  // second filter downstream; add it here or it will drift.
+  const all = res.ok ? res.records : [];
+  const parts = partitionRecords(all);
+  RECORDS = includeTrackedInAdhoc ? all : parts.adhoc;
+  TRACKED_COUNT = parts.tracked.length;
   const pr = await send({ type: "project-list" });
   PROJECTS = pr.ok ? pr.projects : [];
   refreshProjectPicker();
@@ -1246,10 +1271,18 @@ function renderDrilldown(recs) {
     bar.append(dl);
     card.append(bar);
 
-    const wrap = el("div", { style: "overflow-x:auto; max-height:420px; overflow-y:auto" });
-    const t = el("table", {});
-    t.append(el("tr", {}, ...headers.map((h) => el("th", {}, h))));
-    rows.slice(0, 500).forEach((r) => t.append(el("tr", {}, ...r.map((c, i) => el("td", { className: i === 0 ? "" : "num" }, String(c))))));
+    const wrap = el("div", { className: "drill-scroll" });
+    const t = el("table", { className: "drill-table" });
+    // Right-align ONLY genuinely numeric cells. This used to be
+    // `i === 0 ? "" : "num"` — i.e. every column but the first — which
+    // right-aligned text columns like "Original prompt"/"Platform" and made
+    // the table read as ragged nonsense. Testing `typeof` instead of a column
+    // index also can't drift when a column is added or reordered.
+    const isNum = (c) => typeof c === "number";
+    t.append(el("tr", {}, ...headers.map((h, i) =>
+      el("th", { className: rows.length && isNum(rows[0][i]) ? "num" : "" }, h))));
+    rows.slice(0, 500).forEach((r) =>
+      t.append(el("tr", {}, ...r.map((c) => el("td", { className: isNum(c) ? "num" : "" }, String(c))))));
     wrap.append(t);
     card.append(wrap);
     if (rows.length > 500) card.append(el("div", { className: "muted" }, `Showing first 500 of ${rows.length} — export the CSV for all.`));
@@ -2183,11 +2216,343 @@ function toCsv(records) {
   return csvOf(rows); // csvCell handles quoting + formula-injection escaping
 }
 
+/* ==================================================================
+ * GEO brand tracking — the "tool under the tool".
+ *
+ * Deliberately separate from the ad-hoc capture views: a fixed brand set +
+ * prompt set + engine set, re-run on a cadence, so the numbers are comparable
+ * over time. Its responses never enter RECORDS (see the isolation note in
+ * load()), and its metrics are computed in the service worker (see the
+ * "geo-metrics" handler) because Position needs the full answer text.
+ * ================================================================== */
+
+const geoActive = () => GEO_PROFILES.find((p) => p.id === geoActiveId) || GEO_PROFILES[0] || null;
+const fmtPct = (n) => (n == null ? "—" : `${Number(n).toFixed(Number(n) >= 10 ? 0 : 1)}%`);
+const fmtPos = (n) => (n == null ? "—" : `#${Number(n).toFixed(1)}`);
+
+async function loadGeo() {
+  const pr = await send({ type: "geo-profile-list" });
+  GEO_PROFILES = pr.ok ? pr.profiles : [];
+  if (!geoActiveId || !GEO_PROFILES.some((p) => p.id === geoActiveId)) geoActiveId = GEO_PROFILES[0]?.id || null;
+  const active = geoActive();
+  GEO_PROMPTS = [];
+  if (active) {
+    const qs = await send({ type: "geo-prompt-list", profileId: active.id });
+    if (qs.ok) GEO_PROMPTS = qs.prompts;
+  }
+  renderTracking();
+}
+
+function renderTracking() {
+  const root = $("#tracking");
+  if (!root) return;
+  root.textContent = "";
+  const profile = geoActive();
+
+  /* ---- profile switcher ---- */
+  const bar = el("div", { className: "card" });
+  const barHead = el("div", { className: "card-header" }, el("h3", {}, "Brand profiles"));
+  barHead.append(el("span", { className: "muted small" }, `${GEO_PROFILES.length} of ${MAX_PROFILES} used`));
+  bar.append(barHead);
+
+  const switcher = el("div", { className: "geo-switcher" });
+  GEO_PROFILES.forEach((p) => {
+    const b = el("button", { className: `geo-chip${p.id === geoActiveId ? " active" : ""}` }, p.name || "Untitled");
+    if (p.locked) b.append(el("span", { className: "lock" }, " 🔒"));
+    b.onclick = () => { geoActiveId = p.id; loadGeo(); };
+    switcher.append(b);
+  });
+  if (GEO_PROFILES.length < MAX_PROFILES) {
+    const add = el("button", { className: "geo-chip add" }, "+ New profile");
+    add.onclick = async () => {
+      const r = await send({ type: "geo-profile-save", profile: makeProfile({ name: `Profile ${GEO_PROFILES.length + 1}` }) });
+      if (r.ok) { geoActiveId = r.profile.id; loadGeo(); } else alert(r.error);
+    };
+    switcher.append(add);
+  }
+  bar.append(switcher);
+  root.append(bar);
+
+  if (!profile) {
+    root.append(el("div", { className: "empty" },
+      "Create a brand profile to start tracking how you and your competitors appear in AI answers."));
+    return;
+  }
+
+  /* ---- setup: brand, competitors, engines ---- */
+  const setup = el("div", { className: "card" });
+  const sh = el("div", { className: "card-header" }, el("h3", {}, "Setup"));
+  const lockBtn = el("button", { className: "btn sm ghost" }, profile.locked ? "🔒 Locked — unlock to edit" : "Lock this profile");
+  lockBtn.onclick = async () => {
+    if (!profile.locked && !confirm("Lock this profile?\n\nLocking freezes the brand set, competitors and prompts so your trend data stays comparable day to day. You can unlock any time.")) return;
+    if (profile.locked && !confirm("Unlock and allow edits?\n\nChanging the brand set or prompts changes what the metrics are measured against — numbers before and after this point are NOT directly comparable.")) return;
+    const r = await send({ type: "geo-profile-save", profile: { ...profile, locked: !profile.locked }, unlockOverride: true });
+    if (r.ok) loadGeo(); else alert(r.error);
+  };
+  sh.append(lockBtn);
+  setup.append(sh);
+
+  const dis = profile.locked;
+  const nameIn = el("input", { type: "text", value: profile.name || "", placeholder: "Profile name", disabled: dis });
+  const brandIn = el("input", { type: "text", value: profile.brand?.name || "", placeholder: "Your brand name", disabled: dis });
+  const urlIn = el("input", { type: "text", value: profile.brand?.url || "", placeholder: "yourbrand.com", disabled: dis });
+  setup.append(el("div", { className: "proj-row" }, nameIn));
+  setup.append(el("label", { className: "muted", style: "display:block;margin-top:8px" }, "Your brand"));
+  setup.append(el("div", { className: "proj-row" }, brandIn, urlIn));
+
+  setup.append(el("label", { className: "muted", style: "display:block;margin-top:10px" },
+    "Competitors — one per line, as name, url"));
+  const compTa = el("textarea", {
+    rows: 4, disabled: dis,
+    placeholder: "Competitor Inc, competitor.com\nRival Co, rival.io",
+    value: (profile.competitors || []).map((c) => `${c.name}${c.url ? ", " + c.url : ""}`).join("\n"),
+  });
+  setup.append(compTa);
+
+  setup.append(el("label", { className: "muted", style: "display:block;margin-top:10px" }, "Engines to track"));
+  const engRow = el("div", { className: "chk-row geo-engines" });
+  ENGINES.forEach((e) => {
+    const cb = el("input", {
+      type: "checkbox", value: e.id,
+      checked: (profile.engines || []).includes(e.id),
+      disabled: dis || !e.available,
+    });
+    const lab = el("label", { className: `chk${e.available ? "" : " unavailable"}` }, cb, ` ${e.label}`);
+    // Unavailable engines are shown disabled rather than hidden: the roadmap
+    // stays visible, and a metric can never silently under-count because a
+    // checkbox looked selectable but drove nothing.
+    if (!e.available) lab.append(el("span", { className: "soon" }, ` ${e.note || "coming soon"}`));
+    engRow.append(lab);
+  });
+  setup.append(engRow);
+
+  if (!dis) {
+    const save = el("button", { className: "btn sm" }, "Save profile");
+    save.onclick = async () => {
+      const competitors = compTa.value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((l) => {
+        const [n, u] = l.split(",").map((s) => (s || "").trim());
+        return { name: n, url: u || "" };
+      });
+      const engines = [...engRow.querySelectorAll("input:checked")].map((i) => i.value);
+      const r = await send({
+        type: "geo-profile-save",
+        profile: { ...profile, name: nameIn.value.trim() || profile.name, brand: { name: brandIn.value.trim(), url: urlIn.value.trim() }, competitors, engines },
+      });
+      if (r.ok) loadGeo(); else alert(r.error);
+    };
+    setup.append(el("div", { className: "ft-actions", style: "margin-top:10px" }, save));
+  }
+  root.append(setup);
+
+  /* ---- tracked prompts + tags ---- */
+  const pc = el("div", { className: "card" });
+  pc.append(el("div", { className: "card-header" }, el("h3", {}, "Tracked prompts"),
+    el("span", { className: "muted small" }, `${GEO_PROMPTS.filter((p) => p.active !== false).length} active of ${GEO_PROMPTS.length}`)));
+
+  if (!dis) {
+    const ta = el("textarea", { rows: 3, placeholder: "One prompt per line…\nbest trading app in India\nbest broker for beginners" });
+    const tagsIn = el("input", { type: "text", placeholder: "tags for these (comma separated)", style: "flex:1" });
+    const addBtn = el("button", { className: "btn sm" }, "Add prompts");
+    addBtn.onclick = async () => {
+      const text = ta.value.trim();
+      if (!text) return;
+      const tags = tagsIn.value.split(",").map((s) => s.trim()).filter(Boolean);
+      const r = await send({ type: "geo-prompt-bulk-add", profileId: profile.id, text, tags });
+      if (r.ok) { ta.value = ""; tagsIn.value = ""; loadGeo(); } else alert(r.error);
+    };
+    pc.append(ta, el("div", { className: "proj-row", style: "margin-top:6px" }, tagsIn, addBtn));
+  }
+
+  if (GEO_PROMPTS.length) {
+    const list = el("div", { className: "itemlist", style: "margin-top:10px" });
+    GEO_PROMPTS.forEach((p) => {
+      const row = el("div", { className: `item${p.active === false ? " inactive" : ""}` });
+      const head = el("div", { className: "item-head" });
+      head.append(el("span", { className: "item-name" }, p.text));
+      if (!dis) {
+        const tgl = el("button", { className: "linkbtn" }, p.active === false ? "enable" : "pause");
+        tgl.onclick = async () => { await send({ type: "geo-prompt-save", prompt: { ...p, active: p.active === false } }); loadGeo(); };
+        const del = el("button", { className: "linkbtn danger" }, "remove");
+        del.onclick = async () => { if (confirm(`Remove this tracked prompt?\n\n"${p.text}"\n\nResponses already captured for it are kept.`)) { await send({ type: "geo-prompt-delete", id: p.id }); loadGeo(); } };
+        head.append(tgl, del);
+      }
+      row.append(head);
+      const tagWrap = el("div", { className: "tagline" });
+      (p.tags || []).forEach((t) => tagWrap.append(el("span", { className: "tag" }, t)));
+      if (!dis) {
+        const ti = el("input", { type: "text", className: "taginput", placeholder: "+ tag", value: "" });
+        ti.onkeydown = async (ev) => {
+          if (ev.key !== "Enter" || !ti.value.trim()) return;
+          const tags = [...new Set([...(p.tags || []), ...ti.value.split(",").map((s) => s.trim()).filter(Boolean)])];
+          await send({ type: "geo-prompt-save", prompt: { ...p, tags } });
+          loadGeo();
+        };
+        tagWrap.append(ti);
+      }
+      row.append(tagWrap);
+      list.append(row);
+    });
+    pc.append(list);
+  }
+  root.append(pc);
+
+  /* ---- run ---- */
+  const rc = el("div", { className: "card" });
+  rc.append(el("div", { className: "card-header" }, el("h3", {}, "Daily run")));
+  const vol = runVolume(GEO_PROMPTS, profile.engines || []);
+  const due = runDue(profile);
+
+  if (due && vol.submissions) {
+    rc.append(el("div", { className: "geo-due" },
+      `Today's run hasn't happened yet — last run ${profile.lastRunAt ? new Date(profile.lastRunAt).toLocaleDateString() : "never"}.`));
+  }
+  rc.append(el("p", { className: "muted" },
+    `This run will submit ${vol.submissions} prompt${vol.submissions === 1 ? "" : "s"} (${vol.prompts} prompt${vol.prompts === 1 ? "" : "s"} × ${vol.engines} engine${vol.engines === 1 ? "" : "s"}) through your logged-in accounts, paced with human-like gaps.`));
+  if (vol.submissions > 60) {
+    rc.append(el("div", { className: "warn-box" },
+      el("span", {}, `${vol.submissions} automated submissions in one run is a lot of activity on one account. Consider splitting your prompts across profiles or pausing some, and keep an eye on the run rather than leaving it unattended.`)));
+  }
+  const runBtn = el("button", { className: "btn primary" }, "▶ Run today's tracking");
+  runBtn.onclick = async () => {
+    if (!confirm(`Run tracking now?\n\n${vol.submissions} submissions (${vol.prompts} prompts × ${vol.engines} engines) will be sent through your logged-in ChatGPT/Gemini sessions at a human pace.\n\nYou can pause or stop from the Loader tab at any time.`)) return;
+    const r = await send({ type: "geo-run-start", profileId: profile.id });
+    if (!r.ok) { alert(r.error); return; }
+    showTab("loader"); // progress + pause/stop live there
+    loadGeo();
+  };
+  rc.append(el("div", { className: "ft-actions" }, runBtn));
+  root.append(rc);
+
+  /* ---- metrics ---- */
+  const mc = el("div", { className: "card", id: "geoMetrics" });
+  mc.append(el("div", { className: "card-header" }, el("h3", {}, "Performance"), el("span", { className: "muted small" }, "loading…")));
+  root.append(mc);
+  refreshGeoMetrics();
+}
+
+async function refreshGeoMetrics() {
+  const mc = $("#geoMetrics");
+  const profile = geoActive();
+  if (!mc || !profile) return;
+
+  const since = geoRangeDays ? Date.now() - geoRangeDays * 86400000 : 0;
+  const r = await send({
+    type: "geo-metrics",
+    profileId: profile.id,
+    tags: geoTagFilter,
+    engines: geoEngineFilter,
+    since: since || undefined,
+  });
+  mc.textContent = "";
+  const head = el("div", { className: "card-header" }, el("h3", {}, "Performance"));
+  mc.append(head);
+
+  if (!r.ok) { mc.append(el("div", { className: "empty" }, r.error || "Couldn't load metrics.")); return; }
+  const m = r.metrics;
+
+  /* filters */
+  const filters = el("div", { className: "proj-row" });
+  const range = el("select", { className: "filter" });
+  [[7, "Last 7 days"], [30, "Last 30 days"], [90, "Last 90 days"], [0, "All time"]].forEach(([v, l]) =>
+    range.append(el("option", { value: String(v), selected: geoRangeDays === v }, l)));
+  range.onchange = () => { geoRangeDays = Number(range.value); refreshGeoMetrics(); };
+  const eng = el("select", { className: "filter" });
+  eng.append(el("option", { value: "" }, "All engines"));
+  availableEngines().forEach((e) => eng.append(el("option", { value: e.id, selected: geoEngineFilter[0] === e.id }, e.label)));
+  eng.onchange = () => { geoEngineFilter = eng.value ? [eng.value] : []; refreshGeoMetrics(); };
+  filters.append(range, eng);
+  mc.append(filters);
+
+  const tags = allTags(GEO_PROMPTS);
+  if (tags.length) {
+    const tw = el("div", { className: "tagline", style: "margin-top:8px" });
+    tw.append(el("span", { className: "muted small" }, "Tags: "));
+    tags.forEach((t) => {
+      const on = geoTagFilter.includes(t);
+      const chip = el("button", { className: `tag clickable${on ? " on" : ""}` }, t);
+      chip.onclick = () => {
+        geoTagFilter = on ? geoTagFilter.filter((x) => x !== t) : [...geoTagFilter, t];
+        refreshGeoMetrics();
+      };
+      tw.append(chip);
+    });
+    if (geoTagFilter.length) {
+      const clr = el("button", { className: "linkbtn" }, "clear");
+      clr.onclick = () => { geoTagFilter = []; refreshGeoMetrics(); };
+      tw.append(clr);
+    }
+    mc.append(tw);
+  }
+
+  if (!m.totalResponses) {
+    mc.append(el("div", { className: "empty" },
+      "No tracked responses yet for these filters. Run today's tracking to collect the first data points."));
+    return;
+  }
+
+  /* KPI row */
+  const own = m.own;
+  const kpis = el("div", { className: "geo-kpis" });
+  const kpi = (label, value, sub) => {
+    const b = el("div", { className: "geo-kpi" });
+    b.append(el("div", { className: "k-label" }, label));
+    b.append(el("div", { className: "k-value" }, value));
+    if (sub) b.append(el("div", { className: "k-sub muted" }, sub));
+    return b;
+  };
+  kpis.append(
+    kpi("Share of Voice", fmtPct(own?.shareOfVoice), `${own?.mentions || 0} of ${m.mentionPool} tracked mentions`),
+    kpi("Brand Visibility", fmtPct(own?.visibility), `${own?.responsesPresent || 0} of ${m.totalResponses} responses`),
+    kpi("Mentions", String(own?.mentions ?? 0), "times named in answers"),
+    kpi("Source Visibility", fmtPct(own?.sourceVisibility), `your domain in ${own?.sourceResponses || 0} responses`),
+    kpi("Citations", String(own?.citations ?? 0), "responses citing your domain"),
+    kpi("Avg position", fmtPos(own?.avgPosition), "rank among tracked brands"),
+  );
+  mc.append(kpis);
+
+  /* competitor table */
+  const wrap = el("div", { className: "drill-scroll", style: "margin-top:14px" });
+  const t = el("table", { className: "drill-table" });
+  t.append(el("tr", {},
+    el("th", {}, "Brand"),
+    el("th", { className: "num" }, "Visibility"),
+    el("th", { className: "num" }, "Share of Voice"),
+    el("th", { className: "num" }, "Mentions"),
+    el("th", { className: "num" }, "Avg position"),
+    el("th", { className: "num" }, "Citations"),
+    el("th", { className: "num" }, "Source vis.")));
+  m.brands.forEach((b) => {
+    const tr = el("tr", { className: b.isOwn ? "own-brand" : "" });
+    tr.append(el("td", {}, b.isOwn ? `${b.name} (you)` : b.name));
+    tr.append(el("td", { className: "num" }, fmtPct(b.visibility)));
+    tr.append(el("td", { className: "num" }, fmtPct(b.shareOfVoice)));
+    tr.append(el("td", { className: "num" }, String(b.mentions)));
+    tr.append(el("td", { className: "num" }, fmtPos(b.avgPosition)));
+    tr.append(el("td", { className: "num" }, String(b.citations)));
+    tr.append(el("td", { className: "num" }, fmtPct(b.sourceVisibility)));
+    t.append(tr);
+  });
+  wrap.append(t);
+  mc.append(wrap);
+
+  /* honest gap, stated in the UI rather than left for the user to discover */
+  mc.append(el("div", { className: "geo-note muted small" }, `Sentiment: not measured. ${SENTIMENT_NOTE}`));
+
+  const dl = el("button", { className: "btn sm ghost", style: "margin-top:10px" }, "⬇ Export metrics CSV");
+  dl.onclick = () => {
+    const rows = [["Brand", "Is own", "Visibility %", "Share of Voice %", "Mentions", "Avg position", "Citations", "Source visibility %", "Responses present", "Total responses"]];
+    m.brands.forEach((b) => rows.push([b.name, b.isOwn ? "yes" : "no", b.visibility.toFixed(2), b.shareOfVoice.toFixed(2), b.mentions, b.avgPosition == null ? "" : b.avgPosition.toFixed(2), b.citations, b.sourceVisibility.toFixed(2), b.responsesPresent, m.totalResponses]));
+    download(`citely-tracking-${profile.name.replace(/\W+/g, "-")}-${Date.now()}.csv`, csvOf(rows), "text/csv");
+  };
+  mc.append(dl);
+}
+
 /* ---------- wiring ---------- */
 document.querySelectorAll("[data-tab]").forEach((btn) =>
   btn.addEventListener("click", () => {
     // clicking the Analyze tab directly returns to the latest capture
     if (btn.dataset.tab === "analyze") { viewingId = null; renderAnalyze(); }
+    if (btn.dataset.tab === "tracking") loadGeo();
     showTab(btn.dataset.tab);
   })
 );

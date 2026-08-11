@@ -42,6 +42,12 @@ export function makeRecord(base = {}) {
     turnId: base.turnId || null,
     projectId: base.projectId || null, // owning prompt-group, if captured under one
     runId: base.runId || null, // which Loader run produced this (for drift/compare)
+    // GEO tracking provenance. Non-null ONLY for captures produced by a brand
+    // tracking run: { profileId, runId, promptId, tags[] }. Ordinary browsing
+    // captures keep this null, and that distinction is what keeps tracking
+    // metrics reproducible — see the isolation note in src/lib/geo.js. Never
+    // test this field directly in UI code; go through geo.js isTracked().
+    geo: base.geo || null,
     userPrompt: base.userPrompt || null,
     generatedTitle: base.generatedTitle || null,
     turnUseCase: base.turnUseCase || null,

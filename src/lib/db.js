@@ -9,7 +9,7 @@
  */
 
 const DB_NAME = "lcfc";
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 let dbPromise = null;
 
@@ -38,6 +38,22 @@ function openDb() {
       if (!db.objectStoreNames.contains("runs")) {
         const runs = db.createObjectStore("runs", { keyPath: "id" });
         runs.createIndex("startedAt", "startedAt", { unique: false });
+      }
+      // v4: GEO brand tracking. Every upgrade block is guarded by a `contains`
+      // check and only ever ADDS stores, so an existing install upgrades in
+      // place — no capture is touched or migrated, and `derived.geo` simply
+      // reads as undefined (treated as null / ad-hoc) on pre-v4 records.
+      if (!db.objectStoreNames.contains("profiles")) {
+        db.createObjectStore("profiles", { keyPath: "id" });
+      }
+      if (!db.objectStoreNames.contains("trackedPrompts")) {
+        const tp = db.createObjectStore("trackedPrompts", { keyPath: "id" });
+        tp.createIndex("profileId", "profileId", { unique: false });
+      }
+      if (!db.objectStoreNames.contains("geoRuns")) {
+        const gr = db.createObjectStore("geoRuns", { keyPath: "id" });
+        gr.createIndex("profileId", "profileId", { unique: false });
+        gr.createIndex("startedAt", "startedAt", { unique: false });
       }
     };
     req.onsuccess = () => resolve(req.result);
