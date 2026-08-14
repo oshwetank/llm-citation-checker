@@ -27,6 +27,11 @@
 
 export const MAX_PROFILES = 3;
 
+// A soft-deleted campaign stays recoverable for this many days before it's
+// purged for real (see "geo-profile-trash"/"geo-profile-restore" in
+// background.js and the lazy sweep in "geo-profile-list").
+export const TRASH_RETENTION_DAYS = 7;
+
 export const SENTIMENT_NOTE =
   "Sentiment is not measured yet. The published definition gives a 0-100 scale " +
   "but no formula or aggregation method, and a fabricated score would be worse " +
@@ -102,6 +107,9 @@ export function makeProfile(base = {}) {
     locked: !!base.locked,
     createdAt: base.createdAt || Date.now(),
     lastRunAt: base.lastRunAt || null,
+    // Soft-delete: set to a timestamp instead of removing the profile outright,
+    // so a campaign can be restored for a window before it's purged for real.
+    deletedAt: base.deletedAt || null,
   };
 }
 

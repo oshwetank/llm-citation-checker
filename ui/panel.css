@@ -1833,7 +1833,12 @@ tr.own-brand td { background: var(--accent-subtle); font-weight: 600; }
 .prompt-table td {
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
-  vertical-align: top;
+  /* Rows used to mix top-aligned prompt text with taller action-button cells,
+     so the border-bottom line landed at a different height per column and
+     read as "misaligned" between rows. Fewer, simpler cells now (checkbox +
+     text + tags, no more per-row buttons) plus a shared vertical-align keeps
+     every cell in a row the same height and the divider line dead straight. */
+  vertical-align: middle;
 }
 .prompt-table tr:last-child td { border-bottom: none; }
 .prompt-table .prompt-cell {
@@ -1841,8 +1846,74 @@ tr.own-brand td { background: var(--accent-subtle); font-weight: 600; }
   word-break: break-word;
   min-width: 180px;
 }
-.prompt-table tr.inactive-row { opacity: 0.5; }
-.prompt-table td.row-actions { white-space: nowrap; }
+.prompt-table tr.inactive-row { opacity: 0.6; }
+.prompt-table td.prompt-check { width: 24px; text-align: center; }
+.prompt-table td.prompt-check input { accent-color: var(--accent); }
+
+.prompt-bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.tag-sidebar-row { display: flex; align-items: center; gap: 2px; margin-top: 4px; }
+.tag-icon-btn {
+  font-size: 10px; line-height: 1; padding: 2px 4px; border-radius: 5px;
+  border: 1px solid transparent; background: transparent; color: var(--fg-muted); cursor: pointer;
+}
+.tag-icon-btn:hover { background: var(--card-hover); border-color: var(--border); color: var(--fg-primary); }
+.tag-icon-btn.danger:hover { color: var(--red-fg); border-color: var(--red-border); background: var(--red-bg); }
+
+.competitor-rows { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.competitor-row.proj-row { margin-top: 0; }
+.competitor-row .comp-name, .competitor-row .comp-url { flex: 1; }
+.competitor-row .btn { flex: 0 0 auto; padding: 4px 9px; }
+
+/* LLM picker: an icon-forward selectable grid rather than plain checkboxes. */
+.llm-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+.llm-pill {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-subtle);
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.15s ease;
+}
+.llm-pill:hover { border-color: var(--border-hover); background: var(--card-hover); }
+.llm-pill .llm-icon { font-size: 20px; line-height: 1; }
+.llm-pill .llm-label { font-size: 11.5px; font-weight: 500; color: var(--fg-secondary); }
+.llm-pill .llm-check {
+  position: absolute; top: 6px; right: 8px; font-size: 11px; color: var(--accent); opacity: 0; transition: opacity 0.15s ease;
+}
+.llm-pill.selected {
+  border-color: var(--accent); background: var(--accent-subtle); box-shadow: 0 0 0 1px var(--accent) inset;
+}
+.llm-pill.selected .llm-label { color: var(--fg-primary); font-weight: 600; }
+.llm-pill.selected .llm-check { opacity: 1; }
+.llm-pill.disabled {
+  cursor: not-allowed; opacity: 0.55; background: transparent;
+}
+.llm-pill.disabled .soon {
+  font-size: 9px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--fg-muted);
+  border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; margin-top: 2px;
+}
 
 .campaign-summary .campaign-meta {
   display: flex;

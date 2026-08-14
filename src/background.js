@@ -17,9 +17,17 @@ import { gzipString, gunzipToString } from "./lib/gzip.js";
 import { adapt as adaptChatGpt } from "./adapters/chatgpt.js";
 import { adapt as adaptGemini } from "./adapters/gemini.js";
 import {
-  MAX_PROFILES, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
+  MAX_PROFILES, TRASH_RETENTION_DAYS, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
   selectTracked, computeMetrics, computeSeries,
 } from "./lib/geo.js";
+
+// Loose match for duplicate-prompt detection: trim, lowercase, collapse
+// whitespace. Deliberately NOT as aggressive as geo.js's normName() (which
+// strips all punctuation) — "40,000" and "40000" should probably stay
+// distinct prompts, just exact-text-modulo-whitespace duplicates should not.
+function normPromptText(s) {
+  return String(s || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
 
 const ADAPTERS = { chatgpt: adaptChatGpt, gemini: adaptGemini };
 
@@ -536,7 +544,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         /* ---------- GEO brand tracking ---------- */
         case "geo-profile-list": {
-          const profiles = await db.getAll("profiles");
+          // Lazy sweep: anything soft-deleted past the retention window gets
+          // purged for real right here, so there's no need for a background
+          // alarm just to expire trash. Runs on every list call, which is
+          // cheap at MAX_PROFILES-scale data.
+          const cutoff = Date.now() - TRASH_RETENTION_DAYS * 86400000;
+          const all = await db.getAll("profiles");
+          for (const p of all) {
+            if (p.deletedAt && p.deletedAt < cutoff) {
+              const prompts = await db.getAll("trackedPrompts");
+              for (const pr of prompts) if (pr.profileId === p.id) await db.delete("trackedPrompts", pr.id);
+              await db.delete("profiles", p.id);
+            }
+          }
+          const profiles = (await db.getAll("profiles")).filter((p) => msg.includeDeleted || !p.deletedAt);
           profiles.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
           sendResponse({ ok: true, profiles });
           break;
@@ -546,7 +567,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const existing = msg.profile?.id ? all.find((p) => p.id === msg.profile.id) : null;
           // Cap enforced in the service worker, not just the UI — the UI is not
           // a security or integrity boundary and a stale popup could resubmit.
-          if (!existing && all.length >= MAX_PROFILES) {
+          // Soft-deleted profiles don't count against the live cap.
+          if (!existing && all.filter((p) => !p.deletedAt).length >= MAX_PROFILES) {
             sendResponse({ ok: false, error: `You can track at most ${MAX_PROFILES} brand profiles.` });
             break;
           }
@@ -559,11 +581,32 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, profile });
           break;
         }
+        // Soft delete: recoverable for TRASH_RETENTION_DAYS (see the sweep in
+        // geo-profile-list above). Prompts and captures are left alone either
+        // way — deleting a profile has never deleted its data, only detached it.
+        case "geo-profile-trash": {
+          const profile = await db.get("profiles", msg.id);
+          if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
+          await db.put("profiles", { ...profile, deletedAt: Date.now() });
+          sendResponse({ ok: true });
+          break;
+        }
+        case "geo-profile-restore": {
+          const profile = await db.get("profiles", msg.id);
+          if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
+          const live = (await db.getAll("profiles")).filter((p) => !p.deletedAt && p.id !== msg.id);
+          if (live.length >= MAX_PROFILES) {
+            sendResponse({ ok: false, error: `You can track at most ${MAX_PROFILES} brand profiles — trash or delete one first.` });
+            break;
+          }
+          await db.put("profiles", { ...profile, deletedAt: null });
+          sendResponse({ ok: true });
+          break;
+        }
         case "geo-profile-delete": {
-          // Deleting a profile orphans its prompts and its captured responses.
-          // Prompts go with it; captures are LEFT ALONE deliberately — they are
-          // real captured data the user may still want, and silently deleting
-          // history because a profile was removed would be a nasty surprise.
+          // Immediate, permanent delete — used for "delete forever" from the
+          // trash. Prompts go with it; captures are LEFT ALONE deliberately —
+          // real captured data the user may still want.
           const prompts = await db.getAll("trackedPrompts");
           for (const p of prompts) if (p.profileId === msg.id) await db.delete("trackedPrompts", p.id);
           await db.delete("profiles", msg.id);
@@ -586,39 +629,62 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, prompt });
           break;
         }
-        case "geo-prompt-bulk-add": {
-          // One prompt per line, shared tags — the fast way to seed a profile.
-          const lines = String(msg.text || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-          const tags = msg.tags || [];
-          const added = [];
-          for (const text of lines) {
-            const p = makeTrackedPrompt({ profileId: msg.profileId, text, tags });
-            await db.put("trackedPrompts", p);
-            added.push(p);
-          }
-          sendResponse({ ok: true, added: added.length });
-          break;
-        }
         case "geo-prompt-bulk-add-rows": {
-          // One prompt per row with its OWN tags — the CSV/XLSX import path
-          // (column A = prompt, column B = tags), as opposed to
-          // geo-prompt-bulk-add's single shared tag set for pasted text.
+          // One prompt per row with its OWN tags — used by both the CSV/XLSX
+          // import path and manual entry (each line parsed client-side into
+          // {text, tags}). Duplicate prompt text (case/whitespace-insensitive)
+          // is skipped rather than added twice — both against what's already
+          // tracked on this profile AND within the same batch — and reported
+          // back so the UI can tell the user what got skipped and why.
           const rows = Array.isArray(msg.rows) ? msg.rows : [];
+          const existingPrompts = (await db.getAll("trackedPrompts")).filter((p) => p.profileId === msg.profileId);
+          const seen = new Set(existingPrompts.map((p) => normPromptText(p.text)));
           const added = [];
+          const duplicates = [];
           for (const row of rows) {
             const text = String(row?.text || "").trim();
             if (!text) continue;
+            const key = normPromptText(text);
+            if (seen.has(key)) { duplicates.push(text); continue; }
+            seen.add(key);
             const p = makeTrackedPrompt({ profileId: msg.profileId, text, tags: row.tags || [] });
             await db.put("trackedPrompts", p);
             added.push(p);
           }
-          sendResponse({ ok: true, added: added.length });
+          sendResponse({ ok: true, added: added.length, duplicates });
           break;
         }
         case "geo-prompt-delete":
           await db.delete("trackedPrompts", msg.id);
           sendResponse({ ok: true });
           break;
+        case "geo-tag-delete": {
+          // Removes the tag from every prompt that carries it — the prompts
+          // themselves are untouched. Distinct from deleting prompts by tag.
+          const prompts = (await db.getAll("trackedPrompts")).filter((p) => p.profileId === msg.profileId);
+          let changed = 0;
+          for (const p of prompts) {
+            if (!(p.tags || []).includes(msg.tag)) continue;
+            await db.put("trackedPrompts", { ...p, tags: p.tags.filter((t) => t !== msg.tag) });
+            changed++;
+          }
+          sendResponse({ ok: true, changed });
+          break;
+        }
+        case "geo-tag-rename": {
+          const newTag = String(msg.newTag || "").trim();
+          if (!newTag) { sendResponse({ ok: false, error: "New tag name can't be empty." }); break; }
+          const prompts = (await db.getAll("trackedPrompts")).filter((p) => p.profileId === msg.profileId);
+          let changed = 0;
+          for (const p of prompts) {
+            if (!(p.tags || []).includes(msg.oldTag)) continue;
+            const tags = [...new Set(p.tags.map((t) => (t === msg.oldTag ? newTag : t)))];
+            await db.put("trackedPrompts", { ...p, tags });
+            changed++;
+          }
+          sendResponse({ ok: true, changed });
+          break;
+        }
 
         case "geo-run-list": {
           const runs = await db.getAll("geoRuns");
@@ -647,11 +713,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             since: msg.since,
             until: msg.until,
           });
+          // Same shape of aggregate the ad-hoc Dashboard shows (captures /
+          // with-search / fan-out queries / unique domains / cited / fetched),
+          // but over THIS campaign's tracked responses — lets the Dashboard
+          // merge "Performance Overview" and campaign KPIs into one section
+          // once a campaign is selected, instead of two disconnected cards.
+          let fanTotal = 0, searched = 0, citedTotal = 0, fetchedTotal = 0;
+          const domainSet = new Set();
+          for (const r of scoped) {
+            if (r.searched) searched++;
+            for (const b of ["search", "shopping", "image"]) fanTotal += (r.fanout?.[b] || []).length;
+            for (const s of r.sources || []) {
+              if (s.outcome === "cited") citedTotal++;
+              else if (s.outcome === "fetched") fetchedTotal++;
+              if (s.domain) domainSet.add(s.domain);
+            }
+          }
           sendResponse({
             ok: true,
             metrics: computeMetrics(scoped, profile),
             series: computeSeries(scoped, profile, msg.bucket || "day"),
             responses: scoped.length,
+            overview: { captures: scoped.length, searched, fanTotal, domainCount: domainSet.size, citedTotal, fetchedTotal },
           });
           break;
         }
