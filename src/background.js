@@ -599,6 +599,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, added: added.length });
           break;
         }
+        case "geo-prompt-bulk-add-rows": {
+          // One prompt per row with its OWN tags — the CSV/XLSX import path
+          // (column A = prompt, column B = tags), as opposed to
+          // geo-prompt-bulk-add's single shared tag set for pasted text.
+          const rows = Array.isArray(msg.rows) ? msg.rows : [];
+          const added = [];
+          for (const row of rows) {
+            const text = String(row?.text || "").trim();
+            if (!text) continue;
+            const p = makeTrackedPrompt({ profileId: msg.profileId, text, tags: row.tags || [] });
+            await db.put("trackedPrompts", p);
+            added.push(p);
+          }
+          sendResponse({ ok: true, added: added.length });
+          break;
+        }
         case "geo-prompt-delete":
           await db.delete("trackedPrompts", msg.id);
           sendResponse({ ok: true });

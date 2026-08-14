@@ -113,6 +113,32 @@ html.popup, body.popup, html:not(.tab), body:not(.tab) {
   background: #94a3b8;
 }
 
+/* Base text utilities — used everywhere (Analyze, Dashboard, Campaigns,
+   About…) but previously undefined, so "muted" text rendered full-strength
+   and .empty/.ft-actions had no layout at all. */
+.muted {
+  color: var(--fg-muted);
+}
+.muted.small, span.small, div.small {
+  font-size: 11px;
+}
+.empty {
+  padding: 18px 14px;
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 12px;
+  background: var(--bg-subtle);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+.ft-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
 /* Layout Wrapper */
 .app-wrapper {
   width: 100%;
@@ -1722,6 +1748,137 @@ body.popup .drill-table th:first-child { min-width: 180px; }
 .item.inactive { opacity: 0.5; }
 tr.own-brand td { background: var(--accent-subtle); font-weight: 600; }
 .geo-note { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--border); }
+
+/* ---------- Campaigns tab (setup wizard + prompt table + run) ---------- */
+.onboard-card .onboard-steps {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--fg-secondary);
+  line-height: 1.9;
+}
+.onboard-banner.warn-box {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.onboard-banner .linkbtn { font-size: 11px; }
+
+.wizard-divider {
+  border-top: 1px dashed var(--border);
+  margin: 16px 0 14px;
+}
+
+.prompt-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.prompt-search {
+  flex: 1;
+  min-width: 160px;
+  padding: 6px 10px;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--fg-primary);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.prompt-search:focus { outline: none; border-color: var(--accent); }
+
+.prompt-table-layout {
+  display: flex;
+  gap: 14px;
+  margin-top: 10px;
+  align-items: flex-start;
+}
+.tag-sidebar {
+  flex: 0 0 120px;
+  padding-right: 12px;
+  border-right: 1px solid var(--border);
+}
+.tag-sidebar .tag.clickable { display: inline-block; }
+
+.prompt-table-scroll {
+  flex: 1;
+  min-width: 0;
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.5);
+}
+.prompt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.prompt-table th {
+  position: sticky;
+  top: 0;
+  text-align: left;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+  background: rgba(248, 250, 252, 0.97);
+  backdrop-filter: blur(6px);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.prompt-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.prompt-table tr:last-child td { border-bottom: none; }
+.prompt-table .prompt-cell {
+  color: var(--fg-primary);
+  word-break: break-word;
+  min-width: 180px;
+}
+.prompt-table tr.inactive-row { opacity: 0.5; }
+.prompt-table td.row-actions { white-space: nowrap; }
+
+.campaign-summary .campaign-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  font-size: 12px;
+  color: var(--fg-secondary);
+}
+
+/* Shrink the Dashboard's export dropdown — it reads as a compact icon-style
+   action, not a full button, so it shouldn't compete with primary actions. */
+.dl-picker {
+  padding: 2px 6px !important;
+  font-size: 10.5px !important;
+  min-width: 0;
+  max-width: 100px;
+}
+
+/* In the 540px popup there isn't room for a side-by-side tag rail — stack it
+   above the table instead of squeezing both into unreadable slivers. */
+body.popup .prompt-table-layout {
+  flex-direction: column;
+}
+body.popup .tag-sidebar {
+  flex: none;
+  width: 100%;
+  padding-right: 0;
+  padding-bottom: 10px;
+  border-right: none;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+body.popup .tag-sidebar > div { margin-top: 0 !important; }
 
 /* Own class, NOT .app-footer — that one is a flex row with
    justify-content:space-between, which spreads "Made by / Shwetank / for all"
