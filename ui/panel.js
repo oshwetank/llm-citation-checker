@@ -315,48 +315,41 @@ function extractRankAndCategory(brandName, passage, text) {
   return { rank, category };
 }
 
-function extractBrandAspects(brandName, rawText, passage) {
-  const text = sanitizeText(rawText || passage || "");
+// Takes the brand's OWN passages (b.passages — each already a tight, correctly
+// scoped ±110-char window around one real mention, computed by the adapter/
+// src/lib/brands.js) instead of re-deriving a window from the full answer
+// text. The previous version re-scanned a fresh 350-char slice of raw text
+// and cut it off at the next hardcoded smartphone-brand name it could find —
+// in dense side-by-side comparisons (several brands named within a couple of
+// sentences of each other, e.g. a TV shootout) that cutoff landed almost
+// immediately, so real aspects a few words later were silently missed. Using
+// the passage(s) already scoped to THIS brand's own mentions avoids that
+// failure mode entirely, and scanning every passage (not just the first)
+// catches aspects raised at a brand's later mentions too.
+function extractBrandAspects(passages) {
+  const text = sanitizeText((passages || []).join(" ")).toLowerCase();
   if (!text) return [];
-  
-  const lowerBrand = brandName.toLowerCase();
-  const lowerText = text.toLowerCase();
-  
-  const pos = lowerText.indexOf(lowerBrand);
-  if (pos === -1) return [];
-  
-  let segment = text.slice(pos, pos + 350);
-  const BRAND_STOPPERS = ["oneplus", "samsung", "oppo", "vivo", "realme", "xiaomi", "iphone", "google", "nothing", "iqoo", "motorola"];
-  let cutIdx = segment.length;
-  BRAND_STOPPERS.forEach((stop) => {
-    if (stop !== lowerBrand) {
-      const idx = segment.toLowerCase().indexOf(stop, brandName.length + 2);
-      if (idx !== -1 && idx < cutIdx) cutIdx = idx;
-    }
-  });
-  segment = segment.slice(0, cutIdx).toLowerCase();
 
   const aspects = [];
-  
-  if (/\b(camera|cameras|photo|photos|portrait|portraits|hasselblad|imaging|zoom|sensor|video|recording)\b/i.test(segment)) {
+  if (/\b(camera|cameras|photo|photos|portrait|portraits|hasselblad|imaging|zoom|sensor|video|recording)\b/i.test(text)) {
     aspects.push("Camera");
   }
-  if (/\b(battery|charging|mah|watt|backup|fast charging|wireless charging)\b/i.test(segment)) {
+  if (/\b(battery|charging|mah|watt|backup|fast charging|wireless charging)\b/i.test(text)) {
     aspects.push("Battery");
   }
-  if (/\b(display|screen|amoled|oled|120hz|ltpo|refresh rate|resolution|bright)\b/i.test(segment)) {
+  if (/\b(display|screen|amoled|oled|120hz|ltpo|refresh rate|resolution|bright|hdr|dolby vision)\b/i.test(text)) {
     aspects.push("Display");
   }
-  if (/\b(processor|performance|snapdragon|chipset|dimensity|gaming|speed|thermal|cooling|ram|cpu)\b/i.test(segment)) {
+  if (/\b(processor|performance|snapdragon|chipset|dimensity|gaming|speed|thermal|cooling|ram|cpu)\b/i.test(text)) {
     aspects.push("Performance");
   }
-  if (/\b(compact|one-handed|size|pocketable|handy)\b/i.test(segment)) {
+  if (/\b(compact|one-handed|size|pocketable|handy)\b/i.test(text)) {
     aspects.push("Compact");
   }
-  if (/\b(software|os|ios|updates|ui|support|long-term|years of updates|ecosystem)\b/i.test(segment)) {
+  if (/\b(software|os|ios|updates|ui|support|long-term|years of updates|ecosystem)\b/i.test(text)) {
     aspects.push("Software");
   }
-  if (/\b(design|build|premium|finish|ip68|ip69|rating|durability)\b/i.test(segment)) {
+  if (/\b(design|build|premium|finish|ip68|ip69|rating|durability)\b/i.test(text)) {
     aspects.push("Design");
   }
 
@@ -698,12 +691,16 @@ function renderAnalyze() {
       "predator": "Acer"
     };
 
+    // Generic words the detector could mistake for a brand — deliberately NOT a
+    // place for real brand names. "sony" used to be listed here, which silently
+    // dropped every genuine Sony mention (TVs, cameras, audio...) from this
+    // card for every industry, permanently — a correctness bug, not a filter.
     const NOISE_BRAND_WORDS = new Set([
       "battery", "software", "camera", "cameras", "display", "performance", "design",
       "overall", "budget", "value", "rating", "phone", "phones", "mobile", "mobiles",
       "recommendation", "recommendations", "processor", "chipset", "storage", "memory",
-      "charging", "screen", "gaming", "price", "pros", "cons", "specs", "life", "sony",
-      "option", "options", "pick", "picks", "overall", "android", "ios", "best"
+      "charging", "screen", "gaming", "price", "pros", "cons", "specs", "life",
+      "option", "options", "pick", "picks", "android", "ios", "best"
     ]);
 
     const normalizedBrands = new Map();
@@ -729,7 +726,7 @@ function renderAnalyze() {
       const item = el("div", { className: "brand-item" });
       const head = el("div", { className: "brand-head" });
       
-      const { rank, category } = extractRankAndCategory(b.brand, b.passages[0] || "", rec.answerText || "");
+      const { rank, category } = extractRankAndCategory(b.brand, (b.passages || []).join(" "), rec.answerText || "");
       const brandTitle = el("span", { className: "brand-name" });
       if (rank) {
         brandTitle.append(el("span", { className: "tag rank-tag", style: "margin-right:6px;" }, rank), " ");
@@ -768,7 +765,7 @@ function renderAnalyze() {
       // Extract cited aspects / intent around this brand — skip for count=0
       // entries, whose "passage" is a synthetic note, not real narration.
       if (b.count > 0) {
-        const aspects = extractBrandAspects(b.brand, rec.answerText || "", b.passages[0] || "");
+        const aspects = extractBrandAspects(b.passages);
         const aspectRow = el("div", { className: "brand-aspects-row" });
         aspectRow.append(el("span", { className: "brand-label" }, "Cited for:"));
 
@@ -819,39 +816,57 @@ function renderAnalyze() {
       "victus": "HP", "pavilion": "HP", "inspiron": "Dell", "alienware": "Dell",
       "legion": "Lenovo", "predator": "Acer"
     };
+    // Words that mean a "model" match actually ran on past the model name into
+    // ordinary sentence text — reject anywhere in the candidate, not just a
+    // leading word, since a phrase like "Bravia 8 so you do" only fails a
+    // leading-word check.
+    const FILLER_RE = /\b(so|you|do|the|is|was|are|an|and|but|that|this|which|who|how|why|what|its|it's|from|has|have|will|can|could|would|were)\b/i;
 
-    const searchPassages = rec.sources.map(s => `${s.title || ""} ${s.snippet || ""}`).join(" \n ");
-    const allSearchBrands = extractBrandsFromText(searchPassages, rec.products);
     const mentionedBrandKeys = new Set((rec.brandMentions || []).map(b => (ALIAS_MAP_OMIT[b.brand.toLowerCase()] || b.brand).toLowerCase()));
-    
+    const brandCanonical = new Map(); // lower -> display name
+    const brandSourceIdxs = new Map(); // lower -> Set(source index)
+    const modelEntries = new Map(); // "brand||model" -> { brand, model, sourceIdxs: Set }
+
+    // Extracted PER SOURCE (title+snippet of one source at a time) rather than
+    // one giant blob of every source concatenated — a regex match could
+    // previously bleed across the boundary between two unrelated sources'
+    // text, which is what produced garbled "model names" that were actually
+    // fragments of the next source's sentence.
+    rec.sources.forEach((s, idx) => {
+      const srcText = `${s.title || ""} ${s.snippet || ""}`;
+      extractBrandsFromText(srcText, rec.products).forEach((sb) => {
+        const canonical = ALIAS_MAP_OMIT[sb.brand.toLowerCase()] || sb.brand;
+        const key = canonical.toLowerCase();
+        brandCanonical.set(key, canonical);
+        if (!brandSourceIdxs.has(key)) brandSourceIdxs.set(key, new Set());
+        brandSourceIdxs.get(key).add(idx);
+
+        const modelRe = new RegExp(`\\b${escapeRegExp(sb.brand)}\\s+([A-Z0-9][a-zA-Z0-9\\-\\.\\s]{1,20})`, "gi");
+        let mm; let loopCap = 0;
+        while ((mm = modelRe.exec(srcText)) !== null && loopCap++ < 20) {
+          if (mm.index === modelRe.lastIndex) modelRe.lastIndex++;
+          const candidate = mm[1].trim().split(/[\n,;:\(\)]/)[0].trim();
+          if (candidate.length < 2 || candidate.length > 24) continue;
+          if (FILLER_RE.test(candidate)) continue;
+          if (/^(and|or|with|for|in|under|laptop|phone|price|spec|review)/i.test(candidate)) continue;
+          const mKey = `${key}||${candidate.toLowerCase()}`;
+          if (!modelEntries.has(mKey)) modelEntries.set(mKey, { brand: canonical, model: candidate, sourceIdxs: new Set() });
+          modelEntries.get(mKey).sourceIdxs.add(idx);
+        }
+      });
+    });
+
     const omittedBrandsList = [];
     const omittedModelsList = [];
-    
-    allSearchBrands.forEach(sb => {
-      const canonical = ALIAS_MAP_OMIT[sb.brand.toLowerCase()] || sb.brand;
-      const key = canonical.toLowerCase();
-      const isMentioned = mentionedBrandKeys.has(key);
-      
-      const modelRe = new RegExp(`\\b${escapeRegExp(sb.brand)}\\s+([A-Z0-9][a-zA-Z0-9\\-\\.\\s]{1,20})`, "gi");
-      const foundModels = new Set();
-      let mm;
-      let loopCap = 0;
-      while ((mm = modelRe.exec(searchPassages)) !== null && loopCap++ < 50) {
-        if (mm.index === modelRe.lastIndex) modelRe.lastIndex++;
-        const candidate = mm[1].trim().split(/[\n,;:\(\)]/)[0].trim();
-        if (candidate.length >= 2 && !/^(and|or|with|for|in|under|laptop|phone|price|spec|review)/i.test(candidate)) {
-          foundModels.add(candidate);
-        }
-      }
-      
-      if (!isMentioned) {
-        omittedBrandsList.push({ brand: canonical, models: [...foundModels] });
+    const ansTextLower = (rec.answerText || "").toLowerCase();
+
+    brandCanonical.forEach((canonical, key) => {
+      const modelsForBrand = [...modelEntries.values()].filter((m) => m.brand.toLowerCase() === key);
+      if (!mentionedBrandKeys.has(key)) {
+        omittedBrandsList.push({ brand: canonical, sourceIdxs: [...brandSourceIdxs.get(key)], models: modelsForBrand });
       } else {
-        const ansTextLower = (rec.answerText || "").toLowerCase();
-        const unmentionedMods = [...foundModels].filter(m => !ansTextLower.includes(m.toLowerCase()));
-        if (unmentionedMods.length) {
-          omittedModelsList.push({ brand: canonical, omittedModels: unmentionedMods });
-        }
+        const unmentioned = modelsForBrand.filter((m) => !ansTextLower.includes(m.model.toLowerCase()));
+        if (unmentioned.length) omittedModelsList.push({ brand: canonical, omittedModels: unmentioned });
       }
     });
 
@@ -862,9 +877,27 @@ function renderAnalyze() {
           el("span", { className: "tag fetched", style: "font-size: 10px;" }, "From Search Snippets")
         ),
         el("div", { className: "muted", style: "font-size: 11px; margin-bottom: 10px; line-height: 1.4;" },
-          "Brands and models evaluated in ChatGPT's raw search snippets that were dropped in its final written answer:"
+          "Brands and models evaluated in ChatGPT's raw search snippets that were dropped in its final written answer. Click a chip to see which sources it came from."
         )
       );
+
+      // Clicking a brand/model chip reveals the sources whose title/snippet
+      // actually contained it — the evidence behind the chip, not just an
+      // asserted count, and a real answer to "which sources contributed to
+      // this visibility."
+      const sourceChip = (label, sourceIdxs, style) => {
+        const wrap = el("div", {});
+        const chip = el("button", { className: "tag model-tag", style: `cursor:pointer;${style || ""}` }, label);
+        const list = el("div", { className: "omit-source-list", style: "display:none" });
+        sourceIdxs.forEach((idx) => {
+          const s = rec.sources[idx];
+          if (!s) return;
+          list.append(el("a", { href: s.url, target: "_blank", rel: "noreferrer", className: "omit-source-link" }, s.title || s.domain || s.url));
+        });
+        chip.onclick = () => { list.style.display = list.style.display === "none" ? "flex" : "none"; };
+        wrap.append(chip, list);
+        return wrap;
+      };
 
       const omitList = el("div", { className: "brand-list" });
 
@@ -875,12 +908,12 @@ function renderAnalyze() {
           el("span", { className: "tag danger" }, "Omitted Brand")
         );
         item.append(head);
+        item.append(sourceChip(`Seen in ${ob.sourceIdxs.length} source${ob.sourceIdxs.length === 1 ? "" : "s"}`, ob.sourceIdxs));
 
         if (ob.models.length) {
-          const modRow = el("div", { className: "brand-models-row", style: "margin-top: 4px;" },
-            el("span", { className: "brand-label" }, "Models in Search:"),
-            ...ob.models.map(m => el("span", { className: "tag model-tag" }, m))
-          );
+          const modRow = el("div", { className: "brand-models-row", style: "margin-top: 4px; flex-wrap:wrap;" },
+            el("span", { className: "brand-label" }, "Models in Search:"));
+          ob.models.forEach((m) => modRow.append(sourceChip(m.model, [...m.sourceIdxs])));
           item.append(modRow);
         }
         omitList.append(item);
@@ -894,10 +927,9 @@ function renderAnalyze() {
         );
         item.append(head);
 
-        const modRow = el("div", { className: "brand-models-row", style: "margin-top: 4px;" },
-          el("span", { className: "brand-label" }, "Ignored Models:"),
-          ...om.omittedModels.map(m => el("span", { className: "tag model-tag", style: "background: #fef3c7; color: #b45309;" }, m))
-        );
+        const modRow = el("div", { className: "brand-models-row", style: "margin-top: 4px; flex-wrap:wrap;" },
+          el("span", { className: "brand-label" }, "Ignored Models:"));
+        om.omittedModels.forEach((m) => modRow.append(sourceChip(m.model, [...m.sourceIdxs], "background: #fef3c7; color: #b45309;")));
         item.append(modRow);
         omitList.append(item);
       });
@@ -1018,7 +1050,9 @@ function renderAnalyze() {
   // 3. Top URLs Card (Merged list with Rank, Snippets & Char Counts)
   if (rec.sources.length) {
     const sc = el("div", { className: "card", id: "card-sources" }, el("h3", {}, `Top URLs / Captured Sources (${rec.sources.length})`));
-    
+    sc.append(el("p", { className: "muted small", style: "margin:-4px 0 10px" },
+      "Snippets are what ChatGPT's search returned for each page, not necessarily the exact sentence that justified a citation — click one to try jumping to that text on the source page itself."));
+
     // Filter Pills
     const filterBar = el("div", { className: "filter-bar" });
     let activeSrcFilter = "all";
@@ -1050,7 +1084,23 @@ function renderAnalyze() {
         
         const snippetText = s.snippet ? s.snippet.trim() : null;
         if (snippetText) {
-          const snipBox = el("div", { className: "url-snippet-box" }, snippetText);
+          const snipBox = el("div", { className: "url-snippet-box" });
+          // Text-fragment deep link: jumps to where this exact text appears
+          // on the SOURCE page (not the ChatGPT conversation) if the browser
+          // can find it verbatim — quietly does nothing if it can't, rather
+          // than erroring, since this snippet is what ChatGPT's search
+          // returned for the page and isn't guaranteed to be present
+          // word-for-word (see the card's note above).
+          const textTarget = encodeURIComponent(snippetText.slice(0, 120).trim());
+          const fragUrl = s.url ? `${s.url}#:~:text=${textTarget}` : null;
+          if (fragUrl) {
+            snipBox.append(el("a", {
+              href: fragUrl, target: "_blank", rel: "noreferrer", className: "url-snippet-link",
+              title: "Try to jump to this text on the source page",
+            }, snippetText));
+          } else {
+            snipBox.append(snippetText);
+          }
           snipBox.append(el("span", { className: "char-badge" }, `[${snippetText.length}c]`));
           li.append(snipBox);
         }
