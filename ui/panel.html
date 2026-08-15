@@ -133,6 +133,17 @@
             </div>
             <div id="dbgLog" class="dbglog"></div>
           </div>
+
+          <!-- ==================== QA DIAGNOSTICS (temporary) ====================
+               Added for a one-off 200-prompt/20-industry stress test. Safe to
+               delete this whole card, plus the matching JS block in panel.js
+               (search "QA DIAGNOSTICS") and the "qa-audit" case in
+               src/background.js, once that's done. -->
+          <div class="card">
+            <button id="qaToggle" class="linkbtn" style="font-size:11px">🔧 QA Diagnostics (temporary, dev-only)</button>
+            <div id="qaPanel" style="display:none; margin-top:10px"></div>
+          </div>
+          <!-- ==================== /QA DIAGNOSTICS ==================== -->
         </section>
       </main>
 

@@ -1,11 +1,11 @@
 /*
- * lib/xlsxLite.js — dependency-free reader for the "column A = prompt,
- * column B = tags" import sheet, in either .csv/.tsv or real .xlsx.
+ * lib/xlsxLite.js — dependency-free reader for a "prompt + tags" import
+ * sheet, in either .csv/.tsv or real .xlsx.
  *
  * No npm/build step exists in this repo (see ARCHITECTURE.md), so this
  * hand-rolls just enough of the XLSX/ZIP format to read cell text out of the
  * first worksheet — no formulas, styles, or multi-sheet support needed for a
- * two-column import list. ZIP inflate uses the browser's native
+ * prompt import list. ZIP inflate uses the browser's native
  * DecompressionStream('deflate-raw') instead of vendoring a zip/inflate
  * library.
  */
@@ -14,6 +14,13 @@
 function colLetters(ref) {
   const m = /^([A-Z]+)\d+$/.exec(ref || "");
   return m ? m[1] : "";
+}
+
+/** "A" -> 0, "B" -> 1, "AA" -> 26, ... */
+function colIndexOf(letters) {
+  let n = 0;
+  for (const ch of letters) n = n * 26 + (ch.charCodeAt(0) - 64);
+  return n - 1;
 }
 
 /** Very small CSV/TSV parser: quoted fields, escaped quotes, CRLF/LF. */
@@ -122,7 +129,16 @@ function textOfSharedStringNode(xml) {
 function decodeXmlEntities(s) {
   return String(s || "")
     .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+    .replace(/&apos;/g, "'")
+    // Numeric character references (&#8377; / &#x20B9;) — real spreadsheet
+    // tools use these for non-ASCII characters (found via a real import file
+    // whose ₹ amounts all came through blank without this). Must run before
+    // the &amp; replace below, same reasoning as the other entities: decoding
+    // &amp; first would turn a literal "&#38;"-shaped reference into
+    // something a later pass mis-reads.
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)))
+    .replace(/&amp;/g, "&");
 }
 
 function parseSharedStrings(xml) {
@@ -134,13 +150,17 @@ function parseSharedStrings(xml) {
   return items;
 }
 
-/** Parse the first worksheet's rows into a 2D array of column-A/column-B strings. */
+/** Parse the first worksheet's rows into full 2D arrays — every column
+ *  actually used in each row, not just A/B, so a sheet that puts "Prompt" in
+ *  column D (real-world exports rarely start at A) is still readable by
+ *  rowsToPrompts()'s header-name detection below. */
 function parseSheetRows(xml, sharedStrings) {
   const rows = [];
   const rowRe = /<row[^>]*>([\s\S]*?)<\/row>/g;
   let rowMatch;
   while ((rowMatch = rowRe.exec(xml))) {
-    const byCol = {};
+    const byIdx = {};
+    let maxIdx = -1;
     // Match attrs generically (t= can appear before or after r=) rather than
     // assuming attribute order.
     const cRe = /<c\b([^>]*)>([\s\S]*?)<\/c>/g;
@@ -150,7 +170,12 @@ function parseSheetRows(xml, sharedStrings) {
       const body = cm[2];
       const ref = /\br="([A-Z]+\d+)"/.exec(attrs)?.[1];
       if (!ref) continue;
-      const type = /\st="([a-z]+)"/.exec(attrs)?.[1] || "n";
+      // OOXML's own type values are mixed-case ("inlineStr" is the one that
+      // matters — every other valid value happens to be all-lowercase, which
+      // is exactly why a lowercase-only class here silently passed every
+      // test fixture and then read every real inline-string cell as empty
+      // the moment a real file (this one, in fact) used it).
+      const type = /\st="([a-zA-Z]+)"/.exec(attrs)?.[1] || "n";
       let value = "";
       if (type === "inlineStr") {
         value = textOfSharedStringNode(body);
@@ -159,14 +184,18 @@ function parseSheetRows(xml, sharedStrings) {
         const raw = v ? decodeXmlEntities(v[1]) : "";
         value = type === "s" ? (sharedStrings[Number(raw)] ?? "") : raw;
       }
-      byCol[colLetters(ref)] = value;
+      const idx = colIndexOf(colLetters(ref));
+      byIdx[idx] = value;
+      if (idx > maxIdx) maxIdx = idx;
     }
-    rows.push(byCol);
+    const row = [];
+    for (let i = 0; i <= maxIdx; i++) row.push(byIdx[i] ?? "");
+    rows.push(row);
   }
-  return rows.map((r) => [r.A || "", r.B || ""]);
+  return rows;
 }
 
-/** Read an .xlsx ArrayBuffer, return rows as [[colA, colB], ...] from the first sheet. */
+/** Read an .xlsx ArrayBuffer, return every row (all columns) from the first sheet. */
 export async function parseXlsx(arrayBuffer) {
   const entries = zipEntries(arrayBuffer);
   const dec = new TextDecoder();
@@ -188,16 +217,50 @@ export async function parseXlsx(arrayBuffer) {
 
 /* ---------------- rows -> prompt objects ---------------- */
 
-const HEADER_HINTS = /^(prompt|prompts|query|queries)$/i;
+const PROMPT_HEADERS = new Set(["prompt", "prompts", "query", "queries"]);
+// Checked in this order — a sheet with both "Tags" and "Industry" columns
+// (unlikely, but possible) prefers the one that actually says "tags".
+const TAG_HEADER_PRIORITY = ["tags", "tag", "industry", "category", "industry category", "label", "labels", "topic", "segment"];
 
-/** [[promptText, tagsText], ...] -> [{ text, tags: [] }, ...], skipping a header row and blank prompts. */
+/**
+ * Rows (full arrays, any number of columns — see parseSheetRows/parseDelimited
+ * above) -> [{ text, tags: [] }, ...].
+ *
+ * Finds the prompt/tags columns BY HEADER NAME first (a real export is just
+ * as likely to put "Prompt" in column D as column A — e.g. a sheet with
+ * S.No/Industry/Category/Prompt/Trigger-Type columns), and only falls back to
+ * the plain two-column A/B layout when no recognizable header row exists.
+ */
 export function rowsToPrompts(rows) {
+  if (!rows.length) return [];
+  const header = rows[0].map((c) => String(c ?? "").trim().toLowerCase());
+  const promptIdx = header.findIndex((h) => PROMPT_HEADERS.has(h));
+
+  let startRow = 0;
+  let pIdx = 0;
+  let tIdx = 1;
+  if (promptIdx !== -1) {
+    startRow = 1; // a real header row was found — don't emit it as a prompt
+    pIdx = promptIdx;
+    tIdx = TAG_HEADER_PRIORITY.reduce((found, want) => {
+      if (found !== -1) return found;
+      const idx = header.findIndex((h) => h === want);
+      return idx !== -1 && idx !== promptIdx ? idx : -1;
+    }, -1);
+    // No recognizably-named tag column — fall back to whatever's immediately
+    // after the prompt column, same spirit as the plain two-column format.
+    if (tIdx === -1 && promptIdx + 1 < header.length) tIdx = promptIdx + 1;
+  }
+
   const out = [];
-  rows.forEach(([a, b], i) => {
-    const text = String(a ?? "").trim();
+  rows.slice(startRow).forEach((row, i) => {
+    const text = String(row[pIdx] ?? "").trim();
     if (!text) return;
-    if (i === 0 && HEADER_HINTS.test(text)) return; // skip "Prompt" / "Tags" header row
-    const tags = String(b ?? "")
+    // Legacy path only: no header row was recognized above, so this guards
+    // against a plain "Prompt"/"Tags" literal header on an otherwise
+    // undetected sheet shape being read as a real prompt.
+    if (promptIdx === -1 && i === 0 && PROMPT_HEADERS.has(text.toLowerCase())) return;
+    const tags = tIdx === -1 ? [] : String(row[tIdx] ?? "")
       .split(/[,;|]/)
       .map((t) => t.trim())
       .filter(Boolean);

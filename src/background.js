@@ -887,6 +887,52 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, record: rec || null });
           break;
         }
+
+        // ==================== QA DIAGNOSTICS (temporary) ====================
+        // Added for a one-off 200-prompt/20-industry stress test; safe to
+        // delete this case (and the "QA Diagnostics" card in ui/panel.js /
+        // panel.html's About section) once that's done. Every check below
+        // reads fields the schema already carries — nothing here infers or
+        // fabricates a "bug," it only surfaces signals (some, like
+        // _extraction.usedFallback, were already being recorded and never
+        // shown anywhere) for a human to look at.
+        case "qa-audit": {
+          const all = await db.getAll("derived");
+          const perCheck = {}; // name -> { count, byIndustry: {}, examples: [] }
+          const bump = (name, industry, captureId) => {
+            const c = (perCheck[name] ||= { count: 0, byIndustry: {}, examples: [] });
+            c.count++;
+            c.byIndustry[industry] = (c.byIndustry[industry] || 0) + 1;
+            if (c.examples.length < 15) c.examples.push(captureId);
+          };
+
+          const byPlatform = {};
+          const byIndustry = {};
+          for (const r of all) {
+            byPlatform[r.platform] = (byPlatform[r.platform] || 0) + 1;
+            const industry = (r.geo && r.geo.tags && r.geo.tags[0]) || "(untagged / ad-hoc)";
+            byIndustry[industry] = (byIndustry[industry] || 0) + 1;
+
+            if (r.searched && (!r.sources || r.sources.length === 0)) bump("searched but zero sources", industry, r.captureId);
+            if (r.sources && r.sources.length > 0 && (!r.brandMentions || r.brandMentions.length === 0)) bump("sources present but zero brand mentions", industry, r.captureId);
+            if ((r.answerChars || 0) > 0 && !(r.answerText && r.answerText.length)) bump("answerChars>0 but answerText empty", industry, r.captureId);
+            if (r._extraction && r._extraction.usedFallback) bump("adapter used its fallback parser", industry, r.captureId);
+            if (r._extraction && r._extraction.notes && r._extraction.notes.length) bump("adapter recorded extraction notes", industry, r.captureId);
+            if (r.searched && (!r.fanout || (!r.fanout.search.length && !r.fanout.shopping.length && !r.fanout.image.length))) bump("searched but zero fan-out queries captured", industry, r.captureId);
+            if (!r.pageUrl) bump("missing pageUrl (breaks deep-link jumps)", industry, r.captureId);
+            if (r.geo && !r.userPrompt) bump("tracked capture missing userPrompt", industry, r.captureId);
+          }
+
+          sendResponse({
+            ok: true,
+            totalRecords: all.length,
+            byPlatform,
+            byIndustry,
+            checks: perCheck,
+          });
+          break;
+        }
+        // ==================== /QA DIAGNOSTICS ====================
         case "get-raw": {
           const row = await db.get("raw", msg.captureId);
           const raw = row ? await gunzipToString(row.gz) : null;
