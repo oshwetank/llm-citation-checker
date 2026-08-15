@@ -2733,13 +2733,21 @@ function renderPromptManager(profile, dis) {
     const allChip = el("button", { className: `tag clickable${promptTagFilter.length ? "" : " on"}` }, "All");
     allChip.onclick = () => { promptTagFilter = []; renderCampaigns(); };
     sidebar.append(allChip);
+    // A rounded "pill" chip (the style everywhere else in this app, e.g. the
+    // "All" button above) reads fine for a short word but wraps into an ugly
+    // multi-line blob for a real tag like "Consumer Electronics &
+    // Smartphones" in a narrow sidebar — a plain full-width list row, like
+    // any sidebar filter list, wraps normally and leaves room for the
+    // rename/delete icons without fighting the label for space.
+    const list = el("div", { className: "tag-sidebar-list" });
     tags.forEach((t) => {
       const on = promptTagFilter.includes(t);
-      const chipRow = el("div", { className: "tag-sidebar-row" });
-      const chip = el("button", { className: `tag clickable${on ? " on" : ""}` }, t);
-      chip.onclick = () => { promptTagFilter = on ? promptTagFilter.filter((x) => x !== t) : [...promptTagFilter, t]; renderCampaigns(); };
-      chipRow.append(chip);
+      const chipRow = el("div", { className: `tag-sidebar-row${on ? " on" : ""}` });
+      const label = el("button", { className: "tag-sidebar-label" }, t);
+      label.onclick = () => { promptTagFilter = on ? promptTagFilter.filter((x) => x !== t) : [...promptTagFilter, t]; renderCampaigns(); };
+      chipRow.append(label);
       if (!dis) {
+        const icons = el("div", { className: "tag-icons" });
         const renameBtn = el("button", { className: "tag-icon-btn", title: `Rename tag "${t}"` }, "✎");
         renameBtn.onclick = async () => {
           const next = window.prompt(`Rename tag "${t}" to:`, t);
@@ -2754,10 +2762,12 @@ function renderPromptManager(profile, dis) {
           const r = await send({ type: "geo-tag-delete", profileId: profile.id, tag: t });
           if (r.ok) { promptTagFilter = promptTagFilter.filter((x) => x !== t); loadGeo(); } else alert(r.error);
         };
-        chipRow.append(renameBtn, delBtn);
+        icons.append(renameBtn, delBtn);
+        chipRow.append(icons);
       }
-      sidebar.append(chipRow);
+      list.append(chipRow);
     });
+    sidebar.append(list);
     body.append(sidebar);
   }
 
@@ -3456,6 +3466,8 @@ function renderQaAuditResults(out, r) {
     item.append(el("div", { className: "brand-head" },
       el("span", { className: "brand-name" }, name),
       el("span", { className: "tag fetched" }, String(c.count))));
+    const byPlat = Object.entries(c.byPlatform).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}: ${v}`).join(" · ");
+    if (byPlat) item.append(el("div", { className: "muted small", style: "margin-top:2px" }, byPlat));
     const byInd = Object.entries(c.byIndustry).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}: ${v}`).join(" · ");
     if (byInd) item.append(el("div", { className: "muted small", style: "margin-top:2px" }, byInd));
     const exWrap = el("div", { className: "tagline", style: "margin-top:4px" });

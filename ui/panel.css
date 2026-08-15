@@ -1798,11 +1798,47 @@ tr.own-brand td { background: var(--accent-subtle); font-weight: 600; }
   align-items: flex-start;
 }
 .tag-sidebar {
-  flex: 0 0 120px;
+  flex: 0 0 180px;
   padding-right: 12px;
   border-right: 1px solid var(--border);
 }
 .tag-sidebar .tag.clickable { display: inline-block; }
+
+.tag-sidebar-list { margin-top: 6px; display: flex; flex-direction: column; }
+.tag-sidebar-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 5px 6px;
+  border-radius: 7px;
+}
+.tag-sidebar-row:hover { background: var(--bg-subtle); }
+.tag-sidebar-row.on { background: var(--accent-subtle); }
+.tag-sidebar-label {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fg-secondary);
+  text-align: left;
+  cursor: pointer;
+  word-break: break-word;
+}
+.tag-sidebar-row.on .tag-sidebar-label { color: var(--accent); font-weight: 600; }
+.tag-sidebar-row .tag-icons {
+  display: flex;
+  gap: 1px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.tag-sidebar-row:hover .tag-icons, .tag-sidebar-row.on .tag-icons { opacity: 1; }
 
 .prompt-table-scroll {
   flex: 1;
@@ -1984,6 +2020,10 @@ body.popup .tag-sidebar {
   flex-wrap: wrap;
 }
 body.popup .tag-sidebar > div { margin-top: 0 !important; }
+/* The tag list itself stays a vertical column of full-width rows even in the
+   narrow popup — these are list rows now, not pills, so wrapping them
+   horizontally alongside "Tags"/"All" would just misalign long labels. */
+body.popup .tag-sidebar-list { flex-basis: 100%; width: 100%; }
 
 /* Own class, NOT .app-footer — that one is a flex row with
    justify-content:space-between, which spreads "Made by / Shwetank / for all"

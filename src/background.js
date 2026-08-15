@@ -898,11 +898,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // shown anywhere) for a human to look at.
         case "qa-audit": {
           const all = await db.getAll("derived");
-          const perCheck = {}; // name -> { count, byIndustry: {}, examples: [] }
-          const bump = (name, industry, captureId) => {
-            const c = (perCheck[name] ||= { count: 0, byIndustry: {}, examples: [] });
+          const perCheck = {}; // name -> { count, byIndustry: {}, byPlatform: {}, examples: [] }
+          const bump = (name, industry, platform, captureId) => {
+            const c = (perCheck[name] ||= { count: 0, byIndustry: {}, byPlatform: {}, examples: [] });
             c.count++;
             c.byIndustry[industry] = (c.byIndustry[industry] || 0) + 1;
+            c.byPlatform[platform] = (c.byPlatform[platform] || 0) + 1;
             if (c.examples.length < 15) c.examples.push(captureId);
           };
 
@@ -912,15 +913,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             byPlatform[r.platform] = (byPlatform[r.platform] || 0) + 1;
             const industry = (r.geo && r.geo.tags && r.geo.tags[0]) || "(untagged / ad-hoc)";
             byIndustry[industry] = (byIndustry[industry] || 0) + 1;
+            const b = (name) => bump(name, industry, r.platform, r.captureId);
 
-            if (r.searched && (!r.sources || r.sources.length === 0)) bump("searched but zero sources", industry, r.captureId);
-            if (r.sources && r.sources.length > 0 && (!r.brandMentions || r.brandMentions.length === 0)) bump("sources present but zero brand mentions", industry, r.captureId);
-            if ((r.answerChars || 0) > 0 && !(r.answerText && r.answerText.length)) bump("answerChars>0 but answerText empty", industry, r.captureId);
-            if (r._extraction && r._extraction.usedFallback) bump("adapter used its fallback parser", industry, r.captureId);
-            if (r._extraction && r._extraction.notes && r._extraction.notes.length) bump("adapter recorded extraction notes", industry, r.captureId);
-            if (r.searched && (!r.fanout || (!r.fanout.search.length && !r.fanout.shopping.length && !r.fanout.image.length))) bump("searched but zero fan-out queries captured", industry, r.captureId);
-            if (!r.pageUrl) bump("missing pageUrl (breaks deep-link jumps)", industry, r.captureId);
-            if (r.geo && !r.userPrompt) bump("tracked capture missing userPrompt", industry, r.captureId);
+            if (r.searched && (!r.sources || r.sources.length === 0)) b("searched but zero sources");
+            if (r.sources && r.sources.length > 0 && (!r.brandMentions || r.brandMentions.length === 0)) b("sources present but zero brand mentions");
+            if ((r.answerChars || 0) > 0 && !(r.answerText && r.answerText.length)) b("answerChars>0 but answerText empty");
+            if (r._extraction && r._extraction.usedFallback) b("adapter used its fallback parser");
+            if (r._extraction && r._extraction.notes && r._extraction.notes.length) b("adapter recorded extraction notes");
+            // Gemini's fan-out extraction is a documented best-effort heuristic
+            // (no structured field like ChatGPT's search_model_queries — see
+            // extractFanout() in adapters/gemini.js), so this check is broken
+            // out by platform specifically to tell "known Gemini limitation"
+            // apart from "something's actually wrong."
+            if (r.searched && (!r.fanout || (!r.fanout.search.length && !r.fanout.shopping.length && !r.fanout.image.length))) b("searched but zero fan-out queries captured");
+            if (!r.pageUrl) b("missing pageUrl (breaks deep-link jumps)");
+            if (r.geo && !r.userPrompt) b("tracked capture missing userPrompt");
           }
 
           sendResponse({
