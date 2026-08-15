@@ -18,7 +18,7 @@ import { adapt as adaptChatGpt } from "./adapters/chatgpt.js";
 import { adapt as adaptGemini } from "./adapters/gemini.js";
 import {
   MAX_PROFILES, TRASH_RETENTION_DAYS, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
-  selectTracked, computeMetrics, computeSeries,
+  selectTracked, computeMetrics, computeSeries, brandPresence, trackedBrandsOf,
 } from "./lib/geo.js";
 
 // Loose match for duplicate-prompt detection: trim, lowercase, collapse
@@ -736,6 +736,59 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             responses: scoped.length,
             overview: { captures: scoped.length, searched, fanTotal, domainCount: domainSet.size, citedTotal, fetchedTotal },
           });
+          break;
+        }
+
+        case "geo-prompt-performance": {
+          // Per-response detail grouped by prompt (not just the profile-wide
+          // aggregate geo-metrics returns): for each run of each tracked
+          // prompt, was the campaign's own brand mentioned (and at what rank
+          // among tracked brands), was its domain cited, plus that run's
+          // sources — so the Dashboard can show a per-prompt performance
+          // table instead of a generic ad-hoc conversation list, without
+          // shipping full answerText across the message boundary.
+          const profile = await db.get("profiles", msg.profileId);
+          if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
+          const all = await db.getAll("derived");
+          const scoped = selectTracked(all, {
+            profileId: msg.profileId,
+            engines: msg.engines,
+            tags: msg.tags,
+            since: msg.since,
+            until: msg.until,
+          });
+          const brands = trackedBrandsOf(profile);
+          const own = brands.find((b) => b.isOwn);
+
+          const byPrompt = new Map();
+          for (const rec of scoped) {
+            const promptId = rec.geo && rec.geo.promptId;
+            if (!promptId) continue;
+            let mentioned = false, position = null, cited = false;
+            if (own) {
+              const pres = brandPresence(rec, brands);
+              const ranked = pres.filter((p) => p.firstIndex !== null).sort((a, b) => a.firstIndex - b.firstIndex);
+              const ownPres = pres.find((p) => p.isOwn);
+              if (ownPres) {
+                mentioned = ownPres.present;
+                cited = ownPres.citedSource;
+                const rankIdx = ranked.findIndex((p) => p.isOwn);
+                position = rankIdx >= 0 ? rankIdx + 1 : null;
+              }
+            }
+            const run = {
+              captureId: rec.captureId,
+              capturedAt: rec.capturedAt,
+              platform: rec.platform,
+              mentioned, position, cited,
+              sources: (rec.sources || []).map((s) => ({ domain: s.domain, url: s.url, outcome: s.outcome })),
+            };
+            if (!byPrompt.has(promptId)) byPrompt.set(promptId, []);
+            byPrompt.get(promptId).push(run);
+          }
+          for (const runs of byPrompt.values()) runs.sort((a, b) => b.capturedAt - a.capturedAt);
+
+          sendResponse({ ok: true, hasBrand: !!own, prompts: Object.fromEntries(byPrompt) });
           break;
         }
 

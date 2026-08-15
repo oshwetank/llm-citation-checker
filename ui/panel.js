@@ -52,7 +52,6 @@ let GEO_PROMPTS = [];
 let geoActiveId = null;
 let geoTagFilter = [];
 let geoEngineFilter = [];
-let geoRangeDays = 30;
 // Campaigns tab (formerly Tracking + Loader) state
 let promptTagFilter = []; // tag chips selected in the prompt table sidebar
 let promptOnlyUnassigned = false;
@@ -1497,6 +1496,8 @@ function renderDashboardImpl() {
     });
     sel.onchange = async () => {
       dashboardCampaignId = sel.value;
+      expandedPromptRuns = new Set();
+      geoTagFilter = [];
       if (dashboardCampaignId) {
         const qs = await send({ type: "geo-prompt-list", profileId: dashboardCampaignId });
         dashboardGeoPrompts = qs.ok ? qs.prompts : [];
@@ -1510,8 +1511,16 @@ function renderDashboardImpl() {
 
   ovHeader.append(filterRow);
   overviewCard.append(ovHeader);
+  // Always in the DOM — this is what used to disappear once a campaign was
+  // selected, taking the only way to change or clear the selection with it.
+  root.append(overviewCard);
 
   const selectedCampaign = dashboardCampaignId ? GEO_PROFILES.find((p) => p.id === dashboardCampaignId) : null;
+  // Same timeframe the ad-hoc filters above use — campaign performance used
+  // to have its OWN separate "Last 7/30/90 days" dropdown, which was a second,
+  // inconsistent time filter instead of reusing this one.
+  const geoSince = dashboardTimeFilter === "custom" ? (customStartTime || undefined) : (timeLimit || undefined);
+  const geoUntil = dashboardTimeFilter === "custom" ? (customEndTime || undefined) : undefined;
 
   if (!selectedCampaign) {
     // Every metric is clickable and opens a detail view built from the SAME
@@ -1544,7 +1553,6 @@ function renderDashboardImpl() {
     overviewCard.append(stats);
     const drill = renderDrilldown(recs);
     if (drill) overviewCard.append(drill);
-    root.append(overviewCard);
 
     if (GEO_PROFILES.length) {
       root.append(el("div", { className: "empty" }, "No campaign selected — pick one above to see its performance."));
@@ -1556,18 +1564,26 @@ function renderDashboardImpl() {
     const gc = el("div", { className: "card", id: "geoMetrics" });
     gc.append(el("div", { className: "card-header" }, el("h3", {}, "Campaign Performance")), el("div", { className: "muted small" }, "loading…"));
     root.append(gc);
-    refreshGeoMetrics(selectedCampaign, dashboardGeoPrompts);
+    refreshGeoMetrics(selectedCampaign, dashboardGeoPrompts, geoSince, geoUntil);
+
+    const pp = el("div", { className: "card", id: "geoPromptTable" });
+    pp.append(el("div", { className: "card-header" }, el("h3", {}, "Prompt Performance")), el("div", { className: "muted small" }, "loading…"));
+    root.append(pp);
+    refreshPromptPerformance(selectedCampaign, dashboardGeoPrompts, geoSince, geoUntil);
   }
+
+  // Saved Conversations + Top Domains are ad-hoc-only (per the isolation rule
+  // in geo.js — tracked runs never mix into this data), so they don't apply
+  // once a campaign is selected. Prompt Performance + the domain/URL toggle
+  // above replace them for that view instead of showing an empty/irrelevant
+  // ad-hoc list underneath a campaign's data.
+  if (selectedCampaign) return;
 
   // Split Grid Container
   const grid = el("div", { className: "dashboard-grid" });
 
   // Main Column: Saved Conversations Card
   const savedCard = el("div", { className: "card" }, el("div", { className: "card-header" }, el("h3", {}, "Saved Conversations")));
-  if (selectedCampaign) {
-    savedCard.append(el("div", { className: "muted small", style: "margin-bottom:8px" },
-      "Showing ad-hoc captures only — campaign responses are kept separate and summarized in Campaign Performance above."));
-  }
   const emptyCount = recs.filter((r) => !hasSignal(r)).length;
   const visibleRecs = showEmptyCaptures ? recs : recs.filter(hasSignal);
   if (emptyCount) {
@@ -2819,17 +2835,16 @@ function renderRunCard(profile) {
 
 /* ---------- Campaign performance metrics (rendered from the Dashboard) ---------- */
 
-async function refreshGeoMetrics(profile, prompts = []) {
+async function refreshGeoMetrics(profile, prompts = [], since, until) {
   const mc = $("#geoMetrics");
   if (!mc || !profile) return;
 
-  const since = geoRangeDays ? Date.now() - geoRangeDays * 86400000 : 0;
   const r = await send({
     type: "geo-metrics",
     profileId: profile.id,
     tags: geoTagFilter,
     engines: geoEngineFilter,
-    since: since || undefined,
+    since, until,
   });
   mc.textContent = "";
   const head = el("div", { className: "card-header" }, el("h3", {}, `Campaign Performance — ${profile.name || "Untitled"}`));
@@ -2838,17 +2853,15 @@ async function refreshGeoMetrics(profile, prompts = []) {
   if (!r.ok) { mc.append(el("div", { className: "empty" }, r.error || "Couldn't load metrics.")); return; }
   const m = r.metrics;
 
-  /* filters */
+  // Timeframe is the same filter as the rest of the Dashboard (see
+  // renderDashboardImpl) — no separate "Last 7/30/90 days" selector here
+  // anymore, so there's only ever one time filter to reason about.
   const filters = el("div", { className: "proj-row" });
-  const range = el("select", { className: "filter" });
-  [[7, "Last 7 days"], [30, "Last 30 days"], [90, "Last 90 days"], [0, "All time"]].forEach(([v, l]) =>
-    range.append(el("option", { value: String(v), selected: geoRangeDays === v }, l)));
-  range.onchange = () => { geoRangeDays = Number(range.value); refreshGeoMetrics(profile, prompts); };
   const eng = el("select", { className: "filter" });
   eng.append(el("option", { value: "" }, "All engines"));
   availableEngines().forEach((e) => eng.append(el("option", { value: e.id, selected: geoEngineFilter[0] === e.id }, e.label)));
-  eng.onchange = () => { geoEngineFilter = eng.value ? [eng.value] : []; refreshGeoMetrics(profile, prompts); };
-  filters.append(range, eng);
+  eng.onchange = () => { geoEngineFilter = eng.value ? [eng.value] : []; refreshGeoMetrics(profile, prompts, since, until); refreshPromptPerformance(profile, prompts, since, until); };
+  filters.append(eng);
   mc.append(filters);
 
   const tags = allTags(prompts);
@@ -2860,13 +2873,18 @@ async function refreshGeoMetrics(profile, prompts = []) {
       const chip = el("button", { className: `tag clickable${on ? " on" : ""}` }, t);
       chip.onclick = () => {
         geoTagFilter = on ? geoTagFilter.filter((x) => x !== t) : [...geoTagFilter, t];
-        refreshGeoMetrics(profile, prompts);
+        refreshGeoMetrics(profile, prompts, since, until);
+        refreshPromptPerformance(profile, prompts, since, until);
       };
       tw.append(chip);
     });
     if (geoTagFilter.length) {
       const clr = el("button", { className: "linkbtn" }, "clear");
-      clr.onclick = () => { geoTagFilter = []; refreshGeoMetrics(profile, prompts); };
+      clr.onclick = () => {
+        geoTagFilter = [];
+        refreshGeoMetrics(profile, prompts, since, until);
+        refreshPromptPerformance(profile, prompts, since, until);
+      };
       tw.append(clr);
     }
     mc.append(tw);
@@ -2946,6 +2964,134 @@ async function refreshGeoMetrics(profile, prompts = []) {
     download(`citely-tracking-${profile.name.replace(/\W+/g, "-")}-${Date.now()}.csv`, csvOf(rows), "text/csv");
   };
   mc.append(dl);
+}
+
+// Per-run detail toggle state, keyed by promptId — which prompts' run
+// history is expanded beyond just the latest run.
+let expandedPromptRuns = new Set();
+let sourceViewMode = "domain"; // "domain" | "url"
+
+const yesNo = (b) => (b ? "✓" : "✕");
+const posLabel = (n) => (n == null ? "—" : `#${n}`);
+
+/** Replaces Saved Conversations once a campaign is selected: prompts grouped
+ *  with their own-brand mention/position/citation per run (merging reruns
+ *  of the same prompt instead of listing every response separately), plus a
+ *  domain/URL source breakdown for the same filtered response set. */
+async function refreshPromptPerformance(profile, prompts, since, until) {
+  const root = $("#geoPromptTable");
+  if (!root || !profile) return;
+
+  const r = await send({
+    type: "geo-prompt-performance",
+    profileId: profile.id,
+    tags: geoTagFilter,
+    engines: geoEngineFilter,
+    since, until,
+  });
+  root.textContent = "";
+  root.append(el("div", { className: "card-header" }, el("h3", {}, "Prompt Performance")));
+
+  if (!r.ok) { root.append(el("div", { className: "empty" }, r.error || "Couldn't load prompt performance.")); return; }
+  if (!r.hasBrand) {
+    root.append(el("div", { className: "empty" }, "Set your brand name on this campaign (Campaigns tab) to see per-prompt mention/citation results."));
+    return;
+  }
+
+  const filteredPrompts = geoTagFilter.length
+    ? prompts.filter((p) => geoTagFilter.some((t) => (p.tags || []).includes(t)))
+    : prompts;
+
+  if (!filteredPrompts.length) {
+    root.append(el("div", { className: "empty" }, "No prompts match the current filters."));
+  } else {
+    const table = el("table", { className: "prompt-perf-table" });
+    table.append(el("tr", {}, el("th", {}, "Prompt"), el("th", {}, "Latest run"), el("th", {}, "Mentioned"), el("th", {}, "Position"), el("th", {}, "Cited"), el("th", { style: "width:90px" }, "")));
+    filteredPrompts.forEach((p) => {
+      const runs = (r.prompts && r.prompts[p.id]) || [];
+      const latest = runs[0];
+      const promptCell = el("td", { className: "prompt-cell" }, p.text);
+      const tagWrap = el("div", { className: "tagline" });
+      (p.tags || []).forEach((t) => tagWrap.append(el("span", { className: "tag" }, t)));
+      if (tagWrap.childNodes.length) promptCell.append(tagWrap);
+
+      if (!latest) {
+        table.append(el("tr", {}, promptCell, el("td", { className: "muted small", colSpan: 5 }, "No runs yet for these filters")));
+        return;
+      }
+      const row = el("tr", {},
+        promptCell,
+        el("td", {}, new Date(latest.capturedAt).toLocaleString()),
+        el("td", {}, yesNo(latest.mentioned)),
+        el("td", {}, posLabel(latest.position)),
+        el("td", {}, yesNo(latest.cited)),
+      );
+      const expandCell = el("td", {});
+      if (runs.length > 1) {
+        const expanded = expandedPromptRuns.has(p.id);
+        const toggle = el("button", { className: "linkbtn" }, expanded ? "hide" : `${runs.length - 1} earlier`);
+        toggle.onclick = () => {
+          if (expanded) expandedPromptRuns.delete(p.id); else expandedPromptRuns.add(p.id);
+          refreshPromptPerformance(profile, prompts, since, until);
+        };
+        expandCell.append(toggle);
+      }
+      row.append(expandCell);
+      table.append(row);
+
+      if (runs.length > 1 && expandedPromptRuns.has(p.id)) {
+        runs.slice(1).forEach((run) => {
+          table.append(el("tr", { className: "prompt-perf-subrow" },
+            el("td", {}),
+            el("td", {}, `${new Date(run.capturedAt).toLocaleString()} · ${run.platform}`),
+            el("td", {}, yesNo(run.mentioned)),
+            el("td", {}, posLabel(run.position)),
+            el("td", {}, yesNo(run.cited)),
+            el("td", {}),
+          ));
+        });
+      }
+    });
+    root.append(el("div", { className: "prompt-table-scroll" }, table));
+  }
+
+  // --- source domains, aggregated from this same filtered response set ---
+  const byDomain = new Map();
+  const byUrl = new Map();
+  const bump = (map, key, outcome) => {
+    if (!key) return;
+    const row = map.get(key) || { citations: 0, fetched: 0 };
+    if (outcome === "cited") row.citations++;
+    else if (outcome === "fetched") row.fetched++;
+    map.set(key, row);
+  };
+  Object.values(r.prompts || {}).forEach((runs) => runs.forEach((run) => (run.sources || []).forEach((s) => {
+    bump(byDomain, s.domain, s.outcome);
+    bump(byUrl, s.url, s.outcome);
+  })));
+
+  root.append(el("div", { className: "wizard-divider" }));
+  const srcHead = el("div", { className: "card-header", style: "margin-top:0" }, el("h3", {}, "Source Domains"));
+  const modeToggle = el("div", { className: "filter-bar" });
+  [["domain", "Domains"], ["url", "URLs"]].forEach(([v, l]) => {
+    const pill = el("button", { className: `filter-pill${sourceViewMode === v ? " active" : ""}` }, l);
+    pill.onclick = () => { sourceViewMode = v; refreshPromptPerformance(profile, prompts, since, until); };
+    modeToggle.append(pill);
+  });
+  srcHead.append(modeToggle);
+  root.append(srcHead);
+
+  const activeMap = sourceViewMode === "domain" ? byDomain : byUrl;
+  if (!activeMap.size) {
+    root.append(el("div", { className: "empty" }, "No sources captured yet for these filters."));
+  } else {
+    const srcTable = el("table", { className: "drill-table" });
+    srcTable.append(el("tr", {}, el("th", {}, sourceViewMode === "domain" ? "Domain" : "URL"), el("th", { className: "num" }, "Citations"), el("th", { className: "num" }, "Fetched")));
+    [...activeMap.entries()].sort((a, b) => b[1].citations - a[1].citations || b[1].fetched - a[1].fetched).slice(0, 50).forEach(([key, row]) => {
+      srcTable.append(el("tr", {}, el("td", { className: "domain-name" }, key), el("td", { className: "num" }, String(row.citations)), el("td", { className: "num" }, String(row.fetched))));
+    });
+    root.append(el("div", { className: "drill-scroll" }, srcTable));
+  }
 }
 
 /* ---------- wiring ---------- */
