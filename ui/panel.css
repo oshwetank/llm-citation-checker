@@ -943,7 +943,8 @@ textarea:focus {
 
 .proj-row input[type="text"],
 .proj-row select,
-select.filter {
+select.filter,
+input.filter {
   flex: 1;
   min-width: 130px;
   padding: 6px 10px;
@@ -957,7 +958,8 @@ select.filter {
 }
 .proj-row input[type="text"]:focus,
 .proj-row select:focus,
-select.filter:focus {
+select.filter:focus,
+input.filter:focus {
   outline: none;
   border-color: var(--accent);
 }
@@ -1938,6 +1940,9 @@ tr.own-brand td { background: var(--accent-subtle); font-weight: 600; }
 .prompt-perf-table tr:last-child td { border-bottom: none; }
 .prompt-perf-table .prompt-cell { color: var(--fg-primary); word-break: break-word; min-width: 180px; }
 .prompt-perf-table tr.prompt-perf-subrow td { color: var(--fg-muted); background: var(--bg-subtle); font-size: 11.5px; }
+.prompt-link { color: var(--accent); text-decoration: none; font-weight: 500; }
+.prompt-link:hover { text-decoration: underline; }
+.platform-result { display: flex; flex-direction: column; gap: 1px; white-space: nowrap; }
 
 .campaign-summary .campaign-meta {
   display: flex;

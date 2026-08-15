@@ -3005,27 +3005,51 @@ async function refreshPromptPerformance(profile, prompts, since, until) {
   if (!filteredPrompts.length) {
     root.append(el("div", { className: "empty" }, "No prompts match the current filters."));
   } else {
-    const table = el("table", { className: "prompt-perf-table" });
-    table.append(el("tr", {}, el("th", {}, "Prompt"), el("th", {}, "Latest run"), el("th", {}, "Mentioned"), el("th", {}, "Position"), el("th", {}, "Cited"), el("th", { style: "width:90px" }, "")));
+    // One column per tracked engine (not a single ambiguous "latest run")
+    // so it's clear whether a brand showed up on ChatGPT vs. Gemini rather
+    // than one merged result that could be from either.
+    const engineIds = (profile.engines && profile.engines.length) ? profile.engines : [];
+    const engineLabel = (id) => ENGINES.find((e) => e.id === id)?.label || id;
+
+    const buildEngineCell = (run) => {
+      if (!run) return el("td", { className: "muted small" }, "—");
+      return el("td", {}, el("div", { className: "platform-result" },
+        el("span", {}, `${yesNo(run.mentioned)} ${posLabel(run.position)}`),
+        el("span", { className: "muted small" }, `Domain cited ${yesNo(run.cited)}`),
+      ));
+    };
+
+    const headerCells = [el("th", {}, "Prompt")];
+    engineIds.forEach((id) => headerCells.push(el("th", {}, `${ENGINE_ICONS[id] || "🔷"} ${engineLabel(id)}`)));
+    headerCells.push(el("th", {}, "Time"), el("th", { style: "width:90px" }, ""));
+    const table = el("table", { className: "prompt-perf-table" }, el("tr", {}, ...headerCells));
+
     filteredPrompts.forEach((p) => {
       const runs = (r.prompts && r.prompts[p.id]) || [];
-      const latest = runs[0];
-      const promptCell = el("td", { className: "prompt-cell" }, p.text);
+      // Clicking a prompt opens its most recent capture in Analyze so the
+      // full answer/sources/fan-out can be studied there instead of just
+      // the summarized mention/position/citation flags here.
+      const promptLink = el("a", { href: "#", className: "prompt-link" }, p.text);
+      promptLink.onclick = (ev) => {
+        ev.preventDefault();
+        if (runs[0]) openCapture(runs[0].captureId);
+      };
+      const promptCell = el("td", { className: "prompt-cell" }, promptLink);
       const tagWrap = el("div", { className: "tagline" });
       (p.tags || []).forEach((t) => tagWrap.append(el("span", { className: "tag" }, t)));
       if (tagWrap.childNodes.length) promptCell.append(tagWrap);
 
-      if (!latest) {
-        table.append(el("tr", {}, promptCell, el("td", { className: "muted small", colSpan: 5 }, "No runs yet for these filters")));
+      const cells = [promptCell];
+      if (!runs.length) {
+        engineIds.forEach(() => cells.push(el("td", { className: "muted small" }, "—")));
+        cells.push(el("td", { className: "muted small" }, "No runs yet"), el("td", {}));
+        table.append(el("tr", {}, ...cells));
         return;
       }
-      const row = el("tr", {},
-        promptCell,
-        el("td", {}, new Date(latest.capturedAt).toLocaleString()),
-        el("td", {}, yesNo(latest.mentioned)),
-        el("td", {}, posLabel(latest.position)),
-        el("td", {}, yesNo(latest.cited)),
-      );
+
+      engineIds.forEach((id) => cells.push(buildEngineCell(runs.find((run) => run.platform === id) || null)));
+      cells.push(el("td", {}, new Date(runs[0].capturedAt).toLocaleString()));
+
       const expandCell = el("td", {});
       if (runs.length > 1) {
         const expanded = expandedPromptRuns.has(p.id);
@@ -3036,19 +3060,15 @@ async function refreshPromptPerformance(profile, prompts, since, until) {
         };
         expandCell.append(toggle);
       }
-      row.append(expandCell);
-      table.append(row);
+      cells.push(expandCell);
+      table.append(el("tr", {}, ...cells));
 
       if (runs.length > 1 && expandedPromptRuns.has(p.id)) {
         runs.slice(1).forEach((run) => {
-          table.append(el("tr", { className: "prompt-perf-subrow" },
-            el("td", {}),
-            el("td", {}, `${new Date(run.capturedAt).toLocaleString()} · ${run.platform}`),
-            el("td", {}, yesNo(run.mentioned)),
-            el("td", {}, posLabel(run.position)),
-            el("td", {}, yesNo(run.cited)),
-            el("td", {}),
-          ));
+          const subCells = [el("td", {})];
+          engineIds.forEach((id) => subCells.push(run.platform === id ? buildEngineCell(run) : el("td", {})));
+          subCells.push(el("td", { className: "muted small" }, new Date(run.capturedAt).toLocaleString()), el("td", {}));
+          table.append(el("tr", { className: "prompt-perf-subrow" }, ...subCells));
         });
       }
     });
@@ -3088,10 +3108,66 @@ async function refreshPromptPerformance(profile, prompts, since, until) {
     const srcTable = el("table", { className: "drill-table" });
     srcTable.append(el("tr", {}, el("th", {}, sourceViewMode === "domain" ? "Domain" : "URL"), el("th", { className: "num" }, "Citations"), el("th", { className: "num" }, "Fetched")));
     [...activeMap.entries()].sort((a, b) => b[1].citations - a[1].citations || b[1].fetched - a[1].fetched).slice(0, 50).forEach(([key, row]) => {
-      srcTable.append(el("tr", {}, el("td", { className: "domain-name" }, key), el("td", { className: "num" }, String(row.citations)), el("td", { className: "num" }, String(row.fetched))));
+      // URLs are clickable — the same URL can surface under several
+      // different prompts, and clicking shows which ones plus what each
+      // response mentioned. Domains aren't (a domain has no single "source"
+      // to drill into the way one exact URL does).
+      const keyCell = sourceViewMode === "url"
+        ? el("button", { className: "linkbtn td-domain-btn", title: "Click to see which prompts cited this URL" }, key)
+        : el("span", { className: "domain-name" }, key);
+      if (sourceViewMode === "url") keyCell.onclick = () => openUrlDetailModal(key, profile, since, until);
+      srcTable.append(el("tr", {}, el("td", { className: "td-domain" }, keyCell), el("td", { className: "num" }, String(row.citations)), el("td", { className: "num" }, String(row.fetched))));
     });
     root.append(el("div", { className: "drill-scroll" }, srcTable));
   }
+}
+
+/** "Rankings by Source URL" — which prompts pulled in this URL, whether the
+ *  campaign's own brand was mentioned in that response, and every brand
+ *  present. No trend chart — just the table (this URL's citation count over
+ *  time isn't tracked at that granularity, and a fabricated chart would be
+ *  worse than no chart). */
+async function openUrlDetailModal(url, profile, since, until) {
+  const existing = document.getElementById("url-modal-backdrop");
+  if (existing) existing.remove();
+
+  const backdrop = el("div", { id: "url-modal-backdrop", className: "modal-backdrop" });
+  const modal = el("div", { className: "modal-content" });
+  const header = el("div", { className: "modal-header" });
+  header.append(
+    el("div", { style: "min-width:0" },
+      el("h3", { style: "margin:0;font-size:15px;color:var(--fg-primary);" }, "Rankings by Source URL"),
+      el("div", { className: "muted small", style: "overflow-wrap:anywhere;margin-top:2px" }, url)),
+  );
+  const closeBtn = el("button", { className: "modal-close-btn", title: "Close" }, "×");
+  closeBtn.onclick = () => backdrop.remove();
+  header.append(closeBtn);
+  modal.append(header);
+
+  const body = el("div", { className: "modal-body" }, el("div", { className: "muted small" }, "Loading…"));
+  modal.append(body);
+  backdrop.append(modal);
+  document.body.append(backdrop);
+  backdrop.onclick = (ev) => { if (ev.target === backdrop) backdrop.remove(); };
+
+  const r = await send({ type: "geo-url-detail", profileId: profile.id, url, tags: geoTagFilter, engines: geoEngineFilter, since, until });
+  body.textContent = "";
+  if (!r.ok) { body.append(el("div", { className: "empty" }, r.error || "Couldn't load this URL's detail.")); return; }
+  if (!r.rows.length) { body.append(el("div", { className: "empty" }, "No responses matched for this URL under the current filters.")); return; }
+
+  const table = el("table", { className: "drill-table" });
+  table.append(el("tr", {}, el("th", {}, "Prompt"), el("th", {}, "Brand Mentioned"), el("th", {}, "Brands"), el("th", {}, "Date")));
+  r.rows.forEach((row) => {
+    const brandChips = el("div", { className: "tagline" });
+    row.brands.forEach((b) => brandChips.append(el("span", { className: "tag" }, b)));
+    table.append(el("tr", {},
+      el("td", {}, row.promptText),
+      el("td", {}, row.mentioned == null ? "—" : yesNo(row.mentioned)),
+      el("td", {}, brandChips),
+      el("td", {}, new Date(row.capturedAt).toLocaleDateString()),
+    ));
+  });
+  body.append(el("div", { className: "drill-scroll" }, table));
 }
 
 /* ---------- wiring ---------- */

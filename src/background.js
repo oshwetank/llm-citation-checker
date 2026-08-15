@@ -792,6 +792,46 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
 
+        case "geo-url-detail": {
+          // One URL can surface under several different prompts (or several
+          // times for the same prompt) — this answers "which prompts pulled
+          // in this exact URL, and which brands showed up in that response,"
+          // for the modal opened by clicking a URL in the Source Domains
+          // breakdown.
+          const profile = await db.get("profiles", msg.profileId);
+          if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
+          const all = await db.getAll("derived");
+          const scoped = selectTracked(all, {
+            profileId: msg.profileId,
+            engines: msg.engines,
+            tags: msg.tags,
+            since: msg.since,
+            until: msg.until,
+          }).filter((rec) => (rec.sources || []).some((s) => s.url === msg.url));
+
+          const brands = trackedBrandsOf(profile);
+          const own = brands.find((b) => b.isOwn);
+          const promptsAll = await db.getAll("trackedPrompts");
+          const promptById = new Map(promptsAll.map((p) => [p.id, p]));
+
+          const rows = scoped.map((rec) => {
+            const pres = brandPresence(rec, brands);
+            const ownPres = own ? pres.find((p) => p.isOwn) : null;
+            const prompt = promptById.get(rec.geo && rec.geo.promptId);
+            return {
+              captureId: rec.captureId,
+              capturedAt: rec.capturedAt,
+              platform: rec.platform,
+              promptText: prompt ? prompt.text : "(prompt no longer tracked)",
+              mentioned: ownPres ? ownPres.present : null,
+              brands: pres.filter((p) => p.present).map((p) => p.name),
+            };
+          }).sort((a, b) => b.capturedAt - a.capturedAt);
+
+          sendResponse({ ok: true, rows });
+          break;
+        }
+
         case "run-list": {
           const runs = await db.getAll("runs");
           runs.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
