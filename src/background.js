@@ -919,13 +919,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             if (r.sources && r.sources.length > 0 && (!r.brandMentions || r.brandMentions.length === 0)) b("sources present but zero brand mentions");
             if ((r.answerChars || 0) > 0 && !(r.answerText && r.answerText.length)) b("answerChars>0 but answerText empty");
             if (r._extraction && r._extraction.usedFallback) b("adapter used its fallback parser");
-            if (r._extraction && r._extraction.notes && r._extraction.notes.length) b("adapter recorded extraction notes");
-            // Gemini's fan-out extraction is a documented best-effort heuristic
-            // (no structured field like ChatGPT's search_model_queries — see
-            // extractFanout() in adapters/gemini.js), so this check is broken
-            // out by platform specifically to tell "known Gemini limitation"
-            // apart from "something's actually wrong."
-            if (r.searched && (!r.fanout || (!r.fanout.search.length && !r.fanout.shopping.length && !r.fanout.image.length))) b("searched but zero fan-out queries captured");
+            // Notes that record a KNOWN platform limitation are not anomalies —
+            // they are the adapter saying "I looked, and this engine doesn't
+            // publish it." Counting them buries the real drift signals.
+            const notes = ((r._extraction && r._extraction.notes) || []).filter(
+              (n) => !/platform limitation/i.test(String(n))
+            );
+            if (notes.length) b("adapter recorded extraction notes");
+            // Gemini never publishes the sub-queries it ran (see extractFanout
+            // in adapters/gemini.js), so flagging its captures here would mean
+            // ~half of every audit is a finding that can never be fixed. Only
+            // ChatGPT, which does have a structured field, is checked.
+            if (r.platform !== "gemini" && r.searched &&
+                (!r.fanout || (!r.fanout.search.length && !r.fanout.shopping.length && !r.fanout.image.length))) {
+              b("searched but zero fan-out queries captured");
+            }
             if (!r.pageUrl) b("missing pageUrl (breaks deep-link jumps)");
             if (r.geo && !r.userPrompt) b("tracked capture missing userPrompt");
           }

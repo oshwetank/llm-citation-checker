@@ -322,5 +322,47 @@ console.log("\nschema carries the geo provenance bag (allow-list regression guar
     !isTracked({ captureId: "old", capturedAt: 1, sources: [], brandMentions: [] }));
 }
 
+/*
+ * brandPresence located brands with a plain indexOf(), so any tracked brand
+ * whose name is a substring of ordinary English inflated its own Visibility
+ * and took rank 1. "HP" matched inside "shipping"; the brand "Nothing" matched
+ * the word "nothing". Both are real brands a user would track.
+ */
+console.log("\nbrand presence does not fire on substrings or ordinary words");
+{
+  const mk = (answerText, brandMentions = []) => ({
+    geo: { profileId: "p" }, platform: "chatgpt", capturedAt: Date.now(),
+    answerText, brandMentions, sources: [],
+  });
+  const brands = [{ name: "HP", url: "hp.com", isOwn: true }, { name: "Nothing", url: "nothing.tech" }];
+
+  const trap = brandPresence(mk("There is nothing better; free shipping on all orders."), brands);
+  check("'HP' does not match inside 'shipping'", trap[0].present === false, JSON.stringify(trap[0]));
+  check("'Nothing' does not match the lowercase word", trap[1].present === false, JSON.stringify(trap[1]));
+  check("no bogus position is assigned", trap.every((p) => p.firstIndex === null));
+
+  const real = brandPresence(mk("The Nothing Phone 3 beats the HP Omen on battery life."), brands);
+  check("a genuine 'HP Omen' mention still counts", real[0].present === true);
+  check("a genuine 'Nothing Phone' mention still counts", real[1].present === true);
+  check("positions reflect real order", real[1].firstIndex < real[0].firstIndex);
+
+  // The substring bug doubled Visibility; both brands appear in 1 of 2 answers.
+  const m = computeMetrics(
+    [mk("There is nothing better; free shipping on all orders."), mk("The Nothing Phone 3 beats the HP Omen.")],
+    { brand: { name: "HP", url: "hp.com" }, competitors: [{ name: "Nothing", url: "nothing.tech" }] }
+  );
+  check("visibility is 50%, not 100%", m.brands.every((b) => near(b.visibility, 50)),
+    m.brands.map((b) => `${b.name}:${b.visibility}`).join(" "));
+
+  // A count-0 carousel hit is "present" but has no place in the prose, so it
+  // must not be handed a rank — its firstIndex is a sort sentinel, not an offset.
+  const shown = brandPresence(
+    mk("Only Samsung is discussed here.", [{ brand: "Noise", count: 0, firstIndex: Number.MAX_SAFE_INTEGER, passages: [] }]),
+    [{ name: "Noise", url: "gonoise.com" }]
+  )[0];
+  check("carousel-only brand is present", shown.present === true);
+  check("carousel-only brand has no position", shown.firstIndex === null, String(shown.firstIndex));
+}
+
 console.log(failures ? `\nFAILED (${failures})` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);

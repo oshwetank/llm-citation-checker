@@ -1064,11 +1064,28 @@ function renderAnalyze() {
   const mainCol = el("div", { className: "analyze-main" });
 
   // 1. Query Fan-Out queries card
+  //
+  // An empty card used to be hidden outright, which reads as "this answer ran
+  // no searches" — misleading on Gemini, which runs them but never publishes
+  // the sub-queries (see extractFanout in src/adapters/gemini.js). Say which
+  // of the two it is rather than showing nothing.
+  if (!fanCount && rec.searched && rec.platform === "gemini") {
+    mainCol.append(el("div", { className: "card", id: "card-fanout" },
+      el("div", { className: "card-header" },
+        el("h3", {}, "Query Fan-Out"),
+        el("span", { className: "tag" }, "not exposed by Gemini")
+      ),
+      el("p", { className: "muted", style: "margin:0" },
+        "This answer did search the web, but Gemini does not publish the sub-queries it ran, " +
+        "so there is nothing to report here. ChatGPT captures do show them. This is a platform " +
+        "limitation, not a failed capture.")
+    ));
+  }
   if (fanCount) {
     const fc = el("div", { className: "card", id: "card-fanout" },
       el("div", { className: "card-header" },
         el("h3", {}, "Query Fan-Out"),
-        el("span", { className: "tag cited" }, `${rec.model || "gpt-5-5"}`)
+        el("span", { className: "tag cited" }, `${rec.model || rec.platform || "unknown model"}`)
       )
     );
     let qIdx = 1;
