@@ -26,29 +26,6 @@ export const ADAPTER_VERSION = "gemini@0.2.0";
 
 const FAVICON_RE = /gstatic\.com|googleusercontent|favicon-tbn/i;
 
-const BRAND_SEED = [
-  // Laptops, PCs & Hardware
-  "ASUS", "MSI", "Acer", "Lenovo", "HP", "Dell", "MacBook", "Apple", "Microsoft", "Surface",
-  "Razer", "Alienware", "Gigabyte", "ROG", "TUF", "IdeaPad", "Vivobook", "ThinkPad", "Inspiron",
-  "Pavilion", "Victus", "Legion", "Predator", "ZenBook", "Swift", "Intel", "AMD", "NVIDIA", "Ryzen",
-  "GeForce", "Radeon", "Infinix", "Avita", "Fujitsu", "Panasonic", "LG", "Toshiba", "Vaio",
-
-  // Smartphones & Tablets
-  "Google Pixel", "Google", "Pixel", "Samsung", "Galaxy", "iPhone", "iPad", "OnePlus", "Xiaomi",
-  "Redmi", "Vivo", "Oppo", "Realme", "Motorola", "Moto", "Nothing", "iQOO", "Poco", "Honor",
-  "Huawei", "Asus", "Sony", "Nokia", "ZTE", "Tecno",
-
-  // Audio, Wearables & Accessories
-  "Bose", "Sennheiser", "JBL", "Boat", "Noise", "Fire-Boltt", "Boult", "Marshall", "Sonos",
-  "Anker", "Belkin", "Logitech", "Corsair", "HyperX", "SteelSeries", "Garmin", "Fitbit",
-
-  // TV, Home Appliances & Electronics
-  "TCL", "Hisense", "Vu", "Whirlpool", "Haier", "Bosch", "Dyson", "Canon", "Nikon", "Fujifilm",
-  "GoPro", "DJI", "Philips",
-
-  // Retail & E-Commerce
-  "Amazon", "Flipkart", "Reliance Digital", "Croma", "Vijay Sales"
-];
 
 function extractAnswerAndReasoning(payload) {
   const mdStrings = [];
@@ -60,10 +37,6 @@ function extractAnswerAndReasoning(payload) {
   const answer = mdStrings.find((s) => !isReasoning(s)) || mdStrings[0] || "";
   const reasoning = mdStrings.find((s) => isReasoning(s)) || null;
   return { answer, reasoning };
-}
-
-function escapeRegExp(s) {
-  return (s || "").replace(/[\-\[\]\/\{\}\(\)\*\+\?\.\\\^\$\|]/g, "\\$&");
 }
 
 // Brand detection is fully automatic and industry-agnostic — see lib/brands.js.

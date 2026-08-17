@@ -182,24 +182,71 @@ export function structuralCandidates(answerText) {
 }
 
 /* ---------- 4. cited domains ---------- */
-// zerodha.com → "Zerodha"; gadgets.beebom.com → "Beebom"
+// Second-level registry labels that are never themselves the brand:
+// "example.co.uk", "woolworths.com.au", "dbs.com.sg", "toyota.co.jp".
+// Everything NOT in this set is treated as a public suffix, so the label
+// immediately before it is the registrable name. That way the list stays
+// tiny and closed, instead of needing an entry for every TLD that exists.
+const SLD_REGISTRY = new Set(["co", "com", "net", "org", "gov", "edu", "ac", "or", "ne", "go", "gob", "gc"]);
+
+// zerodha.com → "Zerodha"; gadgets.beebom.com → "Beebom"; siemens.de → "Siemens".
+//
+// This used to work off an allow-list of suffixes to skip, which failed two ways
+// in production: any ccTLD not on the list ("siemens.de", "loreal.fr",
+// "nestle.ch") returned null and lost the brand entirely, and any modern generic
+// TLD not on the list became the "brand" itself — "cred.club" reported a company
+// called "Club", "acme.store" → "Store", "props.realty" → "Realty". Keying off a
+// closed set of second-level REGISTRY labels instead is correct for both.
 export function brandFromDomain(domain) {
   if (!domain) return null;
-  const host = String(domain).replace(/^www\./, "");
+  const host = String(domain).trim().toLowerCase().replace(/^www\./, "").replace(/\.$/, "");
   const parts = host.split(".").filter(Boolean);
-  if (!parts.length) return null;
-  // Drop common public-suffix pieces to find the registrable label.
-  const SUFFIX = new Set(["com", "co", "in", "net", "org", "io", "ai", "app", "uk", "us", "gov", "edu", "me", "tv"]);
-  let label = null;
-  for (let i = parts.length - 1; i >= 0; i--) {
-    if (!SUFFIX.has(parts[i].toLowerCase())) {
-      label = parts[i];
-      break;
+  if (parts.length < 2) return null; // a bare host with no dot has no registrable label
+  let i = parts.length - 2;
+  if (i > 0 && SLD_REGISTRY.has(parts[i])) i -= 1;
+  const label = parts[i];
+  if (!label || label.length < 3 || /^\d+$/.test(label)) return null;
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+// Find where a compressed domain label appears in prose as separate words.
+//
+// Domain labels squash a brand's words together — "hdfcbank.com" for a company
+// written "HDFC Bank", "ultratechcement.com" for "UltraTech Cement",
+// "siemens-healthineers.com" for "Siemens Healthineers". Matching the label
+// verbatim with \bhdfcbank\b therefore never fires, so on platforms with no
+// entity markers (Gemini) whole industries — lending, cement, healthcare, real
+// estate — detected ZERO brands despite citing those companies' own sites.
+//
+// Scanning word runs and comparing their letters-and-digits concatenation is
+// exact (no fuzzy matching, so no false positives) and carries no vocabulary,
+// so it stays industry- and language-neutral. Returns the real spans, letting
+// the caller display the brand the way the answer actually writes it ("HDFC
+// Bank", "PhonePe") rather than the mangled "Hdfcbank" / "Phonepe".
+const MAX_LABEL_WORDS = 4;
+export function matchCompressedLabel(text, label) {
+  const target = String(label || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (target.length < 3 || !text) return [];
+  const tokens = [...String(text).matchAll(/[A-Za-z0-9&]+/g)].map((m) => ({
+    w: m[0].toLowerCase(),
+    start: m.index,
+    end: m.index + m[0].length,
+  }));
+  const out = [];
+  for (let i = 0; i < tokens.length; i++) {
+    if (!target.startsWith(tokens[i].w)) continue; // cheap reject
+    let acc = "";
+    for (let j = i; j < tokens.length && j - i < MAX_LABEL_WORDS; j++) {
+      acc += tokens[j].w;
+      if (acc.length > target.length || !target.startsWith(acc)) break;
+      if (acc === target) {
+        out.push({ start: tokens[i].start, end: tokens[j].end });
+        i = j; // don't start another run inside this match
+        break;
+      }
     }
   }
-  if (!label || label.length < 3) return null;
-  if (/^\d+$/.test(label)) return null;
-  return label.charAt(0).toUpperCase() + label.slice(1);
+  return out;
 }
 
 /* ---------- name shaping ---------- */
@@ -358,12 +405,21 @@ export function detectBrands(answerText, plainText, ctx = {}) {
   const claimed = [];
   const results = [];
   for (const cand of ordered) {
-    const re = new RegExp(`\\b${escapeRegExp(cand.name)}\\b`, "gi");
-    const hits = [...text.matchAll(re)].filter((m) => {
-      const s = m.index;
-      const e = s + cand.name.length;
-      return !claimed.some(([cs, ce]) => s >= cs && e <= ce);
-    });
+    // A domain-derived candidate is a squashed label ("hdfcbank"), so it is
+    // matched against word runs rather than verbatim — see matchCompressedLabel.
+    const isDomain = cand.category === "cited_domain";
+    const hits = isDomain
+      ? matchCompressedLabel(text, cand.name).filter(
+          (h) => !claimed.some(([cs, ce]) => h.start >= cs && h.end <= ce)
+        )
+      : [...text.matchAll(new RegExp(`\\b${escapeRegExp(cand.name)}\\b`, "gi"))]
+          .map((m) => ({ start: m.index, end: m.index + cand.name.length }))
+          .filter((h) => !claimed.some(([cs, ce]) => h.start >= cs && h.end <= ce));
+    // Prefer how the answer itself writes the name ("HDFC Bank", "PhonePe")
+    // over the mangled title-cased domain label ("Hdfcbank", "Phonepe").
+    const displayName = isDomain && hits.length
+      ? text.slice(hits[0].start, hits[0].end).replace(/\s+/g, " ").trim()
+      : cand.name;
     if (!hits.length) {
       // `shownOnly` candidates (product cards, place listings) are real citation
       // events even when the model's PROSE never names them — e.g. a 6-item
@@ -382,10 +438,10 @@ export function detectBrands(answerText, plainText, ctx = {}) {
       }
       continue;
     }
-    hits.forEach((m) => claimed.push([m.index, m.index + cand.name.length]));
-    const first = hits[0].index;
+    hits.forEach((h) => claimed.push([h.start, h.end]));
+    const first = hits[0].start;
     results.push({
-      brand: cand.name,
+      brand: displayName,
       count: hits.length,
       firstIndex: first,
       category: cand.category,
@@ -393,6 +449,24 @@ export function detectBrands(answerText, plainText, ctx = {}) {
       passages: [text.slice(Math.max(0, first - 110), first + 110).replace(/\s+/g, " ").trim()],
     });
   }
+
+  // Renaming a domain candidate to how the answer writes it can collide with a
+  // candidate that already had that exact name (e.g. structure found "HDFC Bank"
+  // and hdfcbank.com resolved to the same words). Merge rather than report the
+  // same company twice with a split share of voice.
+  const merged = new Map();
+  for (const r of results) {
+    const k = r.brand.toLowerCase();
+    const prev = merged.get(k);
+    if (!prev) { merged.set(k, r); continue; }
+    prev.count += r.count;
+    prev.firstIndex = Math.min(prev.firstIndex, r.firstIndex);
+    prev.category = prev.category || r.category;
+    prev.description = prev.description || r.description;
+    for (const p of r.passages) if (!prev.passages.includes(p)) prev.passages.push(p);
+  }
+  results.length = 0;
+  results.push(...merged.values());
 
   // Label against the user's tracked list (own / competitor) — presentation only.
   const tracked = (ctx.tracked || []).map((t) => ({

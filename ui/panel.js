@@ -10,6 +10,7 @@ import {
   partitionRecords, allTags, runDue, runVolume, makeProfile,
 } from "../src/lib/geo.js";
 import { parseCsv, parseXlsx, rowsToPrompts } from "../src/lib/xlsxLite.js";
+import { matchCompressedLabel, vendorFromProductName } from "../src/lib/brands.js";
 
 const send = (msg) =>
   new Promise((resolve) => chrome.runtime.sendMessage(msg, (r) => resolve(r || { ok: false })));
@@ -326,62 +327,130 @@ function extractRankAndCategory(brandName, passage, text) {
 // the passage(s) already scoped to THIS brand's own mentions avoids that
 // failure mode entirely, and scanning every passage (not just the first)
 // catches aspects raised at a brand's later mentions too.
+//
+// Aspects come from two places, in order of trust:
+//
+//  1. What the answer SAYS it rates the brand for — "best for <x>", "known for
+//     <x>", "stands out for <x>". The label is lifted from the sentence, so it
+//     works in any vertical without knowing a single industry word ("low
+//     processing fees", "same-day delivery", "crack resistance").
+//  2. A curated dimension map, as a fallback for answers that describe a brand
+//     without ever labelling why. This used to be phone specs ONLY — camera,
+//     battery, display, chipset — so a cement or lending answer either got
+//     nothing or, worse, got "Performance" off the word "speed" and "Design"
+//     off "premium". The map now spans the dimensions any category gets
+//     compared on, and the phone-specific triggers only fire on words that
+//     genuinely mean a phone spec.
+const ASPECT_DIMENSIONS = [
+  ["Price & Value", /\b(price|pricing|cost|affordable|budget|value for money|cheaper|expensive|premium pricing|discount|emi)\b/],
+  ["Fees & Rates", /\b(interest rate|interest rates|apr|processing fee|processing fees|brokerage|commission|charges|no annual fee|expense ratio)\b/],
+  ["Quality", /\b(quality|grade|purity|strength|finish|craftsmanship|ingredients|material|materials)\b/],
+  ["Durability", /\b(durability|durable|long[- ]lasting|weather resistant|crack resistan|warranty|wear and tear)\b/],
+  ["Service & Support", /\b(customer (?:service|support|care)|after[- ]sales|helpline|turnaround time|claim settlement|onboarding)\b/],
+  ["Availability", /\b(availability|widely available|in stock|distribution network|dealer network|branches|nationwide|delivery time)\b/],
+  ["Trust & Reputation", /\b(trusted|reputation|reliable|legacy|established|market leader|credibility|certified|regulated|iso )\b/],
+  ["Safety", /\b(safety|safe for|side effects|clinically|dermatologically|non[- ]toxic|fda|hypoallergenic)\b/],
+  ["Sustainability", /\b(sustainab|eco[- ]friendly|recycl|carbon|green building|organic|cruelty[- ]free)\b/],
+  ["Camera", /\b(camera|cameras|megapixel|telephoto|portrait mode|hasselblad|optical zoom)\b/],
+  ["Battery", /\b(battery|mah|fast charging|wireless charging|battery backup)\b/],
+  ["Display", /\b(display|screen|amoled|oled|refresh rate|120hz|ltpo|hdr|dolby vision)\b/],
+  ["Performance", /\b(processor|chipset|snapdragon|dimensity|benchmark|ram|cpu|gpu|thermal throttl)\b/],
+  ["Software", /\b(software update|os update|years of updates|user interface|bloatware|ecosystem)\b/],
+];
+
+// "Best for gaming and photography" → "gaming and photography". Bounded to a
+// short noun phrase so a whole sentence never becomes a chip.
+const ASPECT_PHRASE_RE =
+  /\b(?:best|ideal|great|good|preferred|recommended|popular|known|noted|praised|valued|stands out)\s+(?:choice\s+)?for\s+(?:its\s+)?([a-z][a-z0-9 &/,'-]{2,40}?)(?=[.,;:!?)]|\band\b\s+(?:it|they|the)\b|$)/gi;
+const ASPECT_PHRASE_STOP = /^(the|a|an|you|those|them|it|this|that|these|him|her|us|people|users|customers|anyone|everyone|most|some|many)\b/i;
+
 function extractBrandAspects(passages) {
-  const text = sanitizeText((passages || []).join(" ")).toLowerCase();
-  if (!text) return [];
+  const raw = sanitizeText((passages || []).join(" "));
+  if (!raw) return [];
+  const text = raw.toLowerCase();
 
   const aspects = [];
-  if (/\b(camera|cameras|photo|photos|portrait|portraits|hasselblad|imaging|zoom|sensor|video|recording)\b/i.test(text)) {
-    aspects.push("Camera");
+  const seen = new Set();
+  const push = (label) => {
+    const k = label.toLowerCase();
+    if (!seen.has(k)) { seen.add(k); aspects.push(label); }
+  };
+
+  // 1. aspects the answer states outright
+  let m;
+  ASPECT_PHRASE_RE.lastIndex = 0;
+  while ((m = ASPECT_PHRASE_RE.exec(raw))) {
+    const phrase = m[1].trim().replace(/\s+/g, " ").replace(/[,'-]+$/, "");
+    if (phrase.length < 3 || ASPECT_PHRASE_STOP.test(phrase)) continue;
+    if (phrase.split(/\s+/).length > 5) continue;
+    push(phrase.charAt(0).toUpperCase() + phrase.slice(1));
+    if (aspects.length >= 3) return aspects;
   }
-  if (/\b(battery|charging|mah|watt|backup|fast charging|wireless charging)\b/i.test(text)) {
-    aspects.push("Battery");
-  }
-  if (/\b(display|screen|amoled|oled|120hz|ltpo|refresh rate|resolution|bright|hdr|dolby vision)\b/i.test(text)) {
-    aspects.push("Display");
-  }
-  if (/\b(processor|performance|snapdragon|chipset|dimensity|gaming|speed|thermal|cooling|ram|cpu)\b/i.test(text)) {
-    aspects.push("Performance");
-  }
-  if (/\b(compact|one-handed|size|pocketable|handy)\b/i.test(text)) {
-    aspects.push("Compact");
-  }
-  if (/\b(software|os|ios|updates|ui|support|long-term|years of updates|ecosystem)\b/i.test(text)) {
-    aspects.push("Software");
-  }
-  if (/\b(design|build|premium|finish|ip68|ip69|rating|durability)\b/i.test(text)) {
-    aspects.push("Design");
+
+  // 2. fall back to the dimension map
+  for (const [label, re] of ASPECT_DIMENSIONS) {
+    if (re.test(text)) push(label);
+    if (aspects.length >= 3) break;
   }
 
   return aspects.slice(0, 3);
 }
 
-const BRAND_SEED_UI = [
-  "OnePlus", "Samsung", "Google", "Apple", "Xiaomi", "Oppo", "Vivo", "Realme", "Nothing",
-  "Motorola", "iQOO", "Poco", "Asus", "Lenovo", "HP", "Dell", "Acer", "MSI", "Infinix", "Techno"
-];
+// The vocabulary the Search-Funnel card scans source snippets with.
+//
+// This used to be a hardcoded list of 20 phone/laptop makers, which meant the
+// whole "Evaluated vs. Omitted" card silently found nothing outside consumer
+// electronics — lending, cement, healthcare, beverages and every other vertical
+// got an empty card that looked like "nothing was omitted" rather than "this
+// never ran". The names now come from what the automatic detector already found
+// in THIS capture (src/lib/brands.js — entity markers, product/place data and
+// cited domains), so it carries no industry vocabulary of its own.
+//
+// Two things are deliberately NOT in this vocabulary, because tested against
+// real captures both filled the card with confident nonsense:
+//   - source domains. Most retrieved sources are publishers, so domain-derived
+//     names surfaced "Gadgets360" and "Smartprix" as omitted BRANDS. Requiring
+//     another domain to name them too was not enough to separate a brand being
+//     written about from the site writing about it.
+//   - retailers/merchants. A seller that stocks the product ("Flipkart",
+//     "Reliance Digital + others") is not one of the brands being evaluated —
+//     src/lib/brands.js draws the same line for the same reason.
+// What remains is precise: the card stays silent rather than inventing an
+// omission, and it still catches the case that matters most — a product the
+// model was SHOWN (carousel/place data) and chose not to narrate.
+function buildBrandVocabulary(rec) {
+  const vocab = new Map(); // normalized key -> display name
+  // "Angel One" and the angelone.in label are one company; keying on
+  // letters-and-digits only keeps them from being reported as two, one of
+  // which then looks "omitted" purely because of the space.
+  const norm = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, "");
+  const add = (name) => {
+    const t = String(name || "").trim().replace(/[*_`]/g, "");
+    if (t.length < 3 || t.length > 60) return;
+    const k = norm(t);
+    if (k.length >= 3 && !vocab.has(k)) vocab.set(k, t);
+  };
 
-function extractBrandsFromText(text, products) {
-  if (!text) return [];
+  (rec.brandMentions || []).forEach((b) => add(b.brand));
+  (rec.products || []).forEach((p) => add(p.brand || vendorFromProductName(p.name)));
+  (rec.places || []).forEach((p) => add(p.name));
+  (rec.entities || []).forEach((e) => {
+    if (/brand|company|organization|vendor|place|business/i.test(e.category || "")) add(e.text);
+  });
+
+  return vocab;
+}
+
+// Which vocabulary entries actually appear in one source's title/snippet.
+// Matching goes through matchCompressedLabel so a squashed name still lines up
+// with how the snippet writes it ("hdfcbank" ↔ "HDFC Bank").
+function extractBrandsFromText(text, vocab) {
+  if (!text || !vocab || !vocab.size) return [];
   const found = [];
-  const lower = text.toLowerCase();
-  
-  BRAND_SEED_UI.forEach((brand) => {
-    const re = new RegExp(`\\b${escapeRegExp(brand)}\\b`, "i");
-    if (re.test(text)) {
-      found.push({ brand });
-    }
+  vocab.forEach((display) => {
+    const verbatim = new RegExp(`\\b${escapeRegExp(display)}\\b`, "i").test(text);
+    if (verbatim || matchCompressedLabel(text, display).length) found.push({ brand: display });
   });
-  
-  (products || []).forEach((p) => {
-    const first = (p.name || "").split(/\s+/)[0];
-    if (first && first.length > 2 && lower.includes(first.toLowerCase())) {
-      if (!found.some(f => f.brand.toLowerCase() === first.toLowerCase())) {
-        found.push({ brand: first });
-      }
-    }
-  });
-  
   return found;
 }
 
@@ -832,7 +901,15 @@ function renderAnalyze() {
     // leading-word check.
     const FILLER_RE = /\b(so|you|do|the|is|was|are|an|and|but|that|this|which|who|how|why|what|its|it's|from|has|have|will|can|could|would|were)\b/i;
 
-    const mentionedBrandKeys = new Set((rec.brandMentions || []).map(b => (ALIAS_MAP_OMIT[b.brand.toLowerCase()] || b.brand).toLowerCase()));
+    // Only brands the answer actually NARRATED count as mentioned. A count=0
+    // entry is one the model was shown (product carousel, place listing) and
+    // never wrote about — the single most useful thing this card can surface,
+    // so treating it as "mentioned" would hide exactly the wrong case.
+    const mentionedBrandKeys = new Set(
+      (rec.brandMentions || [])
+        .filter((b) => b.count > 0)
+        .map((b) => (ALIAS_MAP_OMIT[b.brand.toLowerCase()] || b.brand).toLowerCase())
+    );
     const brandCanonical = new Map(); // lower -> display name
     const brandSourceIdxs = new Map(); // lower -> Set(source index)
     const modelEntries = new Map(); // "brand||model" -> { brand, model, sourceIdxs: Set }
@@ -842,9 +919,10 @@ function renderAnalyze() {
     // previously bleed across the boundary between two unrelated sources'
     // text, which is what produced garbled "model names" that were actually
     // fragments of the next source's sentence.
+    const brandVocab = buildBrandVocabulary(rec);
     rec.sources.forEach((s, idx) => {
       const srcText = `${s.title || ""} ${s.snippet || ""}`;
-      extractBrandsFromText(srcText, rec.products).forEach((sb) => {
+      extractBrandsFromText(srcText, brandVocab).forEach((sb) => {
         const canonical = ALIAS_MAP_OMIT[sb.brand.toLowerCase()] || sb.brand;
         const key = canonical.toLowerCase();
         brandCanonical.set(key, canonical);

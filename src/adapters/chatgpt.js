@@ -129,32 +129,6 @@ function extractReferenceTypes(nodes, answerText) {
   return counts;
 }
 
-// Brand mentions with passages. Candidate brands derive from product names
-// (first token) plus a small built-in tech seed; counted case-insensitively in
-// the answer text. Users can extend the brand list later.
-const BRAND_SEED = [
-  // Laptops, PCs & Hardware
-  "ASUS", "MSI", "Acer", "Lenovo", "HP", "Dell", "MacBook", "Apple", "Microsoft", "Surface",
-  "Razer", "Alienware", "Gigabyte", "ROG", "TUF", "IdeaPad", "Vivobook", "ThinkPad", "Inspiron",
-  "Pavilion", "Victus", "Legion", "Predator", "ZenBook", "Swift", "Intel", "AMD", "NVIDIA", "Ryzen",
-  "GeForce", "Radeon", "Infinix", "Avita", "Fujitsu", "Panasonic", "LG", "Toshiba", "Vaio",
-
-  // Smartphones & Tablets
-  "Google Pixel", "Google", "Pixel", "Samsung", "Galaxy", "iPhone", "iPad", "OnePlus", "Xiaomi",
-  "Redmi", "Vivo", "Oppo", "Realme", "Motorola", "Moto", "Nothing", "iQOO", "Poco", "Honor",
-  "Huawei", "Asus", "Sony", "Nokia", "ZTE", "Tecno",
-
-  // Audio, Wearables & Accessories
-  "Bose", "Sennheiser", "JBL", "Boat", "Noise", "Fire-Boltt", "Boult", "Marshall", "Sonos",
-  "Anker", "Belkin", "Logitech", "Corsair", "HyperX", "SteelSeries", "Garmin", "Fitbit",
-
-  // TV, Home Appliances & Electronics
-  "TCL", "Hisense", "Vu", "Whirlpool", "Haier", "Bosch", "Dyson", "Canon", "Nikon", "Fujifilm",
-  "GoPro", "DJI", "Philips",
-
-  // Retail & E-Commerce
-  "Amazon", "Flipkart", "Reliance Digital", "Croma", "Vijay Sales"
-];
 
 export function cleanPassage(text) {
   // ChatGPT's inline markup wraps refs in real Unicode Private-Use-Area chars:
@@ -241,9 +215,6 @@ export function tokenizeAnswerMarkup(text) {
   }
   if (cursor < text.length) out.push({ type: "text", value: text.slice(cursor) });
   return out;
-}
-function escapeRegExp(s) {
-  return (s || "").replace(/[\-\[\]\/\{\}\(\)\*\+\?\.\\\^\$\|]/g, "\\$&");
 }
 
 // Brand detection is fully automatic and industry-agnostic — see lib/brands.js.
