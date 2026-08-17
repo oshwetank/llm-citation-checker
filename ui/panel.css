@@ -1804,7 +1804,17 @@ tr.own-brand td { background: var(--accent-subtle); font-weight: 600; }
 }
 .tag-sidebar .tag.clickable { display: inline-block; }
 
-.tag-sidebar-list { margin-top: 6px; display: flex; flex-direction: column; }
+.tag-sidebar-list {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  /* A campaign can carry one tag per industry — the 20-industry run made this
+     rail ~560px tall next to a table capped at 360px, so the card ended in a
+     long column of tags with empty space beside it. Cap and scroll it to the
+     table's height instead. */
+  max-height: 320px;
+  overflow-y: auto;
+}
 .tag-sidebar-row {
   display: flex;
   align-items: flex-start;

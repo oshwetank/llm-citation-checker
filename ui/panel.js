@@ -226,19 +226,20 @@ function escapeRegExp(s) {
   return (s || "").replace(/[\-\[\]\/\{\}\(\)\*\+\?\.\\\^\$\|]/g, "\\$&");
 }
 
+// Rejects table scaffolding and listicle boilerplate captured instead of a real
+// "Best for …" category. It used to reject any text containing "price" or
+// "phone", which threw away legitimate categories in both directions — a phone
+// answer could not have a phone category, and "price transparency" was dropped
+// in every vertical. The tests below are about shape and filler, not subject.
 function isGenericHeaderOrNoise(str) {
   if (!str) return true;
-  const lower = str.toLowerCase();
-  return (
-    lower.includes("approx") ||
-    lower.includes("price") ||
-    lower.includes("------") ||
-    lower.includes("phone") ||
-    lower.includes("best smartphones you can buy") ||
-    lower.includes("right now") ||
-    lower.length < 3 ||
-    lower.length > 60
-  );
+  const s = String(str).trim();
+  if (s.length < 3 || s.length > 60) return true;
+  if (/^[\s\-—–|:.]+$/.test(s)) return true; // a separator row, not a category
+  if (/-{4,}|\|{2,}/.test(s)) return true; // markdown table scaffolding
+  // Fragments that restate the listicle rather than naming a use case.
+  if (/^(you can buy|right now|approx\.?|approximately|overall|today|in \d{4})\b/i.test(s)) return true;
+  return false;
 }
 
 function extractBrandModels(brandName, products, rawText) {
@@ -264,7 +265,18 @@ function extractBrandModels(brandName, products, rawText) {
       const words = phrase.split(/\s+/);
       const modelWords = [];
       for (const w of words) {
-        if (/^(is|and|or|in|for|the|with|under|are|these|choices|best|top|priority|quality|overall|flagship|value|compact|cameras|software|display|performance|ecosystem|photography|enthusiasts|if|available|around)$/i.test(w)) break;
+        // A model name is a proper noun or a part number — "Nord CE6 5G",
+        // "Galaxy S25 Ultra", "OPC 53 Grade". An all-lowercase word is ordinary
+        // prose, so the name ended at the previous word.
+        //
+        // Without this the regex just swallowed the next five words of the
+        // sentence, which only looked acceptable on phone answers because model
+        // names happen to follow the brand there. In other verticals it
+        // produced flatly wrong output — "HDFC Bank" was credited with a model
+        // called "offers personal loans at competitive", "Apollo Hospitals"
+        // with "runs cardiac centres nationwide" — and it leaked on phones too
+        // ("Galaxy S25 Ultra leads").
+        if (!/^[A-Z]/.test(w) && !/\d/.test(w)) break;
         modelWords.push(w);
       }
       let modelName = modelWords.join(" ").trim();
