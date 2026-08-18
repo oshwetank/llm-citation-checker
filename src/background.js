@@ -17,9 +17,17 @@ import { gzipString, gunzipToString } from "./lib/gzip.js";
 import { adapt as adaptChatGpt } from "./adapters/chatgpt.js";
 import { adapt as adaptGemini } from "./adapters/gemini.js";
 import {
-  MAX_PROFILES, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
-  selectTracked, computeMetrics, computeSeries,
+  MAX_PROFILES, TRASH_RETENTION_DAYS, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
+  selectTracked, computeMetrics, computeSeries, brandPresence, trackedBrandsOf,
 } from "./lib/geo.js";
+
+// Loose match for duplicate-prompt detection: trim, lowercase, collapse
+// whitespace. Deliberately NOT as aggressive as geo.js's normName() (which
+// strips all punctuation) — "40,000" and "40000" should probably stay
+// distinct prompts, just exact-text-modulo-whitespace duplicates should not.
+function normPromptText(s) {
+  return String(s || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
 
 const ADAPTERS = { chatgpt: adaptChatGpt, gemini: adaptGemini };
 
@@ -536,7 +544,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         /* ---------- GEO brand tracking ---------- */
         case "geo-profile-list": {
-          const profiles = await db.getAll("profiles");
+          // Lazy sweep: anything soft-deleted past the retention window gets
+          // purged for real right here, so there's no need for a background
+          // alarm just to expire trash. Runs on every list call, which is
+          // cheap at MAX_PROFILES-scale data.
+          const cutoff = Date.now() - TRASH_RETENTION_DAYS * 86400000;
+          const all = await db.getAll("profiles");
+          for (const p of all) {
+            if (p.deletedAt && p.deletedAt < cutoff) {
+              const prompts = await db.getAll("trackedPrompts");
+              for (const pr of prompts) if (pr.profileId === p.id) await db.delete("trackedPrompts", pr.id);
+              await db.delete("profiles", p.id);
+            }
+          }
+          const profiles = (await db.getAll("profiles")).filter((p) => msg.includeDeleted || !p.deletedAt);
           profiles.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
           sendResponse({ ok: true, profiles });
           break;
@@ -546,7 +567,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const existing = msg.profile?.id ? all.find((p) => p.id === msg.profile.id) : null;
           // Cap enforced in the service worker, not just the UI — the UI is not
           // a security or integrity boundary and a stale popup could resubmit.
-          if (!existing && all.length >= MAX_PROFILES) {
+          // Soft-deleted profiles don't count against the live cap.
+          if (!existing && all.filter((p) => !p.deletedAt).length >= MAX_PROFILES) {
             sendResponse({ ok: false, error: `You can track at most ${MAX_PROFILES} brand profiles.` });
             break;
           }
@@ -559,11 +581,32 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, profile });
           break;
         }
+        // Soft delete: recoverable for TRASH_RETENTION_DAYS (see the sweep in
+        // geo-profile-list above). Prompts and captures are left alone either
+        // way — deleting a profile has never deleted its data, only detached it.
+        case "geo-profile-trash": {
+          const profile = await db.get("profiles", msg.id);
+          if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
+          await db.put("profiles", { ...profile, deletedAt: Date.now() });
+          sendResponse({ ok: true });
+          break;
+        }
+        case "geo-profile-restore": {
+          const profile = await db.get("profiles", msg.id);
+          if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
+          const live = (await db.getAll("profiles")).filter((p) => !p.deletedAt && p.id !== msg.id);
+          if (live.length >= MAX_PROFILES) {
+            sendResponse({ ok: false, error: `You can track at most ${MAX_PROFILES} brand profiles — trash or delete one first.` });
+            break;
+          }
+          await db.put("profiles", { ...profile, deletedAt: null });
+          sendResponse({ ok: true });
+          break;
+        }
         case "geo-profile-delete": {
-          // Deleting a profile orphans its prompts and its captured responses.
-          // Prompts go with it; captures are LEFT ALONE deliberately — they are
-          // real captured data the user may still want, and silently deleting
-          // history because a profile was removed would be a nasty surprise.
+          // Immediate, permanent delete — used for "delete forever" from the
+          // trash. Prompts go with it; captures are LEFT ALONE deliberately —
+          // real captured data the user may still want.
           const prompts = await db.getAll("trackedPrompts");
           for (const p of prompts) if (p.profileId === msg.id) await db.delete("trackedPrompts", p.id);
           await db.delete("profiles", msg.id);
@@ -586,23 +629,62 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, prompt });
           break;
         }
-        case "geo-prompt-bulk-add": {
-          // One prompt per line, shared tags — the fast way to seed a profile.
-          const lines = String(msg.text || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-          const tags = msg.tags || [];
+        case "geo-prompt-bulk-add-rows": {
+          // One prompt per row with its OWN tags — used by both the CSV/XLSX
+          // import path and manual entry (each line parsed client-side into
+          // {text, tags}). Duplicate prompt text (case/whitespace-insensitive)
+          // is skipped rather than added twice — both against what's already
+          // tracked on this profile AND within the same batch — and reported
+          // back so the UI can tell the user what got skipped and why.
+          const rows = Array.isArray(msg.rows) ? msg.rows : [];
+          const existingPrompts = (await db.getAll("trackedPrompts")).filter((p) => p.profileId === msg.profileId);
+          const seen = new Set(existingPrompts.map((p) => normPromptText(p.text)));
           const added = [];
-          for (const text of lines) {
-            const p = makeTrackedPrompt({ profileId: msg.profileId, text, tags });
+          const duplicates = [];
+          for (const row of rows) {
+            const text = String(row?.text || "").trim();
+            if (!text) continue;
+            const key = normPromptText(text);
+            if (seen.has(key)) { duplicates.push(text); continue; }
+            seen.add(key);
+            const p = makeTrackedPrompt({ profileId: msg.profileId, text, tags: row.tags || [] });
             await db.put("trackedPrompts", p);
             added.push(p);
           }
-          sendResponse({ ok: true, added: added.length });
+          sendResponse({ ok: true, added: added.length, duplicates });
           break;
         }
         case "geo-prompt-delete":
           await db.delete("trackedPrompts", msg.id);
           sendResponse({ ok: true });
           break;
+        case "geo-tag-delete": {
+          // Removes the tag from every prompt that carries it — the prompts
+          // themselves are untouched. Distinct from deleting prompts by tag.
+          const prompts = (await db.getAll("trackedPrompts")).filter((p) => p.profileId === msg.profileId);
+          let changed = 0;
+          for (const p of prompts) {
+            if (!(p.tags || []).includes(msg.tag)) continue;
+            await db.put("trackedPrompts", { ...p, tags: p.tags.filter((t) => t !== msg.tag) });
+            changed++;
+          }
+          sendResponse({ ok: true, changed });
+          break;
+        }
+        case "geo-tag-rename": {
+          const newTag = String(msg.newTag || "").trim();
+          if (!newTag) { sendResponse({ ok: false, error: "New tag name can't be empty." }); break; }
+          const prompts = (await db.getAll("trackedPrompts")).filter((p) => p.profileId === msg.profileId);
+          let changed = 0;
+          for (const p of prompts) {
+            if (!(p.tags || []).includes(msg.oldTag)) continue;
+            const tags = [...new Set(p.tags.map((t) => (t === msg.oldTag ? newTag : t)))];
+            await db.put("trackedPrompts", { ...p, tags });
+            changed++;
+          }
+          sendResponse({ ok: true, changed });
+          break;
+        }
 
         case "geo-run-list": {
           const runs = await db.getAll("geoRuns");
@@ -631,12 +713,122 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             since: msg.since,
             until: msg.until,
           });
+          // Same shape of aggregate the ad-hoc Dashboard shows (captures /
+          // with-search / fan-out queries / unique domains / cited / fetched),
+          // but over THIS campaign's tracked responses — lets the Dashboard
+          // merge "Performance Overview" and campaign KPIs into one section
+          // once a campaign is selected, instead of two disconnected cards.
+          let fanTotal = 0, searched = 0, citedTotal = 0, fetchedTotal = 0;
+          const domainSet = new Set();
+          for (const r of scoped) {
+            if (r.searched) searched++;
+            for (const b of ["search", "shopping", "image"]) fanTotal += (r.fanout?.[b] || []).length;
+            for (const s of r.sources || []) {
+              if (s.outcome === "cited") citedTotal++;
+              else if (s.outcome === "fetched") fetchedTotal++;
+              if (s.domain) domainSet.add(s.domain);
+            }
+          }
           sendResponse({
             ok: true,
             metrics: computeMetrics(scoped, profile),
             series: computeSeries(scoped, profile, msg.bucket || "day"),
             responses: scoped.length,
+            overview: { captures: scoped.length, searched, fanTotal, domainCount: domainSet.size, citedTotal, fetchedTotal },
           });
+          break;
+        }
+
+        case "geo-prompt-performance": {
+          // Per-response detail grouped by prompt (not just the profile-wide
+          // aggregate geo-metrics returns): for each run of each tracked
+          // prompt, was the campaign's own brand mentioned (and at what rank
+          // among tracked brands), was its domain cited, plus that run's
+          // sources — so the Dashboard can show a per-prompt performance
+          // table instead of a generic ad-hoc conversation list, without
+          // shipping full answerText across the message boundary.
+          const profile = await db.get("profiles", msg.profileId);
+          if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
+          const all = await db.getAll("derived");
+          const scoped = selectTracked(all, {
+            profileId: msg.profileId,
+            engines: msg.engines,
+            tags: msg.tags,
+            since: msg.since,
+            until: msg.until,
+          });
+          const brands = trackedBrandsOf(profile);
+          const own = brands.find((b) => b.isOwn);
+
+          const byPrompt = new Map();
+          for (const rec of scoped) {
+            const promptId = rec.geo && rec.geo.promptId;
+            if (!promptId) continue;
+            let mentioned = false, position = null, cited = false;
+            if (own) {
+              const pres = brandPresence(rec, brands);
+              const ranked = pres.filter((p) => p.firstIndex !== null).sort((a, b) => a.firstIndex - b.firstIndex);
+              const ownPres = pres.find((p) => p.isOwn);
+              if (ownPres) {
+                mentioned = ownPres.present;
+                cited = ownPres.citedSource;
+                const rankIdx = ranked.findIndex((p) => p.isOwn);
+                position = rankIdx >= 0 ? rankIdx + 1 : null;
+              }
+            }
+            const run = {
+              captureId: rec.captureId,
+              capturedAt: rec.capturedAt,
+              platform: rec.platform,
+              mentioned, position, cited,
+              sources: (rec.sources || []).map((s) => ({ domain: s.domain, url: s.url, outcome: s.outcome })),
+            };
+            if (!byPrompt.has(promptId)) byPrompt.set(promptId, []);
+            byPrompt.get(promptId).push(run);
+          }
+          for (const runs of byPrompt.values()) runs.sort((a, b) => b.capturedAt - a.capturedAt);
+
+          sendResponse({ ok: true, hasBrand: !!own, prompts: Object.fromEntries(byPrompt) });
+          break;
+        }
+
+        case "geo-url-detail": {
+          // One URL can surface under several different prompts (or several
+          // times for the same prompt) — this answers "which prompts pulled
+          // in this exact URL, and which brands showed up in that response,"
+          // for the modal opened by clicking a URL in the Source Domains
+          // breakdown.
+          const profile = await db.get("profiles", msg.profileId);
+          if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
+          const all = await db.getAll("derived");
+          const scoped = selectTracked(all, {
+            profileId: msg.profileId,
+            engines: msg.engines,
+            tags: msg.tags,
+            since: msg.since,
+            until: msg.until,
+          }).filter((rec) => (rec.sources || []).some((s) => s.url === msg.url));
+
+          const brands = trackedBrandsOf(profile);
+          const own = brands.find((b) => b.isOwn);
+          const promptsAll = await db.getAll("trackedPrompts");
+          const promptById = new Map(promptsAll.map((p) => [p.id, p]));
+
+          const rows = scoped.map((rec) => {
+            const pres = brandPresence(rec, brands);
+            const ownPres = own ? pres.find((p) => p.isOwn) : null;
+            const prompt = promptById.get(rec.geo && rec.geo.promptId);
+            return {
+              captureId: rec.captureId,
+              capturedAt: rec.capturedAt,
+              platform: rec.platform,
+              promptText: prompt ? prompt.text : "(prompt no longer tracked)",
+              mentioned: ownPres ? ownPres.present : null,
+              brands: pres.filter((p) => p.present).map((p) => p.name),
+            };
+          }).sort((a, b) => b.capturedAt - a.capturedAt);
+
+          sendResponse({ ok: true, rows });
           break;
         }
 
@@ -695,6 +887,67 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, record: rec || null });
           break;
         }
+
+        // ==================== QA DIAGNOSTICS (temporary) ====================
+        // Added for a one-off 200-prompt/20-industry stress test; safe to
+        // delete this case (and the "QA Diagnostics" card in ui/panel.js /
+        // panel.html's About section) once that's done. Every check below
+        // reads fields the schema already carries — nothing here infers or
+        // fabricates a "bug," it only surfaces signals (some, like
+        // _extraction.usedFallback, were already being recorded and never
+        // shown anywhere) for a human to look at.
+        case "qa-audit": {
+          const all = await db.getAll("derived");
+          const perCheck = {}; // name -> { count, byIndustry: {}, byPlatform: {}, examples: [] }
+          const bump = (name, industry, platform, captureId) => {
+            const c = (perCheck[name] ||= { count: 0, byIndustry: {}, byPlatform: {}, examples: [] });
+            c.count++;
+            c.byIndustry[industry] = (c.byIndustry[industry] || 0) + 1;
+            c.byPlatform[platform] = (c.byPlatform[platform] || 0) + 1;
+            if (c.examples.length < 15) c.examples.push(captureId);
+          };
+
+          const byPlatform = {};
+          const byIndustry = {};
+          for (const r of all) {
+            byPlatform[r.platform] = (byPlatform[r.platform] || 0) + 1;
+            const industry = (r.geo && r.geo.tags && r.geo.tags[0]) || "(untagged / ad-hoc)";
+            byIndustry[industry] = (byIndustry[industry] || 0) + 1;
+            const b = (name) => bump(name, industry, r.platform, r.captureId);
+
+            if (r.searched && (!r.sources || r.sources.length === 0)) b("searched but zero sources");
+            if (r.sources && r.sources.length > 0 && (!r.brandMentions || r.brandMentions.length === 0)) b("sources present but zero brand mentions");
+            if ((r.answerChars || 0) > 0 && !(r.answerText && r.answerText.length)) b("answerChars>0 but answerText empty");
+            if (r._extraction && r._extraction.usedFallback) b("adapter used its fallback parser");
+            // Notes that record a KNOWN platform limitation are not anomalies —
+            // they are the adapter saying "I looked, and this engine doesn't
+            // publish it." Counting them buries the real drift signals.
+            const notes = ((r._extraction && r._extraction.notes) || []).filter(
+              (n) => !/platform limitation/i.test(String(n))
+            );
+            if (notes.length) b("adapter recorded extraction notes");
+            // Gemini never publishes the sub-queries it ran (see extractFanout
+            // in adapters/gemini.js), so flagging its captures here would mean
+            // ~half of every audit is a finding that can never be fixed. Only
+            // ChatGPT, which does have a structured field, is checked.
+            if (r.platform !== "gemini" && r.searched &&
+                (!r.fanout || (!r.fanout.search.length && !r.fanout.shopping.length && !r.fanout.image.length))) {
+              b("searched but zero fan-out queries captured");
+            }
+            if (!r.pageUrl) b("missing pageUrl (breaks deep-link jumps)");
+            if (r.geo && !r.userPrompt) b("tracked capture missing userPrompt");
+          }
+
+          sendResponse({
+            ok: true,
+            totalRecords: all.length,
+            byPlatform,
+            byIndustry,
+            checks: perCheck,
+          });
+          break;
+        }
+        // ==================== /QA DIAGNOSTICS ====================
         case "get-raw": {
           const row = await db.get("raw", msg.captureId);
           const raw = row ? await gunzipToString(row.gz) : null;

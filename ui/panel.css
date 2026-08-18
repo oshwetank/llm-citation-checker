@@ -113,6 +113,32 @@ html.popup, body.popup, html:not(.tab), body:not(.tab) {
   background: #94a3b8;
 }
 
+/* Base text utilities — used everywhere (Analyze, Dashboard, Campaigns,
+   About…) but previously undefined, so "muted" text rendered full-strength
+   and .empty/.ft-actions had no layout at all. */
+.muted {
+  color: var(--fg-muted);
+}
+.muted.small, span.small, div.small {
+  font-size: 11px;
+}
+.empty {
+  padding: 18px 14px;
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 12px;
+  background: var(--bg-subtle);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+.ft-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
 /* Layout Wrapper */
 .app-wrapper {
   width: 100%;
@@ -917,7 +943,8 @@ textarea:focus {
 
 .proj-row input[type="text"],
 .proj-row select,
-select.filter {
+select.filter,
+input.filter {
   flex: 1;
   min-width: 130px;
   padding: 6px 10px;
@@ -931,7 +958,8 @@ select.filter {
 }
 .proj-row input[type="text"]:focus,
 .proj-row select:focus,
-select.filter:focus {
+select.filter:focus,
+input.filter:focus {
   outline: none;
   border-color: var(--accent);
 }
@@ -1722,6 +1750,290 @@ body.popup .drill-table th:first-child { min-width: 180px; }
 .item.inactive { opacity: 0.5; }
 tr.own-brand td { background: var(--accent-subtle); font-weight: 600; }
 .geo-note { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--border); }
+
+/* ---------- Campaigns tab (setup wizard + prompt table + run) ---------- */
+.onboard-card .onboard-steps {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--fg-secondary);
+  line-height: 1.9;
+}
+.onboard-banner.warn-box {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.onboard-banner .linkbtn { font-size: 11px; }
+
+.wizard-divider {
+  border-top: 1px dashed var(--border);
+  margin: 16px 0 14px;
+}
+
+.prompt-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.prompt-search {
+  flex: 1;
+  min-width: 160px;
+  padding: 6px 10px;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--fg-primary);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.prompt-search:focus { outline: none; border-color: var(--accent); }
+
+.prompt-table-layout {
+  display: flex;
+  gap: 14px;
+  margin-top: 10px;
+  align-items: flex-start;
+}
+.tag-sidebar {
+  flex: 0 0 180px;
+  padding-right: 12px;
+  border-right: 1px solid var(--border);
+}
+.tag-sidebar .tag.clickable { display: inline-block; }
+
+.tag-sidebar-list {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  /* A campaign can carry one tag per industry — the 20-industry run made this
+     rail ~560px tall next to a table capped at 360px, so the card ended in a
+     long column of tags with empty space beside it. Cap and scroll it to the
+     table's height instead. */
+  max-height: 320px;
+  overflow-y: auto;
+}
+.tag-sidebar-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 5px 6px;
+  border-radius: 7px;
+}
+.tag-sidebar-row:hover { background: var(--bg-subtle); }
+.tag-sidebar-row.on { background: var(--accent-subtle); }
+.tag-sidebar-label {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fg-secondary);
+  text-align: left;
+  cursor: pointer;
+  word-break: break-word;
+}
+.tag-sidebar-row.on .tag-sidebar-label { color: var(--accent); font-weight: 600; }
+.tag-sidebar-row .tag-icons {
+  display: flex;
+  gap: 1px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.tag-sidebar-row:hover .tag-icons, .tag-sidebar-row.on .tag-icons { opacity: 1; }
+
+.prompt-table-scroll {
+  flex: 1;
+  min-width: 0;
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.5);
+}
+.prompt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.prompt-table th {
+  position: sticky;
+  top: 0;
+  text-align: left;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+  background: rgba(248, 250, 252, 0.97);
+  backdrop-filter: blur(6px);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.prompt-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  /* Rows used to mix top-aligned prompt text with taller action-button cells,
+     so the border-bottom line landed at a different height per column and
+     read as "misaligned" between rows. Fewer, simpler cells now (checkbox +
+     text + tags, no more per-row buttons) plus a shared vertical-align keeps
+     every cell in a row the same height and the divider line dead straight. */
+  vertical-align: middle;
+}
+.prompt-table tr:last-child td { border-bottom: none; }
+.prompt-table .prompt-cell {
+  color: var(--fg-primary);
+  word-break: break-word;
+  min-width: 180px;
+}
+.prompt-table tr.inactive-row { opacity: 0.6; }
+.prompt-table td.prompt-check { width: 24px; text-align: center; }
+.prompt-table td.prompt-check input { accent-color: var(--accent); }
+
+.prompt-bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.tag-sidebar-row { display: flex; align-items: center; gap: 2px; margin-top: 4px; }
+.tag-icon-btn {
+  font-size: 10px; line-height: 1; padding: 2px 4px; border-radius: 5px;
+  border: 1px solid transparent; background: transparent; color: var(--fg-muted); cursor: pointer;
+}
+.tag-icon-btn:hover { background: var(--card-hover); border-color: var(--border); color: var(--fg-primary); }
+.tag-icon-btn.danger:hover { color: var(--red-fg); border-color: var(--red-border); background: var(--red-bg); }
+
+.competitor-rows { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.competitor-row.proj-row { margin-top: 0; }
+.competitor-row .comp-name, .competitor-row .comp-url { flex: 1; }
+.competitor-row .btn { flex: 0 0 auto; padding: 4px 9px; }
+
+/* LLM picker: an icon-forward selectable grid rather than plain checkboxes. */
+.llm-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+.llm-pill {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-subtle);
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.15s ease;
+}
+.llm-pill:hover { border-color: var(--border-hover); background: var(--card-hover); }
+.llm-pill .llm-icon { font-size: 20px; line-height: 1; }
+.llm-pill .llm-label { font-size: 11.5px; font-weight: 500; color: var(--fg-secondary); }
+.llm-pill .llm-check {
+  position: absolute; top: 6px; right: 8px; font-size: 11px; color: var(--accent); opacity: 0; transition: opacity 0.15s ease;
+}
+.llm-pill.selected {
+  border-color: var(--accent); background: var(--accent-subtle); box-shadow: 0 0 0 1px var(--accent) inset;
+}
+.llm-pill.selected .llm-label { color: var(--fg-primary); font-weight: 600; }
+.llm-pill.selected .llm-check { opacity: 1; }
+.llm-pill.disabled {
+  cursor: not-allowed; opacity: 0.55; background: transparent;
+}
+.llm-pill.disabled .soon {
+  font-size: 9px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--fg-muted);
+  border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; margin-top: 2px;
+}
+
+.prompt-perf-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.prompt-perf-table th {
+  text-align: left;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.prompt-perf-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.prompt-perf-table tr:last-child td { border-bottom: none; }
+.prompt-perf-table .prompt-cell { color: var(--fg-primary); word-break: break-word; min-width: 180px; }
+.prompt-perf-table tr.prompt-perf-subrow td { color: var(--fg-muted); background: var(--bg-subtle); font-size: 11.5px; }
+.url-snippet-link { color: inherit; text-decoration: none; cursor: pointer; }
+.url-snippet-link:hover { text-decoration: underline; color: var(--accent); }
+.omit-source-list { flex-direction: column; gap: 3px; margin: 4px 0 2px; padding-left: 4px; border-left: 2px solid var(--border); }
+.omit-source-link { font-size: 11px; color: var(--accent); text-decoration: none; overflow-wrap: anywhere; }
+.omit-source-link:hover { text-decoration: underline; }
+.prompt-link { color: var(--accent); text-decoration: none; font-weight: 500; }
+.prompt-link:hover { text-decoration: underline; }
+.platform-result { display: flex; flex-direction: column; gap: 1px; white-space: nowrap; }
+
+.campaign-summary .campaign-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  font-size: 12px;
+  color: var(--fg-secondary);
+}
+
+/* Shrink the Dashboard's export dropdown — it reads as a compact icon-style
+   action, not a full button, so it shouldn't compete with primary actions. */
+.dl-picker {
+  padding: 2px 6px !important;
+  font-size: 10.5px !important;
+  min-width: 0;
+  max-width: 100px;
+}
+
+/* In the 540px popup there isn't room for a side-by-side tag rail — stack it
+   above the table instead of squeezing both into unreadable slivers. */
+body.popup .prompt-table-layout {
+  flex-direction: column;
+}
+body.popup .tag-sidebar {
+  flex: none;
+  width: 100%;
+  padding-right: 0;
+  padding-bottom: 10px;
+  border-right: none;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+body.popup .tag-sidebar > div { margin-top: 0 !important; }
+/* The tag list itself stays a vertical column of full-width rows even in the
+   narrow popup — these are list rows now, not pills, so wrapping them
+   horizontally alongside "Tags"/"All" would just misalign long labels. */
+body.popup .tag-sidebar-list { flex-basis: 100%; width: 100%; }
 
 /* Own class, NOT .app-footer — that one is a flex row with
    justify-content:space-between, which spreads "Made by / Shwetank / for all"

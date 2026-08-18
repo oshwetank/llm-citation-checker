@@ -6,9 +6,11 @@
 // arrives here via send()/hydrate() through the service worker.
 import { buildExportModel, renderStandaloneHtml } from "../src/lib/exportDoc.js";
 import {
-  ENGINES, availableEngines, MAX_PROFILES, SENTIMENT_NOTE,
+  ENGINES, availableEngines, MAX_PROFILES, SENTIMENT_NOTE, TRASH_RETENTION_DAYS,
   partitionRecords, allTags, runDue, runVolume, makeProfile,
 } from "../src/lib/geo.js";
+import { parseCsv, parseXlsx, rowsToPrompts } from "../src/lib/xlsxLite.js";
+import { matchCompressedLabel, vendorFromProductName } from "../src/lib/brands.js";
 
 const send = (msg) =>
   new Promise((resolve) => chrome.runtime.sendMessage(msg, (r) => resolve(r || { ok: false })));
@@ -34,7 +36,9 @@ const esc = (s) => (s == null ? "" : String(s));
 
 let RECORDS = [];
 let PROJECTS = [];
-let dashboardFilter = ""; // "" = all, else projectId
+let dashboardCampaignId = ""; // "" = no campaign selected
+let dashboardGeoPrompts = []; // tracked prompts for dashboardCampaignId (tag chips only — independent of the Campaigns tab's own GEO_PROMPTS)
+let dashboardSearch = ""; // filters Saved Conversations (and the ad-hoc stat grid) by prompt text
 let viewingId = null; // which capture the Analyze tab shows (null = latest)
 let selectedIds = new Set(); // captures ticked in the Saved Conversations table
 let showEmptyCaptures = false; // reveal zero-signal rows (see hasSignal note below)
@@ -44,11 +48,20 @@ let includeTrackedInAdhoc = false;
 let TRACKED_COUNT = 0;
 // GEO tab state
 let GEO_PROFILES = [];
+let TRASHED_PROFILES = []; // soft-deleted campaigns, still within the recovery window
 let GEO_PROMPTS = [];
 let geoActiveId = null;
 let geoTagFilter = [];
 let geoEngineFilter = [];
-let geoRangeDays = 30;
+// Campaigns tab (formerly Tracking + Loader) state
+let promptTagFilter = []; // tag chips selected in the prompt table sidebar
+let promptOnlyUnassigned = false;
+let promptSearch = "";
+let campaignManageOpen = false; // collapsible setup/prompts panel once a campaign is locked
+let selectedPromptIds = new Set(); // checked rows in the prompt table, for bulk pause/enable/remove
+const ONBOARD_KEY = "lcfc.onboarding.campaignsDismissed";
+let campaignOnboardDismissed = true; // flips to false once we've checked storage, if unset
+chrome.storage.local.get(ONBOARD_KEY, (r) => { campaignOnboardDismissed = !!r[ONBOARD_KEY]; });
 
 // A capture with no prompt AND no fan-out/sources/products/places/answer text.
 // ChatGPT's client races requests in parallel (force_parallel_switch:"auto",
@@ -87,12 +100,18 @@ function csvOf(rows) {
 function fanoutCsv(records) {
   return csvOf(fanoutRows(records));
 }
-function fanoutTxt(records) {
-  // Grouped, human-readable: prompt then its fan-out queries.
-  return records.map((r) => {
-    const qs = ["search", "shopping", "image"].flatMap((b) => (r.fanout[b] || []).map((q) => `  • [${b}] ${q.query}`));
-    return `▸ ${r.userPrompt || "(no prompt)"}\n${qs.join("\n") || "  (no fan-out)"}`;
-  }).join("\n\n");
+// Every render*() function tears down and rebuilds its whole tab's DOM from
+// scratch (no diffing) — the simplest, most robust option for a codebase
+// this size, but a full teardown mid-scroll otherwise snaps the view back to
+// the top on every filter/search change, which reads as a jarring "glitch"
+// rather than a filtered update. This restores the scroll position of
+// whichever container actually scrolls (the popup's capped-height
+// .app-content, or the page itself in the full-tab view) around a render.
+function withScrollPreserved(renderFn) {
+  const scroller = document.body.classList.contains("popup") ? $(".app-content") : (document.scrollingElement || document.documentElement);
+  const y = scroller ? scroller.scrollTop : 0;
+  renderFn();
+  if (scroller) scroller.scrollTop = y;
 }
 
 function showTab(name) {
@@ -137,7 +156,7 @@ async function load() {
   TRACKED_COUNT = parts.tracked.length;
   const pr = await send({ type: "project-list" });
   PROJECTS = pr.ok ? pr.projects : [];
-  refreshProjectPicker();
+  await loadGeo(); // populates GEO_PROFILES/GEO_PROMPTS so Dashboard can show campaign performance
   // Pre-hydrate whichever capture Analyze is about to show.
   const showing = viewingId || (RECORDS[0] && RECORDS[0].captureId);
   await hydrate(showing);
@@ -165,13 +184,6 @@ function renderStorageInfo(s) {
 function projectName(id) {
   const p = PROJECTS.find((x) => x.id === id);
   return p ? p.name : null;
-}
-function refreshProjectPicker() {
-  const pick = $("#loaderProjectPick");
-  if (pick) {
-    pick.innerHTML = '<option value="">— load saved —</option>';
-    PROJECTS.forEach((p) => pick.append(el("option", { value: p.id }, `${p.name} (${p.prompts.length})`)));
-  }
 }
 
 function downloadData(filename, content) {
@@ -214,19 +226,20 @@ function escapeRegExp(s) {
   return (s || "").replace(/[\-\[\]\/\{\}\(\)\*\+\?\.\\\^\$\|]/g, "\\$&");
 }
 
+// Rejects table scaffolding and listicle boilerplate captured instead of a real
+// "Best for …" category. It used to reject any text containing "price" or
+// "phone", which threw away legitimate categories in both directions — a phone
+// answer could not have a phone category, and "price transparency" was dropped
+// in every vertical. The tests below are about shape and filler, not subject.
 function isGenericHeaderOrNoise(str) {
   if (!str) return true;
-  const lower = str.toLowerCase();
-  return (
-    lower.includes("approx") ||
-    lower.includes("price") ||
-    lower.includes("------") ||
-    lower.includes("phone") ||
-    lower.includes("best smartphones you can buy") ||
-    lower.includes("right now") ||
-    lower.length < 3 ||
-    lower.length > 60
-  );
+  const s = String(str).trim();
+  if (s.length < 3 || s.length > 60) return true;
+  if (/^[\s\-—–|:.]+$/.test(s)) return true; // a separator row, not a category
+  if (/-{4,}|\|{2,}/.test(s)) return true; // markdown table scaffolding
+  // Fragments that restate the listicle rather than naming a use case.
+  if (/^(you can buy|right now|approx\.?|approximately|overall|today|in \d{4})\b/i.test(s)) return true;
+  return false;
 }
 
 function extractBrandModels(brandName, products, rawText) {
@@ -252,7 +265,18 @@ function extractBrandModels(brandName, products, rawText) {
       const words = phrase.split(/\s+/);
       const modelWords = [];
       for (const w of words) {
-        if (/^(is|and|or|in|for|the|with|under|are|these|choices|best|top|priority|quality|overall|flagship|value|compact|cameras|software|display|performance|ecosystem|photography|enthusiasts|if|available|around)$/i.test(w)) break;
+        // A model name is a proper noun or a part number — "Nord CE6 5G",
+        // "Galaxy S25 Ultra", "OPC 53 Grade". An all-lowercase word is ordinary
+        // prose, so the name ended at the previous word.
+        //
+        // Without this the regex just swallowed the next five words of the
+        // sentence, which only looked acceptable on phone answers because model
+        // names happen to follow the brand there. In other verticals it
+        // produced flatly wrong output — "HDFC Bank" was credited with a model
+        // called "offers personal loans at competitive", "Apollo Hospitals"
+        // with "runs cardiac centres nationwide" — and it leaked on phones too
+        // ("Galaxy S25 Ultra leads").
+        if (!/^[A-Z]/.test(w) && !/\d/.test(w)) break;
         modelWords.push(w);
       }
       let modelName = modelWords.join(" ").trim();
@@ -304,80 +328,141 @@ function extractRankAndCategory(brandName, passage, text) {
   return { rank, category };
 }
 
-function extractBrandAspects(brandName, rawText, passage) {
-  const text = sanitizeText(rawText || passage || "");
-  if (!text) return [];
-  
-  const lowerBrand = brandName.toLowerCase();
-  const lowerText = text.toLowerCase();
-  
-  const pos = lowerText.indexOf(lowerBrand);
-  if (pos === -1) return [];
-  
-  let segment = text.slice(pos, pos + 350);
-  const BRAND_STOPPERS = ["oneplus", "samsung", "oppo", "vivo", "realme", "xiaomi", "iphone", "google", "nothing", "iqoo", "motorola"];
-  let cutIdx = segment.length;
-  BRAND_STOPPERS.forEach((stop) => {
-    if (stop !== lowerBrand) {
-      const idx = segment.toLowerCase().indexOf(stop, brandName.length + 2);
-      if (idx !== -1 && idx < cutIdx) cutIdx = idx;
-    }
-  });
-  segment = segment.slice(0, cutIdx).toLowerCase();
+// Takes the brand's OWN passages (b.passages — each already a tight, correctly
+// scoped ±110-char window around one real mention, computed by the adapter/
+// src/lib/brands.js) instead of re-deriving a window from the full answer
+// text. The previous version re-scanned a fresh 350-char slice of raw text
+// and cut it off at the next hardcoded smartphone-brand name it could find —
+// in dense side-by-side comparisons (several brands named within a couple of
+// sentences of each other, e.g. a TV shootout) that cutoff landed almost
+// immediately, so real aspects a few words later were silently missed. Using
+// the passage(s) already scoped to THIS brand's own mentions avoids that
+// failure mode entirely, and scanning every passage (not just the first)
+// catches aspects raised at a brand's later mentions too.
+//
+// Aspects come from two places, in order of trust:
+//
+//  1. What the answer SAYS it rates the brand for — "best for <x>", "known for
+//     <x>", "stands out for <x>". The label is lifted from the sentence, so it
+//     works in any vertical without knowing a single industry word ("low
+//     processing fees", "same-day delivery", "crack resistance").
+//  2. A curated dimension map, as a fallback for answers that describe a brand
+//     without ever labelling why. This used to be phone specs ONLY — camera,
+//     battery, display, chipset — so a cement or lending answer either got
+//     nothing or, worse, got "Performance" off the word "speed" and "Design"
+//     off "premium". The map now spans the dimensions any category gets
+//     compared on, and the phone-specific triggers only fire on words that
+//     genuinely mean a phone spec.
+const ASPECT_DIMENSIONS = [
+  ["Price & Value", /\b(price|pricing|cost|affordable|budget|value for money|cheaper|expensive|premium pricing|discount|emi)\b/],
+  ["Fees & Rates", /\b(interest rate|interest rates|apr|processing fee|processing fees|brokerage|commission|charges|no annual fee|expense ratio)\b/],
+  ["Quality", /\b(quality|grade|purity|strength|finish|craftsmanship|ingredients|material|materials)\b/],
+  ["Durability", /\b(durability|durable|long[- ]lasting|weather resistant|crack resistan|warranty|wear and tear)\b/],
+  ["Service & Support", /\b(customer (?:service|support|care)|after[- ]sales|helpline|turnaround time|claim settlement|onboarding)\b/],
+  ["Availability", /\b(availability|widely available|in stock|distribution network|dealer network|branches|nationwide|delivery time)\b/],
+  ["Trust & Reputation", /\b(trusted|reputation|reliable|legacy|established|market leader|credibility|certified|regulated|iso )\b/],
+  ["Safety", /\b(safety|safe for|side effects|clinically|dermatologically|non[- ]toxic|fda|hypoallergenic)\b/],
+  ["Sustainability", /\b(sustainab|eco[- ]friendly|recycl|carbon|green building|organic|cruelty[- ]free)\b/],
+  ["Camera", /\b(camera|cameras|megapixel|telephoto|portrait mode|hasselblad|optical zoom)\b/],
+  ["Battery", /\b(battery|mah|fast charging|wireless charging|battery backup)\b/],
+  ["Display", /\b(display|screen|amoled|oled|refresh rate|120hz|ltpo|hdr|dolby vision)\b/],
+  ["Performance", /\b(processor|chipset|snapdragon|dimensity|benchmark|ram|cpu|gpu|thermal throttl)\b/],
+  ["Software", /\b(software update|os update|years of updates|user interface|bloatware|ecosystem)\b/],
+];
+
+// "Best for gaming and photography" → "gaming and photography". Bounded to a
+// short noun phrase so a whole sentence never becomes a chip.
+const ASPECT_PHRASE_RE =
+  /\b(?:best|ideal|great|good|preferred|recommended|popular|known|noted|praised|valued|stands out)\s+(?:choice\s+)?for\s+(?:its\s+)?([a-z][a-z0-9 &/,'-]{2,40}?)(?=[.,;:!?)]|\band\b\s+(?:it|they|the)\b|$)/gi;
+const ASPECT_PHRASE_STOP = /^(the|a|an|you|those|them|it|this|that|these|him|her|us|people|users|customers|anyone|everyone|most|some|many)\b/i;
+
+function extractBrandAspects(passages) {
+  const raw = sanitizeText((passages || []).join(" "));
+  if (!raw) return [];
+  const text = raw.toLowerCase();
 
   const aspects = [];
-  
-  if (/\b(camera|cameras|photo|photos|portrait|portraits|hasselblad|imaging|zoom|sensor|video|recording)\b/i.test(segment)) {
-    aspects.push("Camera");
+  const seen = new Set();
+  const push = (label) => {
+    const k = label.toLowerCase();
+    if (!seen.has(k)) { seen.add(k); aspects.push(label); }
+  };
+
+  // 1. aspects the answer states outright
+  let m;
+  ASPECT_PHRASE_RE.lastIndex = 0;
+  while ((m = ASPECT_PHRASE_RE.exec(raw))) {
+    const phrase = m[1].trim().replace(/\s+/g, " ").replace(/[,'-]+$/, "");
+    if (phrase.length < 3 || ASPECT_PHRASE_STOP.test(phrase)) continue;
+    if (phrase.split(/\s+/).length > 5) continue;
+    push(phrase.charAt(0).toUpperCase() + phrase.slice(1));
+    if (aspects.length >= 3) return aspects;
   }
-  if (/\b(battery|charging|mah|watt|backup|fast charging|wireless charging)\b/i.test(segment)) {
-    aspects.push("Battery");
-  }
-  if (/\b(display|screen|amoled|oled|120hz|ltpo|refresh rate|resolution|bright)\b/i.test(segment)) {
-    aspects.push("Display");
-  }
-  if (/\b(processor|performance|snapdragon|chipset|dimensity|gaming|speed|thermal|cooling|ram|cpu)\b/i.test(segment)) {
-    aspects.push("Performance");
-  }
-  if (/\b(compact|one-handed|size|pocketable|handy)\b/i.test(segment)) {
-    aspects.push("Compact");
-  }
-  if (/\b(software|os|ios|updates|ui|support|long-term|years of updates|ecosystem)\b/i.test(segment)) {
-    aspects.push("Software");
-  }
-  if (/\b(design|build|premium|finish|ip68|ip69|rating|durability)\b/i.test(segment)) {
-    aspects.push("Design");
+
+  // 2. fall back to the dimension map
+  for (const [label, re] of ASPECT_DIMENSIONS) {
+    if (re.test(text)) push(label);
+    if (aspects.length >= 3) break;
   }
 
   return aspects.slice(0, 3);
 }
 
-const BRAND_SEED_UI = [
-  "OnePlus", "Samsung", "Google", "Apple", "Xiaomi", "Oppo", "Vivo", "Realme", "Nothing",
-  "Motorola", "iQOO", "Poco", "Asus", "Lenovo", "HP", "Dell", "Acer", "MSI", "Infinix", "Techno"
-];
+// The vocabulary the Search-Funnel card scans source snippets with.
+//
+// This used to be a hardcoded list of 20 phone/laptop makers, which meant the
+// whole "Evaluated vs. Omitted" card silently found nothing outside consumer
+// electronics — lending, cement, healthcare, beverages and every other vertical
+// got an empty card that looked like "nothing was omitted" rather than "this
+// never ran". The names now come from what the automatic detector already found
+// in THIS capture (src/lib/brands.js — entity markers, product/place data and
+// cited domains), so it carries no industry vocabulary of its own.
+//
+// Two things are deliberately NOT in this vocabulary, because tested against
+// real captures both filled the card with confident nonsense:
+//   - source domains. Most retrieved sources are publishers, so domain-derived
+//     names surfaced "Gadgets360" and "Smartprix" as omitted BRANDS. Requiring
+//     another domain to name them too was not enough to separate a brand being
+//     written about from the site writing about it.
+//   - retailers/merchants. A seller that stocks the product ("Flipkart",
+//     "Reliance Digital + others") is not one of the brands being evaluated —
+//     src/lib/brands.js draws the same line for the same reason.
+// What remains is precise: the card stays silent rather than inventing an
+// omission, and it still catches the case that matters most — a product the
+// model was SHOWN (carousel/place data) and chose not to narrate.
+function buildBrandVocabulary(rec) {
+  const vocab = new Map(); // normalized key -> display name
+  // "Angel One" and the angelone.in label are one company; keying on
+  // letters-and-digits only keeps them from being reported as two, one of
+  // which then looks "omitted" purely because of the space.
+  const norm = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, "");
+  const add = (name) => {
+    const t = String(name || "").trim().replace(/[*_`]/g, "");
+    if (t.length < 3 || t.length > 60) return;
+    const k = norm(t);
+    if (k.length >= 3 && !vocab.has(k)) vocab.set(k, t);
+  };
 
-function extractBrandsFromText(text, products) {
-  if (!text) return [];
+  (rec.brandMentions || []).forEach((b) => add(b.brand));
+  (rec.products || []).forEach((p) => add(p.brand || vendorFromProductName(p.name)));
+  (rec.places || []).forEach((p) => add(p.name));
+  (rec.entities || []).forEach((e) => {
+    if (/brand|company|organization|vendor|place|business/i.test(e.category || "")) add(e.text);
+  });
+
+  return vocab;
+}
+
+// Which vocabulary entries actually appear in one source's title/snippet.
+// Matching goes through matchCompressedLabel so a squashed name still lines up
+// with how the snippet writes it ("hdfcbank" ↔ "HDFC Bank").
+function extractBrandsFromText(text, vocab) {
+  if (!text || !vocab || !vocab.size) return [];
   const found = [];
-  const lower = text.toLowerCase();
-  
-  BRAND_SEED_UI.forEach((brand) => {
-    const re = new RegExp(`\\b${escapeRegExp(brand)}\\b`, "i");
-    if (re.test(text)) {
-      found.push({ brand });
-    }
+  vocab.forEach((display) => {
+    const verbatim = new RegExp(`\\b${escapeRegExp(display)}\\b`, "i").test(text);
+    if (verbatim || matchCompressedLabel(text, display).length) found.push({ brand: display });
   });
-  
-  (products || []).forEach((p) => {
-    const first = (p.name || "").split(/\s+/)[0];
-    if (first && first.length > 2 && lower.includes(first.toLowerCase())) {
-      if (!found.some(f => f.brand.toLowerCase() === first.toLowerCase())) {
-        found.push({ brand: first });
-      }
-    }
-  });
-  
   return found;
 }
 
@@ -544,10 +629,20 @@ function renderAnalyze() {
   try {
     const root = $("#analyze");
     root.textContent = "";
-    const light = viewingId ? RECORDS.find((r) => r.captureId === viewingId) || RECORDS[0] : RECORDS[0];
-    // Prefer the hydrated full record (carries answerText, which drives brand rank,
-    // "cited for" aspects and hero-product detection). Falls back to the light row.
-    const rec = light ? FULL.get(light.captureId) || light : null;
+    // A specifically-requested, already-hydrated capture (viewingId) wins
+    // outright — even a TRACKED one not present in the ad-hoc RECORDS list
+    // (e.g. opened via Prompt Performance's "click a prompt" link). Without
+    // this, RECORDS.find() below would silently miss it (tracked captures
+    // are deliberately excluded from RECORDS — see the isolation note in
+    // load()) and fall back to RECORDS[0], opening the wrong, most-recent
+    // AD-HOC capture instead of the one actually clicked.
+    let rec = viewingId ? FULL.get(viewingId) : null;
+    if (!rec) {
+      // Prefer the hydrated full record (carries answerText, which drives brand rank,
+      // "cited for" aspects and hero-product detection). Falls back to the light row.
+      const light = viewingId ? RECORDS.find((r) => r.captureId === viewingId) || RECORDS[0] : RECORDS[0];
+      rec = light ? FULL.get(light.captureId) || light : null;
+    }
     if (!rec) {
       root.append(
         el("div", { className: "empty" },
@@ -687,12 +782,16 @@ function renderAnalyze() {
       "predator": "Acer"
     };
 
+    // Generic words the detector could mistake for a brand — deliberately NOT a
+    // place for real brand names. "sony" used to be listed here, which silently
+    // dropped every genuine Sony mention (TVs, cameras, audio...) from this
+    // card for every industry, permanently — a correctness bug, not a filter.
     const NOISE_BRAND_WORDS = new Set([
       "battery", "software", "camera", "cameras", "display", "performance", "design",
       "overall", "budget", "value", "rating", "phone", "phones", "mobile", "mobiles",
       "recommendation", "recommendations", "processor", "chipset", "storage", "memory",
-      "charging", "screen", "gaming", "price", "pros", "cons", "specs", "life", "sony",
-      "option", "options", "pick", "picks", "overall", "android", "ios", "best"
+      "charging", "screen", "gaming", "price", "pros", "cons", "specs", "life",
+      "option", "options", "pick", "picks", "android", "ios", "best"
     ]);
 
     const normalizedBrands = new Map();
@@ -718,7 +817,7 @@ function renderAnalyze() {
       const item = el("div", { className: "brand-item" });
       const head = el("div", { className: "brand-head" });
       
-      const { rank, category } = extractRankAndCategory(b.brand, b.passages[0] || "", rec.answerText || "");
+      const { rank, category } = extractRankAndCategory(b.brand, (b.passages || []).join(" "), rec.answerText || "");
       const brandTitle = el("span", { className: "brand-name" });
       if (rank) {
         brandTitle.append(el("span", { className: "tag rank-tag", style: "margin-right:6px;" }, rank), " ");
@@ -757,7 +856,7 @@ function renderAnalyze() {
       // Extract cited aspects / intent around this brand — skip for count=0
       // entries, whose "passage" is a synthetic note, not real narration.
       if (b.count > 0) {
-        const aspects = extractBrandAspects(b.brand, rec.answerText || "", b.passages[0] || "");
+        const aspects = extractBrandAspects(b.passages);
         const aspectRow = el("div", { className: "brand-aspects-row" });
         aspectRow.append(el("span", { className: "brand-label" }, "Cited for:"));
 
@@ -808,39 +907,66 @@ function renderAnalyze() {
       "victus": "HP", "pavilion": "HP", "inspiron": "Dell", "alienware": "Dell",
       "legion": "Lenovo", "predator": "Acer"
     };
+    // Words that mean a "model" match actually ran on past the model name into
+    // ordinary sentence text — reject anywhere in the candidate, not just a
+    // leading word, since a phrase like "Bravia 8 so you do" only fails a
+    // leading-word check.
+    const FILLER_RE = /\b(so|you|do|the|is|was|are|an|and|but|that|this|which|who|how|why|what|its|it's|from|has|have|will|can|could|would|were)\b/i;
 
-    const searchPassages = rec.sources.map(s => `${s.title || ""} ${s.snippet || ""}`).join(" \n ");
-    const allSearchBrands = extractBrandsFromText(searchPassages, rec.products);
-    const mentionedBrandKeys = new Set((rec.brandMentions || []).map(b => (ALIAS_MAP_OMIT[b.brand.toLowerCase()] || b.brand).toLowerCase()));
-    
+    // Only brands the answer actually NARRATED count as mentioned. A count=0
+    // entry is one the model was shown (product carousel, place listing) and
+    // never wrote about — the single most useful thing this card can surface,
+    // so treating it as "mentioned" would hide exactly the wrong case.
+    const mentionedBrandKeys = new Set(
+      (rec.brandMentions || [])
+        .filter((b) => b.count > 0)
+        .map((b) => (ALIAS_MAP_OMIT[b.brand.toLowerCase()] || b.brand).toLowerCase())
+    );
+    const brandCanonical = new Map(); // lower -> display name
+    const brandSourceIdxs = new Map(); // lower -> Set(source index)
+    const modelEntries = new Map(); // "brand||model" -> { brand, model, sourceIdxs: Set }
+
+    // Extracted PER SOURCE (title+snippet of one source at a time) rather than
+    // one giant blob of every source concatenated — a regex match could
+    // previously bleed across the boundary between two unrelated sources'
+    // text, which is what produced garbled "model names" that were actually
+    // fragments of the next source's sentence.
+    const brandVocab = buildBrandVocabulary(rec);
+    rec.sources.forEach((s, idx) => {
+      const srcText = `${s.title || ""} ${s.snippet || ""}`;
+      extractBrandsFromText(srcText, brandVocab).forEach((sb) => {
+        const canonical = ALIAS_MAP_OMIT[sb.brand.toLowerCase()] || sb.brand;
+        const key = canonical.toLowerCase();
+        brandCanonical.set(key, canonical);
+        if (!brandSourceIdxs.has(key)) brandSourceIdxs.set(key, new Set());
+        brandSourceIdxs.get(key).add(idx);
+
+        const modelRe = new RegExp(`\\b${escapeRegExp(sb.brand)}\\s+([A-Z0-9][a-zA-Z0-9\\-\\.\\s]{1,20})`, "gi");
+        let mm; let loopCap = 0;
+        while ((mm = modelRe.exec(srcText)) !== null && loopCap++ < 20) {
+          if (mm.index === modelRe.lastIndex) modelRe.lastIndex++;
+          const candidate = mm[1].trim().split(/[\n,;:\(\)]/)[0].trim();
+          if (candidate.length < 2 || candidate.length > 24) continue;
+          if (FILLER_RE.test(candidate)) continue;
+          if (/^(and|or|with|for|in|under|laptop|phone|price|spec|review)/i.test(candidate)) continue;
+          const mKey = `${key}||${candidate.toLowerCase()}`;
+          if (!modelEntries.has(mKey)) modelEntries.set(mKey, { brand: canonical, model: candidate, sourceIdxs: new Set() });
+          modelEntries.get(mKey).sourceIdxs.add(idx);
+        }
+      });
+    });
+
     const omittedBrandsList = [];
     const omittedModelsList = [];
-    
-    allSearchBrands.forEach(sb => {
-      const canonical = ALIAS_MAP_OMIT[sb.brand.toLowerCase()] || sb.brand;
-      const key = canonical.toLowerCase();
-      const isMentioned = mentionedBrandKeys.has(key);
-      
-      const modelRe = new RegExp(`\\b${escapeRegExp(sb.brand)}\\s+([A-Z0-9][a-zA-Z0-9\\-\\.\\s]{1,20})`, "gi");
-      const foundModels = new Set();
-      let mm;
-      let loopCap = 0;
-      while ((mm = modelRe.exec(searchPassages)) !== null && loopCap++ < 50) {
-        if (mm.index === modelRe.lastIndex) modelRe.lastIndex++;
-        const candidate = mm[1].trim().split(/[\n,;:\(\)]/)[0].trim();
-        if (candidate.length >= 2 && !/^(and|or|with|for|in|under|laptop|phone|price|spec|review)/i.test(candidate)) {
-          foundModels.add(candidate);
-        }
-      }
-      
-      if (!isMentioned) {
-        omittedBrandsList.push({ brand: canonical, models: [...foundModels] });
+    const ansTextLower = (rec.answerText || "").toLowerCase();
+
+    brandCanonical.forEach((canonical, key) => {
+      const modelsForBrand = [...modelEntries.values()].filter((m) => m.brand.toLowerCase() === key);
+      if (!mentionedBrandKeys.has(key)) {
+        omittedBrandsList.push({ brand: canonical, sourceIdxs: [...brandSourceIdxs.get(key)], models: modelsForBrand });
       } else {
-        const ansTextLower = (rec.answerText || "").toLowerCase();
-        const unmentionedMods = [...foundModels].filter(m => !ansTextLower.includes(m.toLowerCase()));
-        if (unmentionedMods.length) {
-          omittedModelsList.push({ brand: canonical, omittedModels: unmentionedMods });
-        }
+        const unmentioned = modelsForBrand.filter((m) => !ansTextLower.includes(m.model.toLowerCase()));
+        if (unmentioned.length) omittedModelsList.push({ brand: canonical, omittedModels: unmentioned });
       }
     });
 
@@ -851,9 +977,27 @@ function renderAnalyze() {
           el("span", { className: "tag fetched", style: "font-size: 10px;" }, "From Search Snippets")
         ),
         el("div", { className: "muted", style: "font-size: 11px; margin-bottom: 10px; line-height: 1.4;" },
-          "Brands and models evaluated in ChatGPT's raw search snippets that were dropped in its final written answer:"
+          "Brands and models evaluated in ChatGPT's raw search snippets that were dropped in its final written answer. Click a chip to see which sources it came from."
         )
       );
+
+      // Clicking a brand/model chip reveals the sources whose title/snippet
+      // actually contained it — the evidence behind the chip, not just an
+      // asserted count, and a real answer to "which sources contributed to
+      // this visibility."
+      const sourceChip = (label, sourceIdxs, style) => {
+        const wrap = el("div", {});
+        const chip = el("button", { className: "tag model-tag", style: `cursor:pointer;${style || ""}` }, label);
+        const list = el("div", { className: "omit-source-list", style: "display:none" });
+        sourceIdxs.forEach((idx) => {
+          const s = rec.sources[idx];
+          if (!s) return;
+          list.append(el("a", { href: s.url, target: "_blank", rel: "noreferrer", className: "omit-source-link" }, s.title || s.domain || s.url));
+        });
+        chip.onclick = () => { list.style.display = list.style.display === "none" ? "flex" : "none"; };
+        wrap.append(chip, list);
+        return wrap;
+      };
 
       const omitList = el("div", { className: "brand-list" });
 
@@ -864,12 +1008,12 @@ function renderAnalyze() {
           el("span", { className: "tag danger" }, "Omitted Brand")
         );
         item.append(head);
+        item.append(sourceChip(`Seen in ${ob.sourceIdxs.length} source${ob.sourceIdxs.length === 1 ? "" : "s"}`, ob.sourceIdxs));
 
         if (ob.models.length) {
-          const modRow = el("div", { className: "brand-models-row", style: "margin-top: 4px;" },
-            el("span", { className: "brand-label" }, "Models in Search:"),
-            ...ob.models.map(m => el("span", { className: "tag model-tag" }, m))
-          );
+          const modRow = el("div", { className: "brand-models-row", style: "margin-top: 4px; flex-wrap:wrap;" },
+            el("span", { className: "brand-label" }, "Models in Search:"));
+          ob.models.forEach((m) => modRow.append(sourceChip(m.model, [...m.sourceIdxs])));
           item.append(modRow);
         }
         omitList.append(item);
@@ -883,10 +1027,9 @@ function renderAnalyze() {
         );
         item.append(head);
 
-        const modRow = el("div", { className: "brand-models-row", style: "margin-top: 4px;" },
-          el("span", { className: "brand-label" }, "Ignored Models:"),
-          ...om.omittedModels.map(m => el("span", { className: "tag model-tag", style: "background: #fef3c7; color: #b45309;" }, m))
-        );
+        const modRow = el("div", { className: "brand-models-row", style: "margin-top: 4px; flex-wrap:wrap;" },
+          el("span", { className: "brand-label" }, "Ignored Models:"));
+        om.omittedModels.forEach((m) => modRow.append(sourceChip(m.model, [...m.sourceIdxs], "background: #fef3c7; color: #b45309;")));
         item.append(modRow);
         omitList.append(item);
       });
@@ -933,11 +1076,28 @@ function renderAnalyze() {
   const mainCol = el("div", { className: "analyze-main" });
 
   // 1. Query Fan-Out queries card
+  //
+  // An empty card used to be hidden outright, which reads as "this answer ran
+  // no searches" — misleading on Gemini, which runs them but never publishes
+  // the sub-queries (see extractFanout in src/adapters/gemini.js). Say which
+  // of the two it is rather than showing nothing.
+  if (!fanCount && rec.searched && rec.platform === "gemini") {
+    mainCol.append(el("div", { className: "card", id: "card-fanout" },
+      el("div", { className: "card-header" },
+        el("h3", {}, "Query Fan-Out"),
+        el("span", { className: "tag" }, "not exposed by Gemini")
+      ),
+      el("p", { className: "muted", style: "margin:0" },
+        "This answer did search the web, but Gemini does not publish the sub-queries it ran, " +
+        "so there is nothing to report here. ChatGPT captures do show them. This is a platform " +
+        "limitation, not a failed capture.")
+    ));
+  }
   if (fanCount) {
     const fc = el("div", { className: "card", id: "card-fanout" },
       el("div", { className: "card-header" },
         el("h3", {}, "Query Fan-Out"),
-        el("span", { className: "tag cited" }, `${rec.model || "gpt-5-5"}`)
+        el("span", { className: "tag cited" }, `${rec.model || rec.platform || "unknown model"}`)
       )
     );
     let qIdx = 1;
@@ -983,10 +1143,7 @@ function renderAnalyze() {
       domTypes.set(s.domain, set);
     });
 
-    const topDomHead = el("div", { className: "card-header" },
-      el("h3", {}, `Top Domains (${domCount.size})`),
-      el("button", { className: "btn sm ghost card-action-btn", onclick: () => downloadData(`top_domains_${rec.captureId}.json`, JSON.stringify([...domCount.entries()].map(([d, c]) => ({ domain: d, urlCount: c, types: [...(domTypes.get(d) || [])] })), null, 2)) }, "Export JSON")
-    );
+    const topDomHead = el("div", { className: "card-header" }, el("h3", {}, `Top Domains (${domCount.size})`));
     const topDomCard = el("div", { className: "card", id: "card-top-domains" }, topDomHead);
     const dt = el("table", {});
     dt.append(el("tr", {}, el("th", {}, "Domain"), el("th", {}, "Type"), el("th", { className: "num" }, "URLs")));
@@ -1010,7 +1167,9 @@ function renderAnalyze() {
   // 3. Top URLs Card (Merged list with Rank, Snippets & Char Counts)
   if (rec.sources.length) {
     const sc = el("div", { className: "card", id: "card-sources" }, el("h3", {}, `Top URLs / Captured Sources (${rec.sources.length})`));
-    
+    sc.append(el("p", { className: "muted small", style: "margin:-4px 0 10px" },
+      "Snippets are what ChatGPT's search returned for each page, not necessarily the exact sentence that justified a citation — click one to try jumping to that text on the source page itself."));
+
     // Filter Pills
     const filterBar = el("div", { className: "filter-bar" });
     let activeSrcFilter = "all";
@@ -1042,7 +1201,23 @@ function renderAnalyze() {
         
         const snippetText = s.snippet ? s.snippet.trim() : null;
         if (snippetText) {
-          const snipBox = el("div", { className: "url-snippet-box" }, snippetText);
+          const snipBox = el("div", { className: "url-snippet-box" });
+          // Text-fragment deep link: jumps to where this exact text appears
+          // on the SOURCE page (not the ChatGPT conversation) if the browser
+          // can find it verbatim — quietly does nothing if it can't, rather
+          // than erroring, since this snippet is what ChatGPT's search
+          // returned for the page and isn't guaranteed to be present
+          // word-for-word (see the card's note above).
+          const textTarget = encodeURIComponent(snippetText.slice(0, 120).trim());
+          const fragUrl = s.url ? `${s.url}#:~:text=${textTarget}` : null;
+          if (fragUrl) {
+            snipBox.append(el("a", {
+              href: fragUrl, target: "_blank", rel: "noreferrer", className: "url-snippet-link",
+              title: "Try to jump to this text on the source page",
+            }, snippetText));
+          } else {
+            snipBox.append(snippetText);
+          }
           snipBox.append(el("span", { className: "char-badge" }, `[${snippetText.length}c]`));
           li.append(snipBox);
         }
@@ -1124,24 +1299,30 @@ function renderAnalyze() {
 
   // Products list card
   const allProducts = [...(rec.products || [])];
-  
-  // Auto-detect Hero pick in written text if missing from shopping array
-  if (rec.answerText && /best overall|#1 recommendation|my #1/i.test(rec.answerText)) {
-    const heroMatch = rec.answerText.match(/(?:best overall|#1 recommendation)[:\s\-]*\s*\*?\*?([A-Z0-9][a-zA-Z0-9\s\-]{2,25})\*?\*?/i);
+
+  // Flag a hero pick when the answer text calls one out by name — but ONLY on
+  // a product that's already in the captured shopping data. This used to
+  // fabricate a brand-new product (invented price/merchant/rating) whenever
+  // the regex match didn't line up with a real product, e.g. matching a
+  // stray word like "camera" out of "camera quality is your #1 priority" and
+  // presenting it as a ₹44,999 "Official Brand Store" pick that was never in
+  // the actual response. An export must never show data the model didn't
+  // actually provide, so a miss here just means no hero badge — never a
+  // synthesized product.
+  if (rec.answerText && /best overall|#1 recommendation|my #1|my pick/i.test(rec.answerText)) {
+    const heroMatch = rec.answerText.match(/(?:best overall|#1 recommendation|my #1|my pick)[:\s\-]*\s*\*?\*?([A-Za-z0-9][a-zA-Z0-9\s\-]{2,40})\*?\*?/i);
     if (heroMatch && heroMatch[1]) {
-      const heroName = heroMatch[1].trim();
-      let existingHero = allProducts.find(p => p.name && p.name.toLowerCase().includes(heroName.toLowerCase().split(" ")[0]));
-      if (existingHero) {
-        existingHero.isHero = true;
-      } else {
-        allProducts.unshift({
-          name: heroName,
-          price: "₹44,999 / ₹39,999 (Est.)",
-          merchant: "Official Brand Store / Amazon",
-          rating: 4.9,
-          isHero: true
-        });
-      }
+      const heroWords = heroMatch[1].trim().toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+      // Require a real product name to share at least two meaningful words
+      // with the matched phrase (not just one generic word like "camera" or
+      // "phone") before trusting the match.
+      const existingHero = allProducts.find((p) => {
+        if (!p.name) return false;
+        const nameWords = p.name.toLowerCase().split(/\s+/);
+        const overlap = heroWords.filter((w) => nameWords.some((nw) => nw.includes(w) || w.includes(nw)));
+        return overlap.length >= Math.min(2, heroWords.length);
+      });
+      if (existingHero) existingHero.isHero = true;
     }
   }
 
@@ -1149,7 +1330,7 @@ function renderAnalyze() {
     const pc = el("div", { className: "card", id: "card-products" }, el("h3", {}, `Products (${allProducts.length})`));
     const ul = el("ul", { className: "itemlist" });
     allProducts.forEach((p) => {
-      const isHero = p.isHero || /best overall|#1|hero/i.test(p.name || "");
+      const isHero = !!p.isHero;
       const li = el("li", {
         className: `product-item-card ${isHero ? "hero-product-card" : ""}`,
         style: `cursor: pointer; transition: all 0.2s ease; ${isHero ? "border: 1.5px solid #f59e0b; background: rgba(254,243,199,0.4);" : ""}`,
@@ -1342,7 +1523,8 @@ function renderDrilldown(recs) {
 }
 
 /* ---------- Dashboard (aggregates across all captures) ---------- */
-function renderDashboard() {
+function renderDashboard() { withScrollPreserved(renderDashboardImpl); }
+function renderDashboardImpl() {
   const root = $("#dashboard");
   root.textContent = "";
 
@@ -1352,7 +1534,7 @@ function renderDashboard() {
                   dashboardTimeFilter === "7d" ? now - 604800000 : 0;
 
   const recs = RECORDS.filter((r) => {
-    if (dashboardFilter && r.projectId !== dashboardFilter) return false;
+    if (dashboardSearch && !(r.userPrompt || "").toLowerCase().includes(dashboardSearch.toLowerCase())) return false;
     if (dashboardModelFilter && r.platform !== dashboardModelFilter) return false;
     if (dashboardTimeFilter === "custom") {
       if (customStartTime && r.capturedAt < customStartTime) return false;
@@ -1363,7 +1545,7 @@ function renderDashboard() {
     return true;
   });
   currentFilteredRecs = recs;
-  if (!recs.length && !RECORDS.length) {
+  if (!recs.length && !RECORDS.length && !GEO_PROFILES.length) {
     root.append(el("div", { className: "empty" }, "No data captured yet. Open ChatGPT or Gemini in a tab and run a query."));
     return;
   }
@@ -1400,6 +1582,18 @@ function renderDashboard() {
   const ovHeader = el("div", { className: "card-header" }, el("h3", {}, "Performance Overview"));
   
   const filterRow = el("div", { className: "header-brand", style: "display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end;" });
+
+  // 0. Search — filters captures by prompt text (affects the stat grid,
+  // drilldown, and Saved Conversations list below, same as the other filters).
+  const searchInp = el("input", { id: "dashboardSearch", type: "text", placeholder: "🔍 Search prompts…", value: dashboardSearch, className: "filter", style: "min-width:140px" });
+  searchInp.oninput = () => {
+    dashboardSearch = searchInp.value;
+    const cursor = searchInp.selectionStart;
+    renderDashboard();
+    const next = $("#dashboardSearch");
+    if (next) { next.focus(); next.setSelectionRange(cursor, cursor); }
+  };
+  filterRow.append(searchInp);
 
   // 1. Timeframe Filter Container
   const timeContainer = el("div", { style: "display: flex; gap: 8px; align-items: center;" });
@@ -1455,52 +1649,102 @@ function renderDashboard() {
   modelSel.onchange = () => { dashboardModelFilter = modelSel.value; renderDashboard(); };
   filterRow.append(modelSel);
 
-  // 3. Project Filter
-  if (PROJECTS.length) {
+  // 3. Campaign Filter — picks which campaign's performance shows below.
+  // Nothing selected means no campaign section is shown at all (see the
+  // "No campaign selected" note further down), rather than silently
+  // defaulting to one.
+  if (GEO_PROFILES.length) {
     const sel = el("select", { className: "filter" });
-    sel.append(el("option", { value: "" }, `All projects`));
-    PROJECTS.forEach((p) => {
-      const n = RECORDS.filter((r) => r.projectId === p.id).length;
-      const o = el("option", { value: p.id }, `${p.name} (${n})`);
-      if (p.id === dashboardFilter) o.selected = true;
+    sel.append(el("option", { value: "" }, "No campaign selected"));
+    GEO_PROFILES.forEach((p) => {
+      const o = el("option", { value: p.id }, p.name || "Untitled");
+      if (p.id === dashboardCampaignId) o.selected = true;
       sel.append(o);
     });
-    sel.onchange = () => { dashboardFilter = sel.value; renderDashboard(); };
+    sel.onchange = async () => {
+      dashboardCampaignId = sel.value;
+      expandedPromptRuns = new Set();
+      geoTagFilter = [];
+      if (dashboardCampaignId) {
+        const qs = await send({ type: "geo-prompt-list", profileId: dashboardCampaignId });
+        dashboardGeoPrompts = qs.ok ? qs.prompts : [];
+      } else {
+        dashboardGeoPrompts = [];
+      }
+      renderDashboard();
+    };
     filterRow.append(sel);
   }
 
   ovHeader.append(filterRow);
   overviewCard.append(ovHeader);
-
-  // Every metric is clickable and opens a detail view built from the SAME
-  // filtered `recs`, so the project / model / timeframe filters above always
-  // apply to the drill-down too.
-  const stats = el("div", { className: "statgrid" });
-  const stat = (n, l, key) => {
-    const node = el(
-      "div",
-      { className: `stat clickable-stat${dashboardDrill === key ? " stat-active" : ""}`, title: `Click to break down: ${l}` },
-      el("div", { className: "n" }, String(n)),
-      el("div", { className: "l" }, l)
-    );
-    node.onclick = () => {
-      dashboardDrill = dashboardDrill === key ? null : key;
-      renderDashboard();
-    };
-    return node;
-  };
-  stats.append(
-    stat(recs.length, "Captures", "captures"),
-    stat(searched, "With search", "searched"),
-    stat(fanTotal, "Fan-out queries", "fanout"),
-    stat(domainCount.size, "Unique domains", "domains"),
-    stat(citedTotal, "Cited", "cited"),
-    stat(fetchedTotal, "Fetched", "fetched")
-  );
-  overviewCard.append(stats);
-  const drill = renderDrilldown(recs);
-  if (drill) overviewCard.append(drill);
+  // Always in the DOM — this is what used to disappear once a campaign was
+  // selected, taking the only way to change or clear the selection with it.
   root.append(overviewCard);
+
+  const selectedCampaign = dashboardCampaignId ? GEO_PROFILES.find((p) => p.id === dashboardCampaignId) : null;
+  // Same timeframe the ad-hoc filters above use — campaign performance used
+  // to have its OWN separate "Last 7/30/90 days" dropdown, which was a second,
+  // inconsistent time filter instead of reusing this one.
+  const geoSince = dashboardTimeFilter === "custom" ? (customStartTime || undefined) : (timeLimit || undefined);
+  const geoUntil = dashboardTimeFilter === "custom" ? (customEndTime || undefined) : undefined;
+
+  if (!selectedCampaign) {
+    // Every metric is clickable and opens a detail view built from the SAME
+    // filtered `recs`, so the model / timeframe filters above always apply
+    // to the drill-down too. Only shown when no campaign is selected — once
+    // one is, this and the campaign KPIs below merge into a single section
+    // (see refreshGeoMetrics) instead of two disconnected cards.
+    const stats = el("div", { className: "statgrid" });
+    const stat = (n, l, key) => {
+      const node = el(
+        "div",
+        { className: `stat clickable-stat${dashboardDrill === key ? " stat-active" : ""}`, title: `Click to break down: ${l}` },
+        el("div", { className: "n" }, String(n)),
+        el("div", { className: "l" }, l)
+      );
+      node.onclick = () => {
+        dashboardDrill = dashboardDrill === key ? null : key;
+        renderDashboard();
+      };
+      return node;
+    };
+    stats.append(
+      stat(recs.length, "Captures", "captures"),
+      stat(searched, "With search", "searched"),
+      stat(fanTotal, "Fan-out queries", "fanout"),
+      stat(domainCount.size, "Unique domains", "domains"),
+      stat(citedTotal, "Cited", "cited"),
+      stat(fetchedTotal, "Fetched", "fetched")
+    );
+    overviewCard.append(stats);
+    const drill = renderDrilldown(recs);
+    if (drill) overviewCard.append(drill);
+
+    if (GEO_PROFILES.length) {
+      root.append(el("div", { className: "empty" }, "No campaign selected — pick one above to see its performance."));
+    }
+  } else {
+    // A campaign is selected: merge its own captures/fan-out/domain overview
+    // together with its brand KPIs into the one card refreshGeoMetrics builds,
+    // instead of showing the generic ad-hoc overview above it.
+    const gc = el("div", { className: "card", id: "geoMetrics" });
+    gc.append(el("div", { className: "card-header" }, el("h3", {}, "Campaign Performance")), el("div", { className: "muted small" }, "loading…"));
+    root.append(gc);
+    refreshGeoMetrics(selectedCampaign, dashboardGeoPrompts, geoSince, geoUntil);
+
+    const pp = el("div", { className: "card", id: "geoPromptTable" });
+    pp.append(el("div", { className: "card-header" }, el("h3", {}, "Prompt Performance")), el("div", { className: "muted small" }, "loading…"));
+    root.append(pp);
+    refreshPromptPerformance(selectedCampaign, dashboardGeoPrompts, geoSince, geoUntil);
+  }
+
+  // Saved Conversations + Top Domains are ad-hoc-only (per the isolation rule
+  // in geo.js — tracked runs never mix into this data), so they don't apply
+  // once a campaign is selected. Prompt Performance + the domain/URL toggle
+  // above replace them for that view instead of showing an empty/irrelevant
+  // ad-hoc list underneath a campaign's data.
+  if (selectedCampaign) return;
 
   // Split Grid Container
   const grid = el("div", { className: "dashboard-grid" });
@@ -1527,28 +1771,29 @@ function renderDashboard() {
   const updLbl = () => (lbl.textContent = selectedIds.size ? `${selectedIds.size} Selected` : `All ${visibleRecs.length}`);
   updLbl();
   
-  const dlPicker = el("select", { className: "btn sm ghost", style: "border: 1px solid #10b981; color: #10b981; appearance: auto; padding: 2px 8px;" });
-  const optDefault = el("option", { value: "" }, "Download...");
+  // Trimmed to the formats people actually reach for: a spreadsheet (Excel),
+  // structured data for further analysis (CSV), a readable document (HTML),
+  // and the raw underlying data for bulk-selected conversations (JSON) — vs.
+  // the previous 6-option list where Fan-outs TXT and Print/PDF saw little
+  // use. Print/PDF is still available per-conversation from the Analyze tab.
+  const dlPicker = el("select", { className: "btn sm ghost dl-picker", style: "border: 1px solid #10b981; color: #10b981; appearance: auto;" });
+  const optDefault = el("option", { value: "" }, "Export ▾");
   const optExcel = el("option", { value: "excel" }, "Excel (.xls)");
   const optCsv = el("option", { value: "csv" }, "Detailed CSV");
-  const optJson = el("option", { value: "json" }, "JSON");
-  const optTxt = el("option", { value: "txt" }, "Fan-outs TXT");
   const optHtml = el("option", { value: "html" }, "Conversations (HTML)");
-  const optPdf = el("option", { value: "pdf" }, "Conversations (Print/PDF)");
-  dlPicker.append(optDefault, optExcel, optCsv, optJson, optTxt, optHtml, optPdf);
+  const optJson = el("option", { value: "json" }, "Bulk raw data (JSON)");
+  dlPicker.append(optDefault, optExcel, optCsv, optHtml, optJson);
 
   dlPicker.onchange = async () => {
     const val = dlPicker.value;
     if (!val) return;
     dlPicker.value = ""; // reset
-    if (val === "txt") download(`lcfc-fanouts-${Date.now()}.txt`, fanoutTxt(sel()), "text/plain");
-    else if (val === "json") download(`lcfc-selected-${Date.now()}.json`, JSON.stringify(sel(), null, 2), "application/json");
+    if (val === "json") download(`lcfc-selected-${Date.now()}.json`, JSON.stringify(sel(), null, 2), "application/json");
     else if (val === "excel" || val === "csv") downloadDetailedFormat(sel(), val);
     else if (val === "html") await exportRecordsAsHtml(sel());
-    else if (val === "pdf") exportRecordsAsPdf(sel());
   };
 
-  const deleteSelected = el("button", { className: "btn sm danger", style: selectedIds.size ? "margin-left: auto;" : "display:none;" }, `Delete Selected`);
+  const deleteSelected = el("button", { className: "btn sm danger", style: selectedIds.size ? "margin-left: auto;" : "display:none;" }, `🗑 Delete Selected`);
   deleteSelected.onclick = async () => {
     if (!confirm(`Delete the ${selectedIds.size} selected conversation(s)?`)) return;
     for (const id of selectedIds) {
@@ -1559,7 +1804,7 @@ function renderDashboard() {
     load();
   };
 
-  const deleteAll = el("button", { className: "btn sm danger ghost", style: selectedIds.size ? "" : "margin-left: auto;" }, "Delete All");
+  const deleteAll = el("button", { className: "btn sm danger ghost", style: selectedIds.size ? "" : "margin-left: auto;" }, "🗑 Delete All");
   deleteAll.onclick = async () => {
     if (!confirm("Delete all captured conversations? This action cannot be undone.")) return;
     await send({ type: "clear-all" });
@@ -2231,8 +2476,10 @@ const fmtPct = (n) => (n == null ? "—" : `${Number(n).toFixed(Number(n) >= 10 
 const fmtPos = (n) => (n == null ? "—" : `#${Number(n).toFixed(1)}`);
 
 async function loadGeo() {
-  const pr = await send({ type: "geo-profile-list" });
-  GEO_PROFILES = pr.ok ? pr.profiles : [];
+  const pr = await send({ type: "geo-profile-list", includeDeleted: true });
+  const all = pr.ok ? pr.profiles : [];
+  GEO_PROFILES = all.filter((p) => !p.deletedAt);
+  TRASHED_PROFILES = all.filter((p) => p.deletedAt);
   if (!geoActiveId || !GEO_PROFILES.some((p) => p.id === geoActiveId)) geoActiveId = GEO_PROFILES[0]?.id || null;
   const active = geoActive();
   GEO_PROMPTS = [];
@@ -2240,18 +2487,22 @@ async function loadGeo() {
     const qs = await send({ type: "geo-prompt-list", profileId: active.id });
     if (qs.ok) GEO_PROMPTS = qs.prompts;
   }
-  renderTracking();
+  selectedPromptIds = new Set();
+  renderCampaigns();
 }
 
-function renderTracking() {
-  const root = $("#tracking");
+/* ---------- Campaigns tab (setup + prompts + LLMs + run, formerly
+   Tracking + Loader) ---------- */
+
+function renderCampaigns() { withScrollPreserved(renderCampaignsImpl); }
+function renderCampaignsImpl() {
+  const root = $("#loader");
   if (!root) return;
   root.textContent = "";
   const profile = geoActive();
 
-  /* ---- profile switcher ---- */
   const bar = el("div", { className: "card" });
-  const barHead = el("div", { className: "card-header" }, el("h3", {}, "Brand profiles"));
+  const barHead = el("div", { className: "card-header" }, el("h3", {}, "Campaigns"));
   barHead.append(el("span", { className: "muted small" }, `${GEO_PROFILES.length} of ${MAX_PROFILES} used`));
   bar.append(barHead);
 
@@ -2259,146 +2510,475 @@ function renderTracking() {
   GEO_PROFILES.forEach((p) => {
     const b = el("button", { className: `geo-chip${p.id === geoActiveId ? " active" : ""}` }, p.name || "Untitled");
     if (p.locked) b.append(el("span", { className: "lock" }, " 🔒"));
-    b.onclick = () => { geoActiveId = p.id; loadGeo(); };
+    b.onclick = () => { geoActiveId = p.id; campaignManageOpen = false; loadGeo(); };
     switcher.append(b);
   });
   if (GEO_PROFILES.length < MAX_PROFILES) {
-    const add = el("button", { className: "geo-chip add" }, "+ New profile");
+    const add = el("button", { className: "geo-chip add" }, "+ New campaign");
     add.onclick = async () => {
-      const r = await send({ type: "geo-profile-save", profile: makeProfile({ name: `Profile ${GEO_PROFILES.length + 1}` }) });
-      if (r.ok) { geoActiveId = r.profile.id; loadGeo(); } else alert(r.error);
+      const r = await send({ type: "geo-profile-save", profile: makeProfile({ name: `Campaign ${GEO_PROFILES.length + 1}` }) });
+      if (r.ok) { geoActiveId = r.profile.id; campaignManageOpen = false; loadGeo(); } else alert(r.error);
     };
     switcher.append(add);
   }
   bar.append(switcher);
   root.append(bar);
 
+  if (TRASHED_PROFILES.length) root.append(renderTrashedCampaigns());
+
   if (!profile) {
-    root.append(el("div", { className: "empty" },
-      "Create a brand profile to start tracking how you and your competitors appear in AI answers."));
+    root.append(renderCampaignEmptyState());
     return;
   }
 
-  /* ---- setup: brand, competitors, engines ---- */
-  const setup = el("div", { className: "card" });
-  const sh = el("div", { className: "card-header" }, el("h3", {}, "Setup"));
-  const lockBtn = el("button", { className: "btn sm ghost" }, profile.locked ? "🔒 Locked — unlock to edit" : "Lock this profile");
-  lockBtn.onclick = async () => {
-    if (!profile.locked && !confirm("Lock this profile?\n\nLocking freezes the brand set, competitors and prompts so your trend data stays comparable day to day. You can unlock any time.")) return;
-    if (profile.locked && !confirm("Unlock and allow edits?\n\nChanging the brand set or prompts changes what the metrics are measured against — numbers before and after this point are NOT directly comparable.")) return;
-    const r = await send({ type: "geo-profile-save", profile: { ...profile, locked: !profile.locked }, unlockOverride: true });
-    if (r.ok) loadGeo(); else alert(r.error);
-  };
-  sh.append(lockBtn);
-  setup.append(sh);
+  if (!profile.locked) {
+    if (!campaignOnboardDismissed) root.append(renderOnboardingBanner());
+    root.append(renderCampaignSetup(profile, false));
+  } else {
+    root.append(renderCampaignSummary(profile));
+    if (campaignManageOpen) root.append(renderCampaignSetup(profile, true));
+    root.append(renderRunCard(profile));
+  }
+}
 
-  const dis = profile.locked;
-  const nameIn = el("input", { type: "text", value: profile.name || "", placeholder: "Profile name", disabled: dis });
+function renderTrashedCampaigns() {
+  const box = el("div", { className: "card" });
+  box.append(el("div", { className: "card-header" }, el("h3", {}, `🗑 Recently deleted (${TRASHED_PROFILES.length})`)));
+  const list = el("div", { className: "itemlist" });
+  TRASHED_PROFILES.forEach((p) => {
+    const daysLeft = Math.max(0, Math.ceil((p.deletedAt + TRASH_RETENTION_DAYS * 86400000 - Date.now()) / 86400000));
+    const row = el("div", { className: "item" });
+    const head = el("div", { className: "item-head" });
+    head.append(el("span", { className: "item-name" }, p.name || "Untitled"));
+    const restoreBtn = el("button", { className: "linkbtn" }, "↩ restore");
+    restoreBtn.onclick = async () => {
+      const r = await send({ type: "geo-profile-restore", id: p.id });
+      if (r.ok) { geoActiveId = p.id; loadGeo(); } else alert(r.error);
+    };
+    const purgeBtn = el("button", { className: "linkbtn danger" }, "delete forever");
+    purgeBtn.onclick = async () => {
+      if (!confirm(`Permanently delete "${p.name || "this campaign"}"?\n\nThis cannot be undone — its prompts go with it (captured responses are kept).`)) return;
+      const r = await send({ type: "geo-profile-delete", id: p.id });
+      if (r.ok) loadGeo(); else alert(r.error);
+    };
+    head.append(restoreBtn, purgeBtn);
+    row.append(head);
+    row.append(el("div", { className: "muted item-sub" },
+      daysLeft > 0 ? `Auto-deletes in ${daysLeft} day${daysLeft === 1 ? "" : "s"} unless restored.` : "Auto-deleting soon unless restored."));
+    list.append(row);
+  });
+  box.append(list);
+  return box;
+}
+
+function renderCampaignEmptyState() {
+  const box = el("div", { className: "card onboard-card" });
+  box.append(el("div", { className: "card-header" }, el("h3", {}, "Start your first campaign")));
+  box.append(el("p", { className: "muted" },
+    "A campaign tracks how your brand and competitors show up across LLM answers, for a fixed set of prompts. Set it up once, then lock it in so every run stays comparable."));
+  const steps = el("ol", { className: "onboard-steps" });
+  [
+    "Name the campaign and set your brand + competitors",
+    "Upload a CSV/Excel of prompts (or type them) and tag them",
+    "Choose which LLMs to track",
+    "Lock the campaign to start measuring",
+  ].forEach((s) => steps.append(el("li", {}, s)));
+  box.append(steps);
+  const cta = el("button", { className: "btn primary" }, "+ Create your first campaign");
+  cta.onclick = async () => {
+    const r = await send({ type: "geo-profile-save", profile: makeProfile({ name: "My first campaign" }) });
+    if (r.ok) { geoActiveId = r.profile.id; loadGeo(); } else alert(r.error);
+  };
+  box.append(el("div", { className: "ft-actions" }, cta));
+  return box;
+}
+
+function renderOnboardingBanner() {
+  const box = el("div", { className: "warn-box onboard-banner" });
+  box.append(el("div", {},
+    el("b", {}, "Setting up a campaign — "),
+    "add prompts (upload a CSV/Excel or type them), tag them so you can filter later, pick which LLMs to track, then lock the campaign. Locking freezes the setup so your results stay comparable run over run."));
+  const dismiss = el("button", { className: "linkbtn" }, "Got it, don't show this again");
+  dismiss.onclick = () => {
+    campaignOnboardDismissed = true;
+    chrome.storage.local.set({ [ONBOARD_KEY]: true });
+    renderCampaigns();
+  };
+  box.append(dismiss);
+  return box;
+}
+
+// Soft-delete: recoverable from "Recently deleted" for TRASH_RETENTION_DAYS.
+function trashCampaign(profile) {
+  return async () => {
+    if (!confirm(`Delete "${profile.name || "this campaign"}"?\n\nIt moves to Recently deleted and can be restored for ${TRASH_RETENTION_DAYS} days, after which it's purged automatically.`)) return;
+    const r = await send({ type: "geo-profile-trash", id: profile.id });
+    if (r.ok) { geoActiveId = null; loadGeo(); } else alert(r.error);
+  };
+}
+
+/** Setup card: name/brand/competitors/LLMs + the embedded prompt manager.
+ *  Used both for the unlocked wizard and the locked "Manage" panel (dis=true). */
+function renderCampaignSetup(profile, dis) {
+  const card = el("div", { className: "card" });
+  const head = el("div", { className: "card-header" }, el("h3", {}, dis ? "Manage campaign" : "Set up your campaign"));
+  if (!dis) {
+    const delBtn = el("button", { className: "btn sm ghost danger" }, "🗑 Delete campaign");
+    delBtn.onclick = trashCampaign(profile);
+    const lockBtn = el("button", { className: "btn sm primary" }, "🔒 Lock & start tracking");
+    lockBtn.onclick = async () => {
+      if (!GEO_PROMPTS.length) return alert("Add at least one prompt before locking.");
+      if (!(profile.engines || []).length) return alert("Choose at least one LLM to track before locking.");
+      if (!confirm("Lock this campaign?\n\nLocking freezes the brand set, competitors, prompts and LLMs so your trend data stays comparable day to day. You can unlock any time.")) return;
+      const r = await send({ type: "geo-profile-save", profile: { ...profile, locked: true }, unlockOverride: true });
+      if (r.ok) loadGeo(); else alert(r.error);
+    };
+    head.append(delBtn, lockBtn);
+  } else {
+    const unlockBtn = el("button", { className: "btn sm ghost" }, "🔓 Unlock to edit");
+    unlockBtn.onclick = async () => {
+      if (!confirm("Unlock and allow edits?\n\nChanging the brand set, prompts or LLMs changes what the metrics are measured against — numbers before and after this point are NOT directly comparable.")) return;
+      const r = await send({ type: "geo-profile-save", profile: { ...profile, locked: false }, unlockOverride: true });
+      if (r.ok) loadGeo(); else alert(r.error);
+    };
+    head.append(unlockBtn);
+  }
+  card.append(head);
+
+  const nameIn = el("input", { type: "text", value: profile.name || "", placeholder: "Campaign name", disabled: dis });
   const brandIn = el("input", { type: "text", value: profile.brand?.name || "", placeholder: "Your brand name", disabled: dis });
   const urlIn = el("input", { type: "text", value: profile.brand?.url || "", placeholder: "yourbrand.com", disabled: dis });
-  setup.append(el("div", { className: "proj-row" }, nameIn));
-  setup.append(el("label", { className: "muted", style: "display:block;margin-top:8px" }, "Your brand"));
-  setup.append(el("div", { className: "proj-row" }, brandIn, urlIn));
+  card.append(el("div", { className: "proj-row" }, nameIn));
+  card.append(el("label", { className: "muted", style: "display:block;margin-top:8px" }, "Your brand"));
+  card.append(el("div", { className: "proj-row" }, brandIn, urlIn));
 
-  setup.append(el("label", { className: "muted", style: "display:block;margin-top:10px" },
-    "Competitors — one per line, as name, url"));
-  const compTa = el("textarea", {
-    rows: 4, disabled: dis,
-    placeholder: "Competitor Inc, competitor.com\nRival Co, rival.io",
-    value: (profile.competitors || []).map((c) => `${c.name}${c.url ? ", " + c.url : ""}`).join("\n"),
-  });
-  setup.append(compTa);
+  // Competitors: a repeatable name+url row per competitor, rather than a
+  // freeform "name, url per line" textarea — less error-prone to fill in and
+  // to read back.
+  card.append(el("label", { className: "muted", style: "display:block;margin-top:14px" }, "Competitors"));
+  const compWrap = el("div", { className: "competitor-rows" });
+  const addCompetitorRow = (name = "", url = "") => {
+    const row = el("div", { className: "proj-row competitor-row" });
+    row.append(
+      el("input", { type: "text", placeholder: "Competitor name", value: name, disabled: dis, className: "comp-name" }),
+      el("input", { type: "text", placeholder: "competitor.com", value: url, disabled: dis, className: "comp-url" }),
+    );
+    if (!dis) {
+      const rm = el("button", { className: "btn sm ghost danger", title: "Remove competitor" }, "✕");
+      rm.onclick = () => row.remove();
+      row.append(rm);
+    }
+    compWrap.append(row);
+  };
+  (profile.competitors || []).forEach((c) => addCompetitorRow(c.name, c.url));
+  if (dis && !(profile.competitors || []).length) compWrap.append(el("div", { className: "muted small" }, "No competitors added."));
+  card.append(compWrap);
+  if (!dis) {
+    const addCompBtn = el("button", { className: "btn sm ghost", style: "margin-top:8px" }, "➕ Add competitor");
+    addCompBtn.onclick = () => addCompetitorRow();
+    card.append(addCompBtn);
+  }
 
-  setup.append(el("label", { className: "muted", style: "display:block;margin-top:10px" }, "Engines to track"));
-  const engRow = el("div", { className: "chk-row geo-engines" });
+  // LLMs to track: an icon-forward selectable grid instead of plain checkboxes.
+  card.append(el("label", { className: "muted", style: "display:block;margin-top:16px" }, "LLMs to track"));
+  const engCount = el("div", { className: "muted small", style: "margin-top:6px" });
+  const engGrid = el("div", { className: "llm-grid" });
   ENGINES.forEach((e) => {
-    const cb = el("input", {
-      type: "checkbox", value: e.id,
-      checked: (profile.engines || []).includes(e.id),
-      disabled: dis || !e.available,
+    const selected = (profile.engines || []).includes(e.id);
+    const pillDisabled = dis || !e.available;
+    const pill = el("div", {
+      className: `llm-pill${selected ? " selected" : ""}${pillDisabled ? " disabled" : ""}`,
+      role: "checkbox", "aria-checked": String(selected), tabIndex: pillDisabled ? -1 : 0,
     });
-    const lab = el("label", { className: `chk${e.available ? "" : " unavailable"}` }, cb, ` ${e.label}`);
+    pill.dataset.value = e.id;
+    pill.append(el("span", { className: "llm-icon" }, ENGINE_ICONS[e.id] || "🔷"));
+    pill.append(el("span", { className: "llm-label" }, e.label));
     // Unavailable engines are shown disabled rather than hidden: the roadmap
     // stays visible, and a metric can never silently under-count because a
-    // checkbox looked selectable but drove nothing.
-    if (!e.available) lab.append(el("span", { className: "soon" }, ` ${e.note || "coming soon"}`));
-    engRow.append(lab);
+    // pill looked selectable but drove nothing.
+    if (!e.available) pill.append(el("span", { className: "soon" }, e.note || "coming soon"));
+    else pill.append(el("span", { className: "llm-check" }, "✓"));
+    if (!pillDisabled) {
+      const toggle = () => {
+        pill.classList.toggle("selected");
+        pill.setAttribute("aria-checked", String(pill.classList.contains("selected")));
+        engCount.textContent = `${engGrid.querySelectorAll(".llm-pill.selected").length} of ${ENGINES.length} selected`;
+      };
+      pill.onclick = toggle;
+      pill.onkeydown = (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggle(); } };
+    }
+    engGrid.append(pill);
   });
-  setup.append(engRow);
+  engCount.textContent = `${(profile.engines || []).length} of ${ENGINES.length} selected`;
+  card.append(engGrid, engCount);
 
   if (!dis) {
-    const save = el("button", { className: "btn sm" }, "Save profile");
+    const save = el("button", { className: "btn sm" }, "💾 Save details");
     save.onclick = async () => {
-      const competitors = compTa.value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((l) => {
-        const [n, u] = l.split(",").map((s) => (s || "").trim());
-        return { name: n, url: u || "" };
-      });
-      const engines = [...engRow.querySelectorAll("input:checked")].map((i) => i.value);
+      const competitors = [...compWrap.querySelectorAll(".competitor-row")]
+        .map((row) => ({ name: row.querySelector(".comp-name").value.trim(), url: row.querySelector(".comp-url").value.trim() }))
+        .filter((c) => c.name);
+      const engines = [...engGrid.querySelectorAll(".llm-pill.selected")].map((p) => p.dataset.value);
       const r = await send({
         type: "geo-profile-save",
         profile: { ...profile, name: nameIn.value.trim() || profile.name, brand: { name: brandIn.value.trim(), url: urlIn.value.trim() }, competitors, engines },
       });
       if (r.ok) loadGeo(); else alert(r.error);
     };
-    setup.append(el("div", { className: "ft-actions", style: "margin-top:10px" }, save));
+    card.append(el("div", { className: "ft-actions", style: "margin-top:10px" }, save));
   }
-  root.append(setup);
 
-  /* ---- tracked prompts + tags ---- */
-  const pc = el("div", { className: "card" });
-  pc.append(el("div", { className: "card-header" }, el("h3", {}, "Tracked prompts"),
+  card.append(el("div", { className: "wizard-divider" }));
+  card.append(renderPromptManager(profile, dis));
+  return card;
+}
+
+const ENGINE_ICONS = { chatgpt: "💬", gemini: "✦", perplexity: "🔍", claude: "✳️", grok: "🤖" };
+
+// After a bulk add, tell the user what got skipped as a duplicate (and why)
+// rather than silently dropping it — only speaks up when there's something
+// to report.
+function reportAddResult(r) {
+  if (!r.duplicates || !r.duplicates.length) return;
+  const preview = r.duplicates.slice(0, 5).map((t) => `• ${t}`).join("\n");
+  const more = r.duplicates.length > 5 ? `\n…and ${r.duplicates.length - 5} more` : "";
+  alert(`Added ${r.added} prompt${r.added === 1 ? "" : "s"}. Skipped ${r.duplicates.length} duplicate${r.duplicates.length === 1 ? "" : "s"} already in this campaign:\n${preview}${more}`);
+}
+
+/** The prompts table: CSV/Excel upload (primary), manual entry (fallback),
+ *  search, tag-filter sidebar (with per-tag rename/delete), "only unassigned"
+ *  toggle, inline tag editing, and bulk select for pause/remove. */
+function renderPromptManager(profile, dis) {
+  const wrap = el("div", { className: "prompt-manager" });
+  wrap.append(el("div", { className: "card-header", style: "margin-top:0" },
+    el("h3", {}, "Prompts"),
     el("span", { className: "muted small" }, `${GEO_PROMPTS.filter((p) => p.active !== false).length} active of ${GEO_PROMPTS.length}`)));
 
   if (!dis) {
-    const ta = el("textarea", { rows: 3, placeholder: "One prompt per line…\nbest trading app in India\nbest broker for beginners" });
-    const tagsIn = el("input", { type: "text", placeholder: "tags for these (comma separated)", style: "flex:1" });
-    const addBtn = el("button", { className: "btn sm" }, "Add prompts");
-    addBtn.onclick = async () => {
-      const text = ta.value.trim();
-      if (!text) return;
-      const tags = tagsIn.value.split(",").map((s) => s.trim()).filter(Boolean);
-      const r = await send({ type: "geo-prompt-bulk-add", profileId: profile.id, text, tags });
-      if (r.ok) { ta.value = ""; tagsIn.value = ""; loadGeo(); } else alert(r.error);
+    const fileInput = el("input", { type: "file", accept: ".csv,.tsv,.xlsx", style: "display:none" });
+    const uploadBtn = el("button", { className: "btn sm" }, "⬆ Upload prompts (CSV/Excel)");
+    uploadBtn.onclick = () => fileInput.click();
+    fileInput.onchange = async () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      try {
+        const rows = /\.xlsx$/i.test(file.name) ? await parseXlsx(await file.arrayBuffer()) : parseCsv(await file.text());
+        const prompts = rowsToPrompts(rows);
+        if (!prompts.length) { alert("No prompts found in that file — make sure column A has your prompts."); return; }
+        const r = await send({ type: "geo-prompt-bulk-add-rows", profileId: profile.id, rows: prompts });
+        fileInput.value = "";
+        if (r.ok) { reportAddResult(r); loadGeo(); } else alert(r.error);
+      } catch (err) {
+        alert(`Couldn't read that file: ${err.message}`);
+      }
     };
-    pc.append(ta, el("div", { className: "proj-row", style: "margin-top:6px" }, tagsIn, addBtn));
-  }
+    wrap.append(el("div", { className: "proj-row" },
+      uploadBtn,
+      el("span", { className: "muted small" }, "Column A = prompt, column B = tags (comma-separated)"),
+      fileInput));
 
-  if (GEO_PROMPTS.length) {
-    const list = el("div", { className: "itemlist", style: "margin-top:10px" });
-    GEO_PROMPTS.forEach((p) => {
-      const row = el("div", { className: `item${p.active === false ? " inactive" : ""}` });
-      const head = el("div", { className: "item-head" });
-      head.append(el("span", { className: "item-name" }, p.text));
-      if (!dis) {
-        const tgl = el("button", { className: "linkbtn" }, p.active === false ? "enable" : "pause");
-        tgl.onclick = async () => { await send({ type: "geo-prompt-save", prompt: { ...p, active: p.active === false } }); loadGeo(); };
-        const del = el("button", { className: "linkbtn danger" }, "remove");
-        del.onclick = async () => { if (confirm(`Remove this tracked prompt?\n\n"${p.text}"\n\nResponses already captured for it are kept.`)) { await send({ type: "geo-prompt-delete", id: p.id }); loadGeo(); } };
-        head.append(tgl, del);
-      }
-      row.append(head);
-      const tagWrap = el("div", { className: "tagline" });
-      (p.tags || []).forEach((t) => tagWrap.append(el("span", { className: "tag" }, t)));
-      if (!dis) {
-        const ti = el("input", { type: "text", className: "taginput", placeholder: "+ tag", value: "" });
-        ti.onkeydown = async (ev) => {
-          if (ev.key !== "Enter" || !ti.value.trim()) return;
-          const tags = [...new Set([...(p.tags || []), ...ti.value.split(",").map((s) => s.trim()).filter(Boolean)])];
-          await send({ type: "geo-prompt-save", prompt: { ...p, tags } });
-          loadGeo();
-        };
-        tagWrap.append(ti);
-      }
-      row.append(tagWrap);
-      list.append(row);
+    const manualToggle = el("button", { className: "linkbtn" }, "or type prompts manually");
+    const manualBox = el("div", { style: "display:none; margin-top:8px" });
+    const ta = el("textarea", {
+      rows: 4,
+      placeholder: "One prompt per line — add tags after a comma…\nbest trading app in India, finance, beginner\nbest broker for beginners, finance",
     });
-    pc.append(list);
+    const addBtn = el("button", { className: "btn sm" }, "➕ Add prompts");
+    addBtn.onclick = async () => {
+      const rows = ta.value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((line) => {
+        const parts = line.split(",");
+        const text = (parts.shift() || "").trim();
+        const tags = parts.map((t) => t.trim()).filter(Boolean);
+        return { text, tags };
+      }).filter((r) => r.text);
+      if (!rows.length) return;
+      const r = await send({ type: "geo-prompt-bulk-add-rows", profileId: profile.id, rows });
+      if (r.ok) { ta.value = ""; reportAddResult(r); loadGeo(); } else alert(r.error);
+    };
+    manualBox.append(ta, el("div", { className: "proj-row", style: "margin-top:6px" }, addBtn));
+    manualToggle.onclick = () => { manualBox.style.display = manualBox.style.display === "none" ? "block" : "none"; };
+    wrap.append(manualToggle, manualBox);
   }
-  root.append(pc);
 
-  /* ---- run ---- */
+  if (!GEO_PROMPTS.length) {
+    wrap.append(el("div", { className: "empty" }, "No prompts yet — upload a CSV/Excel or add them manually above."));
+    return wrap;
+  }
+
+  const toolbar = el("div", { className: "prompt-toolbar" });
+  const search = el("input", { type: "text", placeholder: "🔍 Search prompts…", value: promptSearch, className: "prompt-search" });
+  search.oninput = () => {
+    promptSearch = search.value;
+    // renderCampaigns() tears down and rebuilds the whole tab (this codebase's
+    // render pattern everywhere), which would otherwise steal focus from this
+    // box after every keystroke — restore it and the cursor position.
+    const cursor = search.selectionStart;
+    renderCampaigns();
+    const next = $(".prompt-search");
+    if (next) { next.focus(); next.setSelectionRange(cursor, cursor); }
+  };
+  toolbar.append(search);
+  if (!dis) {
+    const unassignedInput = el("input", { type: "checkbox", checked: promptOnlyUnassigned });
+    unassignedInput.onchange = (e) => { promptOnlyUnassigned = e.target.checked; renderCampaigns(); };
+    toolbar.append(el("label", { className: "chk" }, unassignedInput, " Only unassigned"));
+  }
+  wrap.append(toolbar);
+
+  const tags = allTags(GEO_PROMPTS);
+  const filtered = GEO_PROMPTS.filter((p) => {
+    if (promptSearch && !p.text.toLowerCase().includes(promptSearch.toLowerCase())) return false;
+    if (promptOnlyUnassigned && (p.tags || []).length) return false;
+    if (promptTagFilter.length && !promptTagFilter.some((t) => (p.tags || []).includes(t))) return false;
+    return true;
+  });
+
+  const body = el("div", { className: "prompt-table-layout" });
+  if (tags.length) {
+    const sidebar = el("div", { className: "tag-sidebar" });
+    sidebar.append(el("div", { className: "muted small", style: "margin-bottom:6px" }, "Tags"));
+    const allChip = el("button", { className: `tag clickable${promptTagFilter.length ? "" : " on"}` }, "All");
+    allChip.onclick = () => { promptTagFilter = []; renderCampaigns(); };
+    sidebar.append(allChip);
+    // A rounded "pill" chip (the style everywhere else in this app, e.g. the
+    // "All" button above) reads fine for a short word but wraps into an ugly
+    // multi-line blob for a real tag like "Consumer Electronics &
+    // Smartphones" in a narrow sidebar — a plain full-width list row, like
+    // any sidebar filter list, wraps normally and leaves room for the
+    // rename/delete icons without fighting the label for space.
+    const list = el("div", { className: "tag-sidebar-list" });
+    tags.forEach((t) => {
+      const on = promptTagFilter.includes(t);
+      const chipRow = el("div", { className: `tag-sidebar-row${on ? " on" : ""}` });
+      const label = el("button", { className: "tag-sidebar-label" }, t);
+      label.onclick = () => { promptTagFilter = on ? promptTagFilter.filter((x) => x !== t) : [...promptTagFilter, t]; renderCampaigns(); };
+      chipRow.append(label);
+      if (!dis) {
+        const icons = el("div", { className: "tag-icons" });
+        const renameBtn = el("button", { className: "tag-icon-btn", title: `Rename tag "${t}"` }, "✎");
+        renameBtn.onclick = async () => {
+          const next = window.prompt(`Rename tag "${t}" to:`, t);
+          if (!next || !next.trim() || next.trim() === t) return;
+          const r = await send({ type: "geo-tag-rename", profileId: profile.id, oldTag: t, newTag: next.trim() });
+          if (r.ok) { promptTagFilter = promptTagFilter.map((x) => (x === t ? next.trim() : x)); loadGeo(); } else alert(r.error);
+        };
+        const delBtn = el("button", { className: "tag-icon-btn danger", title: `Delete tag "${t}"` }, "✕");
+        delBtn.onclick = async () => {
+          const affected = GEO_PROMPTS.filter((p) => (p.tags || []).includes(t)).length;
+          if (!confirm(`Delete the tag "${t}"?\n\nThis removes it from ${affected} prompt(s) — the prompts themselves are kept, they just lose this tag.`)) return;
+          const r = await send({ type: "geo-tag-delete", profileId: profile.id, tag: t });
+          if (r.ok) { promptTagFilter = promptTagFilter.filter((x) => x !== t); loadGeo(); } else alert(r.error);
+        };
+        icons.append(renameBtn, delBtn);
+        chipRow.append(icons);
+      }
+      list.append(chipRow);
+    });
+    sidebar.append(list);
+    body.append(sidebar);
+  }
+
+  if (!dis) {
+    // Bulk actions replace the old always-visible per-row pause/remove
+    // buttons — select what you want to act on, then act on all of it at
+    // once, instead of clicking pause/remove one row at a time.
+    const bulkBar = el("div", { className: "prompt-bulk-bar" });
+    const selAllCb = el("input", { type: "checkbox" });
+    selAllCb.checked = filtered.length > 0 && filtered.every((p) => selectedPromptIds.has(p.id));
+    selAllCb.onchange = () => {
+      filtered.forEach((p) => (selAllCb.checked ? selectedPromptIds.add(p.id) : selectedPromptIds.delete(p.id)));
+      renderCampaigns();
+    };
+    bulkBar.append(el("label", { className: "chk" }, selAllCb, ` Select all (${filtered.length})`));
+    if (selectedPromptIds.size) {
+      bulkBar.append(el("span", { className: "muted small" }, `${selectedPromptIds.size} selected`));
+      const actOn = async (fn) => { for (const id of selectedPromptIds) await fn(id); loadGeo(); };
+      const pauseBtn = el("button", { className: "btn sm ghost" }, "⏸ Pause selected");
+      pauseBtn.onclick = () => actOn(async (id) => {
+        const p = GEO_PROMPTS.find((x) => x.id === id);
+        if (p && p.active !== false) await send({ type: "geo-prompt-save", prompt: { ...p, active: false } });
+      });
+      const enableBtn = el("button", { className: "btn sm ghost" }, "▶ Enable selected");
+      enableBtn.onclick = () => actOn(async (id) => {
+        const p = GEO_PROMPTS.find((x) => x.id === id);
+        if (p && p.active === false) await send({ type: "geo-prompt-save", prompt: { ...p, active: true } });
+      });
+      const removeBtn = el("button", { className: "btn sm danger" }, "🗑 Remove selected");
+      removeBtn.onclick = async () => {
+        if (!confirm(`Remove ${selectedPromptIds.size} selected prompt(s)? Responses already captured for them are kept.`)) return;
+        await actOn((id) => send({ type: "geo-prompt-delete", id }));
+      };
+      bulkBar.append(pauseBtn, enableBtn, removeBtn);
+    }
+    wrap.append(bulkBar);
+  }
+
+  const headerCells = [];
+  if (!dis) headerCells.push(el("th", { style: "width:24px" }, ""));
+  headerCells.push(el("th", {}, "Prompt"), el("th", {}, "Tags"));
+  const table = el("table", { className: "prompt-table" }, el("tr", {}, ...headerCells));
+
+  filtered.forEach((p) => {
+    const cells = [];
+    if (!dis) {
+      const cb = el("input", { type: "checkbox", checked: selectedPromptIds.has(p.id) });
+      cb.onchange = () => {
+        if (cb.checked) selectedPromptIds.add(p.id); else selectedPromptIds.delete(p.id);
+        renderCampaigns();
+      };
+      cells.push(el("td", { className: "prompt-check" }, cb));
+    }
+    const promptCell = el("td", { className: "prompt-cell" });
+    if (p.active === false) promptCell.append(el("span", { className: "tag fetched", style: "margin-right:6px" }, "⏸ paused"));
+    promptCell.append(p.text);
+    cells.push(promptCell);
+    const tagWrap = el("div", { className: "tagline" });
+    (p.tags || []).forEach((t) => tagWrap.append(el("span", { className: "tag" }, t)));
+    if (!dis) {
+      const ti = el("input", { type: "text", className: "taginput", placeholder: "+ tag" });
+      ti.onkeydown = async (ev) => {
+        if (ev.key !== "Enter" || !ti.value.trim()) return;
+        const newTags = [...new Set([...(p.tags || []), ...ti.value.split(",").map((s) => s.trim()).filter(Boolean)])];
+        await send({ type: "geo-prompt-save", prompt: { ...p, tags: newTags } });
+        loadGeo();
+      };
+      tagWrap.append(ti);
+    }
+    cells.push(el("td", {}, tagWrap));
+    table.append(el("tr", { className: p.active === false ? "inactive-row" : "" }, ...cells));
+  });
+
+  body.append(el("div", { className: "prompt-table-scroll" }, table));
+  wrap.append(body);
+  if (promptSearch || promptTagFilter.length || promptOnlyUnassigned) {
+    wrap.append(el("div", { className: "muted small", style: "margin-top:6px" }, `Showing ${filtered.length} of ${GEO_PROMPTS.length} prompts.`));
+  }
+  return wrap;
+}
+
+function renderCampaignSummary(profile) {
+  const card = el("div", { className: "card campaign-summary" });
+  const delBtn = el("button", { className: "btn sm ghost danger" }, "🗑 Delete");
+  delBtn.onclick = trashCampaign(profile);
+  card.append(el("div", { className: "card-header" }, el("h3", {}, profile.name || "Campaign"), el("span", { className: "muted small" }, "🔒 locked"), delBtn));
+  const meta = el("div", { className: "campaign-meta" });
+  const engLabels = ENGINES.filter((e) => (profile.engines || []).includes(e.id)).map((e) => e.label);
+  meta.append(
+    el("span", {}, `Brand: ${profile.brand?.name || "—"}`),
+    el("span", {}, `${GEO_PROMPTS.filter((p) => p.active !== false).length} active prompts`),
+    el("span", {}, `LLMs: ${engLabels.join(", ") || "—"}`),
+    el("span", {}, `Last run: ${profile.lastRunAt ? new Date(profile.lastRunAt).toLocaleDateString() : "never"}`),
+  );
+  card.append(meta);
+  const toggle = el("button", { className: "linkbtn" }, campaignManageOpen ? "Hide setup & prompts" : "Manage setup & prompts");
+  toggle.onclick = () => { campaignManageOpen = !campaignManageOpen; renderCampaigns(); };
+  card.append(el("div", { style: "margin-top:8px" }, toggle));
+  return card;
+}
+
+function renderRunCard(profile) {
   const rc = el("div", { className: "card" });
-  rc.append(el("div", { className: "card-header" }, el("h3", {}, "Daily run")));
+  rc.append(el("div", { className: "card-header" }, el("h3", {}, "Run")));
   const vol = runVolume(GEO_PROMPTS, profile.engines || []);
   const due = runDue(profile);
 
@@ -2410,60 +2990,58 @@ function renderTracking() {
     `This run will submit ${vol.submissions} prompt${vol.submissions === 1 ? "" : "s"} (${vol.prompts} prompt${vol.prompts === 1 ? "" : "s"} × ${vol.engines} engine${vol.engines === 1 ? "" : "s"}) through your logged-in accounts, paced with human-like gaps.`));
   if (vol.submissions > 60) {
     rc.append(el("div", { className: "warn-box" },
-      el("span", {}, `${vol.submissions} automated submissions in one run is a lot of activity on one account. Consider splitting your prompts across profiles or pausing some, and keep an eye on the run rather than leaving it unattended.`)));
+      el("span", {}, `${vol.submissions} automated submissions in one run is a lot of activity on one account. Consider splitting your prompts across campaigns or pausing some, and keep an eye on the run rather than leaving it unattended.`)));
   }
-  const runBtn = el("button", { className: "btn primary" }, "▶ Run today's tracking");
+  const runBtn = el("button", { className: "btn primary" }, "▶ Start run");
   runBtn.onclick = async () => {
-    if (!confirm(`Run tracking now?\n\n${vol.submissions} submissions (${vol.prompts} prompts × ${vol.engines} engines) will be sent through your logged-in ChatGPT/Gemini sessions at a human pace.\n\nYou can pause or stop from the Loader tab at any time.`)) return;
+    if (!confirm(`Run tracking now?\n\n${vol.submissions} submissions (${vol.prompts} prompts × ${vol.engines} engines) will be sent through your logged-in ChatGPT/Gemini sessions at a human pace.`)) return;
     const r = await send({ type: "geo-run-start", profileId: profile.id });
     if (!r.ok) { alert(r.error); return; }
-    showTab("loader"); // progress + pause/stop live there
     loadGeo();
   };
-  rc.append(el("div", { className: "ft-actions" }, runBtn));
-  root.append(rc);
-
-  /* ---- metrics ---- */
-  const mc = el("div", { className: "card", id: "geoMetrics" });
-  mc.append(el("div", { className: "card-header" }, el("h3", {}, "Performance"), el("span", { className: "muted small" }, "loading…")));
-  root.append(mc);
-  refreshGeoMetrics();
+  const pauseBtn = el("button", { className: "btn ghost" }, "⏸ Pause");
+  pauseBtn.onclick = async () => renderLoaderStatus(await send({ type: "loader-pause" }));
+  const resumeBtn = el("button", { className: "btn ghost" }, "▶ Resume");
+  resumeBtn.onclick = async () => renderLoaderStatus(await send({ type: "loader-resume" }));
+  const stopBtn = el("button", { className: "btn danger" }, "■ Stop");
+  stopBtn.onclick = async () => renderLoaderStatus(await send({ type: "loader-stop" }));
+  rc.append(el("div", { className: "ft-actions" }, runBtn, pauseBtn, resumeBtn, stopBtn));
+  rc.append(el("div", { id: "loaderStatus", className: "status-msg" }));
+  return rc;
 }
 
-async function refreshGeoMetrics() {
+/* ---------- Campaign performance metrics (rendered from the Dashboard) ---------- */
+
+async function refreshGeoMetrics(profile, prompts = [], since, until) {
   const mc = $("#geoMetrics");
-  const profile = geoActive();
   if (!mc || !profile) return;
 
-  const since = geoRangeDays ? Date.now() - geoRangeDays * 86400000 : 0;
   const r = await send({
     type: "geo-metrics",
     profileId: profile.id,
     tags: geoTagFilter,
     engines: geoEngineFilter,
-    since: since || undefined,
+    since, until,
   });
   mc.textContent = "";
-  const head = el("div", { className: "card-header" }, el("h3", {}, "Performance"));
+  const head = el("div", { className: "card-header" }, el("h3", {}, `Campaign Performance — ${profile.name || "Untitled"}`));
   mc.append(head);
 
   if (!r.ok) { mc.append(el("div", { className: "empty" }, r.error || "Couldn't load metrics.")); return; }
   const m = r.metrics;
 
-  /* filters */
+  // Timeframe is the same filter as the rest of the Dashboard (see
+  // renderDashboardImpl) — no separate "Last 7/30/90 days" selector here
+  // anymore, so there's only ever one time filter to reason about.
   const filters = el("div", { className: "proj-row" });
-  const range = el("select", { className: "filter" });
-  [[7, "Last 7 days"], [30, "Last 30 days"], [90, "Last 90 days"], [0, "All time"]].forEach(([v, l]) =>
-    range.append(el("option", { value: String(v), selected: geoRangeDays === v }, l)));
-  range.onchange = () => { geoRangeDays = Number(range.value); refreshGeoMetrics(); };
   const eng = el("select", { className: "filter" });
   eng.append(el("option", { value: "" }, "All engines"));
   availableEngines().forEach((e) => eng.append(el("option", { value: e.id, selected: geoEngineFilter[0] === e.id }, e.label)));
-  eng.onchange = () => { geoEngineFilter = eng.value ? [eng.value] : []; refreshGeoMetrics(); };
-  filters.append(range, eng);
+  eng.onchange = () => { geoEngineFilter = eng.value ? [eng.value] : []; refreshGeoMetrics(profile, prompts, since, until); refreshPromptPerformance(profile, prompts, since, until); };
+  filters.append(eng);
   mc.append(filters);
 
-  const tags = allTags(GEO_PROMPTS);
+  const tags = allTags(prompts);
   if (tags.length) {
     const tw = el("div", { className: "tagline", style: "margin-top:8px" });
     tw.append(el("span", { className: "muted small" }, "Tags: "));
@@ -2472,21 +3050,39 @@ async function refreshGeoMetrics() {
       const chip = el("button", { className: `tag clickable${on ? " on" : ""}` }, t);
       chip.onclick = () => {
         geoTagFilter = on ? geoTagFilter.filter((x) => x !== t) : [...geoTagFilter, t];
-        refreshGeoMetrics();
+        refreshGeoMetrics(profile, prompts, since, until);
+        refreshPromptPerformance(profile, prompts, since, until);
       };
       tw.append(chip);
     });
     if (geoTagFilter.length) {
       const clr = el("button", { className: "linkbtn" }, "clear");
-      clr.onclick = () => { geoTagFilter = []; refreshGeoMetrics(); };
+      clr.onclick = () => {
+        geoTagFilter = [];
+        refreshGeoMetrics(profile, prompts, since, until);
+        refreshPromptPerformance(profile, prompts, since, until);
+      };
       tw.append(clr);
     }
     mc.append(tw);
   }
 
+  // Overview row — the same shape of aggregate as the ad-hoc "Performance
+  // Overview" (captures / with-search / fan-out / domains / cited / fetched),
+  // but for this campaign's tracked responses specifically. Folding it in
+  // here is what "merges" the two sections once a campaign is selected.
+  if (r.overview) {
+    const ov = r.overview;
+    const ovStats = el("div", { className: "statgrid", style: "margin-top:10px" });
+    [[ov.captures, "Captures"], [ov.searched, "With search"], [ov.fanTotal, "Fan-out queries"],
+     [ov.domainCount, "Unique domains"], [ov.citedTotal, "Cited"], [ov.fetchedTotal, "Fetched"]].forEach(([n, l]) =>
+      ovStats.append(el("div", { className: "stat" }, el("div", { className: "n" }, String(n)), el("div", { className: "l" }, l))));
+    mc.append(ovStats);
+  }
+
   if (!m.totalResponses) {
-    mc.append(el("div", { className: "empty" },
-      "No tracked responses yet for these filters. Run today's tracking to collect the first data points."));
+    mc.append(el("div", { className: "empty", style: "margin-top:10px" },
+      "No tracked responses yet for these filters. Head to the Campaigns tab to start a run."));
     return;
   }
 
@@ -2547,12 +3143,216 @@ async function refreshGeoMetrics() {
   mc.append(dl);
 }
 
+// Per-run detail toggle state, keyed by promptId — which prompts' run
+// history is expanded beyond just the latest run.
+let expandedPromptRuns = new Set();
+let sourceViewMode = "domain"; // "domain" | "url"
+
+const yesNo = (b) => (b ? "✓" : "✕");
+const posLabel = (n) => (n == null ? "—" : `#${n}`);
+
+/** Replaces Saved Conversations once a campaign is selected: prompts grouped
+ *  with their own-brand mention/position/citation per run (merging reruns
+ *  of the same prompt instead of listing every response separately), plus a
+ *  domain/URL source breakdown for the same filtered response set. */
+async function refreshPromptPerformance(profile, prompts, since, until) {
+  const root = $("#geoPromptTable");
+  if (!root || !profile) return;
+
+  const r = await send({
+    type: "geo-prompt-performance",
+    profileId: profile.id,
+    tags: geoTagFilter,
+    engines: geoEngineFilter,
+    since, until,
+  });
+  root.textContent = "";
+  root.append(el("div", { className: "card-header" }, el("h3", {}, "Prompt Performance")));
+
+  if (!r.ok) { root.append(el("div", { className: "empty" }, r.error || "Couldn't load prompt performance.")); return; }
+  if (!r.hasBrand) {
+    root.append(el("div", { className: "empty" }, "Set your brand name on this campaign (Campaigns tab) to see per-prompt mention/citation results."));
+    return;
+  }
+
+  const filteredPrompts = geoTagFilter.length
+    ? prompts.filter((p) => geoTagFilter.some((t) => (p.tags || []).includes(t)))
+    : prompts;
+
+  if (!filteredPrompts.length) {
+    root.append(el("div", { className: "empty" }, "No prompts match the current filters."));
+  } else {
+    // One column per tracked engine (not a single ambiguous "latest run")
+    // so it's clear whether a brand showed up on ChatGPT vs. Gemini rather
+    // than one merged result that could be from either.
+    const engineIds = (profile.engines && profile.engines.length) ? profile.engines : [];
+    const engineLabel = (id) => ENGINES.find((e) => e.id === id)?.label || id;
+
+    const buildEngineCell = (run) => {
+      if (!run) return el("td", { className: "muted small" }, "—");
+      return el("td", {}, el("div", { className: "platform-result" },
+        el("span", {}, `${yesNo(run.mentioned)} ${posLabel(run.position)}`),
+        el("span", { className: "muted small" }, `Domain cited ${yesNo(run.cited)}`),
+      ));
+    };
+
+    const headerCells = [el("th", {}, "Prompt")];
+    engineIds.forEach((id) => headerCells.push(el("th", {}, `${ENGINE_ICONS[id] || "🔷"} ${engineLabel(id)}`)));
+    headerCells.push(el("th", {}, "Time"), el("th", { style: "width:90px" }, ""));
+    const table = el("table", { className: "prompt-perf-table" }, el("tr", {}, ...headerCells));
+
+    filteredPrompts.forEach((p) => {
+      const runs = (r.prompts && r.prompts[p.id]) || [];
+      // Clicking a prompt opens its most recent capture in Analyze so the
+      // full answer/sources/fan-out can be studied there instead of just
+      // the summarized mention/position/citation flags here.
+      const promptLink = el("a", { href: "#", className: "prompt-link" }, p.text);
+      promptLink.onclick = (ev) => {
+        ev.preventDefault();
+        if (runs[0]) openCapture(runs[0].captureId);
+      };
+      const promptCell = el("td", { className: "prompt-cell" }, promptLink);
+      const tagWrap = el("div", { className: "tagline" });
+      (p.tags || []).forEach((t) => tagWrap.append(el("span", { className: "tag" }, t)));
+      if (tagWrap.childNodes.length) promptCell.append(tagWrap);
+
+      const cells = [promptCell];
+      if (!runs.length) {
+        engineIds.forEach(() => cells.push(el("td", { className: "muted small" }, "—")));
+        cells.push(el("td", { className: "muted small" }, "No runs yet"), el("td", {}));
+        table.append(el("tr", {}, ...cells));
+        return;
+      }
+
+      engineIds.forEach((id) => cells.push(buildEngineCell(runs.find((run) => run.platform === id) || null)));
+      cells.push(el("td", {}, new Date(runs[0].capturedAt).toLocaleString()));
+
+      const expandCell = el("td", {});
+      if (runs.length > 1) {
+        const expanded = expandedPromptRuns.has(p.id);
+        const toggle = el("button", { className: "linkbtn" }, expanded ? "hide" : `${runs.length - 1} earlier`);
+        toggle.onclick = () => {
+          if (expanded) expandedPromptRuns.delete(p.id); else expandedPromptRuns.add(p.id);
+          refreshPromptPerformance(profile, prompts, since, until);
+        };
+        expandCell.append(toggle);
+      }
+      cells.push(expandCell);
+      table.append(el("tr", {}, ...cells));
+
+      if (runs.length > 1 && expandedPromptRuns.has(p.id)) {
+        runs.slice(1).forEach((run) => {
+          const subCells = [el("td", {})];
+          engineIds.forEach((id) => subCells.push(run.platform === id ? buildEngineCell(run) : el("td", {})));
+          subCells.push(el("td", { className: "muted small" }, new Date(run.capturedAt).toLocaleString()), el("td", {}));
+          table.append(el("tr", { className: "prompt-perf-subrow" }, ...subCells));
+        });
+      }
+    });
+    root.append(el("div", { className: "prompt-table-scroll" }, table));
+  }
+
+  // --- source domains, aggregated from this same filtered response set ---
+  const byDomain = new Map();
+  const byUrl = new Map();
+  const bump = (map, key, outcome) => {
+    if (!key) return;
+    const row = map.get(key) || { citations: 0, fetched: 0 };
+    if (outcome === "cited") row.citations++;
+    else if (outcome === "fetched") row.fetched++;
+    map.set(key, row);
+  };
+  Object.values(r.prompts || {}).forEach((runs) => runs.forEach((run) => (run.sources || []).forEach((s) => {
+    bump(byDomain, s.domain, s.outcome);
+    bump(byUrl, s.url, s.outcome);
+  })));
+
+  root.append(el("div", { className: "wizard-divider" }));
+  const srcHead = el("div", { className: "card-header", style: "margin-top:0" }, el("h3", {}, "Source Domains"));
+  const modeToggle = el("div", { className: "filter-bar" });
+  [["domain", "Domains"], ["url", "URLs"]].forEach(([v, l]) => {
+    const pill = el("button", { className: `filter-pill${sourceViewMode === v ? " active" : ""}` }, l);
+    pill.onclick = () => { sourceViewMode = v; refreshPromptPerformance(profile, prompts, since, until); };
+    modeToggle.append(pill);
+  });
+  srcHead.append(modeToggle);
+  root.append(srcHead);
+
+  const activeMap = sourceViewMode === "domain" ? byDomain : byUrl;
+  if (!activeMap.size) {
+    root.append(el("div", { className: "empty" }, "No sources captured yet for these filters."));
+  } else {
+    const srcTable = el("table", { className: "drill-table" });
+    srcTable.append(el("tr", {}, el("th", {}, sourceViewMode === "domain" ? "Domain" : "URL"), el("th", { className: "num" }, "Citations"), el("th", { className: "num" }, "Fetched")));
+    [...activeMap.entries()].sort((a, b) => b[1].citations - a[1].citations || b[1].fetched - a[1].fetched).slice(0, 50).forEach(([key, row]) => {
+      // URLs are clickable — the same URL can surface under several
+      // different prompts, and clicking shows which ones plus what each
+      // response mentioned. Domains aren't (a domain has no single "source"
+      // to drill into the way one exact URL does).
+      const keyCell = sourceViewMode === "url"
+        ? el("button", { className: "linkbtn td-domain-btn", title: "Click to see which prompts cited this URL" }, key)
+        : el("span", { className: "domain-name" }, key);
+      if (sourceViewMode === "url") keyCell.onclick = () => openUrlDetailModal(key, profile, since, until);
+      srcTable.append(el("tr", {}, el("td", { className: "td-domain" }, keyCell), el("td", { className: "num" }, String(row.citations)), el("td", { className: "num" }, String(row.fetched))));
+    });
+    root.append(el("div", { className: "drill-scroll" }, srcTable));
+  }
+}
+
+/** "Rankings by Source URL" — which prompts pulled in this URL, whether the
+ *  campaign's own brand was mentioned in that response, and every brand
+ *  present. No trend chart — just the table (this URL's citation count over
+ *  time isn't tracked at that granularity, and a fabricated chart would be
+ *  worse than no chart). */
+async function openUrlDetailModal(url, profile, since, until) {
+  const existing = document.getElementById("url-modal-backdrop");
+  if (existing) existing.remove();
+
+  const backdrop = el("div", { id: "url-modal-backdrop", className: "modal-backdrop" });
+  const modal = el("div", { className: "modal-content" });
+  const header = el("div", { className: "modal-header" });
+  header.append(
+    el("div", { style: "min-width:0" },
+      el("h3", { style: "margin:0;font-size:15px;color:var(--fg-primary);" }, "Rankings by Source URL"),
+      el("div", { className: "muted small", style: "overflow-wrap:anywhere;margin-top:2px" }, url)),
+  );
+  const closeBtn = el("button", { className: "modal-close-btn", title: "Close" }, "×");
+  closeBtn.onclick = () => backdrop.remove();
+  header.append(closeBtn);
+  modal.append(header);
+
+  const body = el("div", { className: "modal-body" }, el("div", { className: "muted small" }, "Loading…"));
+  modal.append(body);
+  backdrop.append(modal);
+  document.body.append(backdrop);
+  backdrop.onclick = (ev) => { if (ev.target === backdrop) backdrop.remove(); };
+
+  const r = await send({ type: "geo-url-detail", profileId: profile.id, url, tags: geoTagFilter, engines: geoEngineFilter, since, until });
+  body.textContent = "";
+  if (!r.ok) { body.append(el("div", { className: "empty" }, r.error || "Couldn't load this URL's detail.")); return; }
+  if (!r.rows.length) { body.append(el("div", { className: "empty" }, "No responses matched for this URL under the current filters.")); return; }
+
+  const table = el("table", { className: "drill-table" });
+  table.append(el("tr", {}, el("th", {}, "Prompt"), el("th", {}, "Brand Mentioned"), el("th", {}, "Brands"), el("th", {}, "Date")));
+  r.rows.forEach((row) => {
+    const brandChips = el("div", { className: "tagline" });
+    row.brands.forEach((b) => brandChips.append(el("span", { className: "tag" }, b)));
+    table.append(el("tr", {},
+      el("td", {}, row.promptText),
+      el("td", {}, row.mentioned == null ? "—" : yesNo(row.mentioned)),
+      el("td", {}, brandChips),
+      el("td", {}, new Date(row.capturedAt).toLocaleDateString()),
+    ));
+  });
+  body.append(el("div", { className: "drill-scroll" }, table));
+}
+
 /* ---------- wiring ---------- */
 document.querySelectorAll("[data-tab]").forEach((btn) =>
   btn.addEventListener("click", () => {
     // clicking the Analyze tab directly returns to the latest capture
     if (btn.dataset.tab === "analyze") { viewingId = null; renderAnalyze(); }
-    if (btn.dataset.tab === "tracking") loadGeo();
+    if (btn.dataset.tab === "loader") loadGeo();
     showTab(btn.dataset.tab);
   })
 );
@@ -2636,26 +3436,11 @@ $("#deleteFiltered")?.addEventListener("click", async () => {
   load();
 });
 
-/* ---------- Loader ---------- */
-const loaderPromptsEl = $("#loaderPrompts");
-const LOADER_KEY = "lcfc.loader.prompts";
-function loaderLines() {
-  return loaderPromptsEl.value.split("\n").map((s) => s.trim()).filter(Boolean);
-}
-function updateLoaderCount() {
-  $("#loaderCount").textContent = `${loaderLines().length} prompts`;
-}
-loaderPromptsEl.addEventListener("input", () => {
-  updateLoaderCount();
-  chrome.storage.local.set({ [LOADER_KEY]: loaderPromptsEl.value });
-});
-chrome.storage.local.get(LOADER_KEY, (r) => {
-  if (r[LOADER_KEY]) loaderPromptsEl.value = r[LOADER_KEY];
-  updateLoaderCount();
-});
-
+/* ---------- Campaigns run status ---------- */
 function renderLoaderStatus(s) {
-  if (!s || !s.total) { $("#loaderStatus").textContent = ""; return; }
+  const box = $("#loaderStatus");
+  if (!box) return;
+  if (!s || !s.total) { box.textContent = ""; return; }
   const state = s.running ? (s.paused ? "paused" : "running") : "idle/done";
   let statusText = `${state} — ${s.done}/${s.total} done${s.errors ? `, ${s.errors} errors` : ""}`;
   if (s.platStats) {
@@ -2663,72 +3448,12 @@ function renderLoaderStatus(s) {
     if (details) statusText += `\n[${details}]`;
   }
   statusText += (s.current && s.running ? `\nnow: "${s.current.slice(0, 40)}"` : "");
-  $("#loaderStatus").innerText = statusText;
+  box.innerText = statusText;
 }
-let activeProjectId = ""; // currently loaded/selected project
 
-// Save the current prompt list as a project (create or update).
-$("#loaderProjectSave").addEventListener("click", async () => {
-  const prompts = loaderLines();
-  const name = $("#loaderProjectName").value.trim();
-  if (!name) { $("#loaderStatus").textContent = "Enter a project name to save."; return; }
-  if (!prompts.length) { $("#loaderStatus").textContent = "Add at least one prompt to save."; return; }
-  const r = await send({ type: "project-save", id: activeProjectId || undefined, name, prompts });
-  if (r.ok) { activeProjectId = r.id; await load(); $("#loaderStatus").textContent = `Saved project “${name}”.`; }
-});
-
-// Load a saved project's prompts back into the editor.
-$("#loaderProjectPick").addEventListener("change", (e) => {
-  const p = PROJECTS.find((x) => x.id === e.target.value);
-  if (!p) { activeProjectId = ""; return; }
-  activeProjectId = p.id;
-  $("#loaderProjectName").value = p.name;
-  loaderPromptsEl.value = p.prompts.join("\n");
-  updateLoaderCount();
-});
-
-$("#loaderProjectDelete").addEventListener("click", async () => {
-  if (!activeProjectId) { $("#loaderStatus").textContent = "Select a saved project to delete."; return; }
-  if (!confirm("Delete this project? (captures are kept)")) return;
-  await send({ type: "project-delete", id: activeProjectId });
-  activeProjectId = "";
-  $("#loaderProjectName").value = "";
-  await load();
-});
-
-$("#loaderStart").addEventListener("click", async () => {
-  const prompts = loaderLines();
-  if (!prompts.length) { $("#loaderStatus").textContent = "Add at least one prompt."; return; }
-  // If a project name is set, ensure it's saved so captures get tagged to it.
-  const name = $("#loaderProjectName").value.trim();
-  if (name) {
-    const r = await send({ type: "project-save", id: activeProjectId || undefined, name, prompts });
-    if (r.ok) { activeProjectId = r.id; await load(); }
-  }
-  const platforms = Array.from(document.querySelectorAll('.loader-platform:checked')).map(el => el.value);
-  if (!platforms.length) { $("#loaderStatus").textContent = "Select at least one platform."; return; }
-  
-  const r = await send({
-    type: "loader-start",
-    prompts,
-    options: { 
-      forceSearch: $("#loaderForceSearch").checked, 
-      incognito: $("#loaderIncognito").checked,
-      platforms,
-      projectId: activeProjectId || null 
-    },
-  });
-  $("#loaderStatus").textContent = r.ok
-    ? `Started ${r.total} prompts${activeProjectId ? ` → project “${name}”` : ""}…`
-    : (r.error || "Failed to start");
-});
-$("#loaderPause").addEventListener("click", async () => renderLoaderStatus(await send({ type: "loader-pause" })));
-$("#loaderResume").addEventListener("click", async () => renderLoaderStatus(await send({ type: "loader-resume" })));
-$("#loaderStop").addEventListener("click", async () => renderLoaderStatus(await send({ type: "loader-stop" })));
-
-// poll loader status while the panel is open
+// poll loader status while the Campaigns tab is open
 setInterval(async () => {
-  if (!$("#loader").classList.contains("active")) return;
+  if (!$("#loader")?.classList.contains("active")) return;
   const s = await send({ type: "loader-status" });
   if (s.ok) renderLoaderStatus(s);
 }, 1500);
@@ -2761,48 +3486,173 @@ async function renderDebug() {
 $("#dbgRefresh").addEventListener("click", renderDebug);
 $("#dbgClear").addEventListener("click", async () => { await send({ type: "clear-debug" }); renderDebug(); });
 
+/* ==================== QA DIAGNOSTICS (temporary) ====================
+ * Added for a one-off 200-prompt/20-industry stress test. Safe to delete
+ * this whole block, the matching #qaToggle/#qaPanel markup in panel.html's
+ * About section, and the "qa-audit" case in src/background.js, once that's
+ * done — nothing else in the app reads from or depends on any of it.
+ *
+ * Two independent checks, both read-only against whatever is already
+ * captured (never calls ChatGPT/Gemini itself):
+ *  - Data integrity audit (server-side, src/background.js "qa-audit"): flags
+ *    real schema-level red flags — e.g. sources present but zero brand
+ *    mentions, the adapter's own usedFallback/notes diagnostics never
+ *    surfaced anywhere before — grouped by industry tag and platform.
+ *  - Render self-test: actually calls the real renderAnalyze() for every
+ *    stored capture (tracked AND ad-hoc) and catches any exception, as a
+ *    proxy for "did the layout break" — the closest thing to an automated
+ *    UI smoke test possible without a live browser driving the extension.
+ */
+let qaLastAudit = null;
+let qaLastRenderTest = null;
+
+const qaToggleBtn = $("#qaToggle");
+if (qaToggleBtn) {
+  let qaOpened = false;
+  qaToggleBtn.addEventListener("click", () => {
+    const panel = $("#qaPanel");
+    const show = panel.style.display === "none";
+    panel.style.display = show ? "block" : "none";
+    if (show && !qaOpened) { qaOpened = true; renderQaPanel(); }
+  });
+}
+
+function renderQaPanel() {
+  const panel = $("#qaPanel");
+  panel.textContent = "";
+  panel.append(el("p", { className: "muted small" },
+    "Runs against whatever is currently stored locally — captures from both ad-hoc browsing and Campaign runs. Nothing here calls ChatGPT/Gemini; it only inspects data already captured on this device."));
+
+  const btnRow = el("div", { className: "ft-actions" });
+  const auditBtn = el("button", { className: "btn sm" }, "▶ Run data integrity audit");
+  const renderBtn = el("button", { className: "btn sm ghost" }, "▶ Run render self-test");
+  const exportBtn = el("button", { className: "btn sm ghost" }, "⬇ Export QA report (JSON)");
+  btnRow.append(auditBtn, renderBtn, exportBtn);
+  panel.append(btnRow);
+
+  const out = el("div", { id: "qaOut", style: "margin-top:10px" });
+  panel.append(out);
+
+  auditBtn.onclick = async () => {
+    out.textContent = "Running data integrity audit…";
+    const r = await send({ type: "qa-audit" });
+    if (!r.ok) { out.textContent = r.error || "Audit failed."; return; }
+    qaLastAudit = r;
+    renderQaAuditResults(out, r);
+  };
+  renderBtn.onclick = () => runQaRenderSelfTest(out);
+  exportBtn.onclick = () => {
+    if (!qaLastAudit && !qaLastRenderTest) { alert("Run at least one check first."); return; }
+    const report = { generatedAt: new Date().toISOString(), audit: qaLastAudit, renderSelfTest: qaLastRenderTest };
+    download(`lcfc-qa-report-${Date.now()}.json`, JSON.stringify(report, null, 2), "application/json");
+  };
+}
+
+function renderQaAuditResults(out, r) {
+  out.textContent = "";
+  const platformSummary = Object.entries(r.byPlatform).map(([k, v]) => `${k}: ${v}`).join(", ") || "—";
+  out.append(el("div", { className: "muted small" }, `${r.totalRecords} total captures · by platform: ${platformSummary}`));
+
+  const industryTable = el("table", { className: "drill-table" });
+  industryTable.append(el("tr", {}, el("th", {}, "Industry / tag"), el("th", { className: "num" }, "Captures")));
+  Object.entries(r.byIndustry).sort((a, b) => b[1] - a[1]).forEach(([k, v]) => {
+    industryTable.append(el("tr", {}, el("td", {}, k), el("td", { className: "num" }, String(v))));
+  });
+  out.append(el("div", { className: "drill-scroll", style: "max-height:200px; margin-top:8px" }, industryTable));
+
+  const checkNames = Object.keys(r.checks);
+  if (!checkNames.length) {
+    out.append(el("div", { className: "empty", style: "margin-top:10px" }, "No integrity issues flagged across any stored capture."));
+    return;
+  }
+  const checksBox = el("div", { style: "margin-top:12px" });
+  checksBox.append(el("div", { className: "muted small", style: "margin-bottom:6px" }, "Flagged (click a capture id to open it in Analyze):"));
+  checkNames.forEach((name) => {
+    const c = r.checks[name];
+    const item = el("div", { className: "brand-item" });
+    item.append(el("div", { className: "brand-head" },
+      el("span", { className: "brand-name" }, name),
+      el("span", { className: "tag fetched" }, String(c.count))));
+    const byPlat = Object.entries(c.byPlatform).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}: ${v}`).join(" · ");
+    if (byPlat) item.append(el("div", { className: "muted small", style: "margin-top:2px" }, byPlat));
+    const byInd = Object.entries(c.byIndustry).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}: ${v}`).join(" · ");
+    if (byInd) item.append(el("div", { className: "muted small", style: "margin-top:2px" }, byInd));
+    const exWrap = el("div", { className: "tagline", style: "margin-top:4px" });
+    c.examples.forEach((id) => {
+      const b = el("button", { className: "tag clickable" }, id.slice(0, 8));
+      b.onclick = () => openCapture(id);
+      exWrap.append(b);
+    });
+    item.append(exWrap);
+    checksBox.append(item);
+  });
+  out.append(checksBox);
+}
+
+async function runQaRenderSelfTest(out) {
+  const res = await send({ type: "get-records" });
+  const all = res.ok ? res.records : [];
+  if (!all.length) { out.textContent = "No stored captures to test."; return; }
+
+  const savedViewingId = viewingId;
+  const failures = [];
+  let done = 0;
+  out.textContent = `Running render self-test… 0/${all.length}`;
+  for (const light of all) {
+    try {
+      viewingId = light.captureId;
+      await hydrate(light.captureId);
+      renderAnalyze(); // writes into the (currently inactive/invisible) #analyze panel
+    } catch (err) {
+      failures.push({ captureId: light.captureId, platform: light.platform, error: String((err && err.message) || err) });
+    }
+    done++;
+    if (done % 10 === 0 || done === all.length) out.textContent = `Running render self-test… ${done}/${all.length}`;
+  }
+  viewingId = savedViewingId;
+  await hydrate(viewingId);
+  renderAnalyze(); // restore whatever Analyze was actually showing before this ran
+
+  qaLastRenderTest = { totalChecked: all.length, failureCount: failures.length, failures };
+
+  out.textContent = "";
+  out.append(el("div", { className: "muted small" }, `Checked ${all.length} captures.`));
+  if (!failures.length) {
+    out.append(el("div", { className: "empty", style: "margin-top:8px" }, "No exceptions thrown building the Analyze view for any stored capture."));
+    return;
+  }
+  const box = el("div", { style: "margin-top:10px" });
+  box.append(el("div", { className: "muted small", style: "margin-bottom:6px" }, `${failures.length} capture(s) threw while rendering — click to open in Analyze and inspect:`));
+  failures.forEach((f) => {
+    const item = el("div", { className: "brand-item" });
+    const openBtn = el("button", { className: "linkbtn" }, `${f.captureId.slice(0, 8)} (${f.platform})`);
+    openBtn.onclick = () => openCapture(f.captureId);
+    item.append(el("div", { className: "brand-head" }, openBtn));
+    item.append(el("div", { className: "muted small" }, f.error));
+    box.append(item);
+  });
+  out.append(box);
+}
+/* ==================== /QA DIAGNOSTICS ==================== */
+
 /* ---------- Settings ---------- */
 async function loadSettings() {
   const r = await send({ type: "settings-get" });
   if (!r.ok) return;
   const s = r.settings;
-  const my = s.myBrand || { name: "", url: "" };
-  if ($("#setMyName")) $("#setMyName").value = my.name || "";
-  if ($("#setMyUrl")) $("#setMyUrl").value = my.url || "";
-  if ($("#setCompetitors")) {
-    $("#setCompetitors").value = (s.competitors || [])
-      .map((c) => (c.url ? `${c.name}, ${c.url}` : c.name))
-      .join("\n");
-  }
   if ($("#setDebug")) $("#setDebug").checked = !!s.debugCapture;
   if ($("#setRetention")) $("#setRetention").value = s.retentionMax;
   if ($("#setMaxMB")) $("#setMaxMB").value = s.maxCaptureMB;
 }
 if ($("#setSave")) {
   $("#setSave").addEventListener("click", async () => {
-    // Each competitor line is "name, url" — the url part is optional.
-    const competitors = $("#setCompetitors").value
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        const i = line.indexOf(",");
-        return i === -1
-          ? { name: line, url: "" }
-          : { name: line.slice(0, i).trim(), url: line.slice(i + 1).trim() };
-      })
-      .filter((c) => c.name);
     const patch = {
-      myBrand: { name: $("#setMyName").value.trim(), url: $("#setMyUrl").value.trim() },
-      competitors,
       debugCapture: $("#setDebug").checked,
       retentionMax: Math.max(50, parseInt($("#setRetention").value, 10) || 2000),
       maxCaptureMB: Math.max(1, parseInt($("#setMaxMB").value, 10) || 8),
     };
     const r = await send({ type: "settings-set", patch });
-    $("#setStatus").textContent = r.ok
-      ? `Saved — tracking ${patch.myBrand.name || "(no brand set)"} vs ${competitors.length} competitor${competitors.length === 1 ? "" : "s"}. Run “Reprocess all” to re-label existing captures.`
-      : "Failed to save.";
+    $("#setStatus").textContent = r.ok ? "Saved." : "Failed to save.";
   });
 }
 

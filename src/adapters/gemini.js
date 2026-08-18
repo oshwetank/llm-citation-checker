@@ -26,29 +26,6 @@ export const ADAPTER_VERSION = "gemini@0.2.0";
 
 const FAVICON_RE = /gstatic\.com|googleusercontent|favicon-tbn/i;
 
-const BRAND_SEED = [
-  // Laptops, PCs & Hardware
-  "ASUS", "MSI", "Acer", "Lenovo", "HP", "Dell", "MacBook", "Apple", "Microsoft", "Surface",
-  "Razer", "Alienware", "Gigabyte", "ROG", "TUF", "IdeaPad", "Vivobook", "ThinkPad", "Inspiron",
-  "Pavilion", "Victus", "Legion", "Predator", "ZenBook", "Swift", "Intel", "AMD", "NVIDIA", "Ryzen",
-  "GeForce", "Radeon", "Infinix", "Avita", "Fujitsu", "Panasonic", "LG", "Toshiba", "Vaio",
-
-  // Smartphones & Tablets
-  "Google Pixel", "Google", "Pixel", "Samsung", "Galaxy", "iPhone", "iPad", "OnePlus", "Xiaomi",
-  "Redmi", "Vivo", "Oppo", "Realme", "Motorola", "Moto", "Nothing", "iQOO", "Poco", "Honor",
-  "Huawei", "Asus", "Sony", "Nokia", "ZTE", "Tecno",
-
-  // Audio, Wearables & Accessories
-  "Bose", "Sennheiser", "JBL", "Boat", "Noise", "Fire-Boltt", "Boult", "Marshall", "Sonos",
-  "Anker", "Belkin", "Logitech", "Corsair", "HyperX", "SteelSeries", "Garmin", "Fitbit",
-
-  // TV, Home Appliances & Electronics
-  "TCL", "Hisense", "Vu", "Whirlpool", "Haier", "Bosch", "Dyson", "Canon", "Nikon", "Fujifilm",
-  "GoPro", "DJI", "Philips",
-
-  // Retail & E-Commerce
-  "Amazon", "Flipkart", "Reliance Digital", "Croma", "Vijay Sales"
-];
 
 function extractAnswerAndReasoning(payload) {
   const mdStrings = [];
@@ -60,10 +37,6 @@ function extractAnswerAndReasoning(payload) {
   const answer = mdStrings.find((s) => !isReasoning(s)) || mdStrings[0] || "";
   const reasoning = mdStrings.find((s) => isReasoning(s)) || null;
   return { answer, reasoning };
-}
-
-function escapeRegExp(s) {
-  return (s || "").replace(/[\-\[\]\/\{\}\(\)\*\+\?\.\\\^\$\|]/g, "\\$&");
 }
 
 // Brand detection is fully automatic and industry-agnostic — see lib/brands.js.
@@ -226,17 +199,37 @@ function collectPlaces(payload) {
   return records;
 }
 
-// Best-effort fan-out: look for an array of short search-query-like strings.
-function extractFanout(payload, diag) {
-  const out = { search: [], shopping: [], image: [] };
-  walk({ payload }, (value, key) => {
-    if (typeof key === "string" && /quer/i.test(key) && Array.isArray(value)) {
-      value.forEach((q) => typeof q === "string" && out.search.push({ query: q }));
-    }
-  });
-  if (out.search.length) diag.notes.push("fanout: found query array");
-  return out;
+// Best-effort fan-out.
+//
+// This used to match on `typeof key === "string" && /quer/i.test(key)`, which
+// could never fire: a StreamGenerate frame is nested ARRAYS, so walk() hands it
+// ~31,700 numeric indices and about a dozen string keys, none of them named
+// anything. So the search list was always empty, which is the bulk of the
+// "searched but zero fan-out queries" finding in a 231-capture audit — a dead
+// code path, not drift.
+//
+// Inspecting real payloads (web, shopping and local responses) shows Gemini
+// genuinely does not publish the sub-queries it ran, the way ChatGPT's
+// metadata.search_model_queries does. The only q= values anywhere are image
+// thumbnail tokens and per-product Shopping links.
+//
+// A shape-based scan for "arrays of short query-like strings" was tried and
+// rejected: on a local/places response it confidently returned seventeen
+// "queries" that were actually opening hours ("Monday: Open 24 hours") and
+// Gemini's own suggestion chips ("Generate itinerary", "Plan a route"). There
+// is no shape that separates those from a real query, and inventing fan-out
+// data in a measurement tool is worse than reporting the gap — the same call
+// this project already makes for sentiment (see SENTIMENT_NOTE in lib/geo.js).
+//
+// So this reports none, and says so, until Google exposes the field.
+function extractFanout(_payload, diag) {
+  diag.notes.push(FANOUT_UNSUPPORTED_NOTE);
+  return { search: [], shopping: [], image: [] };
 }
+
+export const FANOUT_UNSUPPORTED_NOTE =
+  "fanout: Gemini does not expose the search sub-queries it ran, so none are " +
+  "reported. This is a platform limitation, not a failed extraction.";
 
 export function adapt(rawCapture, opts = {}) {
   const diag = { adapterVersion: ADAPTER_VERSION, usedFallback: false, notes: [] };

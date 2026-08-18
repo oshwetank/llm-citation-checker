@@ -27,6 +27,11 @@
 
 export const MAX_PROFILES = 3;
 
+// A soft-deleted campaign stays recoverable for this many days before it's
+// purged for real (see "geo-profile-trash"/"geo-profile-restore" in
+// background.js and the lazy sweep in "geo-profile-list").
+export const TRASH_RETENTION_DAYS = 7;
+
 export const SENTIMENT_NOTE =
   "Sentiment is not measured yet. The published definition gives a 0-100 scale " +
   "but no formula or aggregation method, and a fabricated score would be worse " +
@@ -59,6 +64,10 @@ export function normName(s) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
+}
+
+export function escapeRegExp(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export function domainOfUrl(u) {
@@ -102,6 +111,9 @@ export function makeProfile(base = {}) {
     locked: !!base.locked,
     createdAt: base.createdAt || Date.now(),
     lastRunAt: base.lastRunAt || null,
+    // Soft-delete: set to a timestamp instead of removing the profile outright,
+    // so a campaign can be restored for a window before it's purged for real.
+    deletedAt: base.deletedAt || null,
   };
 }
 
@@ -176,7 +188,6 @@ export function selectTracked(records, { profileId, engines, tags, since, until,
  */
 export function brandPresence(rec, trackedBrands) {
   const text = rec.answerText || "";
-  const lower = text.toLowerCase();
   const mentions = rec.brandMentions || [];
   const sources = rec.sources || [];
 
@@ -184,9 +195,36 @@ export function brandPresence(rec, trackedBrands) {
     const key = normName(b.name);
     const hit = mentions.find((m) => normName(m.brand) === key);
     const count = hit ? Number(hit.count) || 0 : 0;
+    // Where the brand first appears in the prose, which sets its rank.
+    //
+    // Prefer the detector's own index: it already resolved overlaps and
+    // aliases. A "shown but not named" hit carries MAX_SAFE_INTEGER as a sort
+    // sentinel, not a real offset, so it must not become a position.
+    let idx = -1;
+    if (hit && Number.isFinite(hit.firstIndex) && hit.firstIndex < Number.MAX_SAFE_INTEGER) {
+      idx = hit.firstIndex;
+    } else if (key) {
+      // Fallback for a tracked brand the detector didn't surface. Whole-word on
+      // purpose: a plain indexOf() matched "HP" inside "shipping", which
+      // silently inflated Visibility and handed the brand rank 1.
+      //
+      // Casing is then checked too, because several real brands ARE ordinary
+      // words — "Nothing", "Wild", "Boat", "Noise". A capitalised brand written
+      // in all-lowercase is the English word, not the company, so those hits are
+      // skipped. Under-counting is the right way to be wrong in a measurement
+      // tool, and this only ever runs when the detector found nothing.
+      const name = String(b.name);
+      const hasUpper = /[A-Z]/.test(name);
+      const re = new RegExp(`\\b${escapeRegExp(name)}\\b`, "gi");
+      let m;
+      while ((m = re.exec(text))) {
+        if (hasUpper && m[0] === m[0].toLowerCase()) continue;
+        idx = m.index;
+        break;
+      }
+    }
     // Present if the detector found it at all — including a count-0 carousel
-    // appearance — or if the literal name occurs in the answer text.
-    const idx = key ? lower.indexOf(String(b.name).toLowerCase()) : -1;
+    // appearance — or if the name occurs as a whole word in the answer text.
     const present = !!hit || idx >= 0;
     const dom = domainOfUrl(b.url);
     const citedSource = dom ? sources.some((s) => domainMatches(s.domain, dom) && s.outcome === "cited") : false;

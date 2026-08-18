@@ -19,7 +19,7 @@
             </div>
             <div class="brand-text">
               <span class="brand-title">LLM Citation &amp; Fan-Out Checker</span>
-              <span class="version-badge">v0.24</span>
+              <span class="version-badge">v0.25</span>
               <span class="brand-sub">ChatGPT &amp; Gemini</span>
             </div>
           </div>
@@ -38,12 +38,8 @@
             <span>Dashboard</span>
           </button>
           <button class="nav-tab tab" data-tab="loader">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-            <span>Loader</span>
-          </button>
-          <button class="nav-tab tab" data-tab="tracking">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"></path><path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14.3"></path></svg>
-            <span>Tracking</span>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"></path><line x1="4" y1="22" x2="4" y2="3"></line></svg>
+            <span>Campaigns</span>
           </button>
           <button class="nav-tab tab" data-tab="compare">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>
@@ -59,50 +55,7 @@
       <main class="app-content">
         <section id="analyze" class="panel active"></section>
         <section id="dashboard" class="panel"></section>
-        <section id="loader" class="panel">
-          <div class="card">
-            <div class="card-header">
-              <h3>Prompt Loader — Automated Audit</h3>
-            </div>
-            <p class="muted">
-              Automates sending prompts to ChatGPT in sequence and captures fan-out queries and cited sources in real-time. Open a ChatGPT tab first, then click Start.
-            </p>
-            <div class="warn-box">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
-              <span>Automating ChatGPT submits prompts on your behalf. Use sparingly at human pace to keep your account safe.</span>
-            </div>
-            <div class="proj-row">
-              <input id="loaderProjectName" type="text" placeholder="Project name (e.g. Camera phones)" />
-              <select id="loaderProjectPick"><option value="">— load saved —</option></select>
-              <button id="loaderProjectSave" class="btn sm ghost">Save Project</button>
-              <button id="loaderProjectDelete" class="btn sm ghost danger" title="Delete selected project">Delete</button>
-            </div>
-            <textarea id="loaderPrompts" rows="7" placeholder="One prompt per line…&#10;best camera phone under 40000&#10;best foldable phone 2026"></textarea>
-            <div class="loader-settings" style="margin: 12px 0;">
-              <div style="font-weight: bold; margin-bottom: 6px; font-size: 12px;">Target Platforms:</div>
-              <div style="display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px;">
-                <label class="chk"><input type="checkbox" class="loader-platform" value="chatgpt" checked /> ChatGPT</label>
-                <label class="chk"><input type="checkbox" class="loader-platform" value="gemini" /> Gemini</label>
-              </div>
-              <div style="display: flex; gap: 16px;">
-                <label class="chk" title="Only works for ChatGPT currently"><input type="checkbox" id="loaderForceSearch" /> Force Web Search (ChatGPT)</label>
-                <label class="chk" title="Run browser in Incognito mode for unbiased results. Make sure to 'Allow in Incognito' for this extension in Chrome settings."><input type="checkbox" id="loaderIncognito" /> Run in Incognito Window</label>
-              </div>
-            </div>
-            <div class="loader-meta-row" style="margin-top: 8px;">
-              <div id="loaderCount" class="muted">0 prompts</div>
-            </div>
-            <div class="ft-actions" style="margin-top: 14px">
-              <button id="loaderStart" class="btn primary">▶ Start Audit</button>
-              <button id="loaderPause" class="btn ghost">⏸ Pause</button>
-              <button id="loaderResume" class="btn ghost">▶ Resume</button>
-              <button id="loaderStop" class="btn danger">■ Stop</button>
-            </div>
-            <div id="loaderStatus" class="status-msg"></div>
-          </div>
-        </section>
-
-        <section id="tracking" class="panel"></section>
+        <section id="loader" class="panel"></section>
 
         <section id="compare" class="panel">
           <div class="card">
@@ -131,21 +84,13 @@
         <section id="about" class="panel">
           <div class="card">
             <div class="card-header">
-              <h3>Your brand &amp; competitors</h3>
+              <h3>Capture settings</h3>
             </div>
             <p class="muted">
-              Brand detection is <b>fully automatic</b> for every industry — you don't
-              need to configure anything for the tool to find brands. Setting your brand
-              and competitors here simply labels them in results, so you can see your
-              share of voice against theirs. The URL lets cited domains be matched to
-              the right brand.
+              Brand detection is <b>fully automatic</b> for every industry — nothing to
+              configure there. Your brand, competitors, prompts and tracked LLMs now live
+              per campaign, set up from the Campaigns tab.
             </p>
-            <div class="proj-row">
-              <input id="setMyName" type="text" placeholder="Your brand name" />
-              <input id="setMyUrl" type="text" placeholder="yourbrand.com" />
-            </div>
-            <label class="muted" style="display:block;margin-top:10px">Competitors — one per line, as <code>name, url</code></label>
-            <textarea id="setCompetitors" rows="4" placeholder="Competitor Inc, competitor.com&#10;Rival Co, rival.io"></textarea>
             <div class="chk-row">
               <label class="chk"><input type="checkbox" id="setDebug" /> Enable capture debugger (verbose; off by default)</label>
             </div>
@@ -188,6 +133,17 @@
             </div>
             <div id="dbgLog" class="dbglog"></div>
           </div>
+
+          <!-- ==================== QA DIAGNOSTICS (temporary) ====================
+               Added for a one-off 200-prompt/20-industry stress test. Safe to
+               delete this whole card, plus the matching JS block in panel.js
+               (search "QA DIAGNOSTICS") and the "qa-audit" case in
+               src/background.js, once that's done. -->
+          <div class="card">
+            <button id="qaToggle" class="linkbtn" style="font-size:11px">🔧 QA Diagnostics (temporary, dev-only)</button>
+            <div id="qaPanel" style="display:none; margin-top:10px"></div>
+          </div>
+          <!-- ==================== /QA DIAGNOSTICS ==================== -->
         </section>
       </main>
 
