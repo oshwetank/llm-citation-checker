@@ -1448,7 +1448,7 @@ function renderDrilldown(recs) {
     const bar = el("div", { className: "dlbar" });
     bar.append(el("span", { className: "muted" }, `${rows.length} row${rows.length === 1 ? "" : "s"}`));
     const dl = el("button", { className: "btn sm ghost" }, "⬇ CSV");
-    dl.onclick = () => download(`lcfc-${exportName}-${Date.now()}.csv`, csvOf([headers, ...rows]), "text/csv");
+    dl.onclick = () => download(`citely-${exportName}-${Date.now()}.csv`, csvOf([headers, ...rows]), "text/csv");
     bar.append(dl);
     card.append(bar);
 
@@ -1788,7 +1788,7 @@ function renderDashboardImpl() {
     const val = dlPicker.value;
     if (!val) return;
     dlPicker.value = ""; // reset
-    if (val === "json") download(`lcfc-selected-${Date.now()}.json`, JSON.stringify(sel(), null, 2), "application/json");
+    if (val === "json") download(`citely-selected-${Date.now()}.json`, JSON.stringify(sel(), null, 2), "application/json");
     else if (val === "excel" || val === "csv") downloadDetailedFormat(sel(), val);
     else if (val === "html") await exportRecordsAsHtml(sel());
   };
@@ -2013,8 +2013,8 @@ async function exportRecordsAsHtml(records) {
   const docTitle = full.length === 1 ? models[0].prompt : `${full.length} conversations`;
   const html = renderStandaloneHtml(models, { docTitle });
   const name = full.length === 1
-    ? `lcfc-conversation-${full[0].captureId.slice(0, 8)}.html`
-    : `lcfc-conversations-${full.length}-${Date.now()}.html`;
+    ? `citely-conversation-${full[0].captureId.slice(0, 8)}.html`
+    : `citely-conversations-${full.length}-${Date.now()}.html`;
   download(name, html, "text/html");
 }
 
@@ -2035,7 +2035,7 @@ function sanitizeXML(s) {
 
 function downloadDetailedFormat(records, format) {
   if (format === "csv") {
-    let output = `LLM Citation Audit Log,,,,,,,,,,\n"Prompt-level tracking of ChatGPT search behaviour, cited vs. fetched sources, and query fan-out",,,,,,,,,,\n,,,,,,,,,,\n#,Date,Time,Platform,User Prompt,Search Used,Cited Sources,Cited Count,Fetched Sources,Fetched Count,Total Sources,Fan-Out Query\n`;
+    let output = `Citely Audit Log,,,,,,,,,,\n"Prompt-level tracking of ChatGPT search behaviour, cited vs. fetched sources, and query fan-out",,,,,,,,,,\n,,,,,,,,,,\n#,Date,Time,Platform,User Prompt,Search Used,Cited Sources,Cited Count,Fetched Sources,Fetched Count,Total Sources,Fan-Out Query\n`;
     records.forEach((r, i) => {
       const d = new Date(r.capturedAt);
       const dateStr = d.toLocaleDateString("en-GB", {day:"2-digit", month:"short", year:"numeric"}).replace(/ /g, '-');
@@ -2046,7 +2046,7 @@ function downloadDetailedFormat(records, format) {
       const row = [i + 1, dateStr, timeStr, r.platform || "chatgpt", `"${(r.userPrompt || "").replace(/"/g, '""')}"`, r.searched ? "Yes" : "No", `"${cited}"`, r.sources.filter(s => s.outcome === "cited").length, `"${fetched}"`, r.sources.filter(s => s.outcome === "fetched" || s.outcome === "news").length, r.sources.length, `"${fan.replace(/"/g, '""')}"`];
       output += row.join(",") + "\n";
     });
-    download(`lcfc-audit-${Date.now()}.csv`, output, "text/csv");
+    download(`citely-audit-${Date.now()}.csv`, output, "text/csv");
     return;
   }
   
@@ -2143,7 +2143,7 @@ function downloadDetailedFormat(records, format) {
   xml += ` <Worksheet ss:Name="Summary">
   <Table>
    <Column ss:Width="170"/><Column ss:Width="90"/><Column ss:Width="30"/><Column ss:Width="250"/><Column ss:Width="70"/><Column ss:Width="70"/><Column ss:Width="70"/><Column ss:Width="70"/>
-   <Row><Cell ss:StyleID="sTitle"><Data ss:Type="String">GEO Citation Audit  |  Summary</Data></Cell></Row>
+   <Row><Cell ss:StyleID="sTitle"><Data ss:Type="String">Citely Audit | Summary</Data></Cell></Row>
    <Row><Cell><Data ss:Type="String">Session-level rollup of search behaviour.</Data></Cell></Row>
    <Row></Row>
    <Row>
@@ -2208,7 +2208,7 @@ function downloadDetailedFormat(records, format) {
    <Column ss:Width="30"/><Column ss:Width="80"/><Column ss:Width="60"/><Column ss:Width="80"/>
    <Column ss:Width="250"/><Column ss:Width="60"/><Column ss:Width="250"/><Column ss:Width="50"/>
    <Column ss:Width="250"/><Column ss:Width="50"/><Column ss:Width="50"/><Column ss:Width="250"/>
-   <Row><Cell ss:StyleID="sTitle"><Data ss:Type="String">GEO Citation Audit  |  Audit Log</Data></Cell></Row>
+   <Row><Cell ss:StyleID="sTitle"><Data ss:Type="String">Citely Audit | Audit Log</Data></Cell></Row>
    <Row><Cell><Data ss:Type="String">Prompt-level tracking of search behaviour</Data></Cell></Row>
    <Row></Row>
    <Row ss:StyleID="sHeader">
@@ -2255,7 +2255,7 @@ function downloadDetailedFormat(records, format) {
   xml += ` <Worksheet ss:Name="Source Analysis">
   <Table>
    <Column ss:Width="40"/><Column ss:Width="180"/><Column ss:Width="80"/><Column ss:Width="80"/><Column ss:Width="100"/><Column ss:Width="90"/><Column ss:Width="90"/>
-   <Row><Cell ss:StyleID="sTitle"><Data ss:Type="String">GEO Citation Audit  |  Source Analysis</Data></Cell></Row>
+   <Row><Cell ss:StyleID="sTitle"><Data ss:Type="String">Citely Audit | Source Analysis</Data></Cell></Row>
    <Row><Cell><Data ss:Type="String">Domain-level frequency across every cited and fetched source</Data></Cell></Row>
    <Row></Row>
    <Row ss:StyleID="sHeader">
@@ -2290,7 +2290,7 @@ function downloadDetailedFormat(records, format) {
   xml += ` <Worksheet ss:Name="Domain Data">
   <Table>
    <Column ss:Width="60"/><Column ss:Width="80"/><Column ss:Width="200"/><Column ss:Width="250"/>
-   <Row><Cell ss:StyleID="sTitle"><Data ss:Type="String">GEO Citation Audit  |  Domain Data</Data></Cell></Row>
+   <Row><Cell ss:StyleID="sTitle"><Data ss:Type="String">Citely Audit | Domain Data</Data></Cell></Row>
    <Row><Cell><Data ss:Type="String">Raw extract — one row per domain appearance.</Data></Cell></Row>
    <Row></Row>
    <Row ss:StyleID="sHeader">
@@ -2320,7 +2320,7 @@ function downloadDetailedFormat(records, format) {
   const addSheet = (name, subtitle, widths, headers, rows) => {
     xml += ` <Worksheet ss:Name="${sanitizeXML(name)}">\n  <Table>\n`;
     widths.forEach((w) => (xml += `   <Column ss:Width="${w}"/>`));
-    xml += `\n   <Row><Cell ss:StyleID="sTitle"><Data ss:Type="String">GEO Citation Audit  |  ${sanitizeXML(name)}</Data></Cell></Row>\n`;
+    xml += `\n   <Row><Cell ss:StyleID="sTitle"><Data ss:Type="String">Citely Audit | ${sanitizeXML(name)}</Data></Cell></Row>\n`;
     xml += `   <Row><Cell><Data ss:Type="String">${sanitizeXML(subtitle)}</Data></Cell></Row>\n   <Row></Row>\n`;
     xml += `   <Row ss:StyleID="sHeader">\n`;
     headers.forEach((h) => (xml += `    <Cell><Data ss:Type="String">${sanitizeXML(h)}</Data></Cell>\n`));
@@ -2437,17 +2437,17 @@ function downloadDetailedFormat(records, format) {
     answerRows);
 
   xml += `</Workbook>`;
-  download(`lcfc-audit-${Date.now()}.xls`, xml, "application/vnd.ms-excel");
+  download(`citely-audit-${Date.now()}.xls`, xml, "application/vnd.ms-excel");
 }
 
 async function downloadRaw(captureId, label) {
   const r = await send({ type: "get-raw", captureId });
   if (!r.ok || r.raw == null) { alert("No raw payload stored for this capture."); return; }
   const header =
-    `# LCFC raw capture ${captureId}\n` +
+    `# Citely raw capture ${captureId}\n` +
     `# url: ${r.meta?.url || ""}\n` +
     `# reqBody: ${r.meta?.reqBody || ""}\n\n`;
-  download(`lcfc-raw-${label || captureId}.txt`, header + r.raw, "text/plain");
+  download(`citely-raw-${label || captureId}.txt`, header + r.raw, "text/plain");
 }
 function toCsv(records) {
   const rows = [["capturedAt", "platform", "model", "prompt", "searched", "fanoutCount", "sourceCount"]];
@@ -3360,7 +3360,7 @@ $("#openTab").addEventListener("click", () =>
   chrome.tabs.create({ url: chrome.runtime.getURL("ui/panel.html") })
 );
 $("#exportJson")?.addEventListener("click", () =>
-  download(`lcfc-export-${Date.now()}.json`, JSON.stringify(currentFilteredRecs, null, 2), "application/json")
+  download(`citely-export-${Date.now()}.json`, JSON.stringify(currentFilteredRecs, null, 2), "application/json")
 );
 $("#exportExcel")?.addEventListener("click", () => {
   if (!currentFilteredRecs.length) return alert("No data to export");
@@ -3752,7 +3752,7 @@ function renderCompare() {
     const rows = [["prompt", "type", "name", ...caps.map((r, i) => `#${i + 1} ${new Date(r.capturedAt).toISOString()}`), "delta"]];
     brandRows.forEach((r) => rows.push([timeline.label, "brand", r.name, ...r.values.map((v) => v.label), r.delta]));
     domRows.forEach((r) => rows.push([timeline.label, "domain", r.name, ...r.values.map((v) => v.label), r.delta]));
-    download(`lcfc-timeline-${Date.now()}.csv`, csvOf(rows), "text/csv");
+    download(`citely-timeline-${Date.now()}.csv`, csvOf(rows), "text/csv");
   };
   bar.append(dl);
   out.append(el("div", { className: "card" }, bar));
