@@ -888,66 +888,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
 
-        // ==================== QA DIAGNOSTICS (temporary) ====================
-        // Added for a one-off 200-prompt/20-industry stress test; safe to
-        // delete this case (and the "QA Diagnostics" card in ui/panel.js /
-        // panel.html's About section) once that's done. Every check below
-        // reads fields the schema already carries — nothing here infers or
-        // fabricates a "bug," it only surfaces signals (some, like
-        // _extraction.usedFallback, were already being recorded and never
-        // shown anywhere) for a human to look at.
-        case "qa-audit": {
-          const all = await db.getAll("derived");
-          const perCheck = {}; // name -> { count, byIndustry: {}, byPlatform: {}, examples: [] }
-          const bump = (name, industry, platform, captureId) => {
-            const c = (perCheck[name] ||= { count: 0, byIndustry: {}, byPlatform: {}, examples: [] });
-            c.count++;
-            c.byIndustry[industry] = (c.byIndustry[industry] || 0) + 1;
-            c.byPlatform[platform] = (c.byPlatform[platform] || 0) + 1;
-            if (c.examples.length < 15) c.examples.push(captureId);
-          };
-
-          const byPlatform = {};
-          const byIndustry = {};
-          for (const r of all) {
-            byPlatform[r.platform] = (byPlatform[r.platform] || 0) + 1;
-            const industry = (r.geo && r.geo.tags && r.geo.tags[0]) || "(untagged / ad-hoc)";
-            byIndustry[industry] = (byIndustry[industry] || 0) + 1;
-            const b = (name) => bump(name, industry, r.platform, r.captureId);
-
-            if (r.searched && (!r.sources || r.sources.length === 0)) b("searched but zero sources");
-            if (r.sources && r.sources.length > 0 && (!r.brandMentions || r.brandMentions.length === 0)) b("sources present but zero brand mentions");
-            if ((r.answerChars || 0) > 0 && !(r.answerText && r.answerText.length)) b("answerChars>0 but answerText empty");
-            if (r._extraction && r._extraction.usedFallback) b("adapter used its fallback parser");
-            // Notes that record a KNOWN platform limitation are not anomalies —
-            // they are the adapter saying "I looked, and this engine doesn't
-            // publish it." Counting them buries the real drift signals.
-            const notes = ((r._extraction && r._extraction.notes) || []).filter(
-              (n) => !/platform limitation/i.test(String(n))
-            );
-            if (notes.length) b("adapter recorded extraction notes");
-            // Gemini never publishes the sub-queries it ran (see extractFanout
-            // in adapters/gemini.js), so flagging its captures here would mean
-            // ~half of every audit is a finding that can never be fixed. Only
-            // ChatGPT, which does have a structured field, is checked.
-            if (r.platform !== "gemini" && r.searched &&
-                (!r.fanout || (!r.fanout.search.length && !r.fanout.shopping.length && !r.fanout.image.length))) {
-              b("searched but zero fan-out queries captured");
-            }
-            if (!r.pageUrl) b("missing pageUrl (breaks deep-link jumps)");
-            if (r.geo && !r.userPrompt) b("tracked capture missing userPrompt");
-          }
-
-          sendResponse({
-            ok: true,
-            totalRecords: all.length,
-            byPlatform,
-            byIndustry,
-            checks: perCheck,
-          });
-          break;
-        }
-        // ==================== /QA DIAGNOSTICS ====================
         case "get-raw": {
           const row = await db.get("raw", msg.captureId);
           const raw = row ? await gunzipToString(row.gz) : null;
