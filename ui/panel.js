@@ -1448,7 +1448,7 @@ function renderDrilldown(recs) {
     const bar = el("div", { className: "dlbar" });
     bar.append(el("span", { className: "muted" }, `${rows.length} row${rows.length === 1 ? "" : "s"}`));
     const dl = el("button", { className: "btn sm ghost" }, "⬇ CSV");
-    dl.onclick = () => download(`lcfc-${exportName}-${Date.now()}.csv`, csvOf([headers, ...rows]), "text/csv");
+    dl.onclick = () => download(`citoskeleton-${exportName}-${Date.now()}.csv`, csvOf([headers, ...rows]), "text/csv");
     bar.append(dl);
     card.append(bar);
 
@@ -1788,7 +1788,7 @@ function renderDashboardImpl() {
     const val = dlPicker.value;
     if (!val) return;
     dlPicker.value = ""; // reset
-    if (val === "json") download(`lcfc-selected-${Date.now()}.json`, JSON.stringify(sel(), null, 2), "application/json");
+    if (val === "json") download(`citoskeleton-selected-${Date.now()}.json`, JSON.stringify(sel(), null, 2), "application/json");
     else if (val === "excel" || val === "csv") downloadDetailedFormat(sel(), val);
     else if (val === "html") await exportRecordsAsHtml(sel());
   };
@@ -2013,8 +2013,8 @@ async function exportRecordsAsHtml(records) {
   const docTitle = full.length === 1 ? models[0].prompt : `${full.length} conversations`;
   const html = renderStandaloneHtml(models, { docTitle });
   const name = full.length === 1
-    ? `lcfc-conversation-${full[0].captureId.slice(0, 8)}.html`
-    : `lcfc-conversations-${full.length}-${Date.now()}.html`;
+    ? `citoskeleton-conversation-${full[0].captureId.slice(0, 8)}.html`
+    : `citoskeleton-conversations-${full.length}-${Date.now()}.html`;
   download(name, html, "text/html");
 }
 
@@ -2035,7 +2035,7 @@ function sanitizeXML(s) {
 
 function downloadDetailedFormat(records, format) {
   if (format === "csv") {
-    let output = `LLM Citation Audit Log,,,,,,,,,,\n"Prompt-level tracking of ChatGPT search behaviour, cited vs. fetched sources, and query fan-out",,,,,,,,,,\n,,,,,,,,,,\n#,Date,Time,Platform,User Prompt,Search Used,Cited Sources,Cited Count,Fetched Sources,Fetched Count,Total Sources,Fan-Out Query\n`;
+    let output = `CitoSkeleton Audit Log,,,,,,,,,,\n"Prompt-level tracking of ChatGPT search behaviour, cited vs. fetched sources, and query fan-out",,,,,,,,,,\n,,,,,,,,,,\n#,Date,Time,Platform,User Prompt,Search Used,Cited Sources,Cited Count,Fetched Sources,Fetched Count,Total Sources,Fan-Out Query\n`;
     records.forEach((r, i) => {
       const d = new Date(r.capturedAt);
       const dateStr = d.toLocaleDateString("en-GB", {day:"2-digit", month:"short", year:"numeric"}).replace(/ /g, '-');
@@ -2046,7 +2046,7 @@ function downloadDetailedFormat(records, format) {
       const row = [i + 1, dateStr, timeStr, r.platform || "chatgpt", `"${(r.userPrompt || "").replace(/"/g, '""')}"`, r.searched ? "Yes" : "No", `"${cited}"`, r.sources.filter(s => s.outcome === "cited").length, `"${fetched}"`, r.sources.filter(s => s.outcome === "fetched" || s.outcome === "news").length, r.sources.length, `"${fan.replace(/"/g, '""')}"`];
       output += row.join(",") + "\n";
     });
-    download(`lcfc-audit-${Date.now()}.csv`, output, "text/csv");
+    download(`citoskeleton-audit-${Date.now()}.csv`, output, "text/csv");
     return;
   }
   
@@ -2437,17 +2437,17 @@ function downloadDetailedFormat(records, format) {
     answerRows);
 
   xml += `</Workbook>`;
-  download(`lcfc-audit-${Date.now()}.xls`, xml, "application/vnd.ms-excel");
+  download(`citoskeleton-audit-${Date.now()}.xls`, xml, "application/vnd.ms-excel");
 }
 
 async function downloadRaw(captureId, label) {
   const r = await send({ type: "get-raw", captureId });
   if (!r.ok || r.raw == null) { alert("No raw payload stored for this capture."); return; }
   const header =
-    `# LCFC raw capture ${captureId}\n` +
+    `# CitoSkeleton raw capture ${captureId}\n` +
     `# url: ${r.meta?.url || ""}\n` +
     `# reqBody: ${r.meta?.reqBody || ""}\n\n`;
-  download(`lcfc-raw-${label || captureId}.txt`, header + r.raw, "text/plain");
+  download(`citoskeleton-raw-${label || captureId}.txt`, header + r.raw, "text/plain");
 }
 function toCsv(records) {
   const rows = [["capturedAt", "platform", "model", "prompt", "searched", "fanoutCount", "sourceCount"]];
@@ -3138,7 +3138,7 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
   dl.onclick = () => {
     const rows = [["Brand", "Is own", "Visibility %", "Share of Voice %", "Mentions", "Avg position", "Citations", "Source visibility %", "Responses present", "Total responses"]];
     m.brands.forEach((b) => rows.push([b.name, b.isOwn ? "yes" : "no", b.visibility.toFixed(2), b.shareOfVoice.toFixed(2), b.mentions, b.avgPosition == null ? "" : b.avgPosition.toFixed(2), b.citations, b.sourceVisibility.toFixed(2), b.responsesPresent, m.totalResponses]));
-    download(`citely-tracking-${profile.name.replace(/\W+/g, "-")}-${Date.now()}.csv`, csvOf(rows), "text/csv");
+    download(`citoskeleton-tracking-${profile.name.replace(/\W+/g, "-")}-${Date.now()}.csv`, csvOf(rows), "text/csv");
   };
   mc.append(dl);
 }
@@ -3360,7 +3360,7 @@ $("#openTab").addEventListener("click", () =>
   chrome.tabs.create({ url: chrome.runtime.getURL("ui/panel.html") })
 );
 $("#exportJson")?.addEventListener("click", () =>
-  download(`lcfc-export-${Date.now()}.json`, JSON.stringify(currentFilteredRecs, null, 2), "application/json")
+  download(`citoskeleton-export-${Date.now()}.json`, JSON.stringify(currentFilteredRecs, null, 2), "application/json")
 );
 $("#exportExcel")?.addEventListener("click", () => {
   if (!currentFilteredRecs.length) return alert("No data to export");
@@ -3544,7 +3544,7 @@ function renderQaPanel() {
   exportBtn.onclick = () => {
     if (!qaLastAudit && !qaLastRenderTest) { alert("Run at least one check first."); return; }
     const report = { generatedAt: new Date().toISOString(), audit: qaLastAudit, renderSelfTest: qaLastRenderTest };
-    download(`lcfc-qa-report-${Date.now()}.json`, JSON.stringify(report, null, 2), "application/json");
+    download(`citoskeleton-qa-report-${Date.now()}.json`, JSON.stringify(report, null, 2), "application/json");
   };
 }
 
@@ -3901,7 +3901,7 @@ function renderCompare() {
     const rows = [["prompt", "type", "name", ...caps.map((r, i) => `#${i + 1} ${new Date(r.capturedAt).toISOString()}`), "delta"]];
     brandRows.forEach((r) => rows.push([timeline.label, "brand", r.name, ...r.values.map((v) => v.label), r.delta]));
     domRows.forEach((r) => rows.push([timeline.label, "domain", r.name, ...r.values.map((v) => v.label), r.delta]));
-    download(`lcfc-timeline-${Date.now()}.csv`, csvOf(rows), "text/csv");
+    download(`citoskeleton-timeline-${Date.now()}.csv`, csvOf(rows), "text/csv");
   };
   bar.append(dl);
   out.append(el("div", { className: "card" }, bar));

@@ -1,4 +1,4 @@
-# LLM Citation & Fan-Out Checker — Deep Research
+# CitoSkeleton — Deep Research
 
 **Date:** 2026-07-14
 **Question:** Can we build a browser extension that captures query fan-out, cited/referenced sources, and related signals across ChatGPT, Gemini, Claude, Grok, and Perplexity — like RESONEO's "ChatGPT Search & Fan-outs Capture" but multi-platform?

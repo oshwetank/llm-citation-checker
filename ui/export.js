@@ -45,7 +45,7 @@ async function main() {
   // an empty export would be silently indistinguishable from "it worked".
   const hollow = records.filter((r) => !r.answerText && (r.answerChars || 0) > 0);
   if (hollow.length) {
-    console.warn("lcfc export: some records had no answerText despite answerChars > 0", hollow.map((r) => r.captureId));
+    console.warn("CitoSkeleton export: some records had no answerText despite answerChars > 0", hollow.map((r) => r.captureId));
   }
 
   const models = records.map(buildExportModel);
@@ -64,7 +64,7 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("lcfc export failed", err);
+  console.error("CitoSkeleton export failed", err);
   const root = document.getElementById("root");
   if (root) root.textContent = "Something went wrong building the export. Check the console for details.";
 });

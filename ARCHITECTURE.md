@@ -1,4 +1,4 @@
-# LLM Citation & Fan-Out Checker — v1 Architecture
+# CitoSkeleton — v1 Architecture
 
 **Date:** 2026-07-14
 **Status:** Approved for build (pending final go-ahead)

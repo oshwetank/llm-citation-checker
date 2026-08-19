@@ -1,4 +1,4 @@
-# LLM Citation & Fan-Out Checker
+# CitoSkeleton
 
 A Chrome (MV3) extension that **passively** captures ChatGPT's search **query fan-out**
 and the **sources it cites/fetches/mentions** — storing everything **locally on your
@@ -27,7 +27,7 @@ remote code, so a parser fix means a new store submission; your data survives th
 
 1. Go to `chrome://extensions`.
 2. Enable **Developer mode** (top-right).
-3. **Load unpacked** → select this folder (`LLM Citation Checker`).
+3. **Load unpacked** → select this project folder.
 4. Pin the extension. Open **ChatGPT in a NEW tab** (the patch must install before the
    page loads), run a query that triggers a web search, then click the extension icon.
 
