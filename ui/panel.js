@@ -142,7 +142,23 @@ async function openCapture(captureId) {
 }
 
 async function load() {
-  const res = await send({ type: "get-records" });
+  // Every fetch below is a full chrome.runtime.sendMessage round trip to the
+  // service worker (which may need to cold-start after being idle — MV3
+  // service workers get killed after ~30s), and get-records specifically
+  // scans the ENTIRE derived store on every call with no cap or pagination.
+  // These four calls are mutually independent (none reads another's result),
+  // but used to run strictly one-after-another via sequential awaits — 4-6
+  // chained round trips before anything painted. That's exactly what "won't
+  // open on one click" feels like, and get-records' cost grows with total
+  // captures stored, so it also gets slower the more the extension is used.
+  // Firing them concurrently caps the wait at the slowest ONE of them
+  // instead of the sum of all of them.
+  const recordsP = send({ type: "get-records" });
+  const projectsP = send({ type: "project-list" });
+  const statsP = send({ type: "stats" });
+  const geoP = loadGeo(); // self-contained: fetches its own data, renders Campaigns itself
+
+  const res = await recordsP;
   // ISOLATION — the one place tracking data is separated from browsing data.
   // Everything downstream (Analyze, Dashboard, Compare, every export, the
   // drill-downs) reads RECORDS, so filtering here means a brand-tracking run
@@ -154,15 +170,21 @@ async function load() {
   const parts = partitionRecords(all);
   RECORDS = includeTrackedInAdhoc ? all : parts.adhoc;
   TRACKED_COUNT = parts.tracked.length;
-  const pr = await send({ type: "project-list" });
-  PROJECTS = pr.ok ? pr.projects : [];
-  await loadGeo(); // populates GEO_PROFILES/GEO_PROMPTS so Dashboard can show campaign performance
-  // Pre-hydrate whichever capture Analyze is about to show.
+
+  // Paint Analyze — the default-visible tab — the moment ITS OWN data
+  // (RECORDS + the hydrated capture) is ready. renderAnalyze() reads only
+  // RECORDS/FULL, never PROJECTS or GEO_*, so there's no reason the very
+  // first thing a user sees should wait on project-list/geo/stats too.
   const showing = viewingId || (RECORDS[0] && RECORDS[0].captureId);
   await hydrate(showing);
   renderAnalyze();
+
+  const pr = await projectsP;
+  PROJECTS = pr.ok ? pr.projects : [];
+  await geoP; // populates GEO_PROFILES/GEO_PROMPTS so Dashboard can show campaign performance
   renderDashboard();
-  const s = await send({ type: "stats" });
+
+  const s = await statsP;
   const st = $("#status");
   if (st) st.textContent = s.ok ? `${s.derived} captures stored` : "";
   renderStorageInfo(s);

@@ -1,4 +1,6 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+/* Font stylesheet is loaded once via a <link> in panel.html's <head> (before
+   this file is even linked) — an @import of the identical URL used to sit
+   here too, fetching Google Fonts' CSS a second time on every popup open. */
 
 :root {
   /* ── Glass Surface & Background ──
