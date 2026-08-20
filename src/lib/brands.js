@@ -182,6 +182,43 @@ export function structuralCandidates(answerText) {
 }
 
 /* ---------- 4. cited domains ---------- */
+// Pure horizontal marketplaces and B2B listing directories: platforms that
+// host OTHER companies' products/listings across every vertical, rather than
+// making anything themselves. A source citing amazon.in or dir.indiamart.com
+// is telling you where the answer's information came from, not naming a
+// brand being evaluated — so these never become brand candidates no matter
+// how their name is written in the prose. Deliberately narrow and global:
+// each entry is unambiguous in EVERY industry, unlike a vertical-specific
+// retailer (Croma, Reliance Digital, Nykaa) which this project keeps out of
+// the core detector on purpose — see ui/panel.js's Search Funnel vocabulary.
+const MARKETPLACE_DOMAINS = new Set([
+  "amazon.com", "amazon.in", "amazon.co.uk", "amazon.ae", "amazon.de", "amazon.ca",
+  "flipkart.com", "myntra.com", "meesho.com", "snapdeal.com", "shopclues.com",
+  "ebay.com", "ebay.in", "walmart.com", "aliexpress.com", "alibaba.com", "etsy.com",
+  "jiomart.com", "olx.in", "olx.com", "quikr.com",
+  "indiamart.com", "tradeindia.com", "exportersindia.com", "justdial.com",
+  "dhgate.com", "made-in-china.com", "wish.com", "rakuten.com",
+]);
+
+function isMarketplaceDomain(domain) {
+  const host = String(domain || "").trim().toLowerCase().replace(/^www\./, "");
+  if (!host) return false;
+  for (const d of MARKETPLACE_DOMAINS) {
+    if (host === d || host.endsWith("." + d)) return true;
+  }
+  return false;
+}
+
+// Same platforms as MARKETPLACE_DOMAINS, matched by bare name instead of
+// hostname — for the merchant FIELD on a product card, which is a plain
+// string ("Amazon.in", "PNG Jewellers", "Mia by Tanishq"), not a URL. Only
+// the leading word is checked, since that's what identifies the seller.
+const MARKETPLACE_NAME_RE =
+  /^(amazon|flipkart|myntra|meesho|snapdeal|shopclues|ebay|walmart|aliexpress|alibaba|etsy|jiomart|olx|quikr|indiamart|tradeindia|exportersindia|justdial|dhgate|wish|rakuten)\b/i;
+function isMarketplaceName(name) {
+  return MARKETPLACE_NAME_RE.test(String(name || "").trim());
+}
+
 // Second-level registry labels that are never themselves the brand:
 // "example.co.uk", "woolworths.com.au", "dbs.com.sg", "toyota.co.jp".
 // Everything NOT in this set is treated as a public suffix, so the label
@@ -278,15 +315,41 @@ const CATEGORY_PLURAL_NOUNS = new Set([
   "brands", "perfumes", "fragrances", "colognes", "necklaces", "sarees", "kurtas",
   "jewellers", "jewelers", "shops", "restaurants", "cafes", "hotels",
 ]);
+// True when a phrase's LAST word marks it as a category rather than a brand
+// ("Contemporary Gold Necklaces", "Chunky Statement Rings"). Split out of
+// looksLikeProperName so the structural-candidate fallback below can run the
+// same check on phrases too long to be a whole proper name.
+function endsInCategoryNoun(phrase) {
+  const words = String(phrase || "").trim().split(/\s+/);
+  if (words.length < 2) return false;
+  const last = words[words.length - 1].replace(/[^\w]/g, "").toLowerCase();
+  return CATEGORY_PLURAL_NOUNS.has(last);
+}
+
+// Whether the words AFTER the first one still read as a name rather than
+// prose — "Britannia The Original Bourbon" (The/Original/Bourbon all
+// capitalized) vs "Camera quality (day & night)" (quality/day/night all
+// lowercase, an aspect heading, not a brand). Word 0 is deliberately not
+// checked here: a stylized brand like "iQOO" doesn't start with an
+// uppercase letter, so requiring it too would reject the very brand names
+// this exists to catch. Used by the long-phrase structural fallback below,
+// which can't apply looksLikeProperName's word-0 test or its ≤3-word cap.
+function restReadsAsName(phrase) {
+  const words = String(phrase || "").trim().split(/\s+/);
+  const CONNECTORS = new Set(["of", "and", "&", "for", "de", "la", "by", "the"]);
+  return words.slice(1).every((w) => {
+    const c = w.replace(/[^\w&]/g, "");
+    if (!c) return true; // pure punctuation token ("(day" stripped to "day" elsewhere; guard anyway)
+    if (CONNECTORS.has(c.toLowerCase())) return true;
+    return /^[A-Z0-9]/.test(c);
+  });
+}
+
 export function looksLikeProperName(phrase) {
   const words = String(phrase || "").trim().split(/\s+/);
   if (!words.length || words.length > 3) return false;
   if (/\d/.test(phrase)) return false;
-  // A multi-word phrase ending in a category noun is a heading, not a brand.
-  if (words.length > 1) {
-    const last = words[words.length - 1].replace(/[^\w]/g, "").toLowerCase();
-    if (CATEGORY_PLURAL_NOUNS.has(last)) return false;
-  }
+  if (endsInCategoryNoun(phrase)) return false;
   const CONNECTORS = new Set(["of", "and", "&", "for", "de", "la", "by"]);
   return words.every((w, i) => {
     const c = w.replace(/[^\w&]/g, "");
@@ -351,35 +414,81 @@ export function detectBrands(answerText, plainText, ctx = {}) {
   // products silently vanish (0 text hits → dropped) despite being shown to the user.
   productNames.forEach((p) => addCand(vendorFromProductName(p), "product_vendor", null, "default", true));
   (ctx.products || []).forEach((p) => {
-    // shownOnly only for the product's actual BRAND (manufacturer) — a retailer
-    // that merely sells it (Amazon, Croma, Flipkart) isn't the brand being
-    // evaluated, and giving it the same 0-count fallback would clutter Brand
-    // Mentions with sellers instead of makers.
+    // shownOnly only for the product's actual BRAND (manufacturer) — a
+    // marketplace that merely sells it (Amazon, Flipkart) isn't the brand
+    // being evaluated, and giving it the same 0-count fallback would clutter
+    // Brand Mentions with the platform instead of the maker.
+    //
+    // When `brand` is empty the `merchant` field is still checked, but ONLY
+    // when it isn't itself a marketplace — most merchants in real payloads
+    // are legitimate, specific sellers ("PNG Jewellers", "Mia by Tanishq",
+    // "Quirksmith") that are frequently the ONLY brand signal a product
+    // card carries, and skipping them entirely regressed to a strictly
+    // worse guess (the product title's leading adjective — "Modern Gold
+    // Drape Bar Necklace" as a product with no brand field produced the
+    // fake brand "Modern" once the merchant fallback was removed outright).
+    // A marketplace merchant ("Amazon.in") is excluded the same way a
+    // marketplace CITED DOMAIN is below, so "available on Amazon" can't
+    // turn the platform into a reported competitor.
     if (p.brand) addCand(p.brand, "product_vendor", null, "default", true);
-    else if (p.merchant) addCand(String(p.merchant).split(/[+,]/)[0].trim(), "product_vendor");
-    else addCand(vendorFromProductName(p.name), "product_vendor", null, "default", true);
+    else if (p.merchant && !isMarketplaceName(p.merchant)) {
+      addCand(String(p.merchant).split(/[+,]/)[0].trim(), "product_vendor");
+    } else {
+      addCand(vendorFromProductName(p.name), "product_vendor", null, "default", true);
+    }
   });
   // Local/place answers: the businesses themselves are the brands (structured
   // listing data, not a text guess — trusted, long names OK, and "shown" by definition).
   (ctx.places || []).forEach((pl) => addCand(pl.name, "place", null, "trusted", true));
   // 3. structure. Keep a phrase whole when it reads like a proper name
-  // ("Angel One", "Third Wave Coffee"). Otherwise only fall back to its leading
-  // token when the phrase carries a model number ("Vivo V70" → "Vivo"), which is
-  // the signature of brand+model. A digit-free phrase that isn't a proper name is
-  // a category heading ("Contemporary Gold Necklaces") and is dropped. This is
-  // the least reliable signal, so it gets the tightest length cap.
+  // ("Angel One", "Third Wave Coffee"). Otherwise fall back to its leading
+  // token — the signature of brand+product, whether that's a model number
+  // ("Vivo V70" → "Vivo") or a longer product line with no digit at all
+  // ("Britannia The Original Bourbon" → "Britannia", "Sunfeast Dark Fantasy
+  // Bourbon" → "Sunfeast"). The digit check used to gate this fallback
+  // entirely, so any 4-plus-word bold heading with no digit — a completely
+  // ordinary shape for a table of brand names — was silently dropped: the
+  // exact failure that took Britannia and Sunfeast out of Brand Mentions on
+  // a real capture while lower-billed competitors it happened to name in
+  // 2-3 words survived. A digit-free phrase that isn't a proper name is
+  // still dropped when it reads as a CATEGORY ("Contemporary Gold
+  // Necklaces") rather than a brand+product line — same rule
+  // looksLikeProperName uses for short phrases, reused here so long ones
+  // get it too. This is the least reliable signal, so it gets the tightest
+  // length cap (enforced by structuralCandidates itself, 40 chars).
   structuralCandidates(answerText || "").forEach((s) => {
     // A heading sometimes names two alternatives at once ("Google Sheets / Excel",
     // "GIMP / Photoshop") — treat each side of " / " as its own candidate instead
     // of evaluating the joined phrase as one (wrong) name.
     const parts = / \/ /.test(s) ? s.split(/ \/ /).map((p) => p.trim()).filter(Boolean) : [s];
     for (const part of parts) {
-      if (looksLikeProperName(part)) addCand(part, null, null, "structural");
-      else if (/\d/.test(part)) addCand(vendorFromProductName(part), null, null, "structural");
+      if (looksLikeProperName(part)) { addCand(part, null, null, "structural"); continue; }
+      // Long-phrase fallback needs BOTH: not a category heading, and every
+      // word past the first still reads as part of a name. Category alone
+      // isn't enough — "Camera quality (day & night)" and "diamond bridal
+      // jewellery" end in no listed category noun at all, they're just
+      // ordinary prose, which restReadsAsName is what actually catches.
+      if (!endsInCategoryNoun(part) && restReadsAsName(part)) {
+        addCand(vendorFromProductName(part), null, null, "structural");
+      }
     }
   });
-  // 4. cited domains
-  (ctx.sources || []).forEach((s) => addCand(brandFromDomain(s.domain), "cited_domain"));
+  // 4. cited domains. A cited source is where an answer got its information —
+  // not automatically a brand being evaluated. Horizontal marketplaces and B2B
+  // listing directories (Amazon, Flipkart, IndiaMART, eBay…) turn up as sources
+  // constantly, in every vertical, simply because they host product listings —
+  // and when their name also appears in the prose ("available on Amazon"),
+  // domain-derived detection reported the PLATFORM as a mentioned brand
+  // alongside the real competitors the answer was actually comparing. Unlike
+  // the vertical-specific retailer lists this project has deliberately avoided
+  // elsewhere (Croma, Reliance Digital — see ui/panel.js), these are pure
+  // horizontal platforms with no manufactured product of their own in ANY
+  // industry, so excluding them by domain is a structural fact, not an
+  // industry-specific guess.
+  (ctx.sources || []).forEach((s) => {
+    if (isMarketplaceDomain(s.domain)) return;
+    addCand(brandFromDomain(s.domain), "cited_domain");
+  });
   // The user's tracked brands are added as candidates too so their share of voice
   // is reported even at zero — but they are NOT what makes detection work. The
   // user typed this exact name, so trust it whole regardless of word count.

@@ -103,5 +103,90 @@ console.log("\none company is reported once, not split by spelling");
   check("mentions are summed, not halved", hdfc[0] && hdfc[0].count === 2, hdfc[0] && String(hdfc[0].count));
 }
 
+/*
+ * Real bug, reported against a live capture: a Gemini table led with
+ * "Britannia The Original Bourbon" and "Sunfeast Dark Fantasy Bourbon" — the
+ * two brands the answer actually led with, one of them literally called
+ * "Best Overall Classic" in the same answer — and both were silently absent
+ * from Brand Mentions, making a third-place brand look like the top result.
+ * Root cause: the structural-candidate fallback only fired when a heading
+ * contained a digit, so any bold 4-plus-word brand+product line with no
+ * model number had no path into detection at all.
+ */
+console.log("\nlong bold headings with no digit still surface their brand (not just 2-3 word ones)");
+{
+  const table = [
+    "| Brand | Note |",
+    "| **Britannia The Original Bourbon** | since 1955 |",
+    "| **Sunfeast Dark Fantasy Bourbon** | richer profile |",
+    "| **Parle Fab Bourbon** | everyday choice |",
+  ].join("\n");
+  const out = names(table);
+  check("Britannia recovered from a 4-word heading", out.includes("Britannia"), out.join(", "));
+  check("Sunfeast recovered from a 4-word heading", out.includes("Sunfeast"), out.join(", "));
+  check("a genuinely short heading still works unchanged", out.includes("Parle Fab Bourbon"), out.join(", "));
+}
+
+/*
+ * Real bug, same report: aspect/spec headings and prose fragments were
+ * picked up as fake brands once the digit gate above was relaxed — a
+ * "Camera quality (day & night)" sub-heading became a brand called "Camera"
+ * with 14 mentions on a real phone-comparison capture. The fix for the bug
+ * above must not reopen this one: the fallback needs the words AFTER the
+ * first to still look like a name (capitalized/numeric), not prose.
+ */
+console.log("\nlong headings that are prose, not a brand name, are not turned into fake brands");
+{
+  const specHeadings = names([
+    "### Camera quality (day & night)",
+    "Some detail about the sensor.",
+    "### Battery health over time",
+    "More detail about charging.",
+    "### Software updates",
+    "Even more detail.",
+  ].join("\n\n"));
+  check("no fake brand from 'Camera quality...'", !specHeadings.includes("Camera"), specHeadings.join(", "));
+  check("no fake brand from 'Battery health...'", !specHeadings.includes("Battery"), specHeadings.join(", "));
+  check("no fake brand from 'Software updates'", !specHeadings.includes("Software"), specHeadings.join(", "));
+
+  // The exact real-world shape: a slash-joined descriptive heading whose
+  // second half, after splitting on " / ", is all-lowercase prose.
+  const jewel = names("### 💍 For real gold / diamond bridal jewellery\nSome list follows.");
+  check("no fake brand from a slash-split prose fragment", !jewel.includes("diamond"), jewel.join(", "));
+}
+
+/*
+ * Real bug, same report: "there are times when platform's cited name come
+ * under the mention section, like amazon." A product card with no explicit
+ * brand field but a marketplace merchant ("Amazon.in") turned the platform
+ * into a brand candidate; if "Amazon" then appeared anywhere in the prose
+ * (as most shopping answers do), it was reported as a mentioned brand
+ * alongside the real competitors being compared.
+ */
+console.log("\nmarketplace platforms never appear in Brand Mentions, even when named in prose");
+{
+  const answer = "The Bourbon Classic pack is widely available on Amazon and other retailers.";
+  const out = detectBrands(answer, answer, {
+    products: [{ name: "Bourbon Classic", merchant: "Amazon.in", brand: "" }],
+    sources: [{ domain: "amazon.in" }],
+  }).brands.map((b) => b.brand);
+  check("Amazon is not reported as a brand", !out.some((n) => /amazon/i.test(n)), out.join(", "));
+
+  const indiamart = names("IndiaMART lists several dealers for Bourbon biscuits.", {
+    sources: [{ domain: "dir.indiamart.com" }],
+  });
+  check("a B2B directory domain is not reported as a brand", indiamart.length === 0, indiamart.join(", "));
+
+  // A genuine, non-marketplace merchant is exactly the opposite case and
+  // must still come through — many real product cards carry no OTHER
+  // brand signal at all.
+  const answer2 = "The Modern Gold Drape Bar Necklace is sold by PNG Jewellers.";
+  const real = detectBrands(answer2, answer2, {
+    products: [{ name: "Modern Gold Drape Bar Necklace", merchant: "PNG Jewellers", brand: "" }],
+  }).brands.map((b) => b.brand);
+  check("a real, non-marketplace merchant is still used as a brand signal", real.includes("PNG Jewellers"), real.join(", "));
+  check("the product title is not used as a fallback when a real merchant exists", !real.includes("Modern"), real.join(", "));
+}
+
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
 process.exit(failures ? 1 : 0);
