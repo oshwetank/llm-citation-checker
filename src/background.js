@@ -264,6 +264,7 @@ async function persistLoaderState() {
             token: p.token || null,
             expectedPrompt: p.expectedPrompt || null,
             durations: p.durations || [],
+            outcomes: p.outcomes || [],
           },
         ])
       ),
@@ -346,10 +347,13 @@ function failTurnAndAdvance(plat, reason, retryDelayMs = 0) {
   if (!p) return;
   loader.errors++;
   p.failed = (p.failed || 0) + 1;
+  p.outcomes = p.outcomes || [];
+  p.outcomes[p.idx] = { status: "failed", reason, at: Date.now() };
   p.idx++;
   p.lastAdvanceAt = Date.now();
   p.lastFailReason = reason;
   persistLoaderState();
+  syncGeoRun();
   if (retryDelayMs > 0) setTimeout(() => loaderRunPlatform(plat), retryDelayMs);
   else loaderRunPlatform(plat);
 }
@@ -378,6 +382,15 @@ async function resumeFromSnapshot(snap) {
   for (const [plat, sp] of platEntries) {
     const trueIdx = countCompletedForRun(all, snap.runId, plat);
     const idx = Math.max(sp.idx || 0, Math.min(trueIdx, (sp.prompts || []).length));
+    // Reconciliation can move idx forward past what this snapshot's own
+    // outcomes array covers (the completion(s) happened in the instance
+    // that died, before it got a chance to persist them) — backfill those
+    // slots as "done" so the per-prompt status list stays accurate instead
+    // of silently having gaps for prompts that did in fact complete.
+    const outcomes = (sp.outcomes || []).slice();
+    for (let i = sp.idx || 0; i < idx; i++) {
+      if (!outcomes[i]) outcomes[i] = { status: "done", reason: null, at: Date.now() };
+    }
     loader.platforms[plat] = {
       tabId: sp.tabId,
       prompts: sp.prompts || [],
@@ -388,6 +401,7 @@ async function resumeFromSnapshot(snap) {
       token: sp.token || null,
       expectedPrompt: sp.expectedPrompt || null,
       durations: sp.durations || [],
+      outcomes,
       watchdog: null,
     };
   }
@@ -416,6 +430,9 @@ async function resumeFromSnapshot(snap) {
       const remaining = p.prompts.length - p.idx;
       loader.errors += remaining;
       p.failed = (p.failed || 0) + remaining;
+      for (let i = p.idx; i < p.prompts.length; i++) {
+        p.outcomes[i] = { status: "failed", reason: "tab closed during restart", at: Date.now() };
+      }
       p.idx = p.prompts.length;
       continue;
     }
@@ -430,8 +447,83 @@ async function resumeFromSnapshot(snap) {
     }
   }
 
-  if (Object.values(loader.platforms).every((p) => p.idx >= p.prompts.length)) loader.running = false;
+  if (Object.values(loader.platforms).every((p) => p.idx >= p.prompts.length)) {
+    loader.running = false;
+    syncGeoRun("done");
+    notifyRunComplete();
+  }
   await persistLoaderState();
+}
+
+// Keeps the durable `geoRuns` record (src/lib/geo.js's makeGeoRun shape) in
+// sync with the in-memory run as it progresses — previously this record was
+// written once at creation and never touched again, so `status`/`captured`/
+// `failed`/`finishedAt` were permanently stuck at their initial values and
+// `geo-run-list` had nothing real to show. Only applies to GEO Campaign runs
+// (loader.options.geo set); a plain ad-hoc Loader/Project run has no
+// geoRuns record to update. Best-effort and fire-and-forget like
+// persistLoaderState — a failure here must never affect the run itself.
+async function syncGeoRun(statusOverride) {
+  const g = loader.options && loader.options.geo;
+  if (!g || !g.runId) return;
+  try {
+    const run = await db.get("geoRuns", g.runId);
+    if (!run) return;
+    const patch = { ...run, captured: loader.done, failed: loader.errors };
+    if (statusOverride) {
+      patch.status = statusOverride;
+      patch.finishedAt = Date.now();
+    }
+    await db.put("geoRuns", patch);
+  } catch (_) {
+    /* best-effort */
+  }
+}
+
+// Fires once a run finishes naturally (every platform's prompt list
+// exhausted) — never on an explicit user-initiated stop, since the user is
+// already right there for that. Two channels, per the agreed tradeoff:
+//   - the toolbar badge needs no extra permission and is always available;
+//   - chrome.notifications needs the "notifications" manifest permission
+//     (and therefore a Chrome Web Store re-review before this can ship),
+//     which was an explicit, accepted decision — see the PR description.
+// Both are best-effort: a user on a build that hasn't picked up the new
+// permission yet, or with notifications blocked at the OS level, still gets
+// a working extension, just without this signal.
+async function notifyRunComplete() {
+  const total = loader.total;
+  const done = loader.done;
+  const errors = loader.errors;
+  try {
+    await chrome.action.setBadgeText({ text: `${done}/${total}` });
+    await chrome.action.setBadgeBackgroundColor({ color: errors ? "#b91c1c" : "#16a34a" });
+  } catch (_) {
+    /* action.setBadgeText unavailable in some test/mock contexts */
+  }
+  try {
+    if (chrome.notifications) {
+      await chrome.notifications.create(`lcfc-run-${loader.runId}`, {
+        type: "basic",
+        iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+        title: "Campaign finished",
+        message: `${done} of ${total} succeeded${errors ? `, ${errors} failed` : ""}.`,
+      });
+    }
+  } catch (_) {
+    /* notifications permission not yet granted on this build, or unavailable in test contexts */
+  }
+}
+
+// Average completed-turn duration and remaining-time estimate for one
+// platform, from its rolling window of real durations (populated in
+// loaderOnCapture). null until at least one turn has completed — an ETA
+// guessed from zero data would be worse than admitting it isn't known yet.
+function turnEta(p) {
+  const durations = p.durations || [];
+  if (!durations.length) return null;
+  const avgMs = durations.reduce((a, b) => a + b, 0) / durations.length;
+  const remaining = Math.max(0, p.prompts.length - p.idx);
+  return { avgMs, remainingMs: avgMs * remaining };
 }
 
 // Diagnostic ring buffer (in-memory) for the Debug view.
@@ -442,17 +534,59 @@ function pushDebug(event) {
 }
 
 function loaderStatus() {
-  if (!loader.running) return { running: false, total: loader.total, done: loader.done, errors: loader.errors };
+  // runId is included even in the idle/finished shape — the UI dedupes its
+  // one-time badge-clearing ack per runId (see loaderAckedRunId in
+  // panel.js), which needs it to tell "this finished run has already been
+  // acknowledged" from "a *different* run just finished since".
+  if (!loader.running) return { running: false, total: loader.total, done: loader.done, errors: loader.errors, runId: loader.runId };
   let totalTasks = 0;
   let totalIdx = 0;
   const platStats = {};
-  const current = [];
+  const now = Date.now();
   for (const plat of Object.keys(loader.platforms)) {
     const p = loader.platforms[plat];
     totalTasks += p.prompts.length;
     totalIdx += p.idx;
-    platStats[plat] = { done: p.idx, total: p.prompts.length, failed: p.failed || 0 };
-    if (p.idx < p.prompts.length) current.push(p.prompts[p.idx]);
+    const inFlight = p.idx < p.prompts.length;
+    const eta = turnEta(p);
+    // Per-prompt status list — previously nothing tracked this at all, only
+    // an aggregate done/total count and one truncated "current" string that
+    // silently dropped every platform but the first with something in
+    // flight. `outcomes[i]` is set the moment prompt i finishes (success or
+    // failure, including during restart recovery — see resumeFromSnapshot);
+    // anything before idx with no recorded outcome falls back to "done" as
+    // a safe default rather than showing a hole in the list.
+    const prompts = p.prompts.map((text, i) => {
+      const outcome = (p.outcomes || [])[i];
+      let status;
+      if (outcome) status = outcome.status;
+      else if (i === p.idx && inFlight) status = "running";
+      else if (i < p.idx) status = "done";
+      else status = "pending";
+      return { text, status, reason: outcome ? outcome.reason : null, at: outcome ? outcome.at : null };
+    });
+    platStats[plat] = {
+      done: p.idx,
+      total: p.prompts.length,
+      failed: p.failed || 0,
+      current: inFlight ? p.prompts[p.idx] : null,
+      elapsedMs: inFlight && p.startedAt ? Math.min(now - p.startedAt, TURN_TIMEOUT_MS) : null,
+      turnTimeoutMs: TURN_TIMEOUT_MS,
+      avgTurnMs: eta ? Math.round(eta.avgMs) : null,
+      etaMs: eta ? Math.round(eta.remainingMs) : null,
+      prompts,
+    };
+  }
+  // Overall ETA: the run isn't done until the SLOWEST platform finishes (they
+  // run in parallel), so it's the max across platforms that still have work
+  // left — and honestly null, not a guess, if any of those hasn't completed
+  // even one turn yet to estimate from.
+  let etaMs = 0;
+  let etaKnown = true;
+  for (const s of Object.values(platStats)) {
+    if (s.total - s.done <= 0) continue;
+    if (s.etaMs == null) { etaKnown = false; break; }
+    etaMs = Math.max(etaMs, s.etaMs);
   }
   return {
     running: loader.running,
@@ -461,8 +595,8 @@ function loaderStatus() {
     done: loader.done,
     idx: totalIdx,
     errors: loader.errors,
-    current: current.length ? current[0] : null,
     runId: loader.runId,
+    etaMs: etaKnown ? etaMs : null,
     platStats,
   };
 }
@@ -482,7 +616,11 @@ async function loaderRunPlatform(plat) {
   clearWatchdog(p);
 
   if (p.idx >= p.prompts.length) {
-    if (Object.values(loader.platforms).every((x) => x.idx >= x.prompts.length)) loader.running = false;
+    if (Object.values(loader.platforms).every((x) => x.idx >= x.prompts.length)) {
+      loader.running = false;
+      syncGeoRun("done");
+      notifyRunComplete();
+    }
     await persistLoaderState();
     return;
   }
@@ -526,6 +664,11 @@ async function loaderStart(prompts, options) {
   loader.options = options || {};
   loader.total = clean.length * supported.length;
   loader.runId = crypto.randomUUID();
+  // Clear any badge left over from a previous run's completion so it never
+  // reads as this run's status by mistake.
+  try {
+    await chrome.action.setBadgeText({ text: "" });
+  } catch (_) {}
 
   let windowId;
   if (options && options.incognito) {
@@ -556,7 +699,7 @@ async function loaderStart(prompts, options) {
     const created = windowId
       ? await chrome.tabs.create({ windowId, url: "about:blank" })
       : await chrome.tabs.create({ url: "about:blank", active: false });
-    loader.platforms[plat] = { tabId: created.id, prompts: clean, idx: 0, failed: 0, lastAdvanceAt: 0, durations: [] };
+    loader.platforms[plat] = { tabId: created.id, prompts: clean, idx: 0, failed: 0, lastAdvanceAt: 0, durations: [], outcomes: [] };
   }
   await persistLoaderState();
   for (const plat of supported) loaderRunPlatform(plat);
@@ -635,6 +778,8 @@ function loaderOnCapture(tabId, record) {
 
     clearWatchdog(p);
     if (p.startedAt) p.durations = [...(p.durations || []), Date.now() - p.startedAt].slice(-DURATION_WINDOW);
+    p.outcomes = p.outcomes || [];
+    p.outcomes[p.idx] = { status: "done", reason: null, at: Date.now() };
     p.lastAdvanceAt = Date.now();
     loader.done++;
     p.idx++;
@@ -644,6 +789,7 @@ function loaderOnCapture(tabId, record) {
     // already reflected in storage rather than reconciling against a
     // count that doesn't yet include it (which would resubmit this prompt).
     persistLoaderState();
+    syncGeoRun();
     const delay = 3000 + Math.random() * 3000; // human-paced gap
     if (!loader.paused) setTimeout(() => loaderRunPlatform(plat), delay);
     return;
@@ -1066,11 +1212,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           for (const p of Object.values(loader.platforms)) clearWatchdog(p);
           loader.running = false;
           loader.paused = false;
+          // "stopped" here, not "done" — deliberately no badge/notification:
+          // the user just clicked Stop, they're already right there.
+          await syncGeoRun("stopped");
           await persistLoaderState();
           sendResponse({ ok: true, ...loaderStatus() });
           break;
         case "loader-status":
           sendResponse({ ok: true, ...loaderStatus() });
+          break;
+        // The popup calls this once it has shown the user the completion
+        // banner/badge, so the badge doesn't linger stale on the toolbar
+        // icon indefinitely after they've already seen it.
+        case "loader-ack-complete":
+          try {
+            await chrome.action.setBadgeText({ text: "" });
+          } catch (_) {}
+          sendResponse({ ok: true });
           break;
 
         case "debug":

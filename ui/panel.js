@@ -3029,7 +3029,42 @@ function renderRunCard(profile) {
   stopBtn.onclick = async () => renderLoaderStatus(await send({ type: "loader-stop" }));
   rc.append(el("div", { className: "ft-actions" }, runBtn, pauseBtn, resumeBtn, stopBtn));
   rc.append(el("div", { id: "loaderStatus", className: "status-msg" }));
+  // Paint status immediately rather than waiting for the next 1.5s poll tick
+  // — this card is rebuilt from scratch (root.textContent = "" in
+  // renderCampaignsImpl) every time the Campaigns tab re-renders, so
+  // without this the status box would flash empty for up to 1.5s on every
+  // switch back to this tab while a run is in flight.
+  send({ type: "loader-status" }).then((s) => { if (s.ok) renderLoaderStatus(s); });
+  rc.append(renderRunHistory(profile));
   return rc;
+}
+
+// Durable per-run history — reads geoRuns, which background.js now keeps in
+// sync (status/captured/failed/finishedAt) as a run progresses and on
+// completion; previously that store was written once at creation and never
+// updated again, so this had nothing real to show and wasn't called at all.
+function renderRunHistory(profile) {
+  const box = el("div", { className: "card loader-history", id: "runHistory" });
+  box.append(el("div", { className: "card-header" }, el("h3", {}, "Run history")));
+  const list = el("div", { className: "muted small" }, "Loading…");
+  box.append(list);
+  send({ type: "geo-run-list", profileId: profile.id }).then((r) => {
+    list.textContent = "";
+    const runs = (r.ok ? r.runs : []).slice(0, 10);
+    if (!runs.length) { list.append("No runs yet."); return; }
+    const table = el("div", { className: "loader-history-rows" });
+    runs.forEach((run) => {
+      const dur = run.finishedAt ? fmtDuration(run.finishedAt - run.startedAt) : null;
+      const statusLabel = { running: "Running", done: "Done", stopped: "Stopped", failed: "Failed" }[run.status] || run.status;
+      table.append(el("div", { className: `loader-history-row status-${run.status}` },
+        el("span", { className: "muted" }, new Date(run.startedAt).toLocaleString()),
+        el("span", {}, statusLabel),
+        el("span", {}, `${run.captured || 0}/${run.expected || 0} captured${run.failed ? `, ${run.failed} failed` : ""}`),
+        el("span", { className: "muted" }, dur ? `took ${dur}` : "")));
+    });
+    list.append(table);
+  });
+  return box;
 }
 
 /* ---------- Campaign performance metrics (rendered from the Dashboard) ---------- */
@@ -3459,18 +3494,118 @@ $("#deleteFiltered")?.addEventListener("click", async () => {
 });
 
 /* ---------- Campaigns run status ---------- */
+// mm:ss for a duration; "<1s" for anything under a second so a fast turn
+// doesn't read as "0s" (which looks broken, not fast).
+function fmtDuration(ms) {
+  if (ms == null) return null;
+  const s = Math.round(ms / 1000);
+  if (s < 1) return "<1s";
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return m ? `${m}m ${r}s` : `${r}s`;
+}
+
+const PROMPT_STATUS_ICON = { done: "✓", failed: "✕", running: "●", pending: "…" };
+const PROMPT_STATUS_LABEL = { done: "Done", failed: "Failed", running: "Running", pending: "Pending" };
+
+// Tracks running -> not-running so the "finished" banner fires exactly once,
+// right when this popup/tab first notices the transition — not on every
+// 1.5s poll tick while the finished state is being displayed. Deliberately
+// NOT what gates clearing the toolbar badge (see loaderAckedRunId below):
+// a popup that's closed while a campaign runs — the normal case, since a
+// run can take minutes and nobody leaves the popup open for that — would
+// never observe a live running->finished transition at all, and the badge
+// would stay stuck forever.
+let loaderWasRunning = false;
+// The runId last acknowledged (badge cleared for), so loader-ack-complete
+// fires once per finished run per popup lifetime rather than on every poll
+// tick while an idle/finished state keeps being displayed.
+let loaderAckedRunId = null;
+
+// Rebuilt into a live per-engine/per-prompt panel — previously this showed
+// only a coarse done/total count and one truncated "now:" string that
+// silently dropped every engine but the first with something in flight (see
+// background.js's loaderStatus() for where that data now actually comes
+// from). Full DOM rebuild on every poll tick, same tradeoff the rest of
+// this app already makes (see the withScrollPreserved note) — the status
+// box is small enough that this is cheap.
 function renderLoaderStatus(s) {
   const box = $("#loaderStatus");
   if (!box) return;
-  if (!s || !s.total) { box.textContent = ""; return; }
-  const state = s.running ? (s.paused ? "paused" : "running") : "idle/done";
-  let statusText = `${state} — ${s.done}/${s.total} done${s.errors ? `, ${s.errors} errors` : ""}`;
-  if (s.platStats) {
-    const details = Object.keys(s.platStats).map(p => `${p}: ${s.platStats[p].done}/${s.platStats[p].total}`).join(" | ");
-    if (details) statusText += `\n[${details}]`;
+  box.textContent = "";
+  if (!s || !s.total) { loaderWasRunning = false; return; }
+
+  if (!s.running) {
+    if (loaderWasRunning) {
+      // Only shown when THIS popup instance actually watched the run go
+      // running -> finished live — a nice-to-have flourish, not the primary
+      // "you missed something" signal (that's the badge, acked below).
+      const succeeded = s.done, total = s.total, failed = s.errors;
+      const banner = el("div", { className: `loader-finished-banner ${failed ? "has-errors" : ""}` },
+        el("b", {}, failed ? "Campaign finished with errors — " : "Campaign finished — "),
+        `${succeeded} of ${total} succeeded${failed ? `, ${failed} failed` : ""}.`);
+      box.append(banner);
+    }
+    // Clearing the badge does NOT depend on having watched that transition —
+    // opening the Campaigns tab to any finished-run state at all means the
+    // result has now been shown, whether that's seconds or hours after the
+    // run actually finished. Deduped per runId so this fires once, not on
+    // every 1.5s poll tick while this idle state keeps being redisplayed.
+    if (s.runId && loaderAckedRunId !== s.runId) {
+      send({ type: "loader-ack-complete" });
+      loaderAckedRunId = s.runId;
+    }
+    loaderWasRunning = false;
+    return;
   }
-  statusText += (s.current && s.running ? `\nnow: "${s.current.slice(0, 40)}"` : "");
-  box.innerText = statusText;
+  loaderWasRunning = true;
+
+  const state = s.paused ? "Paused" : "Running";
+  const summary = el("div", { className: "loader-summary" },
+    el("b", {}, state), ` — ${s.done}/${s.total} done`,
+    s.errors ? el("span", { className: "loader-errcount" }, ` · ${s.errors} failed`) : "",
+    s.etaMs != null ? el("span", { className: "muted" }, ` · ~${fmtDuration(s.etaMs)} remaining`) : (s.paused ? "" : el("span", { className: "muted" }, " · estimating time remaining…")));
+  box.append(summary);
+
+  const kpis = el("div", { className: "geo-kpis loader-kpis" });
+  for (const [plat, ps] of Object.entries(s.platStats || {})) {
+    const label = ENGINES.find((e) => e.id === plat)?.label || plat;
+    const sub = [];
+    if (ps.failed) sub.push(`${ps.failed} failed`);
+    if (ps.current) {
+      const elapsed = ps.elapsedMs != null ? `${fmtDuration(ps.elapsedMs)}/${fmtDuration(ps.turnTimeoutMs)}` : "";
+      sub.push(`now: "${ps.current.slice(0, 32)}${ps.current.length > 32 ? "…" : ""}"${elapsed ? ` (${elapsed})` : ""}`);
+    } else if (ps.done >= ps.total) {
+      sub.push("done");
+    }
+    kpis.append(el("div", { className: "geo-kpi" },
+      el("div", { className: "k-label" }, label),
+      el("div", { className: "k-value" }, `${ps.done}/${ps.total}`),
+      el("div", { className: "k-sub muted" }, sub.join(" · "))));
+  }
+  box.append(kpis);
+
+  // Per-prompt breakdown, one list per engine, so "which prompt ran on
+  // which LLM, and which is still pending" is directly visible instead of
+  // needing to infer it from a single aggregate count.
+  const lists = el("div", { className: "loader-prompt-lists" });
+  for (const [plat, ps] of Object.entries(s.platStats || {})) {
+    const label = ENGINES.find((e) => e.id === plat)?.label || plat;
+    const list = el("div", { className: "loader-prompt-list" });
+    list.append(el("div", { className: "loader-prompt-list-head" }, label));
+    const rows = el("div", { className: "loader-prompt-rows" });
+    (ps.prompts || []).forEach((p, i) => {
+      const row = el("div", { className: `loader-prompt-row status-${p.status}` },
+        el("span", { className: "loader-prompt-icon", title: PROMPT_STATUS_LABEL[p.status] }, PROMPT_STATUS_ICON[p.status]),
+        el("span", { className: "loader-prompt-idx muted" }, `${i + 1}.`),
+        el("span", { className: "loader-prompt-text" }, p.text));
+      if (p.status === "failed" && p.reason) row.title = `Failed: ${p.reason}`;
+      rows.append(row);
+    });
+    list.append(rows);
+    lists.append(list);
+  }
+  box.append(lists);
 }
 
 // poll loader status while the Campaigns tab is open
