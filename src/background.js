@@ -681,6 +681,17 @@ async function loaderRunPlatform(plat) {
 }
 
 async function loaderStart(prompts, options) {
+  // Guard against a second run stomping the first: `loader` is one shared
+  // in-memory object, so without this a double-click on "Start run" (or any
+  // other overlapping loader-start/geo-run-start call while one is already
+  // active) would silently discard the first run's in-flight state via the
+  // `loader = newLoaderState()` reset below — orphaning its tabs/watchdogs
+  // while a second run starts fresh on top of it. This is one concrete way
+  // "2 prompts run together" could happen: not just a service-worker
+  // restart race (Phase 1), but two starts landing in the same live worker.
+  if (loader.running) {
+    return { ok: false, error: "A run is already in progress. Wait for it to finish, or stop it, before starting another." };
+  }
   const clean = (prompts || []).map((p) => String(p).trim()).filter(Boolean);
   if (!clean.length) return { ok: false, error: "No prompts provided." };
 
