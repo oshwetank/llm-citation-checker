@@ -8,7 +8,7 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.25.0** — ChatGPT and Gemini. See [ARCHITECTURE.md](ARCHITECTURE.md) for the design
+> **v0.26.0** — ChatGPT and Gemini. See [ARCHITECTURE.md](ARCHITECTURE.md) for the design
 > and [RESEARCH.md](RESEARCH.md) for the original feasibility research.
 
 ## Two modes, deliberately kept apart
