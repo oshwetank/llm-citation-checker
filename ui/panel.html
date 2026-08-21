@@ -19,12 +19,18 @@
             </div>
             <div class="brand-text">
               <span class="brand-title">Citely</span>
-              <span class="version-badge">v0.25</span>
+              <span class="version-badge">v0.26</span>
               <span class="brand-sub">ChatGPT &amp; Gemini</span>
             </div>
           </div>
-          <button id="openTab" class="nav-tab tab ghost popout-btn" title="Open in full browser tab">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+          <!-- Was a bare 14px icon with the .nav-tab class, which gave it a tab's
+               padding but none of a button's affordance, so it read as a stray
+               glyph floating in the header. Now it's a labelled pill: same
+               action, but it looks pressable and says what it does. Tab wiring
+               keys off [data-tab], which this deliberately does not have. -->
+          <button id="openTab" class="popout-btn" title="Open Citely in a full browser tab">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+            <span class="popout-label">Full tab</span>
           </button>
         </div>
 
@@ -63,12 +69,20 @@
               <h3>Track a prompt over time</h3>
             </div>
             <p class="muted">
-              Pick one prompt you have captured more than once. This shows every time
-              it ran, side by side, so you can see which brands and domains gained or
-              lost ground between runs.
+              Pick one prompt you have captured more than once. You get each run's own
+              profile (fan-out, cited vs. fetched, answer length), a per-engine split,
+              and matrices showing every brand, domain, page and sub-query across runs —
+              so you can see not just <i>that</i> something moved, but what moved it.
             </p>
-            <div class="proj-row">
-              <select id="cmpPrompt" class="filter" style="flex:2"><option value="">Choose a prompt…</option></select>
+            <div class="proj-row cmp-pickers">
+              <!-- Typing here filters the dropdown below. A bare <select> is
+                   unusable once a few dozen prompts have been captured, and
+                   the browser's own type-ahead only matches from the start of
+                   the option text. -->
+              <input id="cmpSearch" class="filter search-input" type="text"
+                     placeholder="Search words in prompts…"
+                     title="Type any words — prompts containing every word stay in the list below, in any order" />
+              <select id="cmpPrompt" class="filter cmp-prompt-select"><option value="">Choose a prompt…</option></select>
               <select id="cmpProject" class="filter"><option value="">All projects</option></select>
               <select id="cmpModel" class="filter">
                 <option value="">All models</option>
@@ -76,64 +90,132 @@
                 <option value="gemini">Gemini</option>
               </select>
             </div>
-            <div id="cmpHint" class="muted" style="margin-top:8px"></div>
+            <div id="cmpHint" class="muted small" style="margin-top:8px"></div>
           </div>
           <div id="cmpOut"></div>
         </section>
 
         <section id="about" class="panel">
-          <div class="card">
-            <div class="card-header">
-              <h3>Capture settings</h3>
-            </div>
-            <p class="muted">
-              Brand detection is <b>fully automatic</b> for every industry — nothing to
-              configure there. Your brand, competitors, prompts and tracked LLMs now live
-              per campaign, set up from the Campaigns tab.
-            </p>
-            <div class="chk-row">
-              <label class="chk"><input type="checkbox" id="setDebug" /> Enable capture debugger (verbose; off by default)</label>
-            </div>
-            <div class="proj-row">
-              <label class="muted" for="setRetention">Keep at most</label>
-              <input id="setRetention" type="number" min="50" step="50" style="max-width:110px" />
-              <label class="muted" for="setMaxMB">captures · skip payloads over</label>
-              <input id="setMaxMB" type="number" min="1" step="1" style="max-width:90px" />
-              <span class="muted">MB</span>
-              <button id="setSave" class="btn sm">Save settings</button>
-            </div>
-            <div id="setStatus" class="muted" style="margin-top:6px"></div>
-            <div id="storageInfo" class="muted" style="margin-top:6px"></div>
-            <div class="proj-row" style="margin-top:12px">
-              <button id="reprocess" class="btn sm ghost">↻ Reprocess all captures</button>
-              <span class="muted">Re-runs the current extraction logic over everything already captured — use this after an extension update to pick up adapter fixes (brand detection, citation links, etc.) on old data.</span>
+          <!-- The About tab was four cards of prose with the settings form
+               buried as a run-on sentence split across three text nodes
+               ("Keep at most" / "captures - skip payloads over" / "MB"). It's
+               now: what this is -> how to use it -> settings as a real
+               labelled form -> the dev-only debugger behind a disclosure. -->
+          <div class="card about-hero">
+            <div class="about-hero-icon"><img src="../icons/icon128.png" width="40" height="40" alt="" /></div>
+            <div>
+              <h2 class="about-title">Citely <span class="version-badge">v0.26</span></h2>
+              <p class="about-tagline">
+                See what ChatGPT and Gemini actually read before they answer — the
+                searches they run, the pages they fetch, the sources they cite, and
+                which brands make it into the reply.
+              </p>
+              <p class="about-privacy">
+                <span class="about-lock">🔒</span>
+                Everything stays on this device. No account, no server, no network calls of our own.
+              </p>
             </div>
           </div>
+
           <div class="card">
-            <div class="card-header">
-              <h3>How it works</h3>
-            </div>
-            <p>
-              Open ChatGPT or Gemini in a browser tab and run a prompt. This extension passively inspects network responses already received by your browser, extracts search fan-out queries, citations, and product entities, and stores them <b>on your local device only</b>.
-            </p>
-            <p class="muted">
-              Raw captures are kept locally so analytics can be re-derived without re-running requests.
+            <div class="card-header"><h3>How it works</h3></div>
+            <ol class="about-steps">
+              <li>
+                <span class="about-step-n">1</span>
+                <div>
+                  <b>Run a prompt</b> in an open ChatGPT or Gemini tab.
+                  <div class="muted small">Citely reads the responses your browser has already received — it never sends a request of its own.</div>
+                </div>
+              </li>
+              <li>
+                <span class="about-step-n">2</span>
+                <div>
+                  <b>Open Analyze</b> for the full breakdown of that one answer.
+                  <div class="muted small">Fan-out queries, cited vs. merely fetched sources, products, places and brand mentions.</div>
+                </div>
+              </li>
+              <li>
+                <span class="about-step-n">3</span>
+                <div>
+                  <b>Set up a Campaign</b> to track a brand across a fixed prompt set.
+                  <div class="muted small">Share of Voice, visibility, average rank and per-prompt results, measured the same way every run.</div>
+                </div>
+              </li>
+              <li>
+                <span class="about-step-n">4</span>
+                <div>
+                  <b>Use Compare</b> to watch one prompt move over time.
+                  <div class="muted small">Which brands and domains gained or lost ground between runs of the same question.</div>
+                </div>
+              </li>
+            </ol>
+            <p class="muted small about-foot">
+              Brand detection is fully automatic for every industry — there is nothing to configure.
+              Your brand, competitors, prompts and tracked engines live per campaign, in the Campaigns tab.
             </p>
           </div>
+
           <div class="card">
-            <div class="card-header">
-              <h3>Capture Debugger</h3>
+            <div class="card-header"><h3>Settings</h3></div>
+            <div class="settings-form">
+              <div class="setting-row">
+                <label class="setting-label" for="setRetention">
+                  Captures to keep
+                  <span class="muted small">Oldest captures are dropped once you go past this.</span>
+                </label>
+                <div class="setting-field">
+                  <input id="setRetention" type="number" min="50" step="50" />
+                  <span class="setting-unit">captures</span>
+                </div>
+              </div>
+              <div class="setting-row">
+                <label class="setting-label" for="setMaxMB">
+                  Skip large payloads
+                  <span class="muted small">Responses bigger than this are not stored, to keep the local database small.</span>
+                </label>
+                <div class="setting-field">
+                  <input id="setMaxMB" type="number" min="1" step="1" />
+                  <span class="setting-unit">MB</span>
+                </div>
+              </div>
+              <div class="setting-row">
+                <label class="setting-label" for="setDebug">
+                  Capture debugger
+                  <span class="muted small">Verbose logging of every observed network event. Off by default.</span>
+                </label>
+                <div class="setting-field">
+                  <label class="chk"><input type="checkbox" id="setDebug" /> Enabled</label>
+                </div>
+              </div>
             </div>
-            <p class="muted">
-              Inspects observed network events and payloads for ChatGPT and Gemini.
-            </p>
-            <div class="ft-actions" style="margin-bottom: 10px;">
-              <button id="dbgRefresh" class="btn sm ghost">Refresh Log</button>
-              <button id="dbgClear" class="btn sm ghost danger">Clear Log</button>
+            <div class="settings-actions">
+              <button id="setSave" class="btn sm primary">Save settings</button>
+              <span id="setStatus" class="muted small"></span>
             </div>
-            <div id="dbgLog" class="dbglog"></div>
+            <div id="storageInfo" class="muted small settings-storage"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-header"><h3>Maintenance</h3></div>
+            <div class="maint-row">
+              <div>
+                <b>Reprocess all captures</b>
+                <div class="muted small">Re-runs the current extraction logic over everything already captured. Use this after an extension update to pick up adapter fixes — brand detection, citation links and so on — on old data.</div>
+              </div>
+              <button id="reprocess" class="btn sm ghost">↻ Reprocess</button>
+            </div>
+            <details class="about-details">
+              <summary>Capture debugger log</summary>
+              <p class="muted small">Observed network events and payloads for ChatGPT and Gemini. Only useful when the debugger above is enabled.</p>
+              <div class="ft-actions" style="margin-bottom: 10px;">
+                <button id="dbgRefresh" class="btn sm ghost">Refresh log</button>
+                <button id="dbgClear" class="btn sm ghost danger">Clear log</button>
+              </div>
+              <div id="dbgLog" class="dbglog"></div>
+            </details>
           </div>
         </section>
+
       </main>
 
       <footer class="credit-footer">

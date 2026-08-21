@@ -18,7 +18,7 @@ import { adapt as adaptChatGpt } from "./adapters/chatgpt.js";
 import { adapt as adaptGemini } from "./adapters/gemini.js";
 import {
   MAX_PROFILES, TRASH_RETENTION_DAYS, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
-  selectTracked, computeMetrics, computeSeries, brandPresence, trackedBrandsOf,
+  selectTracked, computeMetrics, computeSeries, brandPresence, trackedBrandsOf, normName,
 } from "./lib/geo.js";
 
 // Loose match for duplicate-prompt detection: trim, lowercase, collapse
@@ -742,11 +742,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "geo-prompt-performance": {
           // Per-response detail grouped by prompt (not just the profile-wide
           // aggregate geo-metrics returns): for each run of each tracked
-          // prompt, was the campaign's own brand mentioned (and at what rank
-          // among tracked brands), was its domain cited, plus that run's
-          // sources — so the Dashboard can show a per-prompt performance
-          // table instead of a generic ad-hoc conversation list, without
-          // shipping full answerText across the message boundary.
+          // prompt, was the FOCUS brand mentioned (and at what rank among
+          // tracked brands), was its domain cited, plus that run's sources —
+          // so the Dashboard can show a per-prompt performance table instead
+          // of a generic ad-hoc conversation list, without shipping full
+          // answerText across the message boundary.
+          //
+          // `msg.focusBrand` (a brand NAME, matched loosely via normName)
+          // picks which tracked brand this is computed for. Omitted/unmatched
+          // falls back to the campaign's own brand — every existing caller
+          // that doesn't pass it keeps getting exactly what it got before.
+          // This is what lets the UI answer "how is MY brand doing" and
+          // "how is this COMPETITOR doing" through the same endpoint, so a
+          // competitor's row in the Campaign Performance table can open the
+          // same kind of per-prompt breakdown the campaign's own brand gets.
           const profile = await db.get("profiles", msg.profileId);
           if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
           const all = await db.getAll("derived");
@@ -758,21 +767,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             until: msg.until,
           });
           const brands = trackedBrandsOf(profile);
-          const own = brands.find((b) => b.isOwn);
+          const focusKey = msg.focusBrand ? normName(msg.focusBrand) : null;
+          const focus = focusKey ? brands.find((b) => normName(b.name) === focusKey) : brands.find((b) => b.isOwn);
 
           const byPrompt = new Map();
           for (const rec of scoped) {
             const promptId = rec.geo && rec.geo.promptId;
             if (!promptId) continue;
             let mentioned = false, position = null, cited = false;
-            if (own) {
+            if (focus) {
               const pres = brandPresence(rec, brands);
               const ranked = pres.filter((p) => p.firstIndex !== null).sort((a, b) => a.firstIndex - b.firstIndex);
-              const ownPres = pres.find((p) => p.isOwn);
-              if (ownPres) {
-                mentioned = ownPres.present;
-                cited = ownPres.citedSource;
-                const rankIdx = ranked.findIndex((p) => p.isOwn);
+              const focusPres = pres.find((p) => normName(p.name) === normName(focus.name));
+              if (focusPres) {
+                mentioned = focusPres.present;
+                cited = focusPres.citedSource;
+                const rankIdx = ranked.findIndex((p) => normName(p.name) === normName(focus.name));
                 position = rankIdx >= 0 ? rankIdx + 1 : null;
               }
             }
@@ -788,7 +798,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }
           for (const runs of byPrompt.values()) runs.sort((a, b) => b.capturedAt - a.capturedAt);
 
-          sendResponse({ ok: true, hasBrand: !!own, prompts: Object.fromEntries(byPrompt) });
+          sendResponse({
+            ok: true,
+            hasBrand: !!focus,
+            focusBrand: focus ? focus.name : null,
+            focusIsOwn: !!focus?.isOwn,
+            prompts: Object.fromEntries(byPrompt),
+          });
           break;
         }
 

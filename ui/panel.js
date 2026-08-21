@@ -28,7 +28,15 @@ window.addEventListener("resize", applyMode);
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const el = (tag, props = {}, ...kids) => {
-  const n = Object.assign(document.createElement(tag), props);
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    // data-*/aria-* aren't real IDL properties — Object.assign used to just
+    // stash them as plain JS properties on the element (no attribute, so
+    // `[data-tip]` selectors and dataset reads never saw them). setAttribute
+    // is what actually makes them queryable/CSS-selectable.
+    if (k.startsWith("data-") || k.startsWith("aria-")) n.setAttribute(k, v);
+    else n[k] = v;
+  }
   for (const k of kids) n.append(k?.nodeType ? k : document.createTextNode(k ?? ""));
   return n;
 };
@@ -40,6 +48,14 @@ let dashboardCampaignId = ""; // "" = no campaign selected
 let dashboardGeoPrompts = []; // tracked prompts for dashboardCampaignId (tag chips only — independent of the Campaigns tab's own GEO_PROMPTS)
 let dashboardSearch = ""; // filters Saved Conversations (and the ad-hoc stat grid) by prompt text
 let viewingId = null; // which capture the Analyze tab shows (null = latest)
+// Which tab to return to from Analyze, and what to call it in the "← Back
+// to X" banner. Set automatically by openCapture() from whichever tab was
+// active when a capture link was clicked (Dashboard, Campaigns, Compare…),
+// so following a link and then wanting to go back doesn't require re-finding
+// whatever filter/scroll state was on that screen — the DOM itself is never
+// torn down while hidden, so switching back restores it exactly as it was.
+let returnTab = null;
+const TAB_LABELS = { dashboard: "Dashboard", loader: "Campaigns", compare: "Compare", about: "About" };
 let selectedIds = new Set(); // captures ticked in the Saved Conversations table
 let showEmptyCaptures = false; // reveal zero-signal rows (see hasSignal note below)
 // Tracking-run captures are hidden from the ad-hoc views by default so brand
@@ -72,6 +88,140 @@ chrome.storage.local.get(ONBOARD_KEY, (r) => { campaignOnboardDismissed = !!r[ON
 function hasSignal(r) {
   const fan = (r.fanout.search.length || 0) + (r.fanout.shopping.length || 0) + (r.fanout.image.length || 0);
   return !!(r.userPrompt || fan || r.sources.length || r.products.length || (r.places && r.places.length) || r.answerChars);
+}
+
+/* ---------- Delayed tooltip ----------
+ * `title` attributes are already used throughout this app to explain what a
+ * number or badge actually means (e.g. "distinct prompts whose answer cited
+ * this source") — but the native browser tooltip fires almost immediately,
+ * fights for attention on a screen that's mostly numbers, and doesn't exist
+ * at all on touch. This is a slow, deliberate replacement: it only appears
+ * after a real pause (~4s), so it never competes with the eye scanning the
+ * page, and it's opt-in per element via `data-tip` rather than a blanket
+ * upgrade of every `title` in the app — reserved for the things worth a
+ * pause to read (metric definitions, badge semantics), not routine buttons.
+ *
+ * One delegated listener on `document` (set up once, survives every
+ * render's full DOM teardown) rather than per-node handlers that would need
+ * re-wiring on every re-render.
+ */
+const TOOLTIP_DELAY = 4200;
+let tipTimer = null;
+let tipEl = null;
+function ensureTipEl() {
+  if (tipEl) return tipEl;
+  tipEl = el("div", { className: "app-tooltip", role: "tooltip" });
+  document.body.appendChild(tipEl);
+  return tipEl;
+}
+function showTooltip(target) {
+  const text = target.getAttribute("data-tip");
+  if (!text) return;
+  const tip = ensureTipEl();
+  tip.textContent = text;
+  tip.style.display = "block";
+  tip.style.visibility = "hidden";
+  const r = target.getBoundingClientRect();
+  const tr = tip.getBoundingClientRect();
+  let left = r.left + r.width / 2 - tr.width / 2;
+  left = Math.max(8, Math.min(left, window.innerWidth - tr.width - 8));
+  let top = r.top - tr.height - 9;
+  let placement = "top";
+  if (top < 4) { top = r.bottom + 9; placement = "bottom"; }
+  tip.style.left = `${Math.round(left)}px`;
+  tip.style.top = `${Math.round(top + window.scrollY)}px`;
+  tip.dataset.placement = placement;
+  const arrowX = Math.max(12, Math.min(r.left + r.width / 2 - left, tr.width - 12));
+  tip.style.setProperty("--tip-arrow-x", `${Math.round(arrowX)}px`);
+  tip.style.visibility = "visible";
+  tip.classList.add("show");
+}
+function hideTooltip() {
+  clearTimeout(tipTimer);
+  tipTimer = null;
+  if (tipEl) { tipEl.classList.remove("show"); tipEl.style.display = "none"; }
+}
+document.addEventListener("mouseover", (ev) => {
+  const target = ev.target.closest?.("[data-tip]");
+  if (!target) return;
+  clearTimeout(tipTimer);
+  tipTimer = setTimeout(() => showTooltip(target), TOOLTIP_DELAY);
+});
+document.addEventListener("mouseout", (ev) => {
+  const target = ev.target.closest?.("[data-tip]");
+  if (!target || (ev.relatedTarget && target.contains(ev.relatedTarget))) return;
+  hideTooltip();
+});
+document.addEventListener("mousedown", hideTooltip);
+document.addEventListener("scroll", hideTooltip, true);
+
+/* ---------- Engine badges ----------
+ * Plain-text emoji (💬 for ChatGPT, ✦ for Gemini) render inconsistently
+ * across OS/browser font stacks — different weight, different color, some
+ * platforms substitute an entirely different glyph — which is what read as
+ * a "broken logo" next to an otherwise crisp UI. These are small inline SVG
+ * marks instead: fixed size, fixed color, identical everywhere. They're
+ * deliberately abstract (a generic bubble / a four-point sparkle), not a
+ * reproduction of either company's actual trademark.
+ */
+const ENGINE_BADGE = {
+  chatgpt: {
+    bg: "linear-gradient(135deg,#12b591,#0d8f6f)",
+    path: "M4 4h16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H10l-4.4 3.3A1 1 0 0 1 4 18.5V16a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z",
+  },
+  gemini: {
+    bg: "linear-gradient(135deg,#4285f4,#9b72cb)",
+    path: "M12 2c.6 4.6 2.4 6.4 7 7-4.6.6-6.4 2.4-7 7-.6-4.6-2.4-6.4-7-7 4.6-.6 6.4-2.4 7-7z",
+  },
+};
+function engineIcon(id) {
+  const b = ENGINE_BADGE[id];
+  if (!b) return el("span", { className: "engine-badge engine-badge-fallback" }, ENGINE_ICONS[id] || "◆");
+  const span = el("span", { className: "engine-badge", style: `background:${b.bg}` });
+  span.innerHTML = `<svg viewBox="0 0 24 24" width="11" height="11" aria-hidden="true"><path fill="#fff" d="${b.path}"/></svg>`;
+  return span;
+}
+// icon + label as one inline unit, for anywhere the old `${ENGINE_ICONS[id]} ${label}` string was built.
+function engineChip(id, label) {
+  return el("span", { className: "engine-chip" }, engineIcon(id), " " + label);
+}
+
+/* Free-text search across prompt text.
+ *
+ * Every search box in this app used to do one literal `includes()` of the
+ * whole query, which meant "phone 50k" matched nothing at all unless the
+ * prompt happened to contain that exact string — you effectively had to
+ * retype the prompt verbatim for it to show up. A search box promises the
+ * opposite, so the query is split into tokens and EVERY token has to appear
+ * somewhere in the text (AND, not OR — narrowing as you type is what makes a
+ * search box feel responsive). Order and adjacency don't matter.
+ */
+function matchesSearch(text, query) {
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return true;
+  const hay = String(text || "").toLowerCase();
+  return q.split(/\s+/).every((tok) => hay.includes(tok));
+}
+
+/* Wraps the matched tokens in <mark> so it's obvious WHY a row matched — with
+ * token matching the hit is often not the string you typed. Returns a
+ * DocumentFragment, never HTML, so page-derived text is never parsed as
+ * markup. */
+function highlightMatch(text, query) {
+  const frag = document.createDocumentFragment();
+  const src = String(text ?? "");
+  const toks = String(query || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!toks.length) { frag.append(document.createTextNode(src)); return frag; }
+  const re = new RegExp(`(${toks.map(escapeRegExp).sort((a, b) => b.length - a.length).join("|")})`, "gi");
+  let last = 0, m;
+  while ((m = re.exec(src))) {
+    if (m.index > last) frag.append(document.createTextNode(src.slice(last, m.index)));
+    frag.append(el("mark", { className: "search-hit" }, m[0]));
+    last = m.index + m[0].length;
+    if (re.lastIndex === m.index) re.lastIndex++; // guard against zero-length matches
+  }
+  if (last < src.length) frag.append(document.createTextNode(src.slice(last)));
+  return frag;
 }
 
 function fanoutRows(records) {
@@ -135,9 +285,23 @@ async function hydrate(captureId) {
 }
 
 async function openCapture(captureId) {
+  // Hydrate BEFORE switching tabs. A capture can legitimately be gone by the
+  // time it is clicked — retention prunes the oldest ones — and if it is,
+  // renderAnalyze() falls through to RECORDS[0] and silently shows a
+  // completely unrelated capture. Every "click a prompt / URL / domain to
+  // open it in Analyze" path lands here, so the guard belongs here.
+  const rec = await hydrate(captureId);
+  if (!rec) {
+    showToast("That capture is no longer stored — it was pruned by the retention limit.");
+    return;
+  }
+  // Remember where this click came from, UNLESS it came from Analyze itself
+  // (re-opening a different capture while already there isn't "arriving
+  // from" anywhere new — leave whatever return path was already set alone).
+  const current = document.querySelector(".panel.active")?.id;
+  if (current && current !== "analyze") returnTab = current;
   viewingId = captureId;
   showTab("analyze");
-  await hydrate(captureId);
   renderAnalyze();
 }
 
@@ -673,15 +837,38 @@ function renderAnalyze() {
       return;
     }
 
-  // banner when viewing an earlier capture (not the latest)
-  if (rec.captureId !== (RECORDS[0] && RECORDS[0].captureId)) {
-    const idx = RECORDS.findIndex((r) => r.captureId === rec.captureId);
-    const banner = el("div", { className: "viewing" });
-    banner.append(el("span", {}, `Viewing capture ${idx + 1} of ${RECORDS.length} (${new Date(rec.capturedAt).toLocaleString()})`));
-    const latest = el("button", { className: "linkbtn" }, "Go to latest →");
-    latest.onclick = () => { viewingId = null; renderAnalyze(); };
-    banner.append(latest);
-    root.append(banner);
+  // Context banner — two independent signals, shown together when both apply:
+  //  1. returnTab: this capture was opened via a link from another tab
+  //     (Dashboard, Campaigns, Compare…) — offer a way back to it.
+  //  2. this isn't the latest AD-HOC capture. Only meaningful for ad-hoc
+  //     captures, which is why `adhocIdx` is checked for >= 0 before saying
+  //     anything about "capture N of M": a campaign/tracked capture (opened
+  //     via Prompt Performance, a brand row, or a domain drill-down) has no
+  //     defined position in RECORDS at all — RECORDS deliberately excludes
+  //     tracked captures (see the isolation note in load()) — so the old
+  //     unconditional `findIndex` here returned -1 and rendered "Viewing
+  //     capture 0 of 12", a claim that was simply false.
+  {
+    const parts = [];
+    if (returnTab) {
+      const backBtn = el("button", { className: "linkbtn" }, `← Back to ${TAB_LABELS[returnTab] || returnTab}`);
+      backBtn.onclick = () => { const rt = returnTab; returnTab = null; showTab(rt); };
+      parts.push(backBtn);
+    }
+    const adhocIdx = RECORDS.findIndex((r) => r.captureId === rec.captureId);
+    if (adhocIdx > 0) {
+      parts.push(el("span", {}, `Viewing capture ${adhocIdx + 1} of ${RECORDS.length} (${new Date(rec.capturedAt).toLocaleString()})`));
+      const latest = el("button", { className: "linkbtn" }, "Go to latest →");
+      latest.onclick = () => { viewingId = null; returnTab = null; renderAnalyze(); };
+      parts.push(latest);
+    } else if (adhocIdx === -1) {
+      parts.push(el("span", {}, `Viewing a campaign capture — ${rec.platform || "unknown"}${rec.model ? " · " + rec.model : ""} · ${new Date(rec.capturedAt).toLocaleString()}`));
+    }
+    if (parts.length) {
+      const banner = el("div", { className: "viewing" });
+      parts.forEach((p, i) => { if (i > 0) banner.append(el("span", { className: "viewing-sep" }, "·")); banner.append(p); });
+      root.append(banner);
+    }
   }
 
   const fanCount =
@@ -771,12 +958,13 @@ function renderAnalyze() {
   const diversity = uniqueUrls > 0 ? ((uniqueDomains / uniqueUrls) * 100).toFixed(1) + "%" : "0%";
 
   const globCard = el("div", { className: "card", id: "card-global-stats" }, el("h3", {}, "Global Statistics"));
+  const statBox = (num, lbl, tip) => el("div", { className: "stat-box", ...(tip ? { "data-tip": tip } : {}) }, el("div", { className: "num" }, num), el("div", { className: "lbl" }, lbl));
   const globGrid = el("div", { className: "stat-row-grid" },
-    el("div", { className: "stat-box" }, el("div", { className: "num" }, String(uniqueDomains)), el("div", { className: "lbl" }, "Domains")),
-    el("div", { className: "stat-box" }, el("div", { className: "num" }, String(uniqueUrls)), el("div", { className: "lbl" }, "URLs")),
-    el("div", { className: "stat-box" }, el("div", { className: "num" }, avUrlsPerFan), el("div", { className: "lbl" }, "URLs / Fan-out")),
-    el("div", { className: "stat-box" }, el("div", { className: "num" }, ratio), el("div", { className: "lbl" }, "Cited Ratio")),
-    el("div", { className: "stat-box" }, el("div", { className: "num" }, diversity), el("div", { className: "lbl" }, "Domain Diversity"))
+    statBox(String(uniqueDomains), "Domains"),
+    statBox(String(uniqueUrls), "URLs"),
+    statBox(avUrlsPerFan, "URLs / Fan-out", "Unique URLs ÷ number of fan-out sub-queries — roughly how many pages each search query pulled in."),
+    statBox(ratio, "Cited Ratio", "Cited sources ÷ all sources — what fraction of everything read actually got cited in the written answer."),
+    statBox(diversity, "Domain Diversity", "Unique domains ÷ unique URLs — closer to 100% means sources are spread across many publishers; closer to 0% means a few sites dominate.")
   );
   globCard.append(globGrid);
   sidebar.append(globCard);
@@ -1103,16 +1291,28 @@ function renderAnalyze() {
   // no searches" — misleading on Gemini, which runs them but never publishes
   // the sub-queries (see extractFanout in src/adapters/gemini.js). Say which
   // of the two it is rather than showing nothing.
+  //
+  // The badge used to say ONLY "not exposed by Gemini" — read on its own
+  // (which is how a badge usually gets read, before the paragraph below it)
+  // that sounds like doubt about whether a search happened at all. It did:
+  // `rec.searched` here is set from Gemini's own tool-use signal in the raw
+  // payload (a "Google Search" / "Searching the web" marker), the same
+  // signal that drives "Tool Name" in Technical Information. So the
+  // confirmation leads, and the limitation is the second, explanatory tag.
   if (!fanCount && rec.searched && rec.platform === "gemini") {
     mainCol.append(el("div", { className: "card", id: "card-fanout" },
       el("div", { className: "card-header" },
         el("h3", {}, "Query Fan-Out"),
-        el("span", { className: "tag" }, "not exposed by Gemini")
+        el("span", { className: "tag cited" }, "🔍 Searched the web"),
+        el("span", {
+          className: "tag", "data-tip":
+            "Confirmed by Gemini's own tool-use signal in the raw response, the same one that drives “Tool Name” above — this isn't a guess.",
+        }, "sub-queries not published")
       ),
       el("p", { className: "muted", style: "margin:0" },
-        "This answer did search the web, but Gemini does not publish the sub-queries it ran, " +
-        "so there is nothing to report here. ChatGPT captures do show them. This is a platform " +
-        "limitation, not a failed capture.")
+        "Gemini confirms it searched the web for this answer, but — unlike ChatGPT — it doesn't " +
+        "publish the specific sub-queries it ran, so there's nothing to list below. That's a " +
+        "platform limitation on Gemini's side, not a failed or incomplete capture.")
     ));
   }
   if (fanCount) {
@@ -1538,7 +1738,7 @@ function renderDrilldown(recs) {
     const rows = [...agg.entries()]
       .map(([domain, v]) => [domain, v.cited, v.fetched, v.cited + v.fetched, v.prompts.size, v.sample])
       .sort((a, b) => b[3] - a[3]);
-    tableWrap(rows, ["Domain", "Cited", "Fetched", "Total", "Prompts", "Example URL"], `${dashboardDrill}-domains`);
+    tableWrap(rows, ["Domain", "Cited", "Read-only", "Total", "Prompts", "Example URL"], `${dashboardDrill}-domains`);
   }
 
   return card;
@@ -1556,7 +1756,7 @@ function renderDashboardImpl() {
                   dashboardTimeFilter === "7d" ? now - 604800000 : 0;
 
   const recs = RECORDS.filter((r) => {
-    if (dashboardSearch && !(r.userPrompt || "").toLowerCase().includes(dashboardSearch.toLowerCase())) return false;
+    if (!matchesSearch(r.userPrompt, dashboardSearch)) return false;
     if (dashboardModelFilter && r.platform !== dashboardModelFilter) return false;
     if (dashboardTimeFilter === "custom") {
       if (customStartTime && r.capturedAt < customStartTime) return false;
@@ -1607,7 +1807,7 @@ function renderDashboardImpl() {
 
   // 0. Search — filters captures by prompt text (affects the stat grid,
   // drilldown, and Saved Conversations list below, same as the other filters).
-  const searchInp = el("input", { id: "dashboardSearch", type: "text", placeholder: "🔍 Search prompts…", value: dashboardSearch, className: "filter", style: "min-width:140px" });
+  const searchInp = el("input", { id: "dashboardSearch", type: "text", placeholder: "🔍 Search words in prompts…", title: "Type any words — rows matching every word are shown, in any order", value: dashboardSearch, className: "filter", style: "min-width:140px" });
   searchInp.oninput = () => {
     dashboardSearch = searchInp.value;
     const cursor = searchInp.selectionStart;
@@ -1687,6 +1887,10 @@ function renderDashboardImpl() {
       dashboardCampaignId = sel.value;
       expandedPromptRuns = new Set();
       geoTagFilter = [];
+      // A prompt/source filter typed for one campaign is meaningless against
+      // another and would silently hide most of the new campaign's rows.
+      geoPromptSearch = "";
+      sourceSearch = "";
       if (dashboardCampaignId) {
         const qs = await send({ type: "geo-prompt-list", profileId: dashboardCampaignId });
         dashboardGeoPrompts = qs.ok ? qs.prompts : [];
@@ -1737,7 +1941,7 @@ function renderDashboardImpl() {
       stat(fanTotal, "Fan-out queries", "fanout"),
       stat(domainCount.size, "Unique domains", "domains"),
       stat(citedTotal, "Cited", "cited"),
-      stat(fetchedTotal, "Fetched", "fetched")
+      stat(fetchedTotal, "Read-only", "fetched")
     );
     overviewCard.append(stats);
     const drill = renderDrilldown(recs);
@@ -1793,27 +1997,47 @@ function renderDashboardImpl() {
   const updLbl = () => (lbl.textContent = selectedIds.size ? `${selectedIds.size} Selected` : `All ${visibleRecs.length}`);
   updLbl();
   
+  // A native <select> sizes itself to its LONGEST option ("Conversations
+  // (HTML)"), so no amount of max-width tightening made it compact — it just
+  // clipped. A button plus its own popover is as wide as the word "Export"
+  // and nothing else. The old hardcoded #10b981 green also made it read as a
+  // foreign control; it uses the accent token like every other action now.
+  const dlWrap = el("div", { className: "menu-wrap" });
+  const dlBtn = el("button", { className: "btn sm ghost menu-btn", title: "Export the shown or selected conversations" },
+    el("span", {}, "\u2913"), el("span", {}, "Export"), el("span", { className: "menu-caret" }, "\u25be"));
+  const dlMenu = el("div", { className: "menu-pop", style: "display:none" });
+  const runExport = async (val) => {
+    dlMenu.style.display = "none";
+    if (val === "json") download(`citely-selected-${Date.now()}.json`, JSON.stringify(sel(), null, 2), "application/json");
+    else if (val === "excel" || val === "csv") downloadDetailedFormat(sel(), val);
+    else if (val === "html") await exportRecordsAsHtml(sel());
+  };
   // Trimmed to the formats people actually reach for: a spreadsheet (Excel),
   // structured data for further analysis (CSV), a readable document (HTML),
   // and the raw underlying data for bulk-selected conversations (JSON) — vs.
   // the previous 6-option list where Fan-outs TXT and Print/PDF saw little
   // use. Print/PDF is still available per-conversation from the Analyze tab.
-  const dlPicker = el("select", { className: "btn sm ghost dl-picker", style: "border: 1px solid #10b981; color: #10b981; appearance: auto;" });
-  const optDefault = el("option", { value: "" }, "Export ▾");
-  const optExcel = el("option", { value: "excel" }, "Excel (.xls)");
-  const optCsv = el("option", { value: "csv" }, "Detailed CSV");
-  const optHtml = el("option", { value: "html" }, "Conversations (HTML)");
-  const optJson = el("option", { value: "json" }, "Bulk raw data (JSON)");
-  dlPicker.append(optDefault, optExcel, optCsv, optHtml, optJson);
-
-  dlPicker.onchange = async () => {
-    const val = dlPicker.value;
-    if (!val) return;
-    dlPicker.value = ""; // reset
-    if (val === "json") download(`citely-selected-${Date.now()}.json`, JSON.stringify(sel(), null, 2), "application/json");
-    else if (val === "excel" || val === "csv") downloadDetailedFormat(sel(), val);
-    else if (val === "html") await exportRecordsAsHtml(sel());
+  [
+    ["excel", "Excel", ".xls spreadsheet"],
+    ["csv", "Detailed CSV", "one row per source"],
+    ["html", "Conversations", "readable HTML document"],
+    ["json", "Raw data", "full JSON payloads"],
+  ].forEach(([v, label, sub]) => {
+    const item = el("button", { className: "menu-item" },
+      el("span", { className: "menu-item-label" }, label),
+      el("span", { className: "menu-item-sub muted small" }, sub));
+    item.onclick = () => runExport(v);
+    dlMenu.append(item);
+  });
+  dlBtn.onclick = (ev) => {
+    ev.stopPropagation();
+    dlMenu.style.display = dlMenu.style.display === "none" ? "block" : "none";
   };
+  // Click-away close. Registered once per render alongside the menu it closes,
+  // and removed on the same click, so these don't stack up across re-renders.
+  const closeDlMenu = () => { dlMenu.style.display = "none"; document.removeEventListener("click", closeDlMenu); };
+  dlBtn.addEventListener("click", () => { if (dlMenu.style.display === "block") setTimeout(() => document.addEventListener("click", closeDlMenu), 0); });
+  dlWrap.append(dlBtn, dlMenu);
 
   const deleteSelected = el("button", { className: "btn sm danger", style: selectedIds.size ? "margin-left: auto;" : "display:none;" }, `🗑 Delete Selected`);
   deleteSelected.onclick = async () => {
@@ -1839,7 +2063,7 @@ function renderDashboardImpl() {
   clearSel.onclick = () => { selectedIds.clear(); renderDashboard(); };
   
   const rightGroup = el("div", { style: "display: flex; gap: 8px; margin-left: auto; align-items: center;" });
-  rightGroup.append(dlPicker, deleteSelected, deleteAll);
+  rightGroup.append(dlWrap, deleteSelected, deleteAll);
 
   bar.append(lbl, clearSel, rightGroup);
   savedCard.append(bar);
@@ -1886,7 +2110,7 @@ function renderDashboardImpl() {
          load();
       };
 
-      const promptDiv = el("div", { className: "capture-prompt", title: "Open this capture", style: "cursor: pointer; font-weight: 500;" }, activeRecord.userPrompt || "(No prompt text)");
+      const promptDiv = el("div", { className: "capture-prompt", title: "Open this capture", style: "cursor: pointer; font-weight: 500;" }, highlightMatch(activeRecord.userPrompt || "(No prompt text)", dashboardSearch));
       promptDiv.onclick = () => openCapture(activeRecord.captureId);
       
       const cb = el("input", { type: "checkbox" });
@@ -1987,10 +2211,16 @@ function renderDashboardImpl() {
     const sideCard = el("div", { className: "card" }, el("div", { className: "card-header" }, el("h3", {}, "Top Domains")));
     const ul = el("ul", { className: "itemlist" });
     topDomains.forEach(([d, n]) => {
-      const li = el("li", {});
+      const li = el("li", { className: "itemlist-clickable" });
       const head = el("div", { className: "item-head" });
+      // Clickable, the same as a campaign's Source Domains table — opens the
+      // identical drill-down modal (citations vs. read-only, every URL, and
+      // which of your OWN captures pulled each one in), built from the same
+      // filtered `recs` this whole card is already computed from.
+      const nameBtn = el("button", { className: "linkbtn td-domain-btn item-name domain-name", title: `Click for detailed URLs under ${d}` }, d);
+      nameBtn.onclick = () => openAdhocDomainDetailModal(d, recs);
       head.append(
-        el("span", { className: "item-name domain-name" }, d),
+        nameBtn,
         el("span", { className: "muted", style: "white-space:nowrap" }, `${n} src`)
       );
       li.append(head);
@@ -2494,6 +2724,22 @@ function toCsv(records) {
  * ================================================================== */
 
 const geoActive = () => GEO_PROFILES.find((p) => p.id === geoActiveId) || GEO_PROFILES[0] || null;
+/* Compact "3d ago" style stamp. A full locale timestamp in a table column
+   ("11/08/2026 19:13:28") is both unreadable at a glance and wide enough to
+   push everything else off the edge of the 540px popup; the exact time stays
+   available as the cell's title. */
+function relTime(ts) {
+  if (!ts) return "\u2014";
+  const s = Math.round((Date.now() - ts) / 1000);
+  if (s < 60) return "just now";
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.round(h / 24);
+  if (d < 7) return `${d}d ago`;
+  return new Date(ts).toLocaleDateString([], { month: "short", day: "numeric" });
+}
 const fmtPct = (n) => (n == null ? "—" : `${Number(n).toFixed(Number(n) >= 10 ? 0 : 1)}%`);
 const fmtPos = (n) => (n == null ? "—" : `#${Number(n).toFixed(1)}`);
 
@@ -2713,7 +2959,7 @@ function renderCampaignSetup(profile, dis) {
       role: "checkbox", "aria-checked": String(selected), tabIndex: pillDisabled ? -1 : 0,
     });
     pill.dataset.value = e.id;
-    pill.append(el("span", { className: "llm-icon" }, ENGINE_ICONS[e.id] || "🔷"));
+    pill.append(el("span", { className: "llm-icon" }, engineIcon(e.id)));
     pill.append(el("span", { className: "llm-label" }, e.label));
     // Unavailable engines are shown disabled rather than hidden: the roadmap
     // stays visible, and a metric can never silently under-count because a
@@ -2828,7 +3074,7 @@ function renderPromptManager(profile, dis) {
   }
 
   const toolbar = el("div", { className: "prompt-toolbar" });
-  const search = el("input", { type: "text", placeholder: "🔍 Search prompts…", value: promptSearch, className: "prompt-search" });
+  const search = el("input", { type: "text", placeholder: "🔍 Search words in prompts…", title: "Type any words — rows matching every word are shown, in any order", value: promptSearch, className: "prompt-search" });
   search.oninput = () => {
     promptSearch = search.value;
     // renderCampaigns() tears down and rebuilds the whole tab (this codebase's
@@ -2849,7 +3095,7 @@ function renderPromptManager(profile, dis) {
 
   const tags = allTags(GEO_PROMPTS);
   const filtered = GEO_PROMPTS.filter((p) => {
-    if (promptSearch && !p.text.toLowerCase().includes(promptSearch.toLowerCase())) return false;
+    if (!matchesSearch(p.text, promptSearch)) return false;
     if (promptOnlyUnassigned && (p.tags || []).length) return false;
     if (promptTagFilter.length && !promptTagFilter.some((t) => (p.tags || []).includes(t))) return false;
     return true;
@@ -2952,7 +3198,7 @@ function renderPromptManager(profile, dis) {
     }
     const promptCell = el("td", { className: "prompt-cell" });
     if (p.active === false) promptCell.append(el("span", { className: "tag fetched", style: "margin-right:6px" }, "⏸ paused"));
-    promptCell.append(p.text);
+    promptCell.append(highlightMatch(p.text, promptSearch));
     cells.push(promptCell);
     const tagWrap = el("div", { className: "tagline" });
     (p.tags || []).forEach((t) => tagWrap.append(el("span", { className: "tag" }, t)));
@@ -3097,7 +3343,7 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
     const ov = r.overview;
     const ovStats = el("div", { className: "statgrid", style: "margin-top:10px" });
     [[ov.captures, "Captures"], [ov.searched, "With search"], [ov.fanTotal, "Fan-out queries"],
-     [ov.domainCount, "Unique domains"], [ov.citedTotal, "Cited"], [ov.fetchedTotal, "Fetched"]].forEach(([n, l]) =>
+     [ov.domainCount, "Unique domains"], [ov.citedTotal, "Cited"], [ov.fetchedTotal, "Read-only"]].forEach(([n, l]) =>
       ovStats.append(el("div", { className: "stat" }, el("div", { className: "n" }, String(n)), el("div", { className: "l" }, l))));
     mc.append(ovStats);
   }
@@ -3111,37 +3357,45 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
   /* KPI row */
   const own = m.own;
   const kpis = el("div", { className: "geo-kpis" });
-  const kpi = (label, value, sub) => {
+  const kpi = (label, value, sub, tip) => {
     const b = el("div", { className: "geo-kpi" });
-    b.append(el("div", { className: "k-label" }, label));
+    b.append(el("div", { className: "k-label", ...(tip ? { "data-tip": tip } : {}) }, label));
     b.append(el("div", { className: "k-value" }, value));
     if (sub) b.append(el("div", { className: "k-sub muted" }, sub));
     return b;
   };
   kpis.append(
-    kpi("Share of Voice", fmtPct(own?.shareOfVoice), `${own?.mentions || 0} of ${m.mentionPool} tracked mentions`),
-    kpi("Brand Visibility", fmtPct(own?.visibility), `${own?.responsesPresent || 0} of ${m.totalResponses} responses`),
+    kpi("Share of Voice", fmtPct(own?.shareOfVoice), `${own?.mentions || 0} of ${m.mentionPool} tracked mentions`,
+      "Your mentions ÷ total mentions of ALL tracked brands combined. (Peec.ai's published formula.)"),
+    kpi("Brand Visibility", fmtPct(own?.visibility), `${own?.responsesPresent || 0} of ${m.totalResponses} responses`,
+      "Responses mentioning your brand ÷ total responses. (Peec.ai's published formula.)"),
     kpi("Mentions", String(own?.mentions ?? 0), "times named in answers"),
-    kpi("Source Visibility", fmtPct(own?.sourceVisibility), `your domain in ${own?.sourceResponses || 0} responses`),
+    kpi("Source Visibility", fmtPct(own?.sourceVisibility), `your domain in ${own?.sourceResponses || 0} responses`,
+      "Responses where your own domain surfaced as a source at all — cited or merely read, not just cited."),
     kpi("Citations", String(own?.citations ?? 0), "responses citing your domain"),
-    kpi("Avg position", fmtPos(own?.avgPosition), "rank among tracked brands"),
+    kpi("Avg position", fmtPos(own?.avgPosition), "rank among tracked brands",
+      "Average rank by where your brand first appears in the written answer, among all tracked brands — only counted for responses where you appear at all."),
   );
   mc.append(kpis);
 
-  /* competitor table */
+  /* competitor table — every row is clickable, own brand included, so a
+     competitor's numbers can be broken down per-prompt exactly the same way
+     the campaign's own brand can be in the full Prompt Performance table
+     below (see openBrandDetailModal). */
   const wrap = el("div", { className: "drill-scroll", style: "margin-top:14px" });
   const t = el("table", { className: "drill-table" });
   t.append(el("tr", {},
     el("th", {}, "Brand"),
-    el("th", { className: "num" }, "Visibility"),
-    el("th", { className: "num" }, "Share of Voice"),
-    el("th", { className: "num" }, "Mentions"),
-    el("th", { className: "num" }, "Avg position"),
-    el("th", { className: "num" }, "Citations"),
-    el("th", { className: "num" }, "Source vis.")));
+    el("th", { className: "num", "data-tip": "Peec.ai formula: responses mentioning this brand ÷ total responses." }, "Visibility"),
+    el("th", { className: "num", "data-tip": "Peec.ai formula: this brand's mentions ÷ total mentions of ALL tracked brands combined." }, "Share of Voice"),
+    el("th", { className: "num", "data-tip": "Total times this brand was named in an answer, across all responses." }, "Mentions"),
+    el("th", { className: "num", "data-tip": "Average rank among tracked brands, by where each first appears in the written answer — only counted for responses where this brand appears." }, "Avg position"),
+    el("th", { className: "num", "data-tip": "Responses that cited this brand's own domain as a source." }, "Citations"),
+    el("th", { className: "num", "data-tip": "Responses where this brand's own domain surfaced as a source at all — cited or merely read." }, "Source vis.")));
   m.brands.forEach((b) => {
-    const tr = el("tr", { className: b.isOwn ? "own-brand" : "" });
-    tr.append(el("td", {}, b.isOwn ? `${b.name} (you)` : b.name));
+    const tr = el("tr", { className: `clickable-row${b.isOwn ? " own-brand" : ""}`, title: `Click for ${b.name}'s per-prompt performance` });
+    tr.onclick = () => openBrandDetailModal(profile, b, prompts, since, until);
+    tr.append(el("td", { className: "td-domain" }, b.isOwn ? `${b.name} (you)` : b.name));
     tr.append(el("td", { className: "num" }, fmtPct(b.visibility)));
     tr.append(el("td", { className: "num" }, fmtPct(b.shareOfVoice)));
     tr.append(el("td", { className: "num" }, String(b.mentions)));
@@ -3169,9 +3423,150 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
 // history is expanded beyond just the latest run.
 let expandedPromptRuns = new Set();
 let sourceViewMode = "domain"; // "domain" | "url"
+// Both live at module scope, not inside refreshPromptPerformance: every
+// render tears the tab down and rebuilds it, so anything held in a local
+// would reset on the next keystroke / filter change.
+let geoPromptSearch = "";
+let sourceSearch = "";
 
-const yesNo = (b) => (b ? "✓" : "✕");
 const posLabel = (n) => (n == null ? "—" : `#${n}`);
+
+/* One engine's result for one prompt, as two glanceable badges instead of the
+ * old "✓ #1 / Domain cited ✕" string — a tick and a cross answering two
+ * different questions in the same cell read as one verdict and were easy to
+ * misparse.
+ *
+ * Both badges are individually clickable, opening THAT run's capture in
+ * Analyze — previously only the prompt's own title link opened anything, and
+ * it always opened whichever run happened to be most recent, so there was no
+ * way to specifically check "what did Gemini say" once ChatGPT had run more
+ * recently. Attaching the click handler directly to each badge (rather than
+ * a wrapping element) matters because promptPerfCards() below lifts these
+ * exact badge nodes out of their <td> into a card layout in the popup — the
+ * handler has to travel with the node itself to survive that move.
+ *
+ * `whose` names whose result this is, for the tooltip copy — "Your brand" /
+ * "your own domain" by default (the campaign's own brand, the only caller
+ * this used to have), but openBrandDetailModal passes an actual competitor
+ * name so a Samsung row doesn't get told "Your brand was not named" about
+ * Samsung.
+ */
+function resultCell(run, whose = { subject: "Your brand", domain: "Your own domain" }) {
+  if (!run) return el("td", { className: "pp-cell" }, el("span", { className: "pp-badge none", "data-tip": "This prompt has not been run on this engine yet." }, "no run"));
+  const cell = el("td", { className: "pp-cell" });
+  const stack = el("div", { className: "pp-stack" });
+  const openThis = (ev) => { ev.stopPropagation(); openCapture(run.captureId); };
+  const clickable = (node, tip) => {
+    node.classList.add("pp-clickable");
+    node.setAttribute("data-tip", tip);
+    node.title = "Open this capture in Analyze";
+    node.onclick = openThis;
+    return node;
+  };
+  if (!run.mentioned) {
+    stack.append(clickable(el("span", { className: "pp-badge miss" }, "not mentioned"), `${whose.subject} was not named in this answer.`));
+  } else if (run.position == null) {
+    // Present but unrankable — a product-card/carousel appearance with no
+    // position in the prose. The old "✓ —" implied a missing rank; this says
+    // what actually happened.
+    stack.append(clickable(el("span", { className: "pp-badge shown" }, "shown"), `${whose.subject} appeared, but not in the written answer, so it has no rank.`));
+  } else {
+    stack.append(clickable(
+      el("span", { className: `pp-badge rank${run.position <= 3 ? " top" : ""}` }, posLabel(run.position)),
+      `Ranked ${posLabel(run.position)} among the brands tracked on this campaign.`,
+    ));
+  }
+  stack.append(clickable(
+    run.cited ? el("span", { className: "pp-chip cited" }, "domain cited") : el("span", { className: "pp-chip notcited" }, "not cited"),
+    run.cited ? `${whose.domain} was cited as a source in this answer.` : `${whose.domain} was not cited as a source in this answer.`,
+  ));
+  cell.append(stack);
+  return cell;
+}
+
+const promptPerfLegend = () => el("div", { className: "pp-legend muted small" },
+  "#n = your brand's rank among the brands tracked on this campaign · ",
+  el("span", { className: "pp-badge shown" }, "shown"), " = appeared without a rank (product card) · ",
+  el("span", { className: "pp-chip cited" }, "domain cited"), " = your own site was used as a source");
+
+/* Popup layout for the same data.
+ *
+ * A table with a prompt column plus one column per engine needs ~530px; the
+ * popup gives it ~444px, so in the popup it was always going to be a
+ * sideways-scrolling table with half its columns off-screen. Same numbers,
+ * stacked vertically instead — nothing scrolls sideways and nothing is
+ * hidden behind a scrollbar. The full-tab view keeps the table, where the
+ * width is genuinely there and scanning a column beats reading cards.
+ */
+function promptPerfCards(filteredPrompts, engineIds, engineLabel, runsOf, rerender) {
+  const wrap = el("div", { className: "pp-cards" });
+  filteredPrompts.forEach((p, i) => {
+    const runs = runsOf(p);
+    const card = el("div", { className: `pp-card${runs.length ? "" : " idle"}` });
+    const titleRow = el("div", { className: "pp-card-title" });
+    titleRow.append(el("span", { className: "pp-card-idx" }, `${i + 1}`));
+    if (runs.length) {
+      const link = el("a", { href: "#", className: "prompt-link", title: "Open the latest capture of this prompt in Analyze" });
+      link.append(highlightMatch(p.text, geoPromptSearch));
+      link.onclick = (ev) => { ev.preventDefault(); openCapture(runs[0].captureId); };
+      titleRow.append(link);
+    } else {
+      titleRow.append(el("span", { className: "muted" }, highlightMatch(p.text, geoPromptSearch)));
+    }
+    card.append(titleRow);
+
+    if ((p.tags || []).length) {
+      const tagWrap = el("div", { className: "tagline" });
+      p.tags.forEach((t) => tagWrap.append(el("span", { className: "tag" }, t)));
+      card.append(tagWrap);
+    }
+
+    const engRows = el("div", { className: "pp-card-engines" });
+    engineIds.forEach((id) => {
+      const run = runs.find((x) => x.platform === id) || null;
+      const row = el("div", { className: "pp-card-engine" });
+      row.append(el("span", { className: "pp-card-engine-name" }, engineChip(id, engineLabel(id))));
+      // resultCell builds a <td>; lift its badges out so the same markup and
+      // the same wording drive both layouts.
+      const cell = resultCell(run);
+      const stack = cell.firstElementChild;
+      row.append(stack && stack.classList.contains("pp-stack")
+        ? el("span", { className: "pp-card-badges" }, ...stack.childNodes)
+        : el("span", { className: "pp-card-badges" }, ...cell.childNodes));
+      engRows.append(row);
+    });
+    card.append(engRows);
+
+    const foot = el("div", { className: "pp-card-foot" });
+    foot.append(el("span", { className: "muted small", title: runs.length ? new Date(runs[0].capturedAt).toLocaleString() : "" },
+      runs.length ? `Last run ${relTime(runs[0].capturedAt)}` : "Never run"));
+    if (runs.length > 1) {
+      const expanded = expandedPromptRuns.has(p.id);
+      const toggle = el("button", { className: "linkbtn" }, expanded ? "hide earlier runs" : `${runs.length - 1} earlier run${runs.length === 2 ? "" : "s"}`);
+      toggle.onclick = () => {
+        if (expanded) expandedPromptRuns.delete(p.id); else expandedPromptRuns.add(p.id);
+        rerender();
+      };
+      foot.append(toggle);
+    }
+    card.append(foot);
+
+    if (runs.length > 1 && expandedPromptRuns.has(p.id)) {
+      const hist = el("div", { className: "pp-card-history" });
+      runs.slice(1).forEach((run) => {
+        const row = el("div", { className: "pp-card-engine" });
+        row.append(el("span", { className: "pp-card-engine-name muted" }, engineChip(run.platform, relTime(run.capturedAt))));
+        const cell = resultCell(run);
+        const stack = cell.firstElementChild;
+        row.append(el("span", { className: "pp-card-badges" }, ...(stack && stack.classList.contains("pp-stack") ? stack.childNodes : cell.childNodes)));
+        hist.append(row);
+      });
+      card.append(hist);
+    }
+    wrap.append(card);
+  });
+  return wrap;
+}
 
 /** Replaces Saved Conversations once a campaign is selected: prompts grouped
  *  with their own-brand mention/position/citation per run (merging reruns
@@ -3189,7 +3584,10 @@ async function refreshPromptPerformance(profile, prompts, since, until) {
     since, until,
   });
   root.textContent = "";
-  root.append(el("div", { className: "card-header" }, el("h3", {}, "Prompt Performance")));
+  const rerender = () => refreshPromptPerformance(profile, prompts, since, until);
+
+  const head = el("div", { className: "card-header" }, el("h3", {}, "Prompt Performance"));
+  root.append(head);
 
   if (!r.ok) { root.append(el("div", { className: "empty" }, r.error || "Couldn't load prompt performance.")); return; }
   if (!r.hasBrand) {
@@ -3197,181 +3595,608 @@ async function refreshPromptPerformance(profile, prompts, since, until) {
     return;
   }
 
-  const filteredPrompts = geoTagFilter.length
+  const filteredPrompts = (geoTagFilter.length
     ? prompts.filter((p) => geoTagFilter.some((t) => (p.tags || []).includes(t)))
-    : prompts;
+    : prompts
+  ).filter((p) => matchesSearch(p.text, geoPromptSearch));
+
+  // Search sits in the card header next to the title, the same place the
+  // Dashboard puts its filters — this table can run to hundreds of prompts
+  // and previously had no way to narrow it at all.
+  const searchInp = el("input", {
+    id: "geoPromptSearch", type: "text", className: "filter search-input",
+    placeholder: "Search words in prompts…",
+    title: "Type any words — prompts containing every word are shown, in any order",
+    value: geoPromptSearch,
+  });
+  searchInp.oninput = () => {
+    geoPromptSearch = searchInp.value;
+    const cursor = searchInp.selectionStart;
+    rerender().then(() => {
+      const next = $("#geoPromptSearch");
+      if (next) { next.focus(); next.setSelectionRange(cursor, cursor); }
+    });
+  };
+  head.append(searchInp);
+
+  // --- roll-up of the table below, so the headline answer ("how many of my
+  // prompts actually mention me?") doesn't have to be counted by eye ---
+  const engineIds = (profile.engines && profile.engines.length) ? profile.engines : [];
+  const engineLabel = (id) => ENGINES.find((e) => e.id === id)?.label || id;
+  const runsOf = (p) => (r.prompts && r.prompts[p.id]) || [];
+  let withRuns = 0, anyMention = 0, anyCite = 0, rankSum = 0, rankN = 0;
+  filteredPrompts.forEach((p) => {
+    const runs = runsOf(p);
+    if (!runs.length) return;
+    withRuns++;
+    if (runs.some((x) => x.mentioned)) anyMention++;
+    if (runs.some((x) => x.cited)) anyCite++;
+    runs.forEach((x) => { if (x.position != null) { rankSum += x.position; rankN++; } });
+  });
+  const summary = el("div", { className: "pp-summary" });
+  const sChip = (n, l, tone) => el("div", { className: `pp-sum ${tone || ""}` },
+    el("span", { className: "pp-sum-n" }, String(n)), el("span", { className: "pp-sum-l" }, l));
+  summary.append(
+    sChip(`${withRuns}/${filteredPrompts.length}`, "prompts with runs"),
+    sChip(anyMention, "mention your brand", anyMention ? "good" : ""),
+    sChip(anyCite, "cite your domain", anyCite ? "good" : ""),
+    sChip(rankN ? `#${(rankSum / rankN).toFixed(1)}` : "—", "average rank"),
+  );
+  root.append(summary);
 
   if (!filteredPrompts.length) {
-    root.append(el("div", { className: "empty" }, "No prompts match the current filters."));
+    root.append(el("div", { className: "empty" },
+      geoPromptSearch ? `No prompts match "${geoPromptSearch}".` : "No prompts match the current filters."));
   } else {
     // One column per tracked engine (not a single ambiguous "latest run")
     // so it's clear whether a brand showed up on ChatGPT vs. Gemini rather
     // than one merged result that could be from either.
-    const engineIds = (profile.engines && profile.engines.length) ? profile.engines : [];
-    const engineLabel = (id) => ENGINES.find((e) => e.id === id)?.label || id;
+    if (document.body.classList.contains("popup")) {
+      root.append(promptPerfCards(filteredPrompts, engineIds, engineLabel, runsOf, rerender));
+      root.append(promptPerfLegend());
+    } else {
+      const headerCells = [el("th", { className: "pp-col-idx" }, "#"), el("th", {}, "Prompt")];
+      engineIds.forEach((id) => headerCells.push(el("th", {}, engineChip(id, engineLabel(id)))));
+      headerCells.push(el("th", {}, "Last run"), el("th", { className: "pp-col-more" }, ""));
+      const table = el("table", { className: "drill-table prompt-perf-table" }, el("tr", {}, ...headerCells));
 
-    const buildEngineCell = (run) => {
-      if (!run) return el("td", { className: "muted small" }, "—");
-      return el("td", {}, el("div", { className: "platform-result" },
-        el("span", {}, `${yesNo(run.mentioned)} ${posLabel(run.position)}`),
-        el("span", { className: "muted small" }, `Domain cited ${yesNo(run.cited)}`),
-      ));
-    };
+      filteredPrompts.forEach((p, i) => {
+        const runs = runsOf(p);
+        // Clicking a prompt opens its most recent capture in Analyze so the
+        // full answer/sources/fan-out can be studied there instead of just
+        // the summarized mention/position/citation flags here.
+        const promptCell = el("td", { className: "prompt-cell" });
+        if (runs.length) {
+          const promptLink = el("a", { href: "#", className: "prompt-link", title: "Open the latest capture of this prompt in Analyze" });
+          promptLink.append(highlightMatch(p.text, geoPromptSearch));
+          promptLink.onclick = (ev) => { ev.preventDefault(); openCapture(runs[0].captureId); };
+          promptCell.append(promptLink);
+        } else {
+          promptCell.append(el("span", { className: "muted" }, highlightMatch(p.text, geoPromptSearch)));
+        }
+        const tagWrap = el("div", { className: "tagline" });
+        (p.tags || []).forEach((t) => tagWrap.append(el("span", { className: "tag" }, t)));
+        if (tagWrap.childNodes.length) promptCell.append(tagWrap);
 
-    const headerCells = [el("th", {}, "Prompt")];
-    engineIds.forEach((id) => headerCells.push(el("th", {}, `${ENGINE_ICONS[id] || "🔷"} ${engineLabel(id)}`)));
-    headerCells.push(el("th", {}, "Time"), el("th", { style: "width:90px" }, ""));
-    const table = el("table", { className: "prompt-perf-table" }, el("tr", {}, ...headerCells));
+        const cells = [el("td", { className: "pp-col-idx muted" }, String(i + 1)), promptCell];
+        if (!runs.length) {
+          engineIds.forEach(() => cells.push(resultCell(null)));
+          cells.push(el("td", { className: "muted small" }, "never"), el("td", {}));
+          table.append(el("tr", { className: "pp-row-idle" }, ...cells));
+          return;
+        }
 
-    filteredPrompts.forEach((p) => {
-      const runs = (r.prompts && r.prompts[p.id]) || [];
-      // Clicking a prompt opens its most recent capture in Analyze so the
-      // full answer/sources/fan-out can be studied there instead of just
-      // the summarized mention/position/citation flags here.
-      const promptLink = el("a", { href: "#", className: "prompt-link" }, p.text);
-      promptLink.onclick = (ev) => {
-        ev.preventDefault();
-        if (runs[0]) openCapture(runs[0].captureId);
-      };
-      const promptCell = el("td", { className: "prompt-cell" }, promptLink);
-      const tagWrap = el("div", { className: "tagline" });
-      (p.tags || []).forEach((t) => tagWrap.append(el("span", { className: "tag" }, t)));
-      if (tagWrap.childNodes.length) promptCell.append(tagWrap);
+        engineIds.forEach((id) => cells.push(resultCell(runs.find((run) => run.platform === id) || null)));
+        cells.push(el("td", { className: "pp-time", title: new Date(runs[0].capturedAt).toLocaleString() }, relTime(runs[0].capturedAt)));
 
-      const cells = [promptCell];
-      if (!runs.length) {
-        engineIds.forEach(() => cells.push(el("td", { className: "muted small" }, "—")));
-        cells.push(el("td", { className: "muted small" }, "No runs yet"), el("td", {}));
+        const expandCell = el("td", { className: "pp-col-more" });
+        if (runs.length > 1) {
+          const expanded = expandedPromptRuns.has(p.id);
+          const toggle = el("button", { className: "linkbtn" }, expanded ? "hide" : `+${runs.length - 1}`);
+          toggle.title = expanded ? "Hide earlier runs" : `Show ${runs.length - 1} earlier run(s)`;
+          toggle.onclick = () => {
+            if (expanded) expandedPromptRuns.delete(p.id); else expandedPromptRuns.add(p.id);
+            rerender();
+          };
+          expandCell.append(toggle);
+        }
+        cells.push(expandCell);
         table.append(el("tr", {}, ...cells));
-        return;
-      }
 
-      engineIds.forEach((id) => cells.push(buildEngineCell(runs.find((run) => run.platform === id) || null)));
-      cells.push(el("td", {}, new Date(runs[0].capturedAt).toLocaleString()));
-
-      const expandCell = el("td", {});
-      if (runs.length > 1) {
-        const expanded = expandedPromptRuns.has(p.id);
-        const toggle = el("button", { className: "linkbtn" }, expanded ? "hide" : `${runs.length - 1} earlier`);
-        toggle.onclick = () => {
-          if (expanded) expandedPromptRuns.delete(p.id); else expandedPromptRuns.add(p.id);
-          refreshPromptPerformance(profile, prompts, since, until);
-        };
-        expandCell.append(toggle);
-      }
-      cells.push(expandCell);
-      table.append(el("tr", {}, ...cells));
-
-      if (runs.length > 1 && expandedPromptRuns.has(p.id)) {
-        runs.slice(1).forEach((run) => {
-          const subCells = [el("td", {})];
-          engineIds.forEach((id) => subCells.push(run.platform === id ? buildEngineCell(run) : el("td", {})));
-          subCells.push(el("td", { className: "muted small" }, new Date(run.capturedAt).toLocaleString()), el("td", {}));
-          table.append(el("tr", { className: "prompt-perf-subrow" }, ...subCells));
-        });
-      }
-    });
-    root.append(el("div", { className: "prompt-table-scroll" }, table));
+        if (runs.length > 1 && expandedPromptRuns.has(p.id)) {
+          runs.slice(1).forEach((run) => {
+            const subCells = [el("td", { className: "pp-col-idx" }), el("td", { className: "muted small" }, "earlier run")];
+            engineIds.forEach((id) => subCells.push(run.platform === id ? resultCell(run) : el("td", {})));
+            subCells.push(el("td", { className: "pp-time muted small", title: new Date(run.capturedAt).toLocaleString() }, relTime(run.capturedAt)), el("td", {}));
+            table.append(el("tr", { className: "prompt-perf-subrow" }, ...subCells));
+          });
+        }
+      });
+      root.append(el("div", { className: "drill-scroll" }, table));
+      root.append(promptPerfLegend());
+    }
   }
 
   // --- source domains, aggregated from this same filtered response set ---
-  const byDomain = new Map();
-  const byUrl = new Map();
-  const bump = (map, key, outcome) => {
-    if (!key) return;
-    const row = map.get(key) || { citations: 0, fetched: 0 };
-    if (outcome === "cited") row.citations++;
-    else if (outcome === "fetched") row.fetched++;
-    map.set(key, row);
+  const promptTextById = new Map((prompts || []).map((p) => [p.id, p.text]));
+  // Two different denominators, deliberately: "prompts cited" counts DISTINCT
+  // prompts (a URL cited five times under one prompt is still one prompt's
+  // worth of reach), while "fetched" counts every occurrence (that's crawl
+  // volume, not reach). Collapsing them into one number is the easy mistake.
+  const domainAgg = new Map();
+  const urlAgg = new Map();
+  const touchDomain = (d) => {
+    let row = domainAgg.get(d);
+    if (!row) { row = { key: d, citations: 0, fetched: 0, urls: new Set(), promptIds: new Set(), citedPromptIds: new Set() }; domainAgg.set(d, row); }
+    return row;
   };
-  Object.values(r.prompts || {}).forEach((runs) => runs.forEach((run) => (run.sources || []).forEach((s) => {
-    bump(byDomain, s.domain, s.outcome);
-    bump(byUrl, s.url, s.outcome);
+  const touchUrl = (u, d) => {
+    let row = urlAgg.get(u);
+    if (!row) { row = { key: u, domain: d, citations: 0, fetched: 0, promptIds: new Set(), citedPromptIds: new Set(), runs: new Map() }; urlAgg.set(u, row); }
+    return row;
+  };
+  Object.entries(r.prompts || {}).forEach(([promptId, runs]) => runs.forEach((run) => (run.sources || []).forEach((sc) => {
+    const cited = sc.outcome === "cited";
+    const fetched = sc.outcome === "fetched";
+    if (sc.domain) {
+      const d = touchDomain(sc.domain);
+      if (cited) d.citations++;
+      if (fetched) d.fetched++;
+      d.promptIds.add(promptId);
+      if (cited) d.citedPromptIds.add(promptId);
+      if (sc.url) d.urls.add(sc.url);
+    }
+    if (sc.url) {
+      const u = touchUrl(sc.url, sc.domain || "");
+      if (cited) u.citations++;
+      if (fetched) u.fetched++;
+      u.promptIds.add(promptId);
+      if (cited) u.citedPromptIds.add(promptId);
+      // Keyed by capture so one response listing the same URL twice is still
+      // one run in the drill-down list.
+      const prev = u.runs.get(run.captureId);
+      if (!prev) {
+        u.runs.set(run.captureId, {
+          captureId: run.captureId, capturedAt: run.capturedAt, platform: run.platform,
+          promptId, promptText: promptTextById.get(promptId) || "(prompt no longer tracked)",
+          cited, mentioned: run.mentioned,
+        });
+      } else if (cited) prev.cited = true;
+    }
   })));
+  domainAgg.forEach((d) => { d.urlList = [...d.urls].map((u) => urlAgg.get(u)).filter(Boolean); });
 
   root.append(el("div", { className: "wizard-divider" }));
   const srcHead = el("div", { className: "card-header", style: "margin-top:0" }, el("h3", {}, "Source Domains"));
-  const modeToggle = el("div", { className: "filter-bar" });
+  const modeToggle = el("div", { className: "filter-bar", style: "margin:0" });
   [["domain", "Domains"], ["url", "URLs"]].forEach(([v, l]) => {
     const pill = el("button", { className: `filter-pill${sourceViewMode === v ? " active" : ""}` }, l);
-    pill.onclick = () => { sourceViewMode = v; refreshPromptPerformance(profile, prompts, since, until); };
+    pill.onclick = () => { sourceViewMode = v; rerender(); };
     modeToggle.append(pill);
   });
-  srcHead.append(modeToggle);
+  const srcSearchInp = el("input", {
+    id: "sourceSearch", type: "text", className: "filter search-input",
+    placeholder: sourceViewMode === "domain" ? "Filter domains…" : "Filter URLs…",
+    value: sourceSearch,
+  });
+  srcSearchInp.oninput = () => {
+    sourceSearch = srcSearchInp.value;
+    const cursor = srcSearchInp.selectionStart;
+    rerender().then(() => {
+      const next = $("#sourceSearch");
+      if (next) { next.focus(); next.setSelectionRange(cursor, cursor); }
+    });
+  };
+  srcHead.append(el("div", { className: "src-head-tools" }, modeToggle, srcSearchInp));
   root.append(srcHead);
 
-  const activeMap = sourceViewMode === "domain" ? byDomain : byUrl;
-  if (!activeMap.size) {
-    root.append(el("div", { className: "empty" }, "No sources captured yet for these filters."));
+  const activeMap = sourceViewMode === "domain" ? domainAgg : urlAgg;
+  const rows = [...activeMap.values()]
+    .filter((row) => matchesSearch(row.key, sourceSearch))
+    .sort((a, b) => b.citations - a.citations || b.fetched - a.fetched || a.key.localeCompare(b.key));
+  const shown = rows.slice(0, 50);
+
+  if (!shown.length) {
+    root.append(el("div", { className: "empty" },
+      sourceSearch ? `No sources match "${sourceSearch}".` : "No sources captured yet for these filters."));
   } else {
-    const srcTable = el("table", { className: "drill-table" });
-    srcTable.append(el("tr", {}, el("th", {}, sourceViewMode === "domain" ? "Domain" : "URL"), el("th", { className: "num" }, "Citations"), el("th", { className: "num" }, "Fetched")));
-    [...activeMap.entries()].sort((a, b) => b[1].citations - a[1].citations || b[1].fetched - a[1].fetched).slice(0, 50).forEach(([key, row]) => {
-      // URLs are clickable — the same URL can surface under several
-      // different prompts, and clicking shows which ones plus what each
-      // response mentioned. Domains aren't (a domain has no single "source"
-      // to drill into the way one exact URL does).
-      const keyCell = sourceViewMode === "url"
-        ? el("button", { className: "linkbtn td-domain-btn", title: "Click to see which prompts cited this URL" }, key)
-        : el("span", { className: "domain-name" }, key);
-      if (sourceViewMode === "url") keyCell.onclick = () => openUrlDetailModal(key, profile, since, until);
-      srcTable.append(el("tr", {}, el("td", { className: "td-domain" }, keyCell), el("td", { className: "num" }, String(row.citations)), el("td", { className: "num" }, String(row.fetched))));
+    // A bar scaled to the top row turns a column of raw integers into a
+    // ranking you can read at a glance — the question this table answers is
+    // "who does the engine lean on", which a bare number column buries.
+    const maxCites = Math.max(1, ...shown.map((x) => x.citations || 0));
+    const srcTable = el("table", { className: "drill-table src-table" });
+    const hdr = [el("th", { className: "src-col-idx" }, "#"), el("th", {}, sourceViewMode === "domain" ? "Domain" : "URL")];
+    if (sourceViewMode === "domain") hdr.push(el("th", { className: "num" }, "URLs"));
+    hdr.push(
+      el("th", { className: "num", "data-tip": "Distinct prompts whose answer cited this source." }, "Prompts"),
+      el("th", { "data-tip": "How many times this source was cited in an answer." }, "Citations"),
+      el("th", {
+        className: "num", "data-tip":
+          "Pulled in as a source this many times, but never cited in the written answer. Not “never retrieved” — every count here was actually read; it just wasn't credited in the answer.",
+      }, "Read-only"));
+    srcTable.append(el("tr", {}, ...hdr));
+
+    shown.forEach((row, i) => {
+      // Both views drill down now. A domain used to be plain text, with a
+      // comment claiming it had "no single source to drill into" — but the
+      // domain roll-up is exactly what people want first (how much of my
+      // citation volume is this publisher, and through which pages), so it
+      // opens a breakdown of its own URLs, each of which opens the prompts.
+      const keyCell = el("button", {
+        className: "linkbtn td-domain-btn",
+        title: sourceViewMode === "domain" ? "Click for this domain's URLs and the prompts they came from" : "Click to see which prompts cited this URL",
+      });
+      keyCell.append(highlightMatch(row.key, sourceSearch));
+      keyCell.onclick = () => (sourceViewMode === "domain"
+        ? openDomainDetailModal(row, `Source breakdown · ${profile.name || "Untitled campaign"}`, "prompt")
+        : openUrlDetailModal(row.key, profile, since, until));
+
+      const bar = el("div", { className: "src-bar" },
+        el("div", { className: "src-bar-fill", style: `width:${Math.round(((row.citations || 0) / maxCites) * 100)}%` }),
+        el("span", { className: "src-bar-n" }, String(row.citations || 0)));
+
+      const cells = [el("td", { className: "src-col-idx muted" }, String(i + 1)), el("td", { className: "td-domain" }, keyCell)];
+      if (sourceViewMode === "domain") cells.push(el("td", { className: "num" }, String(row.urls.size)));
+      cells.push(
+        el("td", { className: "num" }, String(row.citedPromptIds.size)),
+        el("td", { className: "src-bar-cell" }, bar),
+        el("td", { className: "num muted" }, String(row.fetched || 0)));
+      srcTable.append(el("tr", {}, ...cells));
     });
     root.append(el("div", { className: "drill-scroll" }, srcTable));
+    if (rows.length > shown.length) {
+      root.append(el("div", { className: "muted small", style: "margin-top:6px" }, `Showing the top ${shown.length} of ${rows.length} — narrow it with the filter above.`));
+    }
   }
 }
 
-/** "Rankings by Source URL" — which prompts pulled in this URL, whether the
- *  campaign's own brand was mentioned in that response, and every brand
- *  present. No trend chart — just the table (this URL's citation count over
- *  time isn't tracked at that granularity, and a fabricated chart would be
- *  worse than no chart). */
-async function openUrlDetailModal(url, profile, since, until) {
+/* Shared modal chrome, so the URL and domain drill-downs can't drift apart. */
+// A handful of fixed gradients, picked by a cheap hash of the name — not
+// meaningful data, just enough variety that the avatar isn't the same flat
+// blue on every modal (which was part of what read as "dull").
+const AVATAR_GRADIENTS = [
+  "linear-gradient(135deg,#6366f1,#4f46e5)",
+  "linear-gradient(135deg,#0ea5e9,#0369a1)",
+  "linear-gradient(135deg,#f59e0b,#d97706)",
+  "linear-gradient(135deg,#ec4899,#db2777)",
+  "linear-gradient(135deg,#10b981,#047857)",
+  "linear-gradient(135deg,#8b5cf6,#6d28d9)",
+];
+function avatarGradient(key) {
+  let h = 0;
+  for (const c of String(key)) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return AVATAR_GRADIENTS[h % AVATAR_GRADIENTS.length];
+}
+
+function openDetailModal(title, subtitle, opts = {}) {
   const existing = document.getElementById("url-modal-backdrop");
   if (existing) existing.remove();
 
   const backdrop = el("div", { id: "url-modal-backdrop", className: "modal-backdrop" });
   const modal = el("div", { className: "modal-content" });
   const header = el("div", { className: "modal-header" });
-  header.append(
-    el("div", { style: "min-width:0" },
-      el("h3", { style: "margin:0;font-size:15px;color:var(--fg-primary);" }, "Rankings by Source URL"),
-      el("div", { className: "muted small", style: "overflow-wrap:anywhere;margin-top:2px" }, url)),
-  );
+  const titles = el("div", { className: "modal-header-titles" });
+  if (opts.avatarText) {
+    titles.append(el("div", { className: "modal-avatar", style: `background:${avatarGradient(opts.avatarKey || title)}` }, opts.avatarText));
+  }
+  titles.append(el("div", { style: "min-width:0" },
+    el("h3", { className: "modal-title" }, title),
+    subtitle ? el("div", { className: "muted small modal-sub" }, subtitle) : el("span", {})));
+  header.append(titles);
   const closeBtn = el("button", { className: "modal-close-btn", title: "Close" }, "×");
   closeBtn.onclick = () => backdrop.remove();
   header.append(closeBtn);
   modal.append(header);
-
-  const body = el("div", { className: "modal-body" }, el("div", { className: "muted small" }, "Loading…"));
+  const body = el("div", { className: "modal-body" });
   modal.append(body);
   backdrop.append(modal);
   document.body.append(backdrop);
   backdrop.onclick = (ev) => { if (ev.target === backdrop) backdrop.remove(); };
+  // Esc closes — a modal dismissable only by hitting a small × is awkward in
+  // the 540px popup, where the clickable backdrop margin is barely there.
+  const onKey = (ev) => { if (ev.key === "Escape") backdrop.remove(); };
+  document.addEventListener("keydown", onKey);
+  // Every close path in this file (×, backdrop click, Escape, and every
+  // "click a row to navigate" handler in the three modals built on top of
+  // this) calls `backdrop.remove()` directly rather than through one shared
+  // close() function — there are 8 such call sites. Rather than requiring
+  // every one of them to also remember to detach `onKey`, override `remove`
+  // itself once, here, so the listener is cleaned up no matter which of
+  // those 8 paths actually closes the modal. Without this, the keydown
+  // listener leaked on every close path except Escape — harmless per leak
+  // (the stale closure just checks a key and calls .remove() on an already-
+  // detached node) but unbounded: a session that opens and closes several
+  // brand/domain/URL modals in a row accumulates one listener per open.
+  const nativeRemove = backdrop.remove.bind(backdrop);
+  backdrop.remove = () => { nativeRemove(); document.removeEventListener("keydown", onKey); };
+  return { backdrop, body };
+}
+
+const modalStat = (n, l, tone, tip) => el(
+  "div",
+  { className: `stat${tone ? " tone-" + tone : ""}`, ...(tip ? { "data-tip": tip } : {}) },
+  el("div", { className: "n" }, String(n)),
+  el("div", { className: "l" }, l),
+);
+
+/** Build the same drill-down "row" shape openDomainDetailModal expects, but
+ *  from ad-hoc (non-campaign) capture data instead of a campaign's tracked
+ *  runs — this is what lets the plain Dashboard's "Top Domains" list open
+ *  the identical drill-down a campaign's Source Domains table does, instead
+ *  of being permanently plain text. */
+function adhocDomainRow(domain, recs) {
+  const row = { key: domain, citations: 0, fetched: 0, urls: new Set(), citedPromptIds: new Set(), urlList: [] };
+  const urlAgg = new Map();
+  (recs || []).forEach((rec) => {
+    (rec.sources || []).forEach((s) => {
+      if (s.domain !== domain) return;
+      const cited = s.outcome === "cited";
+      const fetched = s.outcome === "fetched";
+      if (cited) row.citations++;
+      if (fetched) row.fetched++;
+      if (!s.url) return;
+      row.urls.add(s.url);
+      if (cited) row.citedPromptIds.add(rec.captureId);
+      let u = urlAgg.get(s.url);
+      if (!u) { u = { key: s.url, citations: 0, fetched: 0, citedPromptIds: new Set(), runs: new Map() }; urlAgg.set(s.url, u); }
+      if (cited) { u.citations++; u.citedPromptIds.add(rec.captureId); }
+      if (fetched) u.fetched++;
+      const prev = u.runs.get(rec.captureId);
+      if (!prev) {
+        u.runs.set(rec.captureId, {
+          captureId: rec.captureId, capturedAt: rec.capturedAt, platform: rec.platform,
+          promptText: rec.userPrompt || "(no prompt text)", cited,
+        });
+      } else if (cited) prev.cited = true;
+    });
+  });
+  row.urlList = [...urlAgg.values()];
+  return row;
+}
+
+function openAdhocDomainDetailModal(domain, recs) {
+  openDomainDetailModal(adhocDomainRow(domain, recs), "Source breakdown · across your captures", "capture");
+}
+
+/** Domain drill-down: this publisher's totals, then every URL of theirs that
+ *  surfaced, then — expanded per URL — the exact prompts (or, for the ad-hoc
+ *  Dashboard, captures) that pulled it in. Clicking one jumps to that
+ *  capture in Analyze.
+ *
+ *  `unit` is "prompt" for a campaign's tracked runs or "capture" for plain
+ *  ad-hoc browsing — the two label their counts differently ("N prompts
+ *  cited on" vs. "N captures cited in") but are otherwise the same shape,
+ *  built by either refreshPromptPerformance's aggregation or adhocDomainRow
+ *  above. */
+function openDomainDetailModal(row, subtitle, unit = "prompt") {
+  const plural = (n) => (n === 1 ? unit : `${unit}s`);
+  const inOn = unit === "prompt" ? "cited on" : "cited in";
+  const { backdrop, body } = openDetailModal(row.key, subtitle, { avatarText: row.key.slice(0, 1).toUpperCase(), avatarKey: row.key });
+
+  const stats = el("div", { className: "statgrid modal-statgrid" });
+  stats.append(
+    modalStat(row.citations, "Citations", "good", "Times this domain was cited as a source in a written answer."),
+    modalStat(row.fetched, "Read-only", "muted",
+      "Pulled in as a source but never cited in the written answer. Not “never retrieved” — every count here was actually read; it just wasn't credited."),
+    modalStat(row.urls.size, "URLs", "accent", `Distinct pages on ${row.key} that appeared as a source.`),
+    modalStat(row.citedPromptIds.size, `${plural(row.citedPromptIds.size)} ${inOn}`, "accent",
+      `${unit === "prompt" ? "Tracked prompts" : "Captures"} whose answer cited at least one page from this domain.`),
+  );
+  body.append(stats);
+
+  const urls = [...(row.urlList || [])].sort((a, b) =>
+    b.citedPromptIds.size - a.citedPromptIds.size || b.citations - a.citations || b.fetched - a.fetched);
+
+  body.append(el("div", { className: "modal-section-title" }, `Pages from ${row.key}`));
+  body.append(el("div", { className: "muted small", style: "margin-bottom:8px" },
+    `"Cited" counts distinct ${unit}s whose answer cited the page; "read-only" counts every time it was pulled in without being cited. Expand a page to see the ${unit}s behind it — click one to open that capture in Analyze.`));
+
+  if (!urls.length) {
+    body.append(el("div", { className: "empty" }, "No individual page URLs were recorded for this domain."));
+    return;
+  }
+
+  const list = el("div", { className: "url-drill" });
+  urls.forEach((u) => {
+    const item = el("div", { className: "url-drill-item" });
+    const head = el("button", { className: "url-drill-head", title: `Show the ${unit}s this page came from` });
+    const caret = el("span", { className: "url-drill-caret" }, "▸");
+    head.append(
+      caret,
+      el("span", { className: "url-drill-url" }, u.key),
+      el("span", { className: "url-drill-meta" },
+        el("span", { className: "pp-chip cited" }, `${u.citedPromptIds.size} ${plural(u.citedPromptIds.size)} cited`),
+        el("span", {
+          className: "pp-chip notcited", "data-tip":
+            "Pulled in as a source this many times, but never cited in the written answer. This is NOT “never retrieved” — every appearance here was read; it just wasn't credited.",
+        }, `${u.fetched} read-only`)),
+    );
+    const runsWrap = el("div", { className: "url-drill-runs", style: "display:none" });
+    [...u.runs.values()].sort((a, b) => b.capturedAt - a.capturedAt).forEach((run) => {
+      const line = el("button", { className: "url-drill-run", title: "Open this capture in Analyze" });
+      line.append(
+        el("span", { className: "url-drill-prompt" }, run.promptText),
+        el("span", { className: "url-drill-run-meta muted small" },
+          engineChip(run.platform, `${ENGINES.find((e) => e.id === run.platform)?.label || run.platform} · ${new Date(run.capturedAt).toLocaleDateString()} · ${run.cited ? "cited" : "read-only"}`)),
+      );
+      line.onclick = () => { backdrop.remove(); openCapture(run.captureId); };
+      runsWrap.append(line);
+    });
+    // A page that came from a single capture has nothing to choose between —
+    // open it directly rather than making the user expand a list of one.
+    if (u.runs.size === 1) {
+      const only = [...u.runs.values()][0];
+      caret.textContent = "→";
+      head.title = "Open this capture in Analyze";
+      head.onclick = () => { backdrop.remove(); openCapture(only.captureId); };
+    } else {
+      head.onclick = () => {
+        const open = runsWrap.style.display !== "none";
+        runsWrap.style.display = open ? "none" : "block";
+        caret.textContent = open ? "▸" : "▾";
+      };
+    }
+    item.append(head, runsWrap);
+    list.append(item);
+  });
+  body.append(list);
+}
+
+/** "Rankings by Source URL" — which prompts pulled in this URL, whether the
+ *  campaign's own brand was mentioned in that response, and every brand
+ *  present. No trend chart — just the table (this URL's citation count over
+ *  time isn't tracked at that granularity, and a fabricated chart would be
+ *  worse than no chart). Rows open the capture in Analyze, the same as the
+ *  domain drill-down. */
+async function openUrlDetailModal(url, profile, since, until) {
+  const { backdrop, body } = openDetailModal("Rankings by Source URL", url);
+  body.append(el("div", { className: "muted small" }, "Loading…"));
 
   const r = await send({ type: "geo-url-detail", profileId: profile.id, url, tags: geoTagFilter, engines: geoEngineFilter, since, until });
   body.textContent = "";
   if (!r.ok) { body.append(el("div", { className: "empty" }, r.error || "Couldn't load this URL's detail.")); return; }
   if (!r.rows.length) { body.append(el("div", { className: "empty" }, "No responses matched for this URL under the current filters.")); return; }
 
+  const mentionedN = r.rows.filter((row) => row.mentioned).length;
+  const stats = el("div", { className: "statgrid modal-statgrid" });
+  stats.append(
+    modalStat(r.rows.length, "Responses"),
+    modalStat(new Set(r.rows.map((row) => row.promptText)).size, "Prompts"),
+    modalStat(mentionedN, "You mentioned"),
+  );
+  body.append(stats);
+  body.append(el("div", { className: "modal-section-title" }, "Responses that pulled in this page"));
+
   const table = el("table", { className: "drill-table" });
-  table.append(el("tr", {}, el("th", {}, "Prompt"), el("th", {}, "Brand Mentioned"), el("th", {}, "Brands"), el("th", {}, "Date")));
+  table.append(el("tr", {}, el("th", {}, "Prompt"), el("th", {}, "You"), el("th", {}, "Brands in the answer"), el("th", {}, "Date")));
   r.rows.forEach((row) => {
     const brandChips = el("div", { className: "tagline" });
     row.brands.forEach((b) => brandChips.append(el("span", { className: "tag" }, b)));
+    const promptCell = el("td", {});
+    if (row.captureId) {
+      const link = el("button", { className: "linkbtn td-domain-btn", title: "Open this capture in Analyze" }, row.promptText);
+      link.onclick = () => { backdrop.remove(); openCapture(row.captureId); };
+      promptCell.append(link);
+    } else {
+      promptCell.append(row.promptText);
+    }
     table.append(el("tr", {},
-      el("td", {}, row.promptText),
-      el("td", {}, row.mentioned == null ? "—" : yesNo(row.mentioned)),
+      promptCell,
+      el("td", {}, row.mentioned == null
+        ? el("span", { className: "pp-badge none" }, "—")
+        : el("span", { className: `pp-badge ${row.mentioned ? "rank" : "miss"}` }, row.mentioned ? "mentioned" : "absent")),
       el("td", {}, brandChips),
-      el("td", {}, new Date(row.capturedAt).toLocaleDateString()),
+      el("td", { className: "muted small", title: new Date(row.capturedAt).toLocaleString() }, relTime(row.capturedAt)),
     ));
   });
   body.append(el("div", { className: "drill-scroll" }, table));
 }
 
+/** Per-prompt performance for ONE brand on this campaign — own brand or any
+ *  competitor. Every row in the Campaign Performance table opens this now,
+ *  not just the campaign's own brand: `geo-prompt-performance` accepts a
+ *  `focusBrand` name and computes mentioned/position/cited against THAT
+ *  brand instead of always "own" (see background.js), so a competitor gets
+ *  the exact same breakdown the campaign's own brand gets in the full-page
+ *  Prompt Performance table below — just scoped to one brand, in a modal. */
+async function openBrandDetailModal(profile, brand, prompts, since, until) {
+  const { backdrop, body } = openDetailModal(
+    brand.isOwn ? `${brand.name} (you)` : brand.name,
+    `Prompt performance · ${profile.name || "Untitled campaign"}`,
+    { avatarText: brand.name.slice(0, 1).toUpperCase(), avatarKey: brand.name },
+  );
+  body.append(el("div", { className: "muted small" }, "Loading…"));
+
+  const r = await send({
+    type: "geo-prompt-performance", profileId: profile.id, focusBrand: brand.name,
+    tags: geoTagFilter, engines: geoEngineFilter, since, until,
+  });
+  body.textContent = "";
+  if (!r.ok) { body.append(el("div", { className: "empty" }, r.error || "Couldn't load this brand's performance.")); return; }
+  if (!r.hasBrand) { body.append(el("div", { className: "empty" }, `${brand.name} couldn't be matched against the tracked runs — check its name on the Campaigns tab.`)); return; }
+
+  const engineIds = (profile.engines && profile.engines.length) ? profile.engines : [];
+  // What resultCell's tooltips should call this brand — the default inside
+  // resultCell says "Your brand" / "Your own domain", which is correct ONLY
+  // for the campaign's own brand. Every other row in the competitor table
+  // opens this same modal for a brand that is emphatically not "yours".
+  const whose = brand.isOwn ? undefined : { subject: brand.name, domain: `${brand.name}'s domain` };
+  const runsByPromptId = new Map(Object.entries(r.prompts || {}));
+  // Same tag filter the full-page Prompt Performance table applies — without
+  // it, the denominator here (and the row list) would silently include
+  // prompts the rest of the Dashboard has filtered out.
+  const filteredPrompts = (geoTagFilter.length
+    ? (prompts || []).filter((p) => geoTagFilter.some((t) => (p.tags || []).includes(t)))
+    : (prompts || [])
+  ).slice().sort((a, b) => a.text.localeCompare(b.text));
+
+  let withRuns = 0, anyMention = 0, anyCite = 0, rankSum = 0, rankN = 0;
+  filteredPrompts.forEach((p) => {
+    const runs = runsByPromptId.get(p.id) || [];
+    if (!runs.length) return;
+    withRuns++;
+    if (runs.some((x) => x.mentioned)) anyMention++;
+    if (runs.some((x) => x.cited)) anyCite++;
+    runs.forEach((x) => { if (x.position != null) { rankSum += x.position; rankN++; } });
+  });
+  const summary = el("div", { className: "pp-summary" });
+  const sChip = (n, l, tone) => el("div", { className: `pp-sum ${tone || ""}` },
+    el("span", { className: "pp-sum-n" }, String(n)), el("span", { className: "pp-sum-l" }, l));
+  summary.append(
+    sChip(`${withRuns}/${filteredPrompts.length}`, "prompts with runs"),
+    sChip(anyMention, "mentioned", anyMention ? "good" : ""),
+    sChip(anyCite, "domain cited", anyCite ? "good" : ""),
+    sChip(rankN ? `#${(rankSum / rankN).toFixed(1)}` : "—", "average rank"),
+  );
+  body.append(summary);
+
+  if (!filteredPrompts.length) {
+    body.append(el("div", { className: "empty" }, "No prompts match the current filters."));
+    return;
+  }
+
+  const list = el("div", { className: "brand-drill" });
+  filteredPrompts.forEach((p) => {
+    const runs = runsByPromptId.get(p.id) || [];
+    const row = el("div", { className: `brand-drill-row${runs.length ? "" : " idle"}` });
+    if (runs[0]) {
+      const link = el("button", { className: "linkbtn brand-drill-prompt", title: "Open the latest capture of this prompt" }, p.text);
+      link.onclick = () => { backdrop.remove(); openCapture(runs[0].captureId); };
+      row.append(link);
+    } else {
+      row.append(el("span", { className: "brand-drill-prompt muted" }, p.text));
+    }
+    const badges = el("div", { className: "brand-drill-badges" });
+    engineIds.forEach((id) => {
+      const run = runs.find((x) => x.platform === id) || null;
+      // resultCell's own click handler opens the capture but has no idea
+      // this badge is sitting inside a modal — override it here so the
+      // modal actually closes before Analyze renders behind it, instead
+      // of leaving the backdrop stuck on top of the new tab.
+      const cell = resultCell(run, whose);
+      const stack = cell.firstElementChild;
+      const nodes = stack && stack.classList.contains("pp-stack") ? [...stack.childNodes] : [...cell.childNodes];
+      if (run) nodes.forEach((n) => {
+        if (!n.classList?.contains("pp-clickable")) return;
+        n.onclick = (ev) => { ev.stopPropagation(); backdrop.remove(); openCapture(run.captureId); };
+      });
+      const wrap = el("span", { className: "brand-drill-engine" });
+      wrap.append(engineIcon(id), ...nodes);
+      badges.append(wrap);
+    });
+    row.append(badges);
+    list.append(row);
+  });
+  body.append(list);
+}
+
 /* ---------- wiring ---------- */
 document.querySelectorAll("[data-tab]").forEach((btn) =>
   btn.addEventListener("click", () => {
+    // Explicitly picking a tab from the nav bar is a fresh destination, not
+    // a "go back" — clear any pending return path so a stale "← Back to X"
+    // banner can't show up later after navigating around some more.
+    returnTab = null;
     // clicking the Analyze tab directly returns to the latest capture
     if (btn.dataset.tab === "analyze") { viewingId = null; renderAnalyze(); }
     if (btn.dataset.tab === "loader") loadGeo();
@@ -3561,6 +4386,8 @@ function promptTimelines() {
   return [...byPrompt.values()].sort((a, b) => b.captures.length - a.captures.length);
 }
 
+let cmpSearch = "";
+
 function refreshComparePickers() {
   const projSel = $("#cmpProject");
   if (projSel) {
@@ -3574,33 +4401,60 @@ function refreshComparePickers() {
   if (!sel) return;
   const keep = sel.value;
   const timelines = promptTimelines();
+  // Same token matcher as every other search box in the app, so "phone 50k"
+  // finds "best camera phone under 50K in India" rather than requiring the
+  // prompt to be retyped verbatim.
+  const matched = timelines.filter((t) => matchesSearch(t.label, cmpSearch));
   sel.textContent = "";
-  sel.append(el("option", { value: "" }, "Choose a prompt…"));
-  timelines.forEach((t) => {
+  sel.append(el("option", { value: "" }, matched.length ? "Choose a prompt\u2026" : "No prompt matches your search"));
+  matched.forEach((t) => {
     const n = t.captures.length;
-    const txt = t.label.length > 60 ? t.label.slice(0, 60) + "…" : t.label;
-    sel.append(el("option", { value: t.key }, `${txt}  —  ${n} capture${n === 1 ? "" : "s"}`));
+    const txt = t.label.length > 60 ? t.label.slice(0, 60) + "\u2026" : t.label;
+    sel.append(el("option", { value: t.key }, `${txt}  \u2014  ${n} capture${n === 1 ? "" : "s"}`));
   });
+  // A selection that the search has filtered out of the list would otherwise
+  // silently reset the whole Compare view; re-add it so it survives typing.
+  if (keep && !matched.some((t) => t.key === keep)) {
+    const kept = timelines.find((t) => t.key === keep);
+    if (kept) sel.append(el("option", { value: kept.key }, `${kept.label.slice(0, 60)}  \u2014  currently selected`));
+  }
   sel.value = keep;
 
   const repeat = timelines.filter((t) => t.captures.length > 1).length;
   const hint = $("#cmpHint");
   if (hint) {
-    hint.textContent = repeat
-      ? `${repeat} prompt${repeat === 1 ? " has" : "s have"} been captured more than once — those show real movement.`
-      : "Capture the same prompt again (any day, or via the Loader) to see what changed between runs.";
+    const base = repeat
+      ? `${repeat} prompt${repeat === 1 ? " has" : "s have"} been captured more than once \u2014 those show real movement.`
+      : "Capture the same prompt again (any day, or via a campaign run) to see what changed between runs.";
+    hint.textContent = cmpSearch ? `${matched.length} of ${timelines.length} prompts match. ${base}` : base;
   }
 }
 
 // Per-capture aggregate for one point on the timeline.
+//
+// Everything here is derived from fields that survive `get-records`' stripping
+// of heavy data. Brand RANK is deliberately absent: ranking needs answerText,
+// which list records don't carry (that's exactly why geo-metrics computes
+// position in the service worker instead). Adding a rank column here would
+// mean either hydrating every capture in the timeline or inventing a number —
+// so Compare reports presence and volume, and says so.
 function pointAggregate(rec) {
   const domains = new Map();
+  const urls = new Map();
+  let cited = 0, fetched = 0;
   (rec.sources || []).forEach((s) => {
-    if (!s.domain) return;
-    const prev = domains.get(s.domain) || { cited: 0, fetched: 0 };
-    if (s.outcome === "cited") prev.cited++;
-    else prev.fetched++;
-    domains.set(s.domain, prev);
+    const isCited = s.outcome === "cited";
+    if (isCited) cited++; else fetched++;
+    if (s.domain) {
+      const prev = domains.get(s.domain) || { cited: 0, fetched: 0 };
+      if (isCited) prev.cited++; else prev.fetched++;
+      domains.set(s.domain, prev);
+    }
+    if (s.url) {
+      const prev = urls.get(s.url) || { cited: 0, fetched: 0, domain: s.domain || "" };
+      if (isCited) prev.cited++; else prev.fetched++;
+      urls.set(s.url, prev);
+    }
   });
   const brands = new Map();
   (rec.brandMentions || []).forEach((b) => {
@@ -3610,13 +4464,30 @@ function pointAggregate(rec) {
     if ((b.count || 0) === 0) prev.shown = true;
     brands.set(b.brand, prev);
   });
-  return { domains, brands };
+  const queries = new Set();
+  ["search", "shopping", "image"].forEach((bucket) =>
+    (rec.fanout?.[bucket] || []).forEach((q) => q && q.query && queries.add(String(q.query).trim())));
+  return {
+    domains, urls, brands, queries,
+    cited, fetched,
+    answerChars: rec.answerChars || 0,
+    products: (rec.products || []).length,
+  };
 }
 
 function deltaTag(delta) {
   if (delta > 0) return el("span", { className: "tag cited" }, `▲ +${delta}`);
   if (delta < 0) return el("span", { className: "tag fetched" }, `▼ ${delta}`);
   return el("span", { className: "tag mentioned" }, "no change");
+}
+
+// "3 of 7 runs" — how reliably an item shows up, which is a different and
+// often more useful question than "did it move between the first and last
+// run". A domain in 7/7 runs is structural; one in 2/7 is noise.
+function stabilityTag(seen, total) {
+  const pct = total ? seen / total : 0;
+  const cls = pct >= 0.8 ? "cited" : pct >= 0.4 ? "mentioned" : "fetched";
+  return el("span", { className: `tag ${cls}`, title: `Appeared in ${seen} of ${total} runs` }, `${seen}/${total}`);
 }
 
 function renderCompare() {
@@ -3638,6 +4509,7 @@ function renderCompare() {
   const caps = timeline.captures;
   const points = caps.map((r) => ({ rec: r, ...pointAggregate(r) }));
   const fmt = (t) => new Date(t).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const engineName = (id) => ENGINES.find((e) => e.id === id)?.label || id;
 
   // --- header: the prompt + its timeline ---
   const head = el("div", { className: "card" });
@@ -3649,10 +4521,75 @@ function renderCompare() {
   const tl = el("div", { className: "chips", style: "margin-top:6px" });
   caps.forEach((r, i) => {
     tl.append(el("span", { className: "chip" },
-      `${i + 1}. ${fmt(r.capturedAt)} · ${r.platform}${r.model ? " · " + r.model : ""}`));
+      `${i + 1}. ${fmt(r.capturedAt)} · ${ENGINE_ICONS[r.platform] || "🔷"} ${engineName(r.platform)}${r.model ? " · " + r.model : ""}`));
   });
   head.append(tl);
   out.append(head);
+
+  // --- run-by-run detail: the shape of each individual answer ---
+  // Previously Compare jumped straight from "here are the captures" to a
+  // first-vs-last diff, so the runs in between were invisible unless an item
+  // happened to appear in one of the matrices. This is each run's own
+  // profile: how much searching it did, how much of what it read it actually
+  // cited, and how long the answer was.
+  const runCard = el("div", { className: "card" }, el("div", { className: "card-header" }, el("h3", {}, "Run by run")));
+  const runTable = el("table", { className: "drill-table cmp-run-table" });
+  runTable.append(el("tr", {},
+    el("th", { className: "src-col-idx" }, "#"),
+    el("th", {}, "When"),
+    el("th", {}, "Engine"),
+    el("th", { className: "num", title: "Sub-queries the engine ran before answering" }, "Fan-out"),
+    el("th", { className: "num", title: "Distinct domains that appeared as a source" }, "Domains"),
+    el("th", { className: "num", title: "Sources actually cited in the answer" }, "Cited"),
+    el("th", { className: "num", title: "Sources read but not cited" }, "Read-only"),
+    el("th", { className: "num", title: "Share of the sources it read that it went on to cite" }, "Cite rate"),
+    el("th", { className: "num", title: "Distinct brands named or shown" }, "Brands"),
+    el("th", { className: "num", title: "Length of the written answer, in characters" }, "Answer")));
+  points.forEach((p, i) => {
+    const read = p.cited + p.fetched;
+    const row = el("tr", {},
+      el("td", { className: "src-col-idx muted" }, String(i + 1)),
+      el("td", { className: "muted small", title: new Date(p.rec.capturedAt).toLocaleString() }, fmt(p.rec.capturedAt)),
+      el("td", {}, `${ENGINE_ICONS[p.rec.platform] || "🔷"} ${engineName(p.rec.platform)}`),
+      el("td", { className: "num" }, String(p.queries.size)),
+      el("td", { className: "num" }, String(p.domains.size)),
+      el("td", { className: "num" }, String(p.cited)),
+      el("td", { className: "num muted" }, String(p.fetched)),
+      el("td", { className: "num" }, read ? `${Math.round((p.cited / read) * 100)}%` : "—"),
+      el("td", { className: "num" }, String(p.brands.size)),
+      el("td", { className: "num muted" }, p.answerChars ? `${(p.answerChars / 1000).toFixed(1)}k` : "—"));
+    runTable.append(row);
+  });
+  runCard.append(el("div", { className: "drill-scroll" }, runTable));
+  out.append(runCard);
+
+  // --- per-engine split, when the timeline spans more than one engine ---
+  // Merging ChatGPT and Gemini into a single series makes movement unreadable:
+  // a "lost domain" is usually just the other engine's turn in the sequence.
+  const byEngine = new Map();
+  points.forEach((p) => {
+    const list = byEngine.get(p.rec.platform) || [];
+    list.push(p);
+    byEngine.set(p.rec.platform, list);
+  });
+  if (byEngine.size > 1) {
+    const engCard = el("div", { className: "card" }, el("div", { className: "card-header" }, el("h3", {}, "By engine")));
+    engCard.append(el("div", { className: "muted small", style: "margin-bottom:8px" },
+      "The same prompt behaves differently on each engine, so the totals above are split out here rather than averaged together."));
+    const grid = el("div", { className: "geo-kpis" });
+    [...byEngine.entries()].forEach(([id, ps]) => {
+      const doms = new Set();
+      let cited = 0, fetched = 0, fan = 0;
+      ps.forEach((p) => { p.domains.forEach((_, d) => doms.add(d)); cited += p.cited; fetched += p.fetched; fan += p.queries.size; });
+      const box = el("div", { className: "geo-kpi" });
+      box.append(el("div", { className: "k-label" }, `${ENGINE_ICONS[id] || "🔷"} ${engineName(id)}`));
+      box.append(el("div", { className: "k-value" }, String(ps.length)));
+      box.append(el("div", { className: "k-sub muted" }, `run${ps.length === 1 ? "" : "s"} · ${doms.size} domains · ${cited} cited · ${fetched} fetched · ${fan} fan-out`));
+      grid.append(box);
+    });
+    engCard.append(grid);
+    out.append(engCard);
+  }
 
   if (caps.length < 2) return;
 
@@ -3661,96 +4598,149 @@ function renderCompare() {
 
   // --- headline movement between first and last capture ---
   const sum = el("div", { className: "card" }, el("div", { className: "card-header" }, el("h3", {}, "What changed (first → latest)")));
+  if (first.rec.platform !== last.rec.platform) {
+    // Stated rather than silently diffed: comparing a ChatGPT run against a
+    // Gemini run measures the difference between two engines, not movement
+    // over time, and the numbers below would be read as the latter.
+    sum.append(el("div", { className: "cmp-warn" },
+      `Heads up — the first run was on ${engineName(first.rec.platform)} and the latest on ${engineName(last.rec.platform)}. ` +
+      "Most of the movement below is probably the difference between the two engines. Filter to one model above for a clean comparison."));
+  }
   const sgrid = el("div", { className: "statgrid" });
   const stat = (n, l) => el("div", { className: "stat" }, el("div", { className: "n" }, String(n)), el("div", { className: "l" }, l));
-  const domsFirst = new Set(first.domains.keys());
-  const domsLast = new Set(last.domains.keys());
-  const gainedDom = [...domsLast].filter((d) => !domsFirst.has(d));
-  const lostDom = [...domsFirst].filter((d) => !domsLast.has(d));
-  const brandsFirst = new Set(first.brands.keys());
-  const brandsLast = new Set(last.brands.keys());
-  const gainedBrand = [...brandsLast].filter((b) => !brandsFirst.has(b));
-  const lostBrand = [...brandsFirst].filter((b) => !brandsLast.has(b));
+  const setOf = (m) => new Set(m.keys());
+  const domsFirst = setOf(first.domains), domsLast = setOf(last.domains);
+  const urlsFirst = setOf(first.urls), urlsLast = setOf(last.urls);
+  const brandsFirst = setOf(first.brands), brandsLast = setOf(last.brands);
+  const diff = (a, b) => [...b].filter((x) => !a.has(x));
+  const gainedDom = diff(domsFirst, domsLast), lostDom = diff(domsLast, domsFirst);
+  const gainedUrl = diff(urlsFirst, urlsLast), lostUrl = diff(urlsLast, urlsFirst);
+  const gainedBrand = diff(brandsFirst, brandsLast), lostBrand = diff(brandsLast, brandsFirst);
+  const gainedQ = [...last.queries].filter((q) => !first.queries.has(q));
+  const lostQ = [...first.queries].filter((q) => !last.queries.has(q));
+  // Jaccard on the domain sets: 100% means the engine reached for exactly the
+  // same publishers both times, 0% means a completely different source list.
+  const union = new Set([...domsFirst, ...domsLast]).size;
+  const overlap = [...domsLast].filter((d) => domsFirst.has(d)).length;
   sgrid.append(
     stat(caps.length, "Captures"),
+    stat(union ? `${Math.round((overlap / union) * 100)}%` : "—", "Source overlap"),
     stat(gainedBrand.length, "Brands gained"),
     stat(lostBrand.length, "Brands lost"),
     stat(gainedDom.length, "Domains gained"),
     stat(lostDom.length, "Domains lost"),
-    stat(domsLast.size, "Domains now")
+    stat(gainedUrl.length, "URLs gained"),
+    stat(lostUrl.length, "URLs lost"),
+    stat(domsLast.size, "Domains now"),
+    stat(last.cited, "Cited now"),
+    stat(last.queries.size, "Fan-out now"),
+    stat(last.answerChars ? `${(last.answerChars / 1000).toFixed(1)}k` : "—", "Answer length"),
   );
   sum.append(sgrid);
   out.append(sum);
 
   // --- matrix helper: rows = item, columns = each capture in time order ---
-  function matrixCard(title, subtitle, rows) {
+  function matrixCard(title, subtitle, rows, opts = {}) {
     if (!rows.length) return null;
     const card = el("div", { className: "card" }, el("div", { className: "card-header" }, el("h3", {}, title)));
-    if (subtitle) card.append(el("div", { className: "muted", style: "margin-bottom:6px" }, subtitle));
-    const wrap = el("div", { style: "overflow-x:auto" });
-    const t = el("table", {});
-    const hr = el("tr", {}, el("th", {}, "Name"));
-    caps.forEach((r, i) => hr.append(el("th", { className: "num", title: fmt(r.capturedAt) }, `#${i + 1}`)));
+    if (subtitle) card.append(el("div", { className: "muted small", style: "margin-bottom:8px" }, subtitle));
+    const t = el("table", { className: "drill-table cmp-matrix" });
+    const hr = el("tr", {}, el("th", {}, opts.nameHeader || "Name"));
+    caps.forEach((r, i) => hr.append(el("th", {
+      className: "num cmp-col",
+      title: `${fmt(r.capturedAt)} · ${engineName(r.platform)}`,
+    }, `${ENGINE_ICONS[r.platform] || ""}${i + 1}`)));
+    hr.append(el("th", { className: "num", title: "How many of the runs this appeared in" }, "Seen"));
     hr.append(el("th", { className: "num" }, "Trend"));
     t.append(hr);
     rows.forEach((row) => {
       const tr = el("tr", {});
-      tr.append(el("td", {}, row.name));
+      tr.append(el("td", { title: row.name }, row.name));
       row.values.forEach((v) => {
-        tr.append(el("td", { className: "num" }, v.label));
+        tr.append(el("td", { className: `num${v.n ? "" : " cmp-absent"}` }, v.label));
       });
+      tr.append(el("td", { className: "num" }, stabilityTag(row.values.filter((v) => v.n > 0 || v.label !== "—").length, caps.length)));
       tr.append(el("td", { className: "num" }, deltaTag(row.delta)));
       t.append(tr);
     });
-    wrap.append(t);
-    card.append(wrap);
+    card.append(el("div", { className: "drill-scroll" }, t));
     return card;
   }
+
+  const buildRows = (allKeys, valueFor) => [...allKeys].map((name) => {
+    const values = points.map((p) => valueFor(p, name));
+    const firstN = values[0].n, lastN = values[values.length - 1].n;
+    return { name, values, delta: lastN - firstN, lastN };
+  }).sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta) || b.lastN - a.lastN);
 
   // --- brand presence over time ---
   const allBrands = new Set();
   points.forEach((p) => p.brands.forEach((_, b) => allBrands.add(b)));
-  const brandRows = [...allBrands].map((name) => {
-    const values = points.map((p) => {
-      const v = p.brands.get(name);
-      if (!v) return { n: 0, label: "—" };
-      if (v.count === 0) return { n: 0, label: "shown" }; // present, but not narrated
-      return { n: v.count, label: String(v.count) };
-    });
-    const firstN = values[0].n;
-    const lastN = values[values.length - 1].n;
-    return { name, values, delta: lastN - firstN, lastN };
-  }).sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta) || b.lastN - a.lastN);
+  const brandRows = buildRows(allBrands, (p, name) => {
+    const v = p.brands.get(name);
+    if (!v) return { n: 0, label: "—" };
+    if (v.count === 0) return { n: 0, label: "shown" }; // present, but not narrated
+    return { n: v.count, label: String(v.count) };
+  });
   const bCard = matrixCard(
     "Brand mentions over time",
-    "How many times each brand was named in the answer, at each capture. “shown” = appeared in a product card but was not named.",
-    brandRows
+    "How many times each brand was named in the answer, at each run. “shown” = appeared in a product card but was never named.",
+    brandRows, { nameHeader: "Brand" }
   );
   if (bCard) out.append(bCard);
 
   // --- domain presence over time ---
   const allDomains = new Set();
   points.forEach((p) => p.domains.forEach((_, d) => allDomains.add(d)));
-  const domRows = [...allDomains].map((name) => {
-    const values = points.map((p) => {
-      const v = p.domains.get(name);
-      if (!v) return { n: 0, label: "—" };
-      const total = v.cited + v.fetched;
-      return { n: total, label: v.cited ? `${total} (c)` : String(total) };
-    });
-    const firstN = values[0].n;
-    const lastN = values[values.length - 1].n;
-    return { name, values, delta: lastN - firstN, lastN };
-  }).sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta) || b.lastN - a.lastN);
+  const domRows = buildRows(allDomains, (p, name) => {
+    const v = p.domains.get(name);
+    if (!v) return { n: 0, label: "—" };
+    const total = v.cited + v.fetched;
+    return { n: total, label: v.cited ? `${total} (c)` : String(total) };
+  });
   const dCard = matrixCard(
     "Source domains over time",
-    "Times each domain appeared per capture. “(c)” marks a domain that was actually cited, not just fetched.",
-    domRows.slice(0, 60)
+    "Times each domain appeared per run. “(c)” marks a domain that was actually cited, not just fetched.",
+    domRows.slice(0, 60), { nameHeader: "Domain" }
   );
   if (dCard) out.append(dCard);
 
+  // --- exact pages over time ---
+  // Domain-level movement hides the thing that's usually actionable: the same
+  // publisher staying put while the specific ranking page swaps underneath it.
+  const allUrls = new Set();
+  points.forEach((p) => p.urls.forEach((_, u) => allUrls.add(u)));
+  const urlRows = buildRows(allUrls, (p, name) => {
+    const v = p.urls.get(name);
+    if (!v) return { n: 0, label: "—" };
+    const total = v.cited + v.fetched;
+    return { n: total, label: v.cited ? `${total} (c)` : String(total) };
+  });
+  const uCard = matrixCard(
+    "Exact pages over time",
+    "The individual URLs behind those domains — a publisher can hold its place while the specific page that ranks changes underneath it.",
+    urlRows.slice(0, 60), { nameHeader: "URL" }
+  );
+  if (uCard) out.append(uCard);
+
+  // --- fan-out query churn ---
+  // The sub-queries are the engine's own interpretation of the prompt; when
+  // they drift, the source list usually drifts with them, and that's the
+  // upstream cause worth seeing next to the effect.
+  const allQueries = new Set();
+  points.forEach((p) => p.queries.forEach((q) => allQueries.add(q)));
+  const qRows = buildRows(allQueries, (p, name) => (p.queries.has(name) ? { n: 1, label: "✓" } : { n: 0, label: "—" }));
+  const qCard = matrixCard(
+    "Search fan-out over time",
+    "Which sub-queries the engine ran before answering. Drift here is usually what moves the source list below it.",
+    qRows.slice(0, 60), { nameHeader: "Sub-query" }
+  );
+  if (qCard) out.append(qCard);
+
   // --- explicit gained/lost lists ---
   const movement = el("div", { className: "card" }, el("div", { className: "card-header" }, el("h3", {}, "Gained and lost")));
+  movement.append(el("div", { className: "muted small", style: "margin-bottom:8px" },
+    "Comparing the first run against the latest one only — the matrices above show everything in between."));
   const ml = el("ul", { className: "itemlist" });
   const addRow = (label, items, cls) => {
     const li = el("li", {});
@@ -3764,20 +4754,44 @@ function renderCompare() {
   addRow("Brands no longer appearing", lostBrand, "fetched");
   addRow("Domains newly appearing", gainedDom, "cited");
   addRow("Domains no longer appearing", lostDom, "fetched");
+  addRow("Pages newly appearing", gainedUrl, "cited");
+  addRow("Pages no longer appearing", lostUrl, "fetched");
+  addRow("Sub-queries newly run", gainedQ, "cited");
+  addRow("Sub-queries no longer run", lostQ, "fetched");
   movement.append(ml);
   out.append(movement);
+
+  out.append(el("div", { className: "card" },
+    el("div", { className: "muted small" },
+      "Not shown here: your brand's rank position per run. Ranking needs the full answer text, which the fast list view doesn't load — " +
+      "the Dashboard's Campaign Performance computes it properly for tracked campaigns instead of estimating it here.")));
 
   // --- export this timeline ---
   const bar = el("div", { className: "dlbar" });
   const dl = el("button", { className: "btn sm" }, "⬇ Export this timeline (CSV)");
   dl.onclick = () => {
-    const rows = [["prompt", "type", "name", ...caps.map((r, i) => `#${i + 1} ${new Date(r.capturedAt).toISOString()}`), "delta"]];
-    brandRows.forEach((r) => rows.push([timeline.label, "brand", r.name, ...r.values.map((v) => v.label), r.delta]));
-    domRows.forEach((r) => rows.push([timeline.label, "domain", r.name, ...r.values.map((v) => v.label), r.delta]));
+    const rows = [["prompt", "type", "name", ...caps.map((r, i) => `#${i + 1} ${r.platform} ${new Date(r.capturedAt).toISOString()}`), "delta"]];
+    const push = (type, list) => list.forEach((r) => rows.push([timeline.label, type, r.name, ...r.values.map((v) => v.label), r.delta]));
+    push("brand", brandRows);
+    push("domain", domRows);
+    push("url", urlRows);
+    push("fanout-query", qRows);
+    points.forEach((p, i) => rows.push([timeline.label, "run-summary", `#${i + 1} ${p.rec.platform}`,
+      ...points.map((_, j) => (j === i ? `cited=${p.cited} fetched=${p.fetched} domains=${p.domains.size} fanout=${p.queries.size} chars=${p.answerChars}` : "")), ""]));
     download(`citely-timeline-${Date.now()}.csv`, csvOf(rows), "text/csv");
   };
   bar.append(dl);
   out.append(el("div", { className: "card" }, bar));
+}
+
+const cmpSearchInp = $("#cmpSearch");
+if (cmpSearchInp) {
+  cmpSearchInp.addEventListener("input", () => {
+    cmpSearch = cmpSearchInp.value;
+    // Only the <option> list is rebuilt here, not the whole tab, so this
+    // input keeps focus on its own and needs no selection-restore dance.
+    refreshComparePickers();
+  });
 }
 
 ["#cmpPrompt", "#cmpProject", "#cmpModel"].forEach((id) => {
