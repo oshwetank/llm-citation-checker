@@ -12,8 +12,26 @@ import {
 import { parseCsv, parseXlsx, rowsToPrompts } from "../src/lib/xlsxLite.js";
 import { matchCompressedLabel, vendorFromProductName } from "../src/lib/brands.js";
 
+// chrome.runtime.sendMessage throws SYNCHRONOUSLY — not via the callback —
+// when this page's connection to the extension is dead ("Extension context
+// invalidated"), which happens to every already-open popup/tab the instant
+// the extension is reloaded or updated from chrome://extensions. That throw
+// happens inside the Promise executor below, so without the try/catch it
+// silently rejects the returned promise; every caller does `await send(...)`
+// with no try/catch of its own (see load()), so the rejection was an
+// unhandled promise rejection that aborted the entire load — leaving the
+// popup completely blank, not even the "No captures yet" placeholder, since
+// nothing ever got the chance to render. Resolving with {ok:false} instead
+// means callers see an ordinary failed response and load() can show a real
+// message instead of silently doing nothing.
 const send = (msg) =>
-  new Promise((resolve) => chrome.runtime.sendMessage(msg, (r) => resolve(r || { ok: false })));
+  new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage(msg, (r) => resolve(r || { ok: false }));
+    } catch (err) {
+      resolve({ ok: false, error: String(err && err.message ? err.message : err) });
+    }
+  });
 
 // Detect popup vs full-tab so the layout adapts (and survives browser zoom).
 function applyMode() {
@@ -174,6 +192,30 @@ async function load() {
   const geoP = loadGeo(); // self-contained: fetches its own data, renders Campaigns itself
 
   const res = await recordsP;
+  // res.error (set by send()'s catch, not a normal "no records yet" reply)
+  // means this page's connection to the extension is actually broken — most
+  // commonly "Extension context invalidated", which happens to every already
+  // -open popup/tab the instant the extension gets reloaded or updated from
+  // chrome://extensions. Falling through to `all = []` here would render the
+  // ordinary "No captures yet" placeholder, which is actively misleading —
+  // there may be plenty of captures, this page just can't reach them anymore.
+  // The fix for the user is simple (close and reopen the popup, or refresh
+  // the tab) but only if they're told that's what's wrong.
+  if (!res.ok && res.error) {
+    const root = $("#analyze");
+    if (root) {
+      root.textContent = "";
+      root.append(
+        el("div", { className: "card warn-box", style: "margin: 20px; color: #b91c1c;" },
+          el("h3", {}, "Couldn't connect to the extension"),
+          el("p", {}, "This usually happens right after the extension is reloaded or updated while this popup/tab was already open."),
+          el("p", { style: "font-weight:600;" }, "Close this popup and reopen it (or refresh the page, if you're in Full tab view)."),
+          el("p", { className: "muted", style: "font-size: 11px;" }, `Details: ${esc(res.error)}`)
+        )
+      );
+    }
+    return;
+  }
   // ISOLATION — the one place tracking data is separated from browsing data.
   // Everything downstream (Analyze, Dashboard, Compare, every export, the
   // drill-downs) reads RECORDS, so filtering here means a brand-tracking run
@@ -3811,4 +3853,25 @@ function renderCompare() {
 });
 
 loadSettings();
-load(); // also fills the Compare pickers, after projects are known
+// .catch() is the whole point here: load() is fired-and-forgotten (nothing
+// awaits it), so ANY exception anywhere in its chain — not just the
+// send()-throws case handled inside load() itself — becomes a silent
+// unhandled promise rejection with the popup left exactly as the static
+// HTML shell renders it: header and tabs present, every panel completely
+// empty. That reads as "the tool is broken" with zero information to act
+// on. This is the last-resort net for whatever isn't already handled
+// upstream, so at least the failure is visible and includes the real error.
+load().catch((err) => { // also fills the Compare pickers, after projects are known
+  console.error("panel load() failed:", err);
+  const root = $("#analyze");
+  if (root) {
+    root.textContent = "";
+    root.append(
+      el("div", { className: "card warn-box", style: "margin: 20px; color: #b91c1c;" },
+        el("h3", {}, "Something went wrong loading this panel"),
+        el("p", {}, "Try closing this popup and reopening it. If it keeps happening, reloading the extension from chrome://extensions may help."),
+        el("p", { className: "muted", style: "font-size: 11px;" }, `Details: ${esc(err && err.message ? err.message : String(err))}`)
+      )
+    );
+  }
+});
