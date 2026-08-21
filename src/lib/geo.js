@@ -140,6 +140,14 @@ export function makeGeoRun(base = {}) {
     expected: base.expected || 0, // prompts × engines
     captured: base.captured || 0,
     failed: base.failed || 0,
+    // Failure-reason histogram — { "timeout": 3, "tab closed": 1, … } — kept
+    // durably here (not just in the ephemeral in-memory/session loader
+    // state) so a diagnostic export can report WHY things failed without
+    // shipping any prompt/answer/URL content. Never contains anything but
+    // these short, fixed reason strings (see background.js's
+    // failTurnAndAdvance and resumeFromSnapshot, the only places that set a
+    // reason) — no user content ever flows into this field.
+    reasons: base.reasons || {},
   };
 }
 

@@ -353,7 +353,7 @@ function failTurnAndAdvance(plat, reason, retryDelayMs = 0) {
   p.lastAdvanceAt = Date.now();
   p.lastFailReason = reason;
   persistLoaderState();
-  syncGeoRun();
+  syncGeoRun(undefined, reason);
   if (retryDelayMs > 0) setTimeout(() => loaderRunPlatform(plat), retryDelayMs);
   else loaderRunPlatform(plat);
 }
@@ -434,6 +434,7 @@ async function resumeFromSnapshot(snap) {
         p.outcomes[i] = { status: "failed", reason: "tab closed during restart", at: Date.now() };
       }
       p.idx = p.prompts.length;
+      syncGeoRun(undefined, "tab closed during restart", remaining);
       continue;
     }
 
@@ -463,13 +464,41 @@ async function resumeFromSnapshot(snap) {
 // (loader.options.geo set); a plain ad-hoc Loader/Project run has no
 // geoRuns record to update. Best-effort and fire-and-forget like
 // persistLoaderState — a failure here must never affect the run itself.
-async function syncGeoRun(statusOverride) {
+// `reason`/`reasonCount`: tallies into the run's durable failure-reason
+// histogram (makeGeoRun's `reasons`, lib/geo.js) — the one place a failure
+// reason survives past this session's chrome.storage.session state, so a
+// diagnostic report (see the "Copy diagnostic report" action in the About
+// tab) can say WHY things failed without shipping any prompt/answer/URL
+// content. `reasonCount` > 1 covers the bulk-fail path in
+// resumeFromSnapshot (a whole platform's remaining leg failing at once).
+// Chained through a single promise rather than each call firing
+// independently. Callers routinely trigger two of these back to back for
+// the SAME record — e.g. a failure (reason update) immediately followed by
+// the "every platform's prompt list is now exhausted" completion check
+// (status update) — and each does its own read-modify-write. Without
+// serializing them, the second call's read can land before the first
+// call's write finishes, and its write then silently clobbers the first's
+// (a lost-update race — this is exactly how a failure-reason update was
+// found, via a live test, being overwritten by the very next "done" status
+// update). Chaining guarantees call N's read only happens after call N-1's
+// write has actually landed.
+let syncGeoRunChain = Promise.resolve();
+function syncGeoRun(statusOverride, reason, reasonCount = 1) {
+  syncGeoRunChain = syncGeoRunChain.then(() => syncGeoRunOnce(statusOverride, reason, reasonCount));
+  return syncGeoRunChain;
+}
+async function syncGeoRunOnce(statusOverride, reason, reasonCount) {
   const g = loader.options && loader.options.geo;
   if (!g || !g.runId) return;
   try {
     const run = await db.get("geoRuns", g.runId);
     if (!run) return;
     const patch = { ...run, captured: loader.done, failed: loader.errors };
+    if (reason) {
+      const reasons = { ...(run.reasons || {}) };
+      reasons[reason] = (reasons[reason] || 0) + reasonCount;
+      patch.reasons = reasons;
+    }
     if (statusOverride) {
       patch.status = statusOverride;
       patch.finishedAt = Date.now();

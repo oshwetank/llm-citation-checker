@@ -1582,6 +1582,22 @@ body.popup .type-tag-group .tag {
   justify-content: space-between;
 }
 
+.diag-modal { max-width: 640px; }
+.diag-report-text {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 10px;
+  font-family: "JetBrains Mono", ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--fg-secondary);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  resize: vertical;
+}
+
 /* Item List styles for Products and Places */
 .itemlist {
   list-style: none;

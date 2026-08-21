@@ -3471,6 +3471,113 @@ $("#exportExcel")?.addEventListener("click", () => {
   download(`llm-audit-${Date.now()}.xls`, html, "application/vnd.ms-excel");
 });
 
+function fmtBytes(n) {
+  if (n == null) return "?";
+  return (n / 1024 / 1024).toFixed(1) + " MB";
+}
+
+/*
+ * Assembles a LOCAL-ONLY diagnostic summary — extension/browser info,
+ * storage counts, and campaign run history (timing, outcome counts, and
+ * the failure-reason histogram background.js's syncGeoRun() now keeps on
+ * every geoRuns record) — for the "let the developer know something's
+ * wrong" case the reliability/status work surfaced a real need for.
+ * Deliberately excludes prompt text, answer content, URLs, and brand
+ * names: those never cross this function at all, only counts/timestamps/
+ * short fixed reason labels do. Built for the user to review (in the modal
+ * below) and copy themselves into a bug report or email — nothing here is
+ * ever transmitted automatically, matching the rest of the extension's
+ * local-only design.
+ */
+async function buildDiagnosticReport() {
+  const manifest = chrome.runtime.getManifest();
+  const [statsRes, runsRes] = await Promise.all([
+    send({ type: "stats" }),
+    send({ type: "geo-run-list" }), // no profileId = every campaign's runs
+  ]);
+
+  const lines = [];
+  lines.push(`${manifest.name} diagnostic report`);
+  lines.push(`Generated: ${new Date().toISOString()}`);
+  lines.push(`Extension version: ${manifest.version}`);
+  lines.push(`Browser: ${navigator.userAgent}`);
+  lines.push("");
+  lines.push("Storage");
+  if (statsRes.ok) {
+    lines.push(`  Raw captures: ${statsRes.raw}`);
+    lines.push(`  Derived captures: ${statsRes.derived}`);
+    if (statsRes.usage) lines.push(`  Usage: ${fmtBytes(statsRes.usage.usedBytes)} of ~${fmtBytes(statsRes.usage.quotaBytes)}`);
+  } else {
+    lines.push(`  (couldn't load — ${statsRes.error || "unknown error"})`);
+  }
+  lines.push("");
+  lines.push("Campaign runs (most recent 20)");
+  if (runsRes.ok && runsRes.runs.length) {
+    runsRes.runs.slice(0, 20).forEach((run) => {
+      const dur = run.finishedAt ? fmtDuration(run.finishedAt - run.startedAt) : "still running / never finished";
+      lines.push(`  ${new Date(run.startedAt).toISOString()} · ${run.status} · ${(run.engines || []).join("+") || "—"} · ${run.captured || 0}/${run.expected || 0} captured${run.failed ? `, ${run.failed} failed` : ""} · took ${dur}`);
+      const reasonEntries = Object.entries(run.reasons || {});
+      if (reasonEntries.length) {
+        lines.push(`      failure reasons — ${reasonEntries.map(([r, n]) => `${r}: ${n}`).join(", ")}`);
+      }
+    });
+  } else if (runsRes.ok) {
+    lines.push("  No campaign runs yet.");
+  } else {
+    lines.push(`  (couldn't load — ${runsRes.error || "unknown error"})`);
+  }
+  lines.push("");
+  lines.push("This report contains no prompt text, answer content, URLs, or brand names — only counts, timing, and short failure-reason labels.");
+  return lines.join("\n");
+}
+
+async function openDiagnosticReportModal() {
+  const existing = document.getElementById("diag-modal-backdrop");
+  if (existing) existing.remove();
+
+  const backdrop = el("div", { id: "diag-modal-backdrop", className: "modal-backdrop" });
+  const modal = el("div", { className: "modal-content diag-modal" });
+  const header = el("div", { className: "modal-header" });
+  header.append(el("h3", { style: "margin:0;font-size:15px;color:var(--fg-primary);" }, "Diagnostic report"));
+  const closeBtn = el("button", { className: "modal-close-btn", title: "Close" }, "×");
+  closeBtn.onclick = () => backdrop.remove();
+  header.append(closeBtn);
+  modal.append(header);
+
+  const body = el("div", { className: "modal-body" });
+  body.append(el("p", { className: "muted small" },
+    "Review before copying — nothing here is sent anywhere automatically. Paste this into a GitHub issue or an email yourself."));
+  const textarea = el("textarea", { readOnly: true, className: "diag-report-text", rows: 16 }, "Loading…");
+  body.append(textarea);
+  modal.append(body);
+
+  const footer = el("div", { className: "modal-footer" });
+  const copyBtn = el("button", { className: "btn sm primary" }, "📋 Copy to clipboard");
+  const copyStatus = el("span", { className: "muted small", style: "margin-left:8px" }, "");
+  copyBtn.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(textarea.value);
+      copyStatus.textContent = "Copied!";
+    } catch (_) {
+      // Clipboard permission can be denied/unavailable — the text is
+      // already right there and selected, so a manual copy still works.
+      textarea.select();
+      copyStatus.textContent = "Couldn't auto-copy — text is selected, press Ctrl/Cmd+C.";
+    }
+    setTimeout(() => { copyStatus.textContent = ""; }, 3000);
+  };
+  footer.append(copyBtn, copyStatus);
+  modal.append(footer);
+
+  backdrop.append(modal);
+  document.body.append(backdrop);
+  backdrop.onclick = (ev) => { if (ev.target === backdrop) backdrop.remove(); };
+
+  textarea.value = await buildDiagnosticReport();
+}
+
+$("#diagReport")?.addEventListener("click", () => openDiagnosticReportModal());
+
 $("#reprocess")?.addEventListener("click", async () => {
   const st = $("#setStatus"); // was "#status" — that id doesn't exist, so this never showed
   if (st) st.textContent = "Reprocessing…";
