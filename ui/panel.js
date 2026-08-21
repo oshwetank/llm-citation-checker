@@ -1670,7 +1670,7 @@ function renderDrilldown(recs) {
     const bar = el("div", { className: "dlbar" });
     bar.append(el("span", { className: "muted" }, `${rows.length} row${rows.length === 1 ? "" : "s"}`));
     const dl = el("button", { className: "btn sm ghost" }, "⬇ CSV");
-    dl.onclick = () => download(`citely-${exportName}-${Date.now()}.csv`, csvOf([headers, ...rows]), "text/csv");
+    dl.onclick = () => download(`citoskeleton-${exportName}-${Date.now()}.csv`, csvOf([headers, ...rows]), "text/csv");
     bar.append(dl);
     card.append(bar);
 
@@ -2008,7 +2008,7 @@ function renderDashboardImpl() {
   const dlMenu = el("div", { className: "menu-pop", style: "display:none" });
   const runExport = async (val) => {
     dlMenu.style.display = "none";
-    if (val === "json") download(`citely-selected-${Date.now()}.json`, JSON.stringify(sel(), null, 2), "application/json");
+    if (val === "json") download(`citoskeleton-selected-${Date.now()}.json`, JSON.stringify(sel(), null, 2), "application/json");
     else if (val === "excel" || val === "csv") downloadDetailedFormat(sel(), val);
     else if (val === "html") await exportRecordsAsHtml(sel());
   };
@@ -2265,8 +2265,8 @@ async function exportRecordsAsHtml(records) {
   const docTitle = full.length === 1 ? models[0].prompt : `${full.length} conversations`;
   const html = renderStandaloneHtml(models, { docTitle });
   const name = full.length === 1
-    ? `citely-conversation-${full[0].captureId.slice(0, 8)}.html`
-    : `citely-conversations-${full.length}-${Date.now()}.html`;
+    ? `citoskeleton-conversation-${full[0].captureId.slice(0, 8)}.html`
+    : `citoskeleton-conversations-${full.length}-${Date.now()}.html`;
   download(name, html, "text/html");
 }
 
@@ -2287,7 +2287,7 @@ function sanitizeXML(s) {
 
 function downloadDetailedFormat(records, format) {
   if (format === "csv") {
-    let output = `Citely Audit Log,,,,,,,,,,\n"Prompt-level tracking of ChatGPT search behaviour, cited vs. fetched sources, and query fan-out",,,,,,,,,,\n,,,,,,,,,,\n#,Date,Time,Platform,User Prompt,Search Used,Cited Sources,Cited Count,Fetched Sources,Fetched Count,Total Sources,Fan-Out Query\n`;
+    let output = `Citoskeleton Audit Log,,,,,,,,,,\n"Prompt-level tracking of ChatGPT search behaviour, cited vs. fetched sources, and query fan-out",,,,,,,,,,\n,,,,,,,,,,\n#,Date,Time,Platform,User Prompt,Search Used,Cited Sources,Cited Count,Fetched Sources,Fetched Count,Total Sources,Fan-Out Query\n`;
     records.forEach((r, i) => {
       const d = new Date(r.capturedAt);
       const dateStr = d.toLocaleDateString("en-GB", {day:"2-digit", month:"short", year:"numeric"}).replace(/ /g, '-');
@@ -2298,7 +2298,7 @@ function downloadDetailedFormat(records, format) {
       const row = [i + 1, dateStr, timeStr, r.platform || "chatgpt", `"${(r.userPrompt || "").replace(/"/g, '""')}"`, r.searched ? "Yes" : "No", `"${cited}"`, r.sources.filter(s => s.outcome === "cited").length, `"${fetched}"`, r.sources.filter(s => s.outcome === "fetched" || s.outcome === "news").length, r.sources.length, `"${fan.replace(/"/g, '""')}"`];
       output += row.join(",") + "\n";
     });
-    download(`citely-audit-${Date.now()}.csv`, output, "text/csv");
+    download(`citoskeleton-audit-${Date.now()}.csv`, output, "text/csv");
     return;
   }
   
@@ -2395,7 +2395,7 @@ function downloadDetailedFormat(records, format) {
   xml += ` <Worksheet ss:Name="Summary">
   <Table>
    <Column ss:Width="170"/><Column ss:Width="90"/><Column ss:Width="30"/><Column ss:Width="250"/><Column ss:Width="70"/><Column ss:Width="70"/><Column ss:Width="70"/><Column ss:Width="70"/>
-   <Row><Cell ss:StyleID="sTitle"><Data ss:Type="String">Citely Audit | Summary</Data></Cell></Row>
+   <Row><Cell ss:StyleID="sTitle"><Data ss:Type="String">Citoskeleton Audit | Summary</Data></Cell></Row>
    <Row><Cell><Data ss:Type="String">Session-level rollup of search behaviour.</Data></Cell></Row>
    <Row></Row>
    <Row>
@@ -2460,7 +2460,7 @@ function downloadDetailedFormat(records, format) {
    <Column ss:Width="30"/><Column ss:Width="80"/><Column ss:Width="60"/><Column ss:Width="80"/>
    <Column ss:Width="250"/><Column ss:Width="60"/><Column ss:Width="250"/><Column ss:Width="50"/>
    <Column ss:Width="250"/><Column ss:Width="50"/><Column ss:Width="50"/><Column ss:Width="250"/>
-   <Row><Cell ss:StyleID="sTitle"><Data ss:Type="String">Citely Audit | Audit Log</Data></Cell></Row>
+   <Row><Cell ss:StyleID="sTitle"><Data ss:Type="String">Citoskeleton Audit | Audit Log</Data></Cell></Row>
    <Row><Cell><Data ss:Type="String">Prompt-level tracking of search behaviour</Data></Cell></Row>
    <Row></Row>
    <Row ss:StyleID="sHeader">
@@ -2507,7 +2507,7 @@ function downloadDetailedFormat(records, format) {
   xml += ` <Worksheet ss:Name="Source Analysis">
   <Table>
    <Column ss:Width="40"/><Column ss:Width="180"/><Column ss:Width="80"/><Column ss:Width="80"/><Column ss:Width="100"/><Column ss:Width="90"/><Column ss:Width="90"/>
-   <Row><Cell ss:StyleID="sTitle"><Data ss:Type="String">Citely Audit | Source Analysis</Data></Cell></Row>
+   <Row><Cell ss:StyleID="sTitle"><Data ss:Type="String">Citoskeleton Audit | Source Analysis</Data></Cell></Row>
    <Row><Cell><Data ss:Type="String">Domain-level frequency across every cited and fetched source</Data></Cell></Row>
    <Row></Row>
    <Row ss:StyleID="sHeader">
@@ -2542,7 +2542,7 @@ function downloadDetailedFormat(records, format) {
   xml += ` <Worksheet ss:Name="Domain Data">
   <Table>
    <Column ss:Width="60"/><Column ss:Width="80"/><Column ss:Width="200"/><Column ss:Width="250"/>
-   <Row><Cell ss:StyleID="sTitle"><Data ss:Type="String">Citely Audit | Domain Data</Data></Cell></Row>
+   <Row><Cell ss:StyleID="sTitle"><Data ss:Type="String">Citoskeleton Audit | Domain Data</Data></Cell></Row>
    <Row><Cell><Data ss:Type="String">Raw extract — one row per domain appearance.</Data></Cell></Row>
    <Row></Row>
    <Row ss:StyleID="sHeader">
@@ -2572,7 +2572,7 @@ function downloadDetailedFormat(records, format) {
   const addSheet = (name, subtitle, widths, headers, rows) => {
     xml += ` <Worksheet ss:Name="${sanitizeXML(name)}">\n  <Table>\n`;
     widths.forEach((w) => (xml += `   <Column ss:Width="${w}"/>`));
-    xml += `\n   <Row><Cell ss:StyleID="sTitle"><Data ss:Type="String">Citely Audit | ${sanitizeXML(name)}</Data></Cell></Row>\n`;
+    xml += `\n   <Row><Cell ss:StyleID="sTitle"><Data ss:Type="String">Citoskeleton Audit | ${sanitizeXML(name)}</Data></Cell></Row>\n`;
     xml += `   <Row><Cell><Data ss:Type="String">${sanitizeXML(subtitle)}</Data></Cell></Row>\n   <Row></Row>\n`;
     xml += `   <Row ss:StyleID="sHeader">\n`;
     headers.forEach((h) => (xml += `    <Cell><Data ss:Type="String">${sanitizeXML(h)}</Data></Cell>\n`));
@@ -2689,17 +2689,17 @@ function downloadDetailedFormat(records, format) {
     answerRows);
 
   xml += `</Workbook>`;
-  download(`citely-audit-${Date.now()}.xls`, xml, "application/vnd.ms-excel");
+  download(`citoskeleton-audit-${Date.now()}.xls`, xml, "application/vnd.ms-excel");
 }
 
 async function downloadRaw(captureId, label) {
   const r = await send({ type: "get-raw", captureId });
   if (!r.ok || r.raw == null) { alert("No raw payload stored for this capture."); return; }
   const header =
-    `# Citely raw capture ${captureId}\n` +
+    `# Citoskeleton raw capture ${captureId}\n` +
     `# url: ${r.meta?.url || ""}\n` +
     `# reqBody: ${r.meta?.reqBody || ""}\n\n`;
-  download(`citely-raw-${label || captureId}.txt`, header + r.raw, "text/plain");
+  download(`citoskeleton-raw-${label || captureId}.txt`, header + r.raw, "text/plain");
 }
 function toCsv(records) {
   const rows = [["capturedAt", "platform", "model", "prompt", "searched", "fanoutCount", "sourceCount"]];
@@ -3414,7 +3414,7 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
   dl.onclick = () => {
     const rows = [["Brand", "Is own", "Visibility %", "Share of Voice %", "Mentions", "Avg position", "Citations", "Source visibility %", "Responses present", "Total responses"]];
     m.brands.forEach((b) => rows.push([b.name, b.isOwn ? "yes" : "no", b.visibility.toFixed(2), b.shareOfVoice.toFixed(2), b.mentions, b.avgPosition == null ? "" : b.avgPosition.toFixed(2), b.citations, b.sourceVisibility.toFixed(2), b.responsesPresent, m.totalResponses]));
-    download(`citely-tracking-${profile.name.replace(/\W+/g, "-")}-${Date.now()}.csv`, csvOf(rows), "text/csv");
+    download(`citoskeleton-tracking-${profile.name.replace(/\W+/g, "-")}-${Date.now()}.csv`, csvOf(rows), "text/csv");
   };
   mc.append(dl);
 }
@@ -4207,7 +4207,7 @@ $("#openTab").addEventListener("click", () =>
   chrome.tabs.create({ url: chrome.runtime.getURL("ui/panel.html") })
 );
 $("#exportJson")?.addEventListener("click", () =>
-  download(`citely-export-${Date.now()}.json`, JSON.stringify(currentFilteredRecs, null, 2), "application/json")
+  download(`citoskeleton-export-${Date.now()}.json`, JSON.stringify(currentFilteredRecs, null, 2), "application/json")
 );
 $("#exportExcel")?.addEventListener("click", () => {
   if (!currentFilteredRecs.length) return alert("No data to export");
@@ -4778,7 +4778,7 @@ function renderCompare() {
     push("fanout-query", qRows);
     points.forEach((p, i) => rows.push([timeline.label, "run-summary", `#${i + 1} ${p.rec.platform}`,
       ...points.map((_, j) => (j === i ? `cited=${p.cited} fetched=${p.fetched} domains=${p.domains.size} fanout=${p.queries.size} chars=${p.answerChars}` : "")), ""]));
-    download(`citely-timeline-${Date.now()}.csv`, csvOf(rows), "text/csv");
+    download(`citoskeleton-timeline-${Date.now()}.csv`, csvOf(rows), "text/csv");
   };
   bar.append(dl);
   out.append(el("div", { className: "card" }, bar));

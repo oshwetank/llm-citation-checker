@@ -2494,6 +2494,12 @@ body.popup .url-drill-meta { width: 100%; justify-content: flex-start; padding-l
   gap: 8px;
 }
 .about-tagline { margin: 0 0 8px; font-size: 12.5px; color: var(--fg-secondary); line-height: 1.5; }
+/* One-line continuity note after the rename from "LLM Citation & Fan-Out
+   Checker" — existing Store users whose installed extension's name just
+   changed underneath them need this before the privacy line, not buried
+   in a changelog they won't read. */
+.about-formerly { margin: 0 0 8px; }
+.about-formerly em { font-style: normal; font-weight: 600; color: var(--fg-secondary); }
 .about-privacy {
   display: flex;
   align-items: flex-start;

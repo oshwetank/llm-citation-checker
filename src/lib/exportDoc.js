@@ -562,11 +562,11 @@ export function renderStandaloneHtml(models, { docTitle, withPrintBar = false } 
 <style>${DOC_STYLE}</style>
 </head>
 <body>
-<div class="watermark" aria-hidden="true">Citely</div>
+<div class="watermark" aria-hidden="true">Citoskeleton</div>
 ${printBar}
 <header class="doc-header">
   ${single ? "" : `<h1>${esc(title)}</h1>`}
-  <div class="sub">Exported from <strong>Citely</strong> · ${esc(fmtDate(Date.now()))} · Made by Shwetank Ojha</div>
+  <div class="sub">Exported from <strong>Citoskeleton</strong> · ${esc(fmtDate(Date.now()))} · Made by Shwetank Ojha</div>
 </header>
 ${toc}
 ${body}

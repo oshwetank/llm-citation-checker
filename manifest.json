@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Citely",
+  "name": "Citoskeleton",
   "version": "0.26.0",
-  "description": "Citely — capture ChatGPT & Gemini search fan-out, cited/fetched sources, products & brand mentions. Local-only — nothing leaves your device.",
+  "description": "Citoskeleton (formerly LLM Citation & Fan-Out Checker): ChatGPT/Gemini search fan-out, citations & brand mentions. Local-only.",
   "permissions": [
     "storage",
     "unlimitedStorage",
@@ -44,7 +44,7 @@
     }
   ],
   "action": {
-    "default_title": "Citely",
+    "default_title": "Citoskeleton",
     "default_popup": "ui/panel.html"
   },
   "icons": {

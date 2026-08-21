@@ -1,4 +1,4 @@
-# Citely — v1 Architecture
+# Citoskeleton — v1 Architecture
 
 **Date:** 2026-07-14
 **Status:** Approved for build (pending final go-ahead)
