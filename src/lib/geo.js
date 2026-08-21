@@ -384,3 +384,55 @@ export function runVolume(prompts, engines) {
   const eng = (engines || []).length;
   return { prompts: active, engines: eng, submissions: active * eng };
 }
+
+/* ---------------- Loader run-progress reconciliation ----------------
+ * The Loader (background.js) tracks its own progress (`idx`) in memory as it
+ * runs, but that counter lives in the MV3 service worker, which Chrome can
+ * kill and restart at any moment — dropping the counter along with it. A
+ * restarted worker must not just trust whatever `idx` it can recover (from
+ * storage, possibly stale by exactly the completion that was in flight when
+ * it died) — it must ask the one place that can't lie: the derived captures
+ * actually stored for this run. This is that answer, kept here (not in
+ * background.js) so it's a plain, testable function over data, with no
+ * chrome.* APIs involved.
+ */
+
+// A capture with no prompt AND no fan-out/sources/products/places/answer
+// text. ChatGPT races parallel requests per turn; the losing racer still
+// hits the capture endpoint but streams almost nothing. These must never
+// count as a completed turn, or a restart's reconciliation would silently
+// skip real prompts. (Same definition background.js has always used for
+// this — kept here too since reconciliation needs it and this module must
+// not import from background.js.)
+export function hasSignal(r) {
+  if (!r) return false;
+  const f = r.fanout || {};
+  const fan = (f.search?.length || 0) + (f.shopping?.length || 0) + (f.image?.length || 0);
+  return !!(
+    r.userPrompt ||
+    fan ||
+    r.sources?.length ||
+    r.products?.length ||
+    r.places?.length ||
+    r.answerChars
+  );
+}
+
+/**
+ * How many prompts have genuinely completed for one platform of one Loader
+ * run, per the derived store itself — not per any in-memory or persisted
+ * counter. `runId` matches `record.runId`, stamped on every capture made
+ * during a Loader run (ad-hoc Project runs and GEO Campaign runs alike —
+ * both go through the same Loader and both stamp it; see storeCapture's
+ * `meta.runId` in background.js). Assumes at most one signal-bearing
+ * capture per completed turn, which is exactly what the watchdog +
+ * MIN_ADVANCE_GAP_MS debounce in background.js guarantee.
+ */
+export function countCompletedForRun(records, runId, platform) {
+  if (!runId) return 0;
+  let n = 0;
+  for (const r of records || []) {
+    if (r.runId === runId && r.platform === platform && hasSignal(r)) n++;
+  }
+  return n;
+}

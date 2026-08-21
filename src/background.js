@@ -19,7 +19,9 @@ import { adapt as adaptGemini } from "./adapters/gemini.js";
 import {
   MAX_PROFILES, TRASH_RETENTION_DAYS, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
   selectTracked, computeMetrics, computeSeries, brandPresence, trackedBrandsOf,
+  hasSignal, countCompletedForRun,
 } from "./lib/geo.js";
+export { hasSignal };
 
 // Loose match for duplicate-prompt detection: trim, lowercase, collapse
 // whitespace. Deliberately NOT as aggressive as geo.js's normName() (which
@@ -100,23 +102,6 @@ function platformFromUrl(url) {
   if (/gemini\.google\.com|BardChatUi|StreamGenerate/.test(url || "")) return "gemini";
   if (/chatgpt\.com|chat\.openai\.com/.test(url || "")) return "chatgpt";
   return "chatgpt";
-}
-
-// Does a derived record carry anything worth keeping/counting? ChatGPT races
-// parallel requests per turn; the losing racer still POSTs and streams almost
-// nothing. Those captures are real but empty — they must not advance the Loader.
-export function hasSignal(r) {
-  if (!r) return false;
-  const f = r.fanout || {};
-  const fan = (f.search?.length || 0) + (f.shopping?.length || 0) + (f.image?.length || 0);
-  return !!(
-    r.userPrompt ||
-    fan ||
-    r.sources?.length ||
-    r.products?.length ||
-    r.places?.length ||
-    r.answerChars
-  );
 }
 
 /* ---------- Capture ---------- */
@@ -218,13 +203,235 @@ async function reprocessAll() {
  * loader tab is the "turn done" signal. Empty race-loser captures are ignored,
  * and a watchdog advances the run if a turn never completes (rate limit, error,
  * closed tab) instead of hanging forever.
+ *
+ * SURVIVING SERVICE-WORKER RESTARTS. MV3 kills this service worker after
+ * ~30s idle, which used to silently drop the entire in-memory `loader`
+ * object and every pending setTimeout watchdog with zero recovery: a run
+ * would just stop, sometimes resuming oddly if some unrelated event happened
+ * to wake the worker back up (its old timers were already gone, so nothing
+ * had actually been advancing it), then stop again for good. Three pieces
+ * fix this:
+ *   1. `persistLoaderState()` writes a serializable snapshot of `loader` to
+ *      chrome.storage.session (survives worker restarts within a browser
+ *      session — no new permission needed, it's part of the same "storage"
+ *      permission already declared) after every state change.
+ *   2. A `chrome.alarms` heartbeat (`HEARTBEAT_ALARM`, fires every minute —
+ *      alarms, unlike setTimeout, wake a terminated service worker) notices
+ *      when persisted state says a run should be active but this worker
+ *      instance has no memory of it, and resumes it.
+ *   3. Resuming never trusts the persisted `idx` blindly — it reconciles
+ *      against the derived captures actually stored for this run
+ *      (`countCompletedForRun`, lib/geo.js), the one thing that can't have
+ *      desynced. This is what closes the duplicate/skipped-prompt class of
+ *      bugs: a completion that landed right as the worker died is counted
+ *      from the real data, not from a counter that might be stale by
+ *      exactly that one step.
  */
 const TURN_TIMEOUT_MS = 90000; // give a turn this long before declaring it failed
 const MIN_ADVANCE_GAP_MS = 2500; // ignore a second "done" arriving right after one
+const LOADER_STATE_KEY = "lcfcLoaderState";
+const HEARTBEAT_ALARM = "lcfcHeartbeat";
+const DURATION_WINDOW = 10; // per-platform rolling window of turn durations, for Phase 2's ETA
 
 let loader = newLoaderState();
 function newLoaderState() {
   return { running: false, paused: false, options: {}, done: 0, errors: 0, total: 0, platforms: {}, runId: null };
+}
+
+// Best-effort: a persistence failure must never break a run already in
+// progress, so every call site fires this and moves on rather than awaiting
+// a hard guarantee.
+async function persistLoaderState() {
+  try {
+    const snap = {
+      running: loader.running,
+      paused: loader.paused,
+      options: loader.options,
+      done: loader.done,
+      errors: loader.errors,
+      total: loader.total,
+      runId: loader.runId,
+      platforms: Object.fromEntries(
+        Object.entries(loader.platforms).map(([plat, p]) => [
+          plat,
+          {
+            tabId: p.tabId,
+            prompts: p.prompts,
+            idx: p.idx,
+            failed: p.failed || 0,
+            lastAdvanceAt: p.lastAdvanceAt || 0,
+            startedAt: p.startedAt || 0,
+            token: p.token || null,
+            expectedPrompt: p.expectedPrompt || null,
+            durations: p.durations || [],
+          },
+        ])
+      ),
+    };
+    await chrome.storage.session.set({ [LOADER_STATE_KEY]: snap });
+  } catch (_) {
+    /* best-effort */
+  }
+}
+async function loadPersistedLoaderState() {
+  try {
+    const got = await chrome.storage.session.get(LOADER_STATE_KEY);
+    return got[LOADER_STATE_KEY] || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// Created once per worker instance. chrome.alarms.create overwrites an
+// existing alarm of the same name rather than duplicating it, but calling it
+// unconditionally on every worker startup would keep resetting the 1-minute
+// schedule — check first so a worker that restarts often doesn't keep
+// pushing the heartbeat further into the future.
+(async () => {
+  try {
+    const existing = await chrome.alarms.get(HEARTBEAT_ALARM);
+    if (!existing) await chrome.alarms.create(HEARTBEAT_ALARM, { periodInMinutes: 1 });
+  } catch (_) {
+    /* alarms API unavailable in some test/mock contexts — degrade silently */
+  }
+})();
+
+chrome.alarms?.onAlarm?.addListener((alarm) => {
+  if (alarm.name === HEARTBEAT_ALARM) heartbeatTick().catch(() => {});
+});
+
+async function heartbeatTick() {
+  if (!loader.running) {
+    // This worker instance has no memory of an active run. If persisted
+    // state disagrees, a previous instance died mid-run — resume it.
+    const snap = await loadPersistedLoaderState();
+    if (snap && snap.running) await resumeFromSnapshot(snap);
+    return;
+  }
+  if (loader.paused) return;
+  // This instance already believes it's mid-run, with a setTimeout watchdog
+  // armed per platform — those survive as long as THIS instance stays
+  // alive, so there's normally nothing to do here. This loop is the safety
+  // net for the rarer case where a turn is well past its timeout with no
+  // watchdog armed (the timer itself got lost some other way, not the whole
+  // worker) — the same recovery the watchdog itself would have done.
+  for (const plat of Object.keys(loader.platforms)) {
+    const p = loader.platforms[plat];
+    if (p.idx >= p.prompts.length || !p.startedAt || p.watchdog) continue;
+    if (Date.now() - p.startedAt >= TURN_TIMEOUT_MS + 5000) failTurnAndAdvance(plat, "watchdog lost");
+  }
+}
+
+// Reusable so the freshly-armed path (loaderRunPlatform) and the recovered-
+// after-restart path (resumeFromSnapshot) can never drift apart.
+function armWatchdog(plat, ms) {
+  const p = loader.platforms[plat];
+  if (!p) return;
+  p.watchdog = setTimeout(() => {
+    if (!loader.running || loader.paused) return;
+    if (p.idx >= p.prompts.length) return;
+    failTurnAndAdvance(plat, "timeout");
+  }, ms);
+}
+
+// The one place a turn is counted as failed and the run moves on — shared by
+// the watchdog, the tab-closed path, and both restart-recovery paths below,
+// so "what counts as a failure" can never quietly diverge between them.
+// `retryDelayMs` defaults to immediate (matching the original watchdog
+// behaviour); the tab-closed path passes a short delay to avoid hammering
+// chrome.tabs.update in a tight loop if every remaining prompt in the list
+// would also fail against the same closed tab.
+function failTurnAndAdvance(plat, reason, retryDelayMs = 0) {
+  const p = loader.platforms[plat];
+  if (!p) return;
+  loader.errors++;
+  p.failed = (p.failed || 0) + 1;
+  p.idx++;
+  p.lastAdvanceAt = Date.now();
+  p.lastFailReason = reason;
+  persistLoaderState();
+  if (retryDelayMs > 0) setTimeout(() => loaderRunPlatform(plat), retryDelayMs);
+  else loaderRunPlatform(plat);
+}
+
+/**
+ * Rebuild `loader` from a persisted snapshot after this worker instance
+ * turns out to have no memory of an active run — i.e. a previous instance
+ * died mid-run. Never trusts the snapshot's `idx` alone: reconciles against
+ * what's actually in the derived store first (see the header comment above).
+ */
+async function resumeFromSnapshot(snap) {
+  const platEntries = Object.entries(snap.platforms || {});
+  const all = platEntries.length ? await db.getAll("derived") : [];
+
+  loader = {
+    running: true,
+    paused: !!snap.paused,
+    options: snap.options || {},
+    done: 0,
+    errors: snap.errors || 0,
+    total: snap.total || 0,
+    runId: snap.runId,
+    platforms: {},
+  };
+
+  for (const [plat, sp] of platEntries) {
+    const trueIdx = countCompletedForRun(all, snap.runId, plat);
+    const idx = Math.max(sp.idx || 0, Math.min(trueIdx, (sp.prompts || []).length));
+    loader.platforms[plat] = {
+      tabId: sp.tabId,
+      prompts: sp.prompts || [],
+      idx,
+      failed: sp.failed || 0,
+      lastAdvanceAt: sp.lastAdvanceAt || 0,
+      startedAt: sp.startedAt || Date.now(),
+      token: sp.token || null,
+      expectedPrompt: sp.expectedPrompt || null,
+      durations: sp.durations || [],
+      watchdog: null,
+    };
+  }
+  loader.done = Object.values(loader.platforms).reduce((n, p) => n + p.idx, 0);
+
+  if (loader.paused) {
+    await persistLoaderState();
+    return;
+  }
+
+  for (const plat of Object.keys(loader.platforms)) {
+    const p = loader.platforms[plat];
+    if (p.idx >= p.prompts.length) continue; // this platform's leg already finished
+
+    let tabAlive = true;
+    try {
+      await chrome.tabs.get(p.tabId);
+    } catch (_) {
+      tabAlive = false;
+    }
+
+    if (!tabAlive) {
+      // Deliberately conservative: don't auto-recreate a closed tab and start
+      // navigating it without the user around to notice — count the rest of
+      // this platform's leg as failed instead of risking a surprise tab.
+      const remaining = p.prompts.length - p.idx;
+      loader.errors += remaining;
+      p.failed = (p.failed || 0) + remaining;
+      p.idx = p.prompts.length;
+      continue;
+    }
+
+    const elapsed = Date.now() - (p.startedAt || 0);
+    if (elapsed >= TURN_TIMEOUT_MS) {
+      // The turn that was in flight when the worker died has now definitely
+      // timed out.
+      failTurnAndAdvance(plat, "timeout during restart");
+    } else {
+      armWatchdog(plat, TURN_TIMEOUT_MS - elapsed);
+    }
+  }
+
+  if (Object.values(loader.platforms).every((p) => p.idx >= p.prompts.length)) loader.running = false;
+  await persistLoaderState();
 }
 
 // Diagnostic ring buffer (in-memory) for the Debug view.
@@ -276,6 +483,7 @@ async function loaderRunPlatform(plat) {
 
   if (p.idx >= p.prompts.length) {
     if (Object.values(loader.platforms).every((x) => x.idx >= x.prompts.length)) loader.running = false;
+    await persistLoaderState();
     return;
   }
 
@@ -286,6 +494,7 @@ async function loaderRunPlatform(plat) {
   p.token = crypto.randomUUID();
   p.expectedPrompt = prompt;
   p.startedAt = Date.now();
+  await persistLoaderState();
 
   const search = plat === "chatgpt" && loader.options.forceSearch ? "&lcfcsearch=1" : "";
   const base = plat === "gemini" ? "https://gemini.google.com/app" : "https://chatgpt.com/";
@@ -295,24 +504,13 @@ async function loaderRunPlatform(plat) {
     await chrome.tabs.update(p.tabId, { url });
   } catch (_) {
     // Tab was closed — fail this prompt and move on rather than hanging.
-    loader.errors++;
-    p.failed = (p.failed || 0) + 1;
-    p.idx++;
-    setTimeout(() => loaderRunPlatform(plat), 500);
+    failTurnAndAdvance(plat, "tab closed", 500);
     return;
   }
 
   // Watchdog: if no signal-bearing capture arrives in time, record a failure and
   // continue. Without this a rate-limited or errored turn stalls the whole run.
-  p.watchdog = setTimeout(() => {
-    if (!loader.running || loader.paused) return;
-    if (p.idx >= p.prompts.length) return;
-    loader.errors++;
-    p.failed = (p.failed || 0) + 1;
-    p.idx++;
-    p.lastAdvanceAt = Date.now();
-    loaderRunPlatform(plat);
-  }, TURN_TIMEOUT_MS);
+  armWatchdog(plat, TURN_TIMEOUT_MS);
 }
 
 async function loaderStart(prompts, options) {
@@ -358,9 +556,10 @@ async function loaderStart(prompts, options) {
     const created = windowId
       ? await chrome.tabs.create({ windowId, url: "about:blank" })
       : await chrome.tabs.create({ url: "about:blank", active: false });
-    loader.platforms[plat] = { tabId: created.id, prompts: clean, idx: 0, failed: 0, lastAdvanceAt: 0 };
-    loaderRunPlatform(plat);
+    loader.platforms[plat] = { tabId: created.id, prompts: clean, idx: 0, failed: 0, lastAdvanceAt: 0, durations: [] };
   }
+  await persistLoaderState();
+  for (const plat of supported) loaderRunPlatform(plat);
 
   return { ok: true, total: loader.total, runId: loader.runId };
 }
@@ -435,9 +634,16 @@ function loaderOnCapture(tabId, record) {
     if (p.lastAdvanceAt && Date.now() - p.lastAdvanceAt < MIN_ADVANCE_GAP_MS) return;
 
     clearWatchdog(p);
+    if (p.startedAt) p.durations = [...(p.durations || []), Date.now() - p.startedAt].slice(-DURATION_WINDOW);
     p.lastAdvanceAt = Date.now();
     loader.done++;
     p.idx++;
+    // Persisted synchronously, before scheduling the next turn — this is the
+    // step that closes the restart-duplicate window: if the worker dies
+    // between here and the next capture, a resume will see this completion
+    // already reflected in storage rather than reconciling against a
+    // count that doesn't yet include it (which would resubmit this prompt).
+    persistLoaderState();
     const delay = 3000 + Math.random() * 3000; // human-paced gap
     if (!loader.paused) setTimeout(() => loaderRunPlatform(plat), delay);
     return;
@@ -845,11 +1051,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "loader-pause":
           loader.paused = true;
           for (const p of Object.values(loader.platforms)) clearWatchdog(p);
+          await persistLoaderState();
           sendResponse({ ok: true, ...loaderStatus() });
           break;
         case "loader-resume":
           if (loader.running && loader.paused) {
             loader.paused = false;
+            await persistLoaderState();
             for (const plat of Object.keys(loader.platforms)) loaderRunPlatform(plat);
           }
           sendResponse({ ok: true, ...loaderStatus() });
@@ -858,6 +1066,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           for (const p of Object.values(loader.platforms)) clearWatchdog(p);
           loader.running = false;
           loader.paused = false;
+          await persistLoaderState();
           sendResponse({ ok: true, ...loaderStatus() });
           break;
         case "loader-status":
