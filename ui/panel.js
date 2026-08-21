@@ -74,6 +74,21 @@ function hasSignal(r) {
   return !!(r.userPrompt || fan || r.sources.length || r.products.length || (r.places && r.places.length) || r.answerChars);
 }
 
+// Which capture Analyze opens by default: the newest one that actually HAS
+// something in it, not just the newest one, period. A losing racer (see the
+// hasSignal note above) can finish streaming AFTER the real answer and land
+// as RECORDS[0] — without this, opening the panel right after running a
+// prompt would silently show an all-"—"/all-zero card instead of the answer
+// that's sitting right below it, which reads as "the tool is broken" rather
+// than "an empty duplicate capture exists". Falls back to the literal newest
+// capture if every stored capture is signal-less. This is only for the
+// *default*, no-selection landing — an explicit viewingId (a clicked link,
+// or "Go to latest" below) always honors the exact capture asked for.
+function defaultRecordId() {
+  const withSignal = RECORDS.find(hasSignal);
+  return (withSignal || RECORDS[0] || null)?.captureId || null;
+}
+
 function fanoutRows(records) {
   const rows = [["platform", "prompt", "bucket", "query", "capturedAt"]];
   records.forEach((r) =>
@@ -175,7 +190,7 @@ async function load() {
   // (RECORDS + the hydrated capture) is ready. renderAnalyze() reads only
   // RECORDS/FULL, never PROJECTS or GEO_*, so there's no reason the very
   // first thing a user sees should wait on project-list/geo/stats too.
-  const showing = viewingId || (RECORDS[0] && RECORDS[0].captureId);
+  const showing = viewingId || defaultRecordId();
   await hydrate(showing);
   renderAnalyze();
 
@@ -662,7 +677,8 @@ function renderAnalyze() {
     if (!rec) {
       // Prefer the hydrated full record (carries answerText, which drives brand rank,
       // "cited for" aspects and hero-product detection). Falls back to the light row.
-      const light = viewingId ? RECORDS.find((r) => r.captureId === viewingId) || RECORDS[0] : RECORDS[0];
+      const targetId = viewingId || defaultRecordId();
+      const light = targetId ? RECORDS.find((r) => r.captureId === targetId) || RECORDS[0] : RECORDS[0];
       rec = light ? FULL.get(light.captureId) || light : null;
     }
     if (!rec) {
@@ -679,7 +695,10 @@ function renderAnalyze() {
     const banner = el("div", { className: "viewing" });
     banner.append(el("span", {}, `Viewing capture ${idx + 1} of ${RECORDS.length} (${new Date(rec.capturedAt).toLocaleString()})`));
     const latest = el("button", { className: "linkbtn" }, "Go to latest →");
-    latest.onclick = () => { viewingId = null; renderAnalyze(); };
+    // Explicit id, not `viewingId = null` — null would re-run the same
+    // signal-preferring default above and land right back here if the
+    // literal newest capture is the signal-less one being skipped.
+    latest.onclick = () => { viewingId = (RECORDS[0] && RECORDS[0].captureId) || null; renderAnalyze(); };
     banner.append(latest);
     root.append(banner);
   }
