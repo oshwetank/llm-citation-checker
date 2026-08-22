@@ -52,6 +52,69 @@ const el = (tag, props = {}, ...kids) => {
 };
 const esc = (s) => (s == null ? "" : String(s));
 
+// showToast() (below, near the other "New capture" notification code) is
+// extended with error/info variants and reused for every bare alert(...)
+// call in this file — a native alert() freezes this whole (already small)
+// popup window and looks nothing like the rest of the UI's own banner
+// styling. Genuinely destructive actions still go through the browser's
+// confirm() as a deliberate blocking gate; that's a different, intentional
+// use of native dialogs and is left alone.
+
+// Disables a button (and optionally swaps its label to a busy state) for the
+// duration of an async action, so an impatient double-click can't fire a
+// slow send() round trip twice — this is exactly how "2 prompts run
+// together" could happen at the UI layer, not just from a service-worker
+// restart race (see loaderStart's own guard in background.js for the
+// authoritative fix; this is the client-side half of the same defense).
+function withBusy(btn, busyLabel, fn) {
+  return async (...args) => {
+    if (!btn || btn.disabled) return;
+    const original = btn.textContent;
+    btn.disabled = true;
+    if (busyLabel) btn.textContent = busyLabel;
+    try {
+      return await fn(...args);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  };
+}
+
+// Shared dismiss wiring for the app's modal-backdrop/-content popups: Escape
+// closes the topmost modal, clicking the backdrop (outside modal-content)
+// closes it, and focus moves into the modal on open and back to whatever
+// triggered it on close. Previously each of the 4 modal-opening functions
+// hand-rolled its own subset of this (one had no backdrop-click-to-close at
+// all, and none had Escape or focus management) — factored out so all of
+// them behave the same way.
+function wireModalDismiss(backdrop, modal) {
+  const opener = document.activeElement;
+  const onKeydown = (e) => {
+    if (e.key === "Escape") { e.preventDefault(); close(); }
+  };
+  const onBackdropClick = (e) => {
+    if (e.target === backdrop) close();
+  };
+  let closed = false;
+  function close() {
+    if (closed) return;
+    closed = true;
+    document.removeEventListener("keydown", onKeydown, true);
+    backdrop.remove();
+    if (opener && opener.focus) opener.focus();
+  }
+  document.addEventListener("keydown", onKeydown, true);
+  backdrop.onclick = onBackdropClick;
+  // Move focus into the modal so Escape/Tab work immediately without a
+  // click first — prefer an explicit close button, fall back to the modal
+  // itself (given tabindex below) if one isn't present yet.
+  if (!modal.hasAttribute("tabindex")) modal.setAttribute("tabindex", "-1");
+  const closeBtn = modal.querySelector(".modal-close-btn");
+  (closeBtn || modal).focus();
+  return close;
+}
+
 let RECORDS = [];
 let PROJECTS = [];
 let dashboardCampaignId = ""; // "" = no campaign selected
@@ -566,7 +629,6 @@ function openDomainModal(domainName, rec) {
   );
 
   const closeBtn = el("button", { className: "modal-close-btn", title: "Close" }, "×");
-  closeBtn.onclick = () => backdrop.remove();
   header.append(closeBtn);
   modal.append(header);
 
@@ -600,15 +662,19 @@ function openDomainModal(domainName, rec) {
   });
   body.append(ul);
 
+  const doneBtn = el("button", { className: "btn sm primary" }, "Done");
   const footer = el("div", { className: "modal-footer" },
     el("button", { className: "btn sm ghost", onclick: () => downloadData(`domain_${domainName}.json`, JSON.stringify(domainSources, null, 2)) }, "Export Domain JSON"),
-    el("button", { className: "btn sm primary", onclick: () => backdrop.remove() }, "Done")
+    doneBtn
   );
   body.append(footer);
 
   modal.append(body);
   backdrop.append(modal);
   document.body.append(backdrop);
+  const close = wireModalDismiss(backdrop, modal);
+  closeBtn.onclick = close;
+  doneBtn.onclick = close;
 }
 
 function openProductModal(product, rec) {
@@ -618,9 +684,10 @@ function openProductModal(product, rec) {
   const backdrop = el("div", { id: "product-modal-backdrop", className: "modal-backdrop" });
   const modal = el("div", { className: "modal-content" });
 
+  const closeBtn = el("button", { className: "modal-close-btn", title: "Close" }, "×");
   const header = el("div", { className: "modal-header" },
     el("h3", {}, `📦 ${product.name}`),
-    el("button", { className: "modal-close", onclick: () => backdrop.remove() }, "×")
+    closeBtn
   );
 
   const body = el("div", { className: "modal-body" });
@@ -665,9 +732,7 @@ function openProductModal(product, rec) {
   backdrop.append(modal);
   document.body.append(backdrop);
 
-  backdrop.onclick = (e) => {
-    if (e.target === backdrop) backdrop.remove();
-  };
+  closeBtn.onclick = wireModalDismiss(backdrop, modal);
 }
 
 function scrollToCard(targetId) {
@@ -678,21 +743,31 @@ function scrollToCard(targetId) {
   setTimeout(() => target.classList.remove("card-highlight"), 1800);
 }
 
-function showToast(text) {
+// variant: "success" (default — original green-dot look, unchanged) |
+// "error" (red dot, longer-lived, has its own dismiss button — this is
+// what every alert(...) in this file now goes through instead) | "info".
+function showToast(text, variant = "success", ms = variant === "error" ? 7000 : 3500) {
   const old = $(".app-toast");
   if (old) old.remove();
 
-  const toast = el("div", { className: "app-toast" },
+  const toast = el("div", { className: `app-toast toast-${variant}` },
     el("div", { className: "toast-dot" }),
-    el("span", {}, text)
+    el("span", { className: "toast-msg" }, text)
   );
+  toast.setAttribute("role", "status");
+  toast.setAttribute("aria-live", "polite");
+  if (variant === "error") {
+    const closeBtn = el("button", { className: "toast-close", title: "Dismiss" }, "×");
+    closeBtn.onclick = () => { toast.classList.remove("show"); setTimeout(() => toast.remove(), 300); };
+    toast.append(closeBtn);
+  }
   document.body.append(toast);
-  
+
   setTimeout(() => toast.classList.add("show"), 10);
   setTimeout(() => {
     toast.classList.remove("show");
     setTimeout(() => toast.remove(), 300);
-  }, 3500);
+  }, ms);
 }
 
 // Listen for captured items broadcasted from background worker
@@ -2089,7 +2164,7 @@ async function exportRecordsAsHtml(records) {
     if (rec) full.push(rec);
   }
   if (!full.length) {
-    alert("Couldn't load the selected conversation(s) — try again.");
+    showToast("Couldn't load the selected conversation(s) — try again.", "error");
     return;
   }
   const models = full.map(buildExportModel);
@@ -2525,7 +2600,7 @@ function downloadDetailedFormat(records, format) {
 
 async function downloadRaw(captureId, label) {
   const r = await send({ type: "get-raw", captureId });
-  if (!r.ok || r.raw == null) { alert("No raw payload stored for this capture."); return; }
+  if (!r.ok || r.raw == null) { showToast("No raw payload stored for this capture.", "error"); return; }
   const header =
     `# Citely raw capture ${captureId}\n` +
     `# url: ${r.meta?.url || ""}\n` +
@@ -2600,7 +2675,7 @@ function renderCampaignsImpl() {
     const add = el("button", { className: "geo-chip add" }, "+ New campaign");
     add.onclick = async () => {
       const r = await send({ type: "geo-profile-save", profile: makeProfile({ name: `Campaign ${GEO_PROFILES.length + 1}` }) });
-      if (r.ok) { geoActiveId = r.profile.id; campaignManageOpen = false; loadGeo(); } else alert(r.error);
+      if (r.ok) { geoActiveId = r.profile.id; campaignManageOpen = false; loadGeo(); } else showToast(r.error, "error");
     };
     switcher.append(add);
   }
@@ -2636,13 +2711,13 @@ function renderTrashedCampaigns() {
     const restoreBtn = el("button", { className: "linkbtn" }, "↩ restore");
     restoreBtn.onclick = async () => {
       const r = await send({ type: "geo-profile-restore", id: p.id });
-      if (r.ok) { geoActiveId = p.id; loadGeo(); } else alert(r.error);
+      if (r.ok) { geoActiveId = p.id; loadGeo(); } else showToast(r.error, "error");
     };
     const purgeBtn = el("button", { className: "linkbtn danger" }, "delete forever");
     purgeBtn.onclick = async () => {
       if (!confirm(`Permanently delete "${p.name || "this campaign"}"?\n\nThis cannot be undone — its prompts go with it (captured responses are kept).`)) return;
       const r = await send({ type: "geo-profile-delete", id: p.id });
-      if (r.ok) loadGeo(); else alert(r.error);
+      if (r.ok) loadGeo(); else showToast(r.error, "error");
     };
     head.append(restoreBtn, purgeBtn);
     row.append(head);
@@ -2670,7 +2745,7 @@ function renderCampaignEmptyState() {
   const cta = el("button", { className: "btn primary" }, "+ Create your first campaign");
   cta.onclick = async () => {
     const r = await send({ type: "geo-profile-save", profile: makeProfile({ name: "My first campaign" }) });
-    if (r.ok) { geoActiveId = r.profile.id; loadGeo(); } else alert(r.error);
+    if (r.ok) { geoActiveId = r.profile.id; loadGeo(); } else showToast(r.error, "error");
   };
   box.append(el("div", { className: "ft-actions" }, cta));
   return box;
@@ -2696,7 +2771,7 @@ function trashCampaign(profile) {
   return async () => {
     if (!confirm(`Delete "${profile.name || "this campaign"}"?\n\nIt moves to Recently deleted and can be restored for ${TRASH_RETENTION_DAYS} days, after which it's purged automatically.`)) return;
     const r = await send({ type: "geo-profile-trash", id: profile.id });
-    if (r.ok) { geoActiveId = null; loadGeo(); } else alert(r.error);
+    if (r.ok) { geoActiveId = null; loadGeo(); } else showToast(r.error, "error");
   };
 }
 
@@ -2710,11 +2785,11 @@ function renderCampaignSetup(profile, dis) {
     delBtn.onclick = trashCampaign(profile);
     const lockBtn = el("button", { className: "btn sm primary" }, "🔒 Lock & start tracking");
     lockBtn.onclick = async () => {
-      if (!GEO_PROMPTS.length) return alert("Add at least one prompt before locking.");
-      if (!(profile.engines || []).length) return alert("Choose at least one LLM to track before locking.");
+      if (!GEO_PROMPTS.length) return showToast("Add at least one prompt before locking.", "error");
+      if (!(profile.engines || []).length) return showToast("Choose at least one LLM to track before locking.", "error");
       if (!confirm("Lock this campaign?\n\nLocking freezes the brand set, competitors, prompts and LLMs so your trend data stays comparable day to day. You can unlock any time.")) return;
       const r = await send({ type: "geo-profile-save", profile: { ...profile, locked: true }, unlockOverride: true });
-      if (r.ok) loadGeo(); else alert(r.error);
+      if (r.ok) loadGeo(); else showToast(r.error, "error");
     };
     head.append(delBtn, lockBtn);
   } else {
@@ -2722,7 +2797,7 @@ function renderCampaignSetup(profile, dis) {
     unlockBtn.onclick = async () => {
       if (!confirm("Unlock and allow edits?\n\nChanging the brand set, prompts or LLMs changes what the metrics are measured against — numbers before and after this point are NOT directly comparable.")) return;
       const r = await send({ type: "geo-profile-save", profile: { ...profile, locked: false }, unlockOverride: true });
-      if (r.ok) loadGeo(); else alert(r.error);
+      if (r.ok) loadGeo(); else showToast(r.error, "error");
     };
     head.append(unlockBtn);
   }
@@ -2806,7 +2881,7 @@ function renderCampaignSetup(profile, dis) {
         type: "geo-profile-save",
         profile: { ...profile, name: nameIn.value.trim() || profile.name, brand: { name: brandIn.value.trim(), url: urlIn.value.trim() }, competitors, engines },
       });
-      if (r.ok) loadGeo(); else alert(r.error);
+      if (r.ok) loadGeo(); else showToast(r.error, "error");
     };
     card.append(el("div", { className: "ft-actions", style: "margin-top:10px" }, save));
   }
@@ -2825,7 +2900,11 @@ function reportAddResult(r) {
   if (!r.duplicates || !r.duplicates.length) return;
   const preview = r.duplicates.slice(0, 5).map((t) => `• ${t}`).join("\n");
   const more = r.duplicates.length > 5 ? `\n…and ${r.duplicates.length - 5} more` : "";
-  alert(`Added ${r.added} prompt${r.added === 1 ? "" : "s"}. Skipped ${r.duplicates.length} duplicate${r.duplicates.length === 1 ? "" : "s"} already in this campaign:\n${preview}${more}`);
+  showToast(
+    `Added ${r.added} prompt${r.added === 1 ? "" : "s"}. Skipped ${r.duplicates.length} duplicate${r.duplicates.length === 1 ? "" : "s"} already in this campaign:\n${preview}${more}`,
+    "info",
+    8000
+  );
 }
 
 /** The prompts table: CSV/Excel upload (primary), manual entry (fallback),
@@ -2847,12 +2926,12 @@ function renderPromptManager(profile, dis) {
       try {
         const rows = /\.xlsx$/i.test(file.name) ? await parseXlsx(await file.arrayBuffer()) : parseCsv(await file.text());
         const prompts = rowsToPrompts(rows);
-        if (!prompts.length) { alert("No prompts found in that file — make sure column A has your prompts."); return; }
+        if (!prompts.length) { showToast("No prompts found in that file — make sure column A has your prompts.", "error"); return; }
         const r = await send({ type: "geo-prompt-bulk-add-rows", profileId: profile.id, rows: prompts });
         fileInput.value = "";
-        if (r.ok) { reportAddResult(r); loadGeo(); } else alert(r.error);
+        if (r.ok) { reportAddResult(r); loadGeo(); } else showToast(r.error, "error");
       } catch (err) {
-        alert(`Couldn't read that file: ${err.message}`);
+        showToast(`Couldn't read that file: ${err.message}`, "error");
       }
     };
     wrap.append(el("div", { className: "proj-row" },
@@ -2876,7 +2955,7 @@ function renderPromptManager(profile, dis) {
       }).filter((r) => r.text);
       if (!rows.length) return;
       const r = await send({ type: "geo-prompt-bulk-add-rows", profileId: profile.id, rows });
-      if (r.ok) { ta.value = ""; reportAddResult(r); loadGeo(); } else alert(r.error);
+      if (r.ok) { ta.value = ""; reportAddResult(r); loadGeo(); } else showToast(r.error, "error");
     };
     manualBox.append(ta, el("div", { className: "proj-row", style: "margin-top:6px" }, addBtn));
     manualToggle.onclick = () => { manualBox.style.display = manualBox.style.display === "none" ? "block" : "none"; };
@@ -2943,14 +3022,14 @@ function renderPromptManager(profile, dis) {
           const next = window.prompt(`Rename tag "${t}" to:`, t);
           if (!next || !next.trim() || next.trim() === t) return;
           const r = await send({ type: "geo-tag-rename", profileId: profile.id, oldTag: t, newTag: next.trim() });
-          if (r.ok) { promptTagFilter = promptTagFilter.map((x) => (x === t ? next.trim() : x)); loadGeo(); } else alert(r.error);
+          if (r.ok) { promptTagFilter = promptTagFilter.map((x) => (x === t ? next.trim() : x)); loadGeo(); } else showToast(r.error, "error");
         };
         const delBtn = el("button", { className: "tag-icon-btn danger", title: `Delete tag "${t}"` }, "✕");
         delBtn.onclick = async () => {
           const affected = GEO_PROMPTS.filter((p) => (p.tags || []).includes(t)).length;
           if (!confirm(`Delete the tag "${t}"?\n\nThis removes it from ${affected} prompt(s) — the prompts themselves are kept, they just lose this tag.`)) return;
           const r = await send({ type: "geo-tag-delete", profileId: profile.id, tag: t });
-          if (r.ok) { promptTagFilter = promptTagFilter.filter((x) => x !== t); loadGeo(); } else alert(r.error);
+          if (r.ok) { promptTagFilter = promptTagFilter.filter((x) => x !== t); loadGeo(); } else showToast(r.error, "error");
         };
         icons.append(renameBtn, delBtn);
         chipRow.append(icons);
@@ -3076,12 +3155,12 @@ function renderRunCard(profile) {
       el("span", {}, `${vol.submissions} automated submissions in one run is a lot of activity on one account. Consider splitting your prompts across campaigns or pausing some, and keep an eye on the run rather than leaving it unattended.`)));
   }
   const runBtn = el("button", { className: "btn primary" }, "▶ Start run");
-  runBtn.onclick = async () => {
+  runBtn.onclick = withBusy(runBtn, "Starting…", async () => {
     if (!confirm(`Run tracking now?\n\n${vol.submissions} submissions (${vol.prompts} prompts × ${vol.engines} engines) will be sent through your logged-in ChatGPT/Gemini sessions at a human pace.`)) return;
     const r = await send({ type: "geo-run-start", profileId: profile.id });
-    if (!r.ok) { alert(r.error); return; }
+    if (!r.ok) { showToast(r.error, "error"); return; }
     loadGeo();
-  };
+  });
   const pauseBtn = el("button", { className: "btn ghost" }, "⏸ Pause");
   pauseBtn.onclick = async () => renderLoaderStatus(await send({ type: "loader-pause" }));
   const resumeBtn = el("button", { className: "btn ghost" }, "▶ Resume");
@@ -3090,7 +3169,42 @@ function renderRunCard(profile) {
   stopBtn.onclick = async () => renderLoaderStatus(await send({ type: "loader-stop" }));
   rc.append(el("div", { className: "ft-actions" }, runBtn, pauseBtn, resumeBtn, stopBtn));
   rc.append(el("div", { id: "loaderStatus", className: "status-msg" }));
+  // Paint status immediately rather than waiting for the next 1.5s poll tick
+  // — this card is rebuilt from scratch (root.textContent = "" in
+  // renderCampaignsImpl) every time the Campaigns tab re-renders, so
+  // without this the status box would flash empty for up to 1.5s on every
+  // switch back to this tab while a run is in flight.
+  send({ type: "loader-status" }).then((s) => { if (s.ok) renderLoaderStatus(s); });
+  rc.append(renderRunHistory(profile));
   return rc;
+}
+
+// Durable per-run history — reads geoRuns, which background.js now keeps in
+// sync (status/captured/failed/finishedAt) as a run progresses and on
+// completion; previously that store was written once at creation and never
+// updated again, so this had nothing real to show and wasn't called at all.
+function renderRunHistory(profile) {
+  const box = el("div", { className: "card loader-history", id: "runHistory" });
+  box.append(el("div", { className: "card-header" }, el("h3", {}, "Run history")));
+  const list = el("div", { className: "muted small" }, "Loading…");
+  box.append(list);
+  send({ type: "geo-run-list", profileId: profile.id }).then((r) => {
+    list.textContent = "";
+    const runs = (r.ok ? r.runs : []).slice(0, 10);
+    if (!runs.length) { list.append("No runs yet."); return; }
+    const table = el("div", { className: "loader-history-rows" });
+    runs.forEach((run) => {
+      const dur = run.finishedAt ? fmtDuration(run.finishedAt - run.startedAt) : null;
+      const statusLabel = { running: "Running", done: "Done", stopped: "Stopped", failed: "Failed" }[run.status] || run.status;
+      table.append(el("div", { className: `loader-history-row status-${run.status}` },
+        el("span", { className: "muted" }, new Date(run.startedAt).toLocaleString()),
+        el("span", {}, statusLabel),
+        el("span", {}, `${run.captured || 0}/${run.expected || 0} captured${run.failed ? `, ${run.failed} failed` : ""}`),
+        el("span", { className: "muted" }, dur ? `took ${dur}` : "")));
+    });
+    list.append(table);
+  });
+  return box;
 }
 
 /* ---------- Campaign performance metrics (rendered from the Dashboard) ---------- */
@@ -3400,7 +3514,6 @@ async function openUrlDetailModal(url, profile, since, until) {
       el("div", { className: "muted small", style: "overflow-wrap:anywhere;margin-top:2px" }, url)),
   );
   const closeBtn = el("button", { className: "modal-close-btn", title: "Close" }, "×");
-  closeBtn.onclick = () => backdrop.remove();
   header.append(closeBtn);
   modal.append(header);
 
@@ -3408,7 +3521,7 @@ async function openUrlDetailModal(url, profile, since, until) {
   modal.append(body);
   backdrop.append(modal);
   document.body.append(backdrop);
-  backdrop.onclick = (ev) => { if (ev.target === backdrop) backdrop.remove(); };
+  closeBtn.onclick = wireModalDismiss(backdrop, modal);
 
   const r = await send({ type: "geo-url-detail", profileId: profile.id, url, tags: geoTagFilter, engines: geoEngineFilter, since, until });
   body.textContent = "";
@@ -3446,7 +3559,7 @@ $("#exportJson")?.addEventListener("click", () =>
   download(`citely-export-${Date.now()}.json`, JSON.stringify(currentFilteredRecs, null, 2), "application/json")
 );
 $("#exportExcel")?.addEventListener("click", () => {
-  if (!currentFilteredRecs.length) return alert("No data to export");
+  if (!currentFilteredRecs.length) return showToast("No data to export", "error");
   
   // Generate HTML table for Excel
   let html = `
@@ -3497,14 +3610,121 @@ $("#exportExcel")?.addEventListener("click", () => {
   download(`llm-audit-${Date.now()}.xls`, html, "application/vnd.ms-excel");
 });
 
-$("#reprocess")?.addEventListener("click", async () => {
+function fmtBytes(n) {
+  if (n == null) return "?";
+  return (n / 1024 / 1024).toFixed(1) + " MB";
+}
+
+/*
+ * Assembles a LOCAL-ONLY diagnostic summary — extension/browser info,
+ * storage counts, and campaign run history (timing, outcome counts, and
+ * the failure-reason histogram background.js's syncGeoRun() now keeps on
+ * every geoRuns record) — for the "let the developer know something's
+ * wrong" case the reliability/status work surfaced a real need for.
+ * Deliberately excludes prompt text, answer content, URLs, and brand
+ * names: those never cross this function at all, only counts/timestamps/
+ * short fixed reason labels do. Built for the user to review (in the modal
+ * below) and copy themselves into a bug report or email — nothing here is
+ * ever transmitted automatically, matching the rest of the extension's
+ * local-only design.
+ */
+async function buildDiagnosticReport() {
+  const manifest = chrome.runtime.getManifest();
+  const [statsRes, runsRes] = await Promise.all([
+    send({ type: "stats" }),
+    send({ type: "geo-run-list" }), // no profileId = every campaign's runs
+  ]);
+
+  const lines = [];
+  lines.push(`${manifest.name} diagnostic report`);
+  lines.push(`Generated: ${new Date().toISOString()}`);
+  lines.push(`Extension version: ${manifest.version}`);
+  lines.push(`Browser: ${navigator.userAgent}`);
+  lines.push("");
+  lines.push("Storage");
+  if (statsRes.ok) {
+    lines.push(`  Raw captures: ${statsRes.raw}`);
+    lines.push(`  Derived captures: ${statsRes.derived}`);
+    if (statsRes.usage) lines.push(`  Usage: ${fmtBytes(statsRes.usage.usedBytes)} of ~${fmtBytes(statsRes.usage.quotaBytes)}`);
+  } else {
+    lines.push(`  (couldn't load — ${statsRes.error || "unknown error"})`);
+  }
+  lines.push("");
+  lines.push("Campaign runs (most recent 20)");
+  if (runsRes.ok && runsRes.runs.length) {
+    runsRes.runs.slice(0, 20).forEach((run) => {
+      const dur = run.finishedAt ? fmtDuration(run.finishedAt - run.startedAt) : "still running / never finished";
+      lines.push(`  ${new Date(run.startedAt).toISOString()} · ${run.status} · ${(run.engines || []).join("+") || "—"} · ${run.captured || 0}/${run.expected || 0} captured${run.failed ? `, ${run.failed} failed` : ""} · took ${dur}`);
+      const reasonEntries = Object.entries(run.reasons || {});
+      if (reasonEntries.length) {
+        lines.push(`      failure reasons — ${reasonEntries.map(([r, n]) => `${r}: ${n}`).join(", ")}`);
+      }
+    });
+  } else if (runsRes.ok) {
+    lines.push("  No campaign runs yet.");
+  } else {
+    lines.push(`  (couldn't load — ${runsRes.error || "unknown error"})`);
+  }
+  lines.push("");
+  lines.push("This report contains no prompt text, answer content, URLs, or brand names — only counts, timing, and short failure-reason labels.");
+  return lines.join("\n");
+}
+
+async function openDiagnosticReportModal() {
+  const existing = document.getElementById("diag-modal-backdrop");
+  if (existing) existing.remove();
+
+  const backdrop = el("div", { id: "diag-modal-backdrop", className: "modal-backdrop" });
+  const modal = el("div", { className: "modal-content diag-modal" });
+  const header = el("div", { className: "modal-header" });
+  header.append(el("h3", { style: "margin:0;font-size:15px;color:var(--fg-primary);" }, "Diagnostic report"));
+  const closeBtn = el("button", { className: "modal-close-btn", title: "Close" }, "×");
+  header.append(closeBtn);
+  modal.append(header);
+
+  const body = el("div", { className: "modal-body" });
+  body.append(el("p", { className: "muted small" },
+    "Review before copying — nothing here is sent anywhere automatically. Paste this into a GitHub issue or an email yourself."));
+  const textarea = el("textarea", { readOnly: true, className: "diag-report-text", rows: 16 }, "Loading…");
+  body.append(textarea);
+  modal.append(body);
+
+  const footer = el("div", { className: "modal-footer" });
+  const copyBtn = el("button", { className: "btn sm primary" }, "📋 Copy to clipboard");
+  const copyStatus = el("span", { className: "muted small", style: "margin-left:8px" }, "");
+  copyBtn.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(textarea.value);
+      copyStatus.textContent = "Copied!";
+    } catch (_) {
+      // Clipboard permission can be denied/unavailable — the text is
+      // already right there and selected, so a manual copy still works.
+      textarea.select();
+      copyStatus.textContent = "Couldn't auto-copy — text is selected, press Ctrl/Cmd+C.";
+    }
+    setTimeout(() => { copyStatus.textContent = ""; }, 3000);
+  };
+  footer.append(copyBtn, copyStatus);
+  modal.append(footer);
+
+  backdrop.append(modal);
+  document.body.append(backdrop);
+  closeBtn.onclick = wireModalDismiss(backdrop, modal);
+
+  textarea.value = await buildDiagnosticReport();
+}
+
+$("#diagReport")?.addEventListener("click", () => openDiagnosticReportModal());
+
+const reprocessBtn = $("#reprocess");
+reprocessBtn?.addEventListener("click", withBusy(reprocessBtn, "Reprocessing…", async () => {
   const st = $("#setStatus"); // was "#status" — that id doesn't exist, so this never showed
   if (st) st.textContent = "Reprocessing…";
   const r = await send({ type: "reprocess-all" });
   if (st) st.textContent = r.ok ? `Reprocessed ${r.reprocessed}/${r.total} captures.` : "Reprocess failed";
   FULL.clear(); // records were re-derived; drop stale hydrated copies
   load();
-});
+}));
 
 $("#deleteFiltered")?.addEventListener("click", async () => {
   if (!currentFilteredRecs.length) return;
@@ -3520,18 +3740,118 @@ $("#deleteFiltered")?.addEventListener("click", async () => {
 });
 
 /* ---------- Campaigns run status ---------- */
+// mm:ss for a duration; "<1s" for anything under a second so a fast turn
+// doesn't read as "0s" (which looks broken, not fast).
+function fmtDuration(ms) {
+  if (ms == null) return null;
+  const s = Math.round(ms / 1000);
+  if (s < 1) return "<1s";
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return m ? `${m}m ${r}s` : `${r}s`;
+}
+
+const PROMPT_STATUS_ICON = { done: "✓", failed: "✕", running: "●", pending: "…" };
+const PROMPT_STATUS_LABEL = { done: "Done", failed: "Failed", running: "Running", pending: "Pending" };
+
+// Tracks running -> not-running so the "finished" banner fires exactly once,
+// right when this popup/tab first notices the transition — not on every
+// 1.5s poll tick while the finished state is being displayed. Deliberately
+// NOT what gates clearing the toolbar badge (see loaderAckedRunId below):
+// a popup that's closed while a campaign runs — the normal case, since a
+// run can take minutes and nobody leaves the popup open for that — would
+// never observe a live running->finished transition at all, and the badge
+// would stay stuck forever.
+let loaderWasRunning = false;
+// The runId last acknowledged (badge cleared for), so loader-ack-complete
+// fires once per finished run per popup lifetime rather than on every poll
+// tick while an idle/finished state keeps being displayed.
+let loaderAckedRunId = null;
+
+// Rebuilt into a live per-engine/per-prompt panel — previously this showed
+// only a coarse done/total count and one truncated "now:" string that
+// silently dropped every engine but the first with something in flight (see
+// background.js's loaderStatus() for where that data now actually comes
+// from). Full DOM rebuild on every poll tick, same tradeoff the rest of
+// this app already makes (see the withScrollPreserved note) — the status
+// box is small enough that this is cheap.
 function renderLoaderStatus(s) {
   const box = $("#loaderStatus");
   if (!box) return;
-  if (!s || !s.total) { box.textContent = ""; return; }
-  const state = s.running ? (s.paused ? "paused" : "running") : "idle/done";
-  let statusText = `${state} — ${s.done}/${s.total} done${s.errors ? `, ${s.errors} errors` : ""}`;
-  if (s.platStats) {
-    const details = Object.keys(s.platStats).map(p => `${p}: ${s.platStats[p].done}/${s.platStats[p].total}`).join(" | ");
-    if (details) statusText += `\n[${details}]`;
+  box.textContent = "";
+  if (!s || !s.total) { loaderWasRunning = false; return; }
+
+  if (!s.running) {
+    if (loaderWasRunning) {
+      // Only shown when THIS popup instance actually watched the run go
+      // running -> finished live — a nice-to-have flourish, not the primary
+      // "you missed something" signal (that's the badge, acked below).
+      const succeeded = s.done, total = s.total, failed = s.errors;
+      const banner = el("div", { className: `loader-finished-banner ${failed ? "has-errors" : ""}` },
+        el("b", {}, failed ? "Campaign finished with errors — " : "Campaign finished — "),
+        `${succeeded} of ${total} succeeded${failed ? `, ${failed} failed` : ""}.`);
+      box.append(banner);
+    }
+    // Clearing the badge does NOT depend on having watched that transition —
+    // opening the Campaigns tab to any finished-run state at all means the
+    // result has now been shown, whether that's seconds or hours after the
+    // run actually finished. Deduped per runId so this fires once, not on
+    // every 1.5s poll tick while this idle state keeps being redisplayed.
+    if (s.runId && loaderAckedRunId !== s.runId) {
+      send({ type: "loader-ack-complete" });
+      loaderAckedRunId = s.runId;
+    }
+    loaderWasRunning = false;
+    return;
   }
-  statusText += (s.current && s.running ? `\nnow: "${s.current.slice(0, 40)}"` : "");
-  box.innerText = statusText;
+  loaderWasRunning = true;
+
+  const state = s.paused ? "Paused" : "Running";
+  const summary = el("div", { className: "loader-summary" },
+    el("b", {}, state), ` — ${s.done}/${s.total} done`,
+    s.errors ? el("span", { className: "loader-errcount" }, ` · ${s.errors} failed`) : "",
+    s.etaMs != null ? el("span", { className: "muted" }, ` · ~${fmtDuration(s.etaMs)} remaining`) : (s.paused ? "" : el("span", { className: "muted" }, " · estimating time remaining…")));
+  box.append(summary);
+
+  const kpis = el("div", { className: "geo-kpis loader-kpis" });
+  for (const [plat, ps] of Object.entries(s.platStats || {})) {
+    const label = ENGINES.find((e) => e.id === plat)?.label || plat;
+    const sub = [];
+    if (ps.failed) sub.push(`${ps.failed} failed`);
+    if (ps.current) {
+      const elapsed = ps.elapsedMs != null ? `${fmtDuration(ps.elapsedMs)}/${fmtDuration(ps.turnTimeoutMs)}` : "";
+      sub.push(`now: "${ps.current.slice(0, 32)}${ps.current.length > 32 ? "…" : ""}"${elapsed ? ` (${elapsed})` : ""}`);
+    } else if (ps.done >= ps.total) {
+      sub.push("done");
+    }
+    kpis.append(el("div", { className: "geo-kpi" },
+      el("div", { className: "k-label" }, label),
+      el("div", { className: "k-value" }, `${ps.done}/${ps.total}`),
+      el("div", { className: "k-sub muted" }, sub.join(" · "))));
+  }
+  box.append(kpis);
+
+  // Per-prompt breakdown, one list per engine, so "which prompt ran on
+  // which LLM, and which is still pending" is directly visible instead of
+  // needing to infer it from a single aggregate count.
+  const lists = el("div", { className: "loader-prompt-lists" });
+  for (const [plat, ps] of Object.entries(s.platStats || {})) {
+    const label = ENGINES.find((e) => e.id === plat)?.label || plat;
+    const list = el("div", { className: "loader-prompt-list" });
+    list.append(el("div", { className: "loader-prompt-list-head" }, label));
+    const rows = el("div", { className: "loader-prompt-rows" });
+    (ps.prompts || []).forEach((p, i) => {
+      const row = el("div", { className: `loader-prompt-row status-${p.status}` },
+        el("span", { className: "loader-prompt-icon", title: PROMPT_STATUS_LABEL[p.status] }, PROMPT_STATUS_ICON[p.status]),
+        el("span", { className: "loader-prompt-idx muted" }, `${i + 1}.`),
+        el("span", { className: "loader-prompt-text" }, p.text));
+      if (p.status === "failed" && p.reason) row.title = `Failed: ${p.reason}`;
+      rows.append(row);
+    });
+    list.append(rows);
+    lists.append(list);
+  }
+  box.append(lists);
 }
 
 // poll loader status while the Campaigns tab is open

@@ -12,6 +12,7 @@ import {
   isTracked, partitionRecords, selectTracked,
   normName, domainOfUrl, domainMatches, bucketKey, runDue, runVolume,
   allTags, availableEngines, ENGINES, MAX_PROFILES,
+  hasSignal, countCompletedForRun,
 } from "../src/lib/geo.js";
 import { adapt as adaptChatGpt } from "../src/adapters/chatgpt.js";
 import { makeRecord } from "../src/schema.js";
@@ -362,6 +363,47 @@ console.log("\nbrand presence does not fire on substrings or ordinary words");
   )[0];
   check("carousel-only brand is present", shown.present === true);
   check("carousel-only brand has no position", shown.firstIndex === null, String(shown.firstIndex));
+}
+
+{
+  console.log("\nhasSignal (mirror of the loader's advance guard — background.js re-exports this same function)");
+  const real = makeRecord({ userPrompt: "hi", sources: [{ url: "https://x.com" }] });
+  check("a real turn has signal", hasSignal(real) === true);
+  check("an empty race-loser has no signal", hasSignal(makeRecord({})) === false);
+  check("null capture has no signal", hasSignal(null) === false);
+  check("a prompt-only capture still counts", hasSignal(makeRecord({ userPrompt: "hi" })) === true);
+}
+
+{
+  // countCompletedForRun is the ground-truth check a restarted service worker
+  // uses instead of trusting a possibly-stale persisted `idx` (see the
+  // "SURVIVING SERVICE-WORKER RESTARTS" section of background.js). It must
+  // count real completions from the derived store itself, and nothing else —
+  // not other runs, not other platforms, not signal-less race-losers.
+  console.log("\ncountCompletedForRun: service-worker-restart reconciliation");
+  const done = (runId, platform, i) => ({
+    ...makeRecord({ runId, platform, userPrompt: `p${i}`, answerChars: 10 }),
+  });
+  const raceLoser = (runId, platform) => ({ ...makeRecord({ runId, platform }) }); // no signal
+
+  const records = [
+    done("run-A", "chatgpt", 1),
+    done("run-A", "chatgpt", 2),
+    raceLoser("run-A", "chatgpt"), // must not be counted
+    done("run-A", "gemini", 1), // different platform, same run
+    done("run-B", "chatgpt", 1), // different run entirely
+  ];
+
+  check("counts only real completions for the given run+platform",
+    countCompletedForRun(records, "run-A", "chatgpt") === 2);
+  check("a signal-less race-loser is not counted", countCompletedForRun(records, "run-A", "chatgpt") !== 3);
+  check("platforms within the same run are counted independently",
+    countCompletedForRun(records, "run-A", "gemini") === 1);
+  check("a different run's captures never leak in",
+    countCompletedForRun(records, "run-B", "chatgpt") === 1);
+  check("an unknown/missing runId counts nothing", countCompletedForRun(records, null, "chatgpt") === 0);
+  check("a run with zero completions counts as zero",
+    countCompletedForRun(records, "run-C", "chatgpt") === 0);
 }
 
 console.log(failures ? `\nFAILED (${failures})` : "\nALL PASSED");
