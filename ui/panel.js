@@ -264,6 +264,22 @@ function isGenericHeaderOrNoise(str) {
   return false;
 }
 
+// Words that can legitimately start the NEXT SENTENCE right after a brand
+// name is narrated ("...Kreo Harpy.  \nIts ~55g weight makes it particularly
+// attractive...") but can never legitimately start a real model name.
+// sanitizeText() collapses all whitespace — including the line break that
+// visually separated the sentences — into a single space before the model
+// regex below ever runs, so by then there's no line-break signal left to
+// tell "start of a new sentence" apart from "next word of the model name".
+// Without this, a capitalized word beginning that next sentence reads as if
+// it were part of the model: "Its" became a phantom model tag on Kreo Harpy.
+const SENTENCE_START_STOPWORDS = new Set([
+  "the", "a", "an", "it", "its", "this", "that", "these", "those", "they",
+  "their", "he", "his", "she", "her", "we", "our", "you", "your", "i",
+  "if", "and", "but", "so", "as", "also", "however", "meanwhile", "still",
+  "overall", "in", "at", "for", "with", "while", "when", "then",
+]);
+
 function extractBrandModels(brandName, products, rawText) {
   const models = new Set();
   const lowerBrand = brandName.toLowerCase();
@@ -299,6 +315,13 @@ function extractBrandModels(brandName, products, rawText) {
         // with "runs cardiac centres nationwide" — and it leaked on phones too
         // ("Galaxy S25 Ultra leads").
         if (!/^[A-Z]/.test(w) && !/\d/.test(w)) break;
+        // A capitalized word is also how the NEXT SENTENCE starts, and that
+        // sentence-boundary capital is indistinguishable from a model-name
+        // capital once whitespace is flattened (see SENTENCE_START_STOPWORDS
+        // above) — so reject a would-be first model word that's actually a
+        // common pronoun/article/connective, e.g. "Its" in "Kreo Harpy Its
+        // ~55g weight makes it particularly attractive...".
+        if (modelWords.length === 0 && SENTENCE_START_STOPWORDS.has(w.replace(/[^\w]/g, "").toLowerCase())) break;
         modelWords.push(w);
       }
       let modelName = modelWords.join(" ").trim();

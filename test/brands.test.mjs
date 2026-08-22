@@ -103,5 +103,76 @@ console.log("\none company is reported once, not split by spelling");
   check("mentions are summed, not halved", hdfc[0] && hdfc[0].count === 2, hdfc[0] && String(hdfc[0].count));
 }
 
+console.log("\nstructural candidates: table first column vs. heading (real capture — gaming mouse under ₹1,000)");
+{
+  // Trimmed down from an actual captured ChatGPT answer that reproduced two
+  // real bugs: "Zebronics Transformer M Plus" (row 4 of the table) never
+  // appeared in Brand Mentions at all, and "CS2"/"BGMI" — game names from a
+  // "For Valorant / CS2 / BGMI → Kreo Harpy" recommendation heading — showed
+  // up as fake brand cards instead.
+  const answer =
+    "### Best gaming mice under ₹1,000\n\n" +
+    "| Mouse | Approx. price | Best for |\n" +
+    "|---|---:|---|\n" +
+    "| **EvoFox Blaze Ultra** | ₹600–700 | Best overall |\n" +
+    "| **Kreo Harpy** | ₹600–700 | FPS / fast aim |\n" +
+    "| **daWg Slay 25** | ₹850–900 | Best sensor |\n" +
+    "| **Zebronics Transformer M Plus** | ₹500–600 | Best value |\n" +
+    "| **EvoFox Phantom Air** | ₹550–650 | Lightweight gaming |\n" +
+    "| **Ant Esports GM100 V2** | ₹300–400 | Cheapest decent option |\n\n" +
+    "The **EvoFox Blaze Ultra** stands out as the safest all-round choice.\n\n" +
+    "### My recommendation\n\n" +
+    "**For Valorant / CS2 / BGMI → Kreo Harpy**  \n" +
+    "Its ~55g weight makes it particularly attractive for quick FPS movements.\n\n" +
+    "**For mixed gaming → EvoFox Blaze Ultra**\n\n" +
+    "If you can stretch further, look at the **Logitech G102** or **Razer DeathAdder Essential**.";
+
+  const found = names(answer, {});
+  check(
+    "Zebronics Transformer M Plus is NOT missing (4-word, digit-free table cell)",
+    found.some((n) => /zebronics/i.test(n)),
+    found.join(", ")
+  );
+  check("daWg still detected (table cell, has a digit)", found.includes("daWg"), found.join(", "));
+  check("Ant still detected (table cell, has a digit)", found.includes("Ant"), found.join(", "));
+  check(
+    "EvoFox Blaze Ultra and EvoFox Phantom Air both kept whole",
+    found.includes("EvoFox Blaze Ultra") && found.includes("EvoFox Phantom Air"),
+    found.join(", ")
+  );
+  check("Kreo Harpy still detected", found.includes("Kreo Harpy"), found.join(", "));
+  check(
+    "CS2 is NOT a fake brand (bare token from a game list before the arrow)",
+    !found.some((n) => /^cs2$/i.test(n)),
+    found.join(", ")
+  );
+  check(
+    "BGMI is NOT a fake brand (bare token from a game list before the arrow)",
+    !found.some((n) => /^bgmi$/i.test(n)),
+    found.join(", ")
+  );
+  check(
+    "'For Valorant' is NOT a fake brand (starts with the noise word 'for')",
+    !found.some((n) => /valorant/i.test(n)),
+    found.join(", ")
+  );
+
+  // Mention order should follow the table's real row order, not skip/shuffle
+  // around the now-fixed Zebronics gap.
+  const order = detectBrands(answer, answer, {}).brands.map((b) => b.brand);
+  // Word-boundary match, not a bare substring search — "Ant" is a substring
+  // of "phANTom", which would otherwise match the wrong entry.
+  const idx = (needle) => order.findIndex((n) => new RegExp(`\\b${needle}\\b`, "i").test(n));
+  check(
+    "mention order matches the table: Blaze Ultra, Kreo Harpy, daWg, Zebronics, Phantom Air, Ant",
+    idx("Blaze Ultra") < idx("Kreo Harpy") &&
+      idx("Kreo Harpy") < idx("daWg") &&
+      idx("daWg") < idx("Zebronics") &&
+      idx("Zebronics") < idx("Phantom Air") &&
+      idx("Phantom Air") < idx("Ant"),
+    order.join(", ")
+  );
+}
+
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
 process.exit(failures ? 1 : 0);

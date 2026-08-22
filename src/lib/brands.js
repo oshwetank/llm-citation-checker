@@ -143,6 +143,14 @@ export function parseMarkers(answerText) {
 }
 
 /* ---------- 3. structural candidates (bold headers, table rows) ---------- */
+// Returns {text, source}[] — `source` is "table" for the first column of a
+// markdown comparison table, "heading" for everything else (bold line-leads,
+// plain ### headings). The two get different trust levels in detectBrands():
+// a table's first column IS the product/brand name by construction (that's
+// the whole reason the tableCell regex exists — see the file-header doc,
+// signal #3), so it doesn't need to pass the same "does this read like a
+// proper name" heuristic that a heading (which can legitimately be a category
+// like "Contemporary Gold Necklaces", not a brand) has to pass.
 export function structuralCandidates(answerText) {
   const out = [];
   if (!answerText) return out;
@@ -157,7 +165,11 @@ export function structuralCandidates(answerText) {
   // Plain (unbolded) headings: "### Zerodha"
   const heading = /(?:^|\n)#{2,6}[ \t]*([^\n#*]{2,60})/g;
 
-  for (const re of [lineLeadBold, tableCell, heading]) {
+  for (const { re, source } of [
+    { re: lineLeadBold, source: "heading" },
+    { re: tableCell, source: "table" },
+    { re: heading, source: "heading" },
+  ]) {
     let m;
     while ((m = re.exec(answerText))) {
       let raw = m[1].replace(/[*_`]/g, "").trim();
@@ -166,16 +178,23 @@ export function structuralCandidates(answerText) {
       // both the ≤3-word proper-name check and the leading-token vendor fallback.
       raw = raw.replace(/^[^\w]+/u, "").trim();
       // Headings often carry a trailing qualifier separated by an em-dash/pipe
-      // ("Vivo V70 — Best Overall") — keep the part BEFORE it. A colon usually
-      // runs the other way ("Best Overall: iQOO Neo 10") — keep the part AFTER
-      // the LAST colon, since that's where the actual name sits.
+      // ("Vivo V70 — Best Overall") — keep the part BEFORE it, since the name
+      // leads there. An arrow or a colon runs the other way — "condition →
+      // recommendation" ("For Valorant/CS2/BGMI → Kreo Harpy") and "label:
+      // name" ("Best Overall: iQOO Neo 10") both put the actual name AFTER —
+      // keep the part after the LAST arrow/colon. Getting this backwards on
+      // the arrow case is exactly how a "which game → which mouse" heading
+      // used to leak "CS2"/"BGMI" as fake brand names: the game list in front
+      // of the arrow was kept and split on "/", instead of the real answer
+      // (the brand name) that comes after it.
       if (/\s+[—–|]\s+/.test(raw)) raw = raw.split(/\s+[—–|]\s+/)[0].trim();
+      else if (/\s*→\s*/.test(raw)) raw = raw.split(/\s*→\s*/).pop().trim();
       else if (raw.includes(":")) raw = raw.split(":").pop().trim();
       // Strip leading list numbering left over from heading matches ("1. Vivo V70").
       raw = raw.replace(/^\d+[.)]\s*/, "").trim();
       if (!raw || raw.endsWith(":")) continue;
       if (raw.length > 40) continue;
-      out.push(raw);
+      out.push({ text: raw, source });
     }
   }
   return out;
@@ -368,14 +387,33 @@ export function detectBrands(answerText, plainText, ctx = {}) {
   // the signature of brand+model. A digit-free phrase that isn't a proper name is
   // a category heading ("Contemporary Gold Necklaces") and is dropped. This is
   // the least reliable signal, so it gets the tightest length cap.
-  structuralCandidates(answerText || "").forEach((s) => {
+  //
+  // A table's first column is exempt from that "is dropped" fate: matching the
+  // tableCell regex already means this IS a comparison table's product/brand
+  // cell (formatting-based signal, not a words-based guess — see the file
+  // header). A 4+-word, digit-free product+model name in that position ("daWg
+  // Slay 25" is fine, but "Zebronics Transformer M Plus" has no digit and 4
+  // words) used to satisfy neither looksLikeProperName's ≤3-word cap nor the
+  // digit-fallback below, and vanish from the brand list entirely despite
+  // being right there in row 1 of the table. Table cells always get the
+  // vendor-fallback instead of being dropped.
+  structuralCandidates(answerText || "").forEach(({ text: s, source }) => {
     // A heading sometimes names two alternatives at once ("Google Sheets / Excel",
     // "GIMP / Photoshop") — treat each side of " / " as its own candidate instead
     // of evaluating the joined phrase as one (wrong) name.
     const parts = / \/ /.test(s) ? s.split(/ \/ /).map((p) => p.trim()).filter(Boolean) : [s];
     for (const part of parts) {
-      if (looksLikeProperName(part)) addCand(part, null, null, "structural");
-      else if (/\d/.test(part)) addCand(vendorFromProductName(part), null, null, "structural");
+      if (looksLikeProperName(part)) { addCand(part, null, null, "structural"); continue; }
+      const hasDigit = /\d/.test(part);
+      // vendorFromProductName only makes sense on a multi-word phrase — it
+      // extracts the LEADING token of a longer name ("Vivo V70" → "Vivo"). On
+      // a single bare token it just returns that token unchanged, which isn't
+      // "vendor extraction" at all — it's accepting the word as-is. That's how
+      // a stray slash-separated fragment like "CS2" (from "For Valorant / CS2
+      // / BGMI → Kreo Harpy") used to read as a brand: it has a digit, so the
+      // digit-fallback fired, but there was nothing to extract a vendor FROM.
+      const multiWord = part.trim().split(/\s+/).length > 1;
+      if (source === "table" || (hasDigit && multiWord)) addCand(vendorFromProductName(part), null, null, "structural");
     }
   });
   // 4. cited domains
