@@ -15,21 +15,35 @@
  *   A. Chrome's built-in Gemini Nano (nano.js) — 0 bytes bundled into this
  *      extension; Chrome manages the model itself, hardware-gated by
  *      Chrome, not by anything here.
- *   B. A small on-device NER model (GLiNER "Edge", ~32M params, an order
- *      of magnitude smaller than the 174MB tier this project evaluated
- *      and rejected for size) — for devices without Nano but that can
- *      handle a light local model. Wired in via registerTierB() once the
- *      offscreen-document pipeline and model asset land; until then this
- *      tier is a clean no-op, not a broken one.
+ *   B. A hook for a small on-device NER model, INTENTIONALLY left
+ *      unregistered. Investigated bundling GLiNER "Edge"
+ *      (knowledgator/gliner-bi-edge-v2.0) for this slot: it turned out to
+ *      have no ONNX export published anywhere (PyTorch weights only,
+ *      ~243MB fp32 — meaning it's actually ~60M params, not the ~32M
+ *      originally estimated from its name), and every GLiNER variant that
+ *      DOES have a ready-made quantized ONNX file (onnx-community's
+ *      small/base/large) is the same size class as the 174MB tier this
+ *      project already evaluated and rejected — quantization alone
+ *      doesn't get GLiNER meaningfully smaller than that. Converting
+ *      bi-edge ourselves, or swapping in a small fixed-category NER model
+ *      instead, were both considered and declined: the fixed-category
+ *      option would only catch bare company names in prose (its training
+ *      categories have no concept of "product model number"), missing
+ *      exactly the full brand+model extraction this whole effort is
+ *      about — not judged a big enough quality gain over Tier A + Tier C
+ *      alone to be worth the size/complexity. registerTierB() is kept as
+ *      live, tested plumbing in case a suitably small model shows up
+ *      later; nothing currently calls it.
  *   C. brands.js alone. Always computed first, always the fallback.
  */
 import { detectBrands, escapeRegExp } from "./brands.js";
 import { isNanoAvailable, extractEntitiesWithNano } from "./nano.js";
 
-// Tier B hook, set by background.js once its offscreen-document GLiNER
-// pipeline exists. `fn` must be an async (text) => string[]|null function
-// with the exact same "null/throw means unavailable, never surfaced as an
-// error" contract as nano.js's extractEntitiesWithNano.
+// Tier B hook. Nothing currently registers one (see the file header) — kept
+// as tested plumbing for a future small on-device model, not active work in
+// progress. `fn` must be an async (text) => string[]|null function with the
+// exact same "null/throw means unavailable, never surfaced as an error"
+// contract as nano.js's extractEntitiesWithNano.
 let tierBExtractor = null;
 export function registerTierB(fn) {
   tierBExtractor = fn;
