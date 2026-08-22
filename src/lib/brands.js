@@ -142,59 +142,124 @@ export function parseMarkers(answerText) {
   return { entities, productNames };
 }
 
-/* ---------- 3. structural candidates (bold headers, table rows) ---------- */
+/* ---------- 3a. real markdown tables (line-based, not regex-guessed) ---------- */
+// Split one row of a markdown table into its cells. GFM allows an optional
+// leading/trailing pipe, and "\|" inside a cell doesn't end it — walked by
+// hand rather than `line.split("|")` so an escaped pipe in a cell ("Bed \|
+// Breakfast") doesn't fracture the row into the wrong number of columns.
+export function splitTableRow(line) {
+  const cells = [];
+  let cur = "";
+  let s = String(line || "").trim();
+  if (s.startsWith("|")) s = s.slice(1);
+  if (s.endsWith("|") && !s.endsWith("\\|")) s = s.slice(0, -1);
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === "\\" && s[i + 1] === "|") { cur += "|"; i++; continue; }
+    if (s[i] === "|") { cells.push(cur.trim()); cur = ""; continue; }
+    cur += s[i];
+  }
+  cells.push(cur.trim());
+  return cells;
+}
+
+// A GFM separator cell is a run of dashes with optional leading/trailing
+// colons ("---", ":---", "---:", ":---:") — this exact shape is what makes
+// the row above it a table HEADER, not any line that merely contains a `|`.
+// Detecting the separator row is the whole trick: it's a format LLMs never
+// produce by accident in prose, so keying off it (rather than counting words
+// or checking for bold text) is what makes table detection correct
+// regardless of how the model happens to phrase or bold the actual cells.
+const SEPARATOR_CELL = /^:?-+:?$/;
+
+// Returns the first-column text of every DATA row (header/separator rows
+// excluded) in every real table found in `text`. Previously this signal was
+// a single regex hunting for "**bold** text between two pipes" anywhere in
+// the answer — which had two real gaps: it required the first-column name to
+// be bold (a table where the model didn't bold the product names produced
+// zero candidates from that entire table), and it had no concept of a row or
+// a table boundary, so it couldn't tell a genuine table apart from any two
+// unrelated lines that each happened to contain a pipe character.
+export function parseMarkdownTables(text) {
+  const out = [];
+  if (!text) return out;
+  const lines = String(text).split("\n");
+  for (let i = 0; i < lines.length - 1; i++) {
+    if (!lines[i].includes("|")) continue;
+    const headerCells = splitTableRow(lines[i]);
+    if (headerCells.length < 2) continue; // a real comparison table has ≥2 columns
+    const sepCells = splitTableRow(lines[i + 1]);
+    if (sepCells.length !== headerCells.length) continue;
+    if (!sepCells.every((c) => SEPARATOR_CELL.test(c))) continue;
+    // Found a real table. Data rows run until one stops looking like a row.
+    let j = i + 2;
+    while (j < lines.length && lines[j].trim() && lines[j].includes("|")) {
+      const cells = splitTableRow(lines[j]);
+      if (cells[0]) out.push(cells[0]);
+      j++;
+    }
+    i = j - 1; // resume scanning after this table, not inside it
+  }
+  return out;
+}
+
+/* ---------- 3b. bold/heading candidates ---------- */
+// Cleans one raw candidate string (from either a table cell or a heading)
+// into the name detectBrands() should actually consider. Shared so table and
+// heading candidates get identical treatment once they're both plain text.
+function cleanCandidateText(raw) {
+  let s = String(raw || "").replace(/[*_`]/g, "").trim();
+  // Strip a leading rank medal/emoji/symbol run ("🥇 Best Overall: iQOO Neo
+  // 10", "🥈 Realme GT 7"). Left in place it counts as a "word", which wrecks
+  // both the ≤3-word proper-name check and the leading-token vendor fallback.
+  s = s.replace(/^[^\w]+/u, "").trim();
+  // Headings often carry a trailing qualifier separated by an em-dash/pipe
+  // ("Vivo V70 — Best Overall") — keep the part BEFORE it, since the name
+  // leads there. An arrow or a colon runs the other way — "condition →
+  // recommendation" ("For Valorant/CS2/BGMI → Kreo Harpy") and "label: name"
+  // ("Best Overall: iQOO Neo 10") both put the actual name AFTER — keep the
+  // part after the LAST arrow/colon. Getting this backwards on the arrow
+  // case is exactly how a "which game → which mouse" heading used to leak
+  // "CS2"/"BGMI" as fake brand names: the game list in front of the arrow
+  // was kept and split on "/", instead of the real answer that follows it.
+  if (/\s+[—–|]\s+/.test(s)) s = s.split(/\s+[—–|]\s+/)[0].trim();
+  else if (/\s*→\s*/.test(s)) s = s.split(/\s*→\s*/).pop().trim();
+  else if (s.includes(":")) s = s.split(":").pop().trim();
+  // Strip leading list numbering left over from heading matches ("1. Vivo V70").
+  s = s.replace(/^\d+[.)]\s*/, "").trim();
+  if (!s || s.endsWith(":") || s.length > 40) return "";
+  return s;
+}
+
 // Returns {text, source}[] — `source` is "table" for the first column of a
-// markdown comparison table, "heading" for everything else (bold line-leads,
-// plain ### headings). The two get different trust levels in detectBrands():
-// a table's first column IS the product/brand name by construction (that's
-// the whole reason the tableCell regex exists — see the file-header doc,
-// signal #3), so it doesn't need to pass the same "does this read like a
-// proper name" heuristic that a heading (which can legitimately be a category
-// like "Contemporary Gold Necklaces", not a brand) has to pass.
+// real markdown table (parseMarkdownTables, above), "heading" for bold
+// line-leads and plain ### headings. The two get different trust levels in
+// detectBrands(): a table's first column IS the product/brand name by
+// construction — that's what a table row IS — so it doesn't need to pass the
+// same "does this read like a proper name" heuristic that a heading (which
+// can legitimately be a category like "Contemporary Gold Necklaces", not a
+// brand) has to pass.
 export function structuralCandidates(answerText) {
   const out = [];
   if (!answerText) return out;
+
+  parseMarkdownTables(answerText).forEach((raw) => {
+    const s = cleanCandidateText(raw);
+    if (s) out.push({ text: s, source: "table" });
+  });
 
   // Bold text at the START of a line, tolerating any combination of heading
   // hashes, list bullets and numbering. Covers every layout the models use:
   //   "1. **Zerodha** — ...", "- **Acme Corp**", "### 1. **Vivo V70** — ...",
   //   "## **Groww**"
   const lineLeadBold = /(?:^|\n)[ \t]*#{0,6}[ \t]*(?:\d+[.)][ \t]*)?[-*•]?[ \t]*\*\*([^*\n]{2,40})\*\*/g;
-  // Bold at the start of a markdown table cell: "| **Zerodha** | ..."
-  const tableCell = /\|\s*\*\*([^*|\n]{2,40})\*\*\s*\|/g;
   // Plain (unbolded) headings: "### Zerodha"
   const heading = /(?:^|\n)#{2,6}[ \t]*([^\n#*]{2,60})/g;
 
-  for (const { re, source } of [
-    { re: lineLeadBold, source: "heading" },
-    { re: tableCell, source: "table" },
-    { re: heading, source: "heading" },
-  ]) {
+  for (const re of [lineLeadBold, heading]) {
     let m;
     while ((m = re.exec(answerText))) {
-      let raw = m[1].replace(/[*_`]/g, "").trim();
-      // Strip a leading rank medal/emoji/symbol run ("🥇 Best Overall: iQOO Neo
-      // 10", "🥈 Realme GT 7"). Left in place it counts as a "word", which wrecks
-      // both the ≤3-word proper-name check and the leading-token vendor fallback.
-      raw = raw.replace(/^[^\w]+/u, "").trim();
-      // Headings often carry a trailing qualifier separated by an em-dash/pipe
-      // ("Vivo V70 — Best Overall") — keep the part BEFORE it, since the name
-      // leads there. An arrow or a colon runs the other way — "condition →
-      // recommendation" ("For Valorant/CS2/BGMI → Kreo Harpy") and "label:
-      // name" ("Best Overall: iQOO Neo 10") both put the actual name AFTER —
-      // keep the part after the LAST arrow/colon. Getting this backwards on
-      // the arrow case is exactly how a "which game → which mouse" heading
-      // used to leak "CS2"/"BGMI" as fake brand names: the game list in front
-      // of the arrow was kept and split on "/", instead of the real answer
-      // (the brand name) that comes after it.
-      if (/\s+[—–|]\s+/.test(raw)) raw = raw.split(/\s+[—–|]\s+/)[0].trim();
-      else if (/\s*→\s*/.test(raw)) raw = raw.split(/\s*→\s*/).pop().trim();
-      else if (raw.includes(":")) raw = raw.split(":").pop().trim();
-      // Strip leading list numbering left over from heading matches ("1. Vivo V70").
-      raw = raw.replace(/^\d+[.)]\s*/, "").trim();
-      if (!raw || raw.endsWith(":")) continue;
-      if (raw.length > 40) continue;
-      out.push({ text: raw, source });
+      const s = cleanCandidateText(m[1]);
+      if (s) out.push({ text: s, source: "heading" });
     }
   }
   return out;
@@ -388,10 +453,11 @@ export function detectBrands(answerText, plainText, ctx = {}) {
   // a category heading ("Contemporary Gold Necklaces") and is dropped. This is
   // the least reliable signal, so it gets the tightest length cap.
   //
-  // A table's first column is exempt from that "is dropped" fate: matching the
-  // tableCell regex already means this IS a comparison table's product/brand
-  // cell (formatting-based signal, not a words-based guess — see the file
-  // header). A 4+-word, digit-free product+model name in that position ("daWg
+  // A table's first column is exempt from that "is dropped" fate: coming from
+  // a real parsed table row already means this IS a comparison table's
+  // product/brand cell (formatting-based signal, not a words-based guess —
+  // see the file header). A 4+-word, digit-free product+model name in that
+  // position ("daWg
   // Slay 25" is fine, but "Zebronics Transformer M Plus" has no digit and 4
   // words) used to satisfy neither looksLikeProperName's ≤3-word cap nor the
   // digit-fallback below, and vanish from the brand list entirely despite

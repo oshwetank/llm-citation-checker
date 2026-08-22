@@ -8,7 +8,7 @@
  * public-suffix logic both lost every non-listed ccTLD and invented companies
  * called "Club" / "Store" / "Realty" out of modern generic TLDs.
  */
-import { detectBrands, brandFromDomain, matchCompressedLabel } from "../src/lib/brands.js";
+import { detectBrands, brandFromDomain, matchCompressedLabel, splitTableRow, parseMarkdownTables } from "../src/lib/brands.js";
 
 let failures = 0;
 const check = (label, cond, detail) => {
@@ -171,6 +171,61 @@ console.log("\nstructural candidates: table first column vs. heading (real captu
       idx("Zebronics") < idx("Phantom Air") &&
       idx("Phantom Air") < idx("Ant"),
     order.join(", ")
+  );
+}
+
+console.log("\nsplitTableRow: cell splitting respects escaped pipes and optional edge pipes");
+{
+  check("leading+trailing pipes", JSON.stringify(splitTableRow("| a | b | c |")) === JSON.stringify(["a", "b", "c"]));
+  check("no edge pipes (GFM allows this)", JSON.stringify(splitTableRow("a | b | c")) === JSON.stringify(["a", "b", "c"]));
+  check(
+    "escaped pipe inside a cell doesn't split it",
+    JSON.stringify(splitTableRow("| Bed \\| Breakfast | ₹2,000 |")) === JSON.stringify(["Bed | Breakfast", "₹2,000"])
+  );
+}
+
+console.log("\nparseMarkdownTables: a real table is identified by its separator row, not by having pipes");
+{
+  const realTable =
+    "| Mouse | Price |\n" +
+    "|---|---:|\n" +
+    "| Zebronics Transformer M Plus | ₹500 |\n" +
+    "| daWg Slay 25 | ₹850 |\n";
+  check(
+    "header row itself is NOT returned as a candidate",
+    !parseMarkdownTables(realTable).includes("Mouse"),
+    JSON.stringify(parseMarkdownTables(realTable))
+  );
+  check(
+    "both data rows' first columns found, unbolded",
+    JSON.stringify(parseMarkdownTables(realTable)) === JSON.stringify(["Zebronics Transformer M Plus", "daWg Slay 25"])
+  );
+
+  // Regression: the old regex required the first column to be **bold** — a
+  // table where the model just didn't bother bolding the names returned zero
+  // candidates from the whole table. A real table parser doesn't care.
+  // (Vendor-fallback still reduces the 4-word name to its lead token, same
+  // as the bolded case — that reduction itself isn't what's under test here.)
+  check("non-bold table (previously undetectable) still works", (() => {
+    const found = names(realTable, {});
+    return found.some((n) => /zebronics/i.test(n)) && found.includes("daWg");
+  })());
+
+  check(
+    "a bare horizontal-rule divider ('---') after a pipe-containing prose line is NOT a table",
+    parseMarkdownTables("Compare cats | dogs as pets.\n---\nCats are lower maintenance.").length === 0
+  );
+  check(
+    "two lines with pipes but no separator row between them is NOT a table",
+    parseMarkdownTables("Option A | Option B\nOption C | Option D").length === 0
+  );
+  check(
+    "a table stops at the first non-row line, not at the next pipe anywhere in the document",
+    (() => {
+      const doc = "| Mouse | Price |\n|---|---:|\n| Kreo Harpy | ₹600 |\n\nSee also: apples | oranges.";
+      const found = parseMarkdownTables(doc);
+      return found.length === 1 && found[0] === "Kreo Harpy";
+    })()
   );
 }
 
