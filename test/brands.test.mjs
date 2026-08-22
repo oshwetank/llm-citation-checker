@@ -8,7 +8,7 @@
  * public-suffix logic both lost every non-listed ccTLD and invented companies
  * called "Club" / "Store" / "Realty" out of modern generic TLDs.
  */
-import { detectBrands, brandFromDomain, matchCompressedLabel } from "../src/lib/brands.js";
+import { detectBrands, brandFromDomain, matchCompressedLabel, splitTableRow, parseMarkdownTables } from "../src/lib/brands.js";
 
 let failures = 0;
 const check = (label, cond, detail) => {
@@ -101,6 +101,132 @@ console.log("\none company is reported once, not split by spelling");
   const hdfc = out.filter((b) => /hdfc/i.test(b.brand));
   check("no duplicate entry from domain + structure", hdfc.length === 1, out.map((b) => b.brand).join(", "));
   check("mentions are summed, not halved", hdfc[0] && hdfc[0].count === 2, hdfc[0] && String(hdfc[0].count));
+}
+
+console.log("\nstructural candidates: table first column vs. heading (real capture — gaming mouse under ₹1,000)");
+{
+  // Trimmed down from an actual captured ChatGPT answer that reproduced two
+  // real bugs: "Zebronics Transformer M Plus" (row 4 of the table) never
+  // appeared in Brand Mentions at all, and "CS2"/"BGMI" — game names from a
+  // "For Valorant / CS2 / BGMI → Kreo Harpy" recommendation heading — showed
+  // up as fake brand cards instead.
+  const answer =
+    "### Best gaming mice under ₹1,000\n\n" +
+    "| Mouse | Approx. price | Best for |\n" +
+    "|---|---:|---|\n" +
+    "| **EvoFox Blaze Ultra** | ₹600–700 | Best overall |\n" +
+    "| **Kreo Harpy** | ₹600–700 | FPS / fast aim |\n" +
+    "| **daWg Slay 25** | ₹850–900 | Best sensor |\n" +
+    "| **Zebronics Transformer M Plus** | ₹500–600 | Best value |\n" +
+    "| **EvoFox Phantom Air** | ₹550–650 | Lightweight gaming |\n" +
+    "| **Ant Esports GM100 V2** | ₹300–400 | Cheapest decent option |\n\n" +
+    "The **EvoFox Blaze Ultra** stands out as the safest all-round choice.\n\n" +
+    "### My recommendation\n\n" +
+    "**For Valorant / CS2 / BGMI → Kreo Harpy**  \n" +
+    "Its ~55g weight makes it particularly attractive for quick FPS movements.\n\n" +
+    "**For mixed gaming → EvoFox Blaze Ultra**\n\n" +
+    "If you can stretch further, look at the **Logitech G102** or **Razer DeathAdder Essential**.";
+
+  const found = names(answer, {});
+  check(
+    "Zebronics Transformer M Plus is NOT missing (4-word, digit-free table cell)",
+    found.some((n) => /zebronics/i.test(n)),
+    found.join(", ")
+  );
+  check("daWg still detected (table cell, has a digit)", found.includes("daWg"), found.join(", "));
+  check("Ant still detected (table cell, has a digit)", found.includes("Ant"), found.join(", "));
+  check(
+    "EvoFox Blaze Ultra and EvoFox Phantom Air both kept whole",
+    found.includes("EvoFox Blaze Ultra") && found.includes("EvoFox Phantom Air"),
+    found.join(", ")
+  );
+  check("Kreo Harpy still detected", found.includes("Kreo Harpy"), found.join(", "));
+  check(
+    "CS2 is NOT a fake brand (bare token from a game list before the arrow)",
+    !found.some((n) => /^cs2$/i.test(n)),
+    found.join(", ")
+  );
+  check(
+    "BGMI is NOT a fake brand (bare token from a game list before the arrow)",
+    !found.some((n) => /^bgmi$/i.test(n)),
+    found.join(", ")
+  );
+  check(
+    "'For Valorant' is NOT a fake brand (starts with the noise word 'for')",
+    !found.some((n) => /valorant/i.test(n)),
+    found.join(", ")
+  );
+
+  // Mention order should follow the table's real row order, not skip/shuffle
+  // around the now-fixed Zebronics gap.
+  const order = detectBrands(answer, answer, {}).brands.map((b) => b.brand);
+  // Word-boundary match, not a bare substring search — "Ant" is a substring
+  // of "phANTom", which would otherwise match the wrong entry.
+  const idx = (needle) => order.findIndex((n) => new RegExp(`\\b${needle}\\b`, "i").test(n));
+  check(
+    "mention order matches the table: Blaze Ultra, Kreo Harpy, daWg, Zebronics, Phantom Air, Ant",
+    idx("Blaze Ultra") < idx("Kreo Harpy") &&
+      idx("Kreo Harpy") < idx("daWg") &&
+      idx("daWg") < idx("Zebronics") &&
+      idx("Zebronics") < idx("Phantom Air") &&
+      idx("Phantom Air") < idx("Ant"),
+    order.join(", ")
+  );
+}
+
+console.log("\nsplitTableRow: cell splitting respects escaped pipes and optional edge pipes");
+{
+  check("leading+trailing pipes", JSON.stringify(splitTableRow("| a | b | c |")) === JSON.stringify(["a", "b", "c"]));
+  check("no edge pipes (GFM allows this)", JSON.stringify(splitTableRow("a | b | c")) === JSON.stringify(["a", "b", "c"]));
+  check(
+    "escaped pipe inside a cell doesn't split it",
+    JSON.stringify(splitTableRow("| Bed \\| Breakfast | ₹2,000 |")) === JSON.stringify(["Bed | Breakfast", "₹2,000"])
+  );
+}
+
+console.log("\nparseMarkdownTables: a real table is identified by its separator row, not by having pipes");
+{
+  const realTable =
+    "| Mouse | Price |\n" +
+    "|---|---:|\n" +
+    "| Zebronics Transformer M Plus | ₹500 |\n" +
+    "| daWg Slay 25 | ₹850 |\n";
+  check(
+    "header row itself is NOT returned as a candidate",
+    !parseMarkdownTables(realTable).includes("Mouse"),
+    JSON.stringify(parseMarkdownTables(realTable))
+  );
+  check(
+    "both data rows' first columns found, unbolded",
+    JSON.stringify(parseMarkdownTables(realTable)) === JSON.stringify(["Zebronics Transformer M Plus", "daWg Slay 25"])
+  );
+
+  // Regression: the old regex required the first column to be **bold** — a
+  // table where the model just didn't bother bolding the names returned zero
+  // candidates from the whole table. A real table parser doesn't care.
+  // (Vendor-fallback still reduces the 4-word name to its lead token, same
+  // as the bolded case — that reduction itself isn't what's under test here.)
+  check("non-bold table (previously undetectable) still works", (() => {
+    const found = names(realTable, {});
+    return found.some((n) => /zebronics/i.test(n)) && found.includes("daWg");
+  })());
+
+  check(
+    "a bare horizontal-rule divider ('---') after a pipe-containing prose line is NOT a table",
+    parseMarkdownTables("Compare cats | dogs as pets.\n---\nCats are lower maintenance.").length === 0
+  );
+  check(
+    "two lines with pipes but no separator row between them is NOT a table",
+    parseMarkdownTables("Option A | Option B\nOption C | Option D").length === 0
+  );
+  check(
+    "a table stops at the first non-row line, not at the next pipe anywhere in the document",
+    (() => {
+      const doc = "| Mouse | Price |\n|---|---:|\n| Kreo Harpy | ₹600 |\n\nSee also: apples | oranges.";
+      const found = parseMarkdownTables(doc);
+      return found.length === 1 && found[0] === "Kreo Harpy";
+    })()
+  );
 }
 
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");

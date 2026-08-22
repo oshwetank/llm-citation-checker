@@ -283,7 +283,7 @@ console.log("\nreal capture: metrics run end-to-end on actual adapter output");
   const lines = txt.split(/\r?\n/);
   const reqBody = (lines.find((l) => l.startsWith("# reqBody:")) || "").replace("# reqBody: ", "") || "{}";
   const raw = lines.filter((l) => !l.startsWith("# ")).join("\n");
-  const real = adaptChatGpt({ captureId: "fin", raw, reqBody, capturedAt: Date.now() }, {});
+  const real = await adaptChatGpt({ captureId: "fin", raw, reqBody, capturedAt: Date.now() }, {});
   real.geo = G();
 
   const profile = makeProfile({

@@ -20,7 +20,7 @@
 
 import { makeRecord, makeSource } from "../schema.js";
 import { walk, collectByKey, collectObjects, firstPath, isHttpUrl, domainOf } from "../lib/deep.js";
-import { detectBrands } from "../lib/brands.js";
+import { detectBrandsAI } from "../lib/ai-brands.js";
 
 export const ADAPTER_VERSION = "chatgpt@0.2.0";
 
@@ -217,18 +217,24 @@ export function tokenizeAnswerMarkup(text) {
   return out;
 }
 
-// Brand detection is fully automatic and industry-agnostic — see lib/brands.js.
+// Brand detection is fully automatic and industry-agnostic — see lib/brands.js
+// (and lib/ai-brands.js for the optional AI-enrichment layered on top of it).
 // `tracked` (the user's own brand + competitors, with URLs) only LABELS what was
 // detected; it never drives detection.
-function extractBrandMentions(answerText, products, tracked, sources, places) {
-  if (!answerText) return [];
-  const { brands } = detectBrands(answerText, cleanPassage(answerText), {
+//
+// Computed ONCE and shared for both the brand list and the base entity list
+// below (extractEntities) — this used to be two separate detectBrands()
+// calls with nearly identical arguments, which was mildly wasteful even
+// synchronously and would have doubled the cost of the AI tier for no
+// reason now that this call is async.
+async function detectBrandsForCapture(answerText, products, tracked, sources, places) {
+  if (!answerText) return { brands: [], entities: [] };
+  return detectBrandsAI(answerText, cleanPassage(answerText), {
     products,
     places,
     sources,
     tracked,
   });
-  return brands;
 }
 
 function cleanUrl(u) {
@@ -517,11 +523,12 @@ function extractPlaces(nodes) {
 
 // Entities come from the model's own annotations where available (it labels them
 // with a real category — "company", "organization", … for whatever industry the
-// answer is about), plus products/merchants and detected brands.
-function extractEntities(answerText, products, brandMentions, sources, places) {
-  const { entities } = detectBrands(answerText, cleanPassage(answerText || ""), { products, sources, places });
-  const seen = new Set(entities.map((e) => (e.category || "") + "|" + e.text.toLowerCase()));
-  const out = [...entities];
+// answer is about), plus products/merchants and detected brands. `baseEntities`
+// is the entities half of the same detectBrandsForCapture() result brandMentions
+// came from — see the comment there for why this isn't its own detectBrands() call.
+function extractEntities(baseEntities, products, brandMentions, sources, places) {
+  const seen = new Set(baseEntities.map((e) => (e.category || "") + "|" + e.text.toLowerCase()));
+  const out = [...baseEntities];
   const add = (text, category) => {
     const t = (text || "").trim();
     const k = category + "|" + t.toLowerCase();
@@ -558,7 +565,7 @@ function extractImages(nodes, products) {
   return out;
 }
 
-export function adapt(rawCapture, opts = {}) {
+export async function adapt(rawCapture, opts = {}) {
   const diag = { adapterVersion: ADAPTER_VERSION, usedFallback: false, notes: [] };
   const nodes = parseSse(rawCapture.raw || "");
 
@@ -578,8 +585,8 @@ export function adapt(rawCapture, opts = {}) {
 
   const answerText = reconstructAnswer(nodes);
   const referenceTypes = extractReferenceTypes(nodes, answerText);
-  const brandMentions = extractBrandMentions(answerText, products, opts.tracked, sources, places);
-  const entities = extractEntities(answerText, products, brandMentions, sources, places);
+  const { brands: brandMentions, entities: baseEntities } = await detectBrandsForCapture(answerText, products, opts.tracked, sources, places);
+  const entities = extractEntities(baseEntities, products, brandMentions, sources, places);
   const images = extractImages(nodes, products);
 
   // Carousel presence: products carousel if any product; news if any dated/news

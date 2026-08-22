@@ -8,7 +8,8 @@
     "unlimitedStorage",
     "tabs",
     "alarms",
-    "notifications"
+    "notifications",
+    "languageModel"
   ],
   "host_permissions": [
     "https://chatgpt.com/*",

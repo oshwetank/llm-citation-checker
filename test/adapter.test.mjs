@@ -15,7 +15,7 @@ import { dirname, join } from "node:path";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIX = join(HERE, "fixtures");
 
-function loadFixture(name, adapter = adapt) {
+async function loadFixture(name, adapter = adapt) {
   const txt = readFileSync(join(FIX, name), "utf8");
   const lines = txt.split(/\r?\n/);
   const reqBody = (lines.find((l) => l.startsWith("# reqBody:")) || "").replace("# reqBody: ", "") || "{}";
@@ -35,7 +35,7 @@ function check(label, cond, detail = "") {
 // --- chatgpt-search-40k.txt : a shopping/search turn with products ---
 {
   console.log("chatgpt-search-40k.txt");
-  const r = loadFixture("chatgpt-search-40k.txt");
+  const r = await loadFixture("chatgpt-search-40k.txt");
   const cited = r.sources.filter((s) => s.outcome === "cited");
   const fetched = r.sources.filter((s) => s.outcome === "fetched");
   check("prompt extracted", !!r.userPrompt, `got ${r.userPrompt}`);
@@ -68,7 +68,7 @@ function check(label, cond, detail = "") {
 // --- chatgpt-search-60k.txt : text-heavy answer with array-op deltas ---
 {
   console.log("\nchatgpt-search-60k.txt");
-  const r = loadFixture("chatgpt-search-60k.txt");
+  const r = await loadFixture("chatgpt-search-60k.txt");
   check("answer fully reconstructed (>1400 chars)", r.answerChars > 1400, `got ${r.answerChars}`);
   const brands = r.brandMentions.map((b) => b.brand);
   check("OPPO captured (array-op reconstruction)", brands.includes("Oppo"), brands.join(","));
@@ -80,7 +80,7 @@ function check(label, cond, detail = "") {
 // --- gemini-streamgenerate.txt : real Gemini Flash-Lite StreamGenerate ---
 {
   console.log("\ngemini-streamgenerate.txt");
-  const r = loadFixture("gemini-streamgenerate.txt", adaptGemini);
+  const r = await loadFixture("gemini-streamgenerate.txt", adaptGemini);
   check("platform is gemini", r.platform === "gemini");
   check("prompt extracted from reqBody", r.userPrompt === "best camera phone under 50K", `got ${r.userPrompt}`);
   check("searched = true", r.searched === true);
@@ -95,7 +95,7 @@ function check(label, cond, detail = "") {
 // --- gemini-pro-shopping.txt : Pro model, product/shopping response ---
 {
   console.log("\ngemini-pro-shopping.txt");
-  const r = loadFixture("gemini-pro-shopping.txt", adaptGemini);
+  const r = await loadFixture("gemini-pro-shopping.txt", adaptGemini);
   check("model detected as Pro", /Pro/.test(r.model), `got ${r.model}`);
   check("model detection survives 0 citations", r.model !== "gemini");
   check("no shape fallback", r._extraction.usedFallback === false);
@@ -111,7 +111,7 @@ function check(label, cond, detail = "") {
 // --- gemini-jewellery-shopping.txt : non-phone category proves generalized product extraction ---
 {
   console.log("\ngemini-jewellery-shopping.txt");
-  const r = loadFixture("gemini-jewellery-shopping.txt", adaptGemini);
+  const r = await loadFixture("gemini-jewellery-shopping.txt", adaptGemini);
   check("model detected as Flash", /Flash/.test(r.model), `got ${r.model}`);
   check("no shape fallback", r._extraction.usedFallback === false);
   check("products extracted (non-phone category)", r.products.length >= 5, `got ${r.products.length}`);
@@ -123,7 +123,7 @@ function check(label, cond, detail = "") {
 // --- gemini-local-places.txt : Maps/local response ---
 {
   console.log("\ngemini-local-places.txt");
-  const r = loadFixture("gemini-local-places.txt", adaptGemini);
+  const r = await loadFixture("gemini-local-places.txt", adaptGemini);
   check("no shape fallback", r._extraction.usedFallback === false);
   check("places extracted", r.places.length >= 3, `got ${r.places.length}`);
   check("places have name+category+rating", r.places.every((p) => p.name && p.category && p.rating != null));
