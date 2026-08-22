@@ -44,6 +44,18 @@ function applyMode() {
 applyMode();
 window.addEventListener("resize", applyMode);
 
+// The header's version badge used to be a hardcoded string in panel.html
+// ("v0.25") that silently went stale the next time manifest.json's version
+// bumped (it was already showing v0.25 while the manifest said 0.26.0).
+// Reading it from the manifest — the single source of truth chrome.runtime
+// already exposes — means it can't drift out of sync again.
+(function syncVersionBadge() {
+  const el = document.querySelector(".version-badge");
+  if (!el) return;
+  const v = chrome.runtime.getManifest().version;
+  el.textContent = `v${v}`;
+})();
+
 const $ = (sel, root = document) => root.querySelector(sel);
 const el = (tag, props = {}, ...kids) => {
   const n = Object.assign(document.createElement(tag), props);
