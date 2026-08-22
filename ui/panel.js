@@ -121,6 +121,22 @@ let dashboardCampaignId = ""; // "" = no campaign selected
 let dashboardGeoPrompts = []; // tracked prompts for dashboardCampaignId (tag chips only — independent of the Campaigns tab's own GEO_PROMPTS)
 let dashboardSearch = ""; // filters Saved Conversations (and the ad-hoc stat grid) by prompt text
 let viewingId = null; // which capture the Analyze tab shows (null = latest)
+// Which tab to return to from Analyze, and what to call it in the "← Back
+// to X" link. Set by openCapture() from whichever tab was active when a
+// capture link was clicked (Dashboard's Saved Conversations or Prompt
+// Performance table, Campaigns' own Prompt Performance, Compare's run
+// links…), so following a link and coming back doesn't require re-finding
+// whatever filter/scroll state was on that screen — combined with
+// TAB_SCROLL below, showTab() restores it exactly as it was left.
+let returnTab = null;
+const TAB_LABELS = { dashboard: "Dashboard", loader: "Campaigns", compare: "Compare", about: "About" };
+// Per-tab scroll position, keyed by panel id. All tabs share one physical
+// scroll container (see withScrollPreserved below), so switching tabs via
+// showTab() used to leave the scroll offset wherever the PREVIOUS tab left
+// it — landing you somewhere unrelated to where you were on the tab you're
+// switching TO (often clamped near the top if the other tab's content is
+// shorter). This is what actually restores "come back to where you were."
+const TAB_SCROLL = {};
 let selectedIds = new Set(); // captures ticked in the Saved Conversations table
 let showEmptyCaptures = false; // reveal zero-signal rows (see hasSignal note below)
 // Tracking-run captures are hidden from the ad-hoc views by default so brand
@@ -196,27 +212,53 @@ function csvOf(rows) {
 function fanoutCsv(records) {
   return csvOf(fanoutRows(records));
 }
+// Whichever container actually scrolls: the popup's capped-height
+// .app-content, or the page itself in the full-tab view.
+function activeScroller() {
+  return document.body.classList.contains("popup") ? $(".app-content") : (document.scrollingElement || document.documentElement);
+}
+
 // Every render*() function tears down and rebuilds its whole tab's DOM from
 // scratch (no diffing) — the simplest, most robust option for a codebase
 // this size, but a full teardown mid-scroll otherwise snaps the view back to
 // the top on every filter/search change, which reads as a jarring "glitch"
-// rather than a filtered update. This restores the scroll position of
-// whichever container actually scrolls (the popup's capped-height
-// .app-content, or the page itself in the full-tab view) around a render.
+// rather than a filtered update. This restores the scroll position around
+// a same-tab re-render (a filter changing, a poll tick, …). It does NOT
+// cover switching to a DIFFERENT tab and back — that's TAB_SCROLL in
+// showTab() below, a related but distinct problem (there the scroll
+// position needs to be remembered PER TAB, not just held steady around one
+// tab's own re-render).
 function withScrollPreserved(renderFn) {
-  const scroller = document.body.classList.contains("popup") ? $(".app-content") : (document.scrollingElement || document.documentElement);
+  const scroller = activeScroller();
   const y = scroller ? scroller.scrollTop : 0;
   renderFn();
   if (scroller) scroller.scrollTop = y;
 }
 
 function showTab(name) {
+  const scroller = activeScroller();
+  const current = document.querySelector(".panel.active")?.id;
+  // Save the tab being left, not the one being entered — entering a tab
+  // whose scroll hasn't been recorded yet (first visit) correctly falls
+  // through to 0 below rather than inheriting whatever the outgoing tab's
+  // offset happened to be.
+  if (current && scroller) TAB_SCROLL[current] = scroller.scrollTop;
+
   document.querySelectorAll("[data-tab]").forEach((b) => b.classList.remove("active"));
   document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
   const btn = document.querySelector(`[data-tab="${name}"]`);
   if (btn) btn.classList.add("active");
   const panel = document.getElementById(name);
   if (panel) panel.classList.add("active");
+
+  // Switching tabs changes the document's total scrollable height (each
+  // tab's content is a different length), so the browser clamps whatever
+  // scrollTop carried over from the outgoing tab to fit — landing
+  // somewhere on the new tab that has nothing to do with where it was last
+  // left, often near the top if the outgoing tab's content was taller.
+  // Restoring the INCOMING tab's own remembered offset (0 on first visit)
+  // is what actually returns you to where you were.
+  if (scroller) scroller.scrollTop = TAB_SCROLL[name] || 0;
 }
 // List records omit heavy fields (answerText, reasoning) to keep the popup fast.
 // Analyze needs the full record, so hydrate just the one being viewed and cache it.
@@ -231,6 +273,13 @@ async function hydrate(captureId) {
 }
 
 async function openCapture(captureId) {
+  // Remember where this click came from, UNLESS it came from Analyze itself
+  // (re-opening a different capture while already there isn't "arriving
+  // from" anywhere new — leave whatever return path was already set alone,
+  // so a chain of Analyze -> another link -> Analyze doesn't lose the
+  // original tab you actually want "back" to return to).
+  const current = document.querySelector(".panel.active")?.id;
+  if (current && current !== "analyze") returnTab = current;
   viewingId = captureId;
   showTab("analyze");
   await hydrate(captureId);
@@ -806,18 +855,46 @@ function renderAnalyze() {
       return;
     }
 
-  // banner when viewing an earlier capture (not the latest)
-  if (rec.captureId !== (RECORDS[0] && RECORDS[0].captureId)) {
-    const idx = RECORDS.findIndex((r) => r.captureId === rec.captureId);
-    const banner = el("div", { className: "viewing" });
-    banner.append(el("span", {}, `Viewing capture ${idx + 1} of ${RECORDS.length} (${new Date(rec.capturedAt).toLocaleString()})`));
-    const latest = el("button", { className: "linkbtn" }, "Go to latest →");
-    // Explicit id, not `viewingId = null` — null would re-run the same
-    // signal-preferring default above and land right back here if the
-    // literal newest capture is the signal-less one being skipped.
-    latest.onclick = () => { viewingId = (RECORDS[0] && RECORDS[0].captureId) || null; renderAnalyze(); };
-    banner.append(latest);
-    root.append(banner);
+  // Context banner — two independent signals, shown together when both
+  // apply, and deliberately the FIRST thing appended so it's visible
+  // without scrolling even on a long Analyze view (previously the only way
+  // back was the sticky header's nav tabs, which combined with tab
+  // switching not remembering scroll position — see showTab() — meant
+  // "back" never actually returned you to where you'd been):
+  //  1. returnTab: this capture was opened via a link from another tab
+  //     (Dashboard, Campaigns, Compare…) — offer a direct way back to it.
+  //  2. this isn't the latest AD-HOC capture. Only meaningful for ad-hoc
+  //     captures — a campaign/tracked capture (opened via Prompt
+  //     Performance, which is exactly the flow returnTab exists for) has
+  //     no position in RECORDS at all, since RECORDS deliberately excludes
+  //     tracked captures (see the isolation note in load()); the old
+  //     unconditional findIndex here returned -1 and would have rendered
+  //     the nonsensical "viewing capture 0 of N" for that exact flow.
+  {
+    const parts = [];
+    if (returnTab) {
+      const backBtn = el("button", { className: "linkbtn" }, `← Back to ${TAB_LABELS[returnTab] || returnTab}`);
+      backBtn.onclick = () => { const rt = returnTab; returnTab = null; showTab(rt); };
+      parts.push(backBtn);
+    }
+    const adhocIdx = RECORDS.findIndex((r) => r.captureId === rec.captureId);
+    if (adhocIdx > 0) {
+      parts.push(el("span", {}, `Viewing capture ${adhocIdx + 1} of ${RECORDS.length} (${new Date(rec.capturedAt).toLocaleString()})`));
+      const latestBtn = el("button", { className: "linkbtn" }, "Go to latest →");
+      // Explicit id, not `viewingId = null` — null would re-run the same
+      // signal-preferring default above (defaultRecordId()) and land right
+      // back here if the literal newest capture is the signal-less one
+      // being skipped.
+      latestBtn.onclick = () => { viewingId = (RECORDS[0] && RECORDS[0].captureId) || null; renderAnalyze(); };
+      parts.push(latestBtn);
+    } else if (adhocIdx === -1 && rec.geo) {
+      parts.push(el("span", {}, `Viewing a campaign capture — ${rec.platform || "unknown"}${rec.model ? " · " + rec.model : ""} · ${new Date(rec.capturedAt).toLocaleString()}`));
+    }
+    if (parts.length) {
+      const banner = el("div", { className: "viewing" });
+      parts.forEach((p, i) => { if (i > 0) banner.append(el("span", { className: "viewing-sep" }, "·")); banner.append(p); });
+      root.append(banner);
+    }
   }
 
   const fanCount =
@@ -3546,6 +3623,10 @@ async function openUrlDetailModal(url, profile, since, until) {
 /* ---------- wiring ---------- */
 document.querySelectorAll("[data-tab]").forEach((btn) =>
   btn.addEventListener("click", () => {
+    // A direct nav click is the user choosing to go here themselves, not
+    // "returning" from a link — any "← Back to X" context from an earlier
+    // openCapture() no longer applies once they've navigated on their own.
+    returnTab = null;
     // clicking the Analyze tab directly returns to the latest capture
     if (btn.dataset.tab === "analyze") { viewingId = null; renderAnalyze(); }
     if (btn.dataset.tab === "loader") loadGeo();
