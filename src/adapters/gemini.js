@@ -20,7 +20,7 @@
 
 import { makeRecord, makeSource } from "../schema.js";
 import { walk, isHttpUrl, domainOf } from "../lib/deep.js";
-import { detectBrands } from "../lib/brands.js";
+import { detectBrandsAI } from "../lib/ai-brands.js";
 
 export const ADAPTER_VERSION = "gemini@0.2.0";
 
@@ -42,9 +42,9 @@ function extractAnswerAndReasoning(payload) {
 // Brand detection is fully automatic and industry-agnostic — see lib/brands.js.
 // `tracked` (the user's own brand + competitors) only LABELS results; it never
 // drives detection, so the tool works on any vertical with zero configuration.
-function extractBrandMentions(text, ctx = {}) {
+async function extractBrandMentions(text, ctx = {}) {
   if (!text) return [];
-  const { brands } = detectBrands(text, text, ctx);
+  const { brands } = await detectBrandsAI(text, text, ctx);
   return brands;
 }
 
@@ -231,7 +231,7 @@ export const FANOUT_UNSUPPORTED_NOTE =
   "fanout: Gemini does not expose the search sub-queries it ran, so none are " +
   "reported. This is a platform limitation, not a failed extraction.";
 
-export function adapt(rawCapture, opts = {}) {
+export async function adapt(rawCapture, opts = {}) {
   const diag = { adapterVersion: ADAPTER_VERSION, usedFallback: false, notes: [] };
   const payloads = parseStreamGenerate(rawCapture.raw || "");
 
@@ -283,7 +283,7 @@ export function adapt(rawCapture, opts = {}) {
   model = model ? `Gemini ${model}` : "gemini";
 
   const { answer, reasoning } = bestPayload ? extractAnswerAndReasoning(bestPayload) : { answer: "", reasoning: null };
-  const brandMentions = extractBrandMentions(answer, {
+  const brandMentions = await extractBrandMentions(answer, {
     products,
     places,
     sources,

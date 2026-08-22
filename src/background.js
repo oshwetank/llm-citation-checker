@@ -163,7 +163,7 @@ async function deriveAndStore(rawRow, rawText, settings) {
   const raw = rawText ?? (await gunzipToString(rawRow.gz));
   const cfg = settings || (await getSettings());
   const adapter = ADAPTERS[rawRow.platform] || ADAPTERS.chatgpt;
-  const record = adapter(
+  const record = await adapter(
     {
       captureId: rawRow.captureId,
       raw,

@@ -19,7 +19,7 @@ function check(label, cond, detail = "") {
     console.log(`  ✗ ${label}  ${detail}`);
   }
 }
-function load(name, adapter, opts) {
+async function load(name, adapter, opts) {
   const txt = readFileSync(join(FIX, name), "utf8");
   const lines = txt.split(/\r?\n/);
   const reqBody = (lines.find((l) => l.startsWith("# reqBody:")) || "").replace("# reqBody: ", "") || "{}";
@@ -30,8 +30,8 @@ function load(name, adapter, opts) {
 // --- answerText must survive into the record (the UI reads it for rank/aspects) ---
 console.log("answerText persistence");
 {
-  const c = load("chatgpt-search-40k.txt", adaptChatGpt);
-  const g = load("gemini-streamgenerate.txt", adaptGemini);
+  const c = await load("chatgpt-search-40k.txt", adaptChatGpt);
+  const g = await load("gemini-streamgenerate.txt", adaptGemini);
   check("chatgpt record carries answerText", typeof c.answerText === "string" && c.answerText.length > 100, `got ${c.answerText?.length}`);
   check("gemini record carries answerText", typeof g.answerText === "string" && g.answerText.length > 100, `got ${g.answerText?.length}`);
   check("answerChars agrees with answerText", c.answerChars === c.answerText.length);
@@ -46,21 +46,21 @@ console.log("answerText persistence");
  */
 console.log("\nautomatic detection across industries (no configuration)");
 {
-  const fin = load("chatgpt-finance-trading.txt", adaptChatGpt, {});
+  const fin = await load("chatgpt-finance-trading.txt", adaptChatGpt, {});
   const finNames = fin.brandMentions.map((b) => b.brand);
   check("finance: brokers detected", ["Zerodha", "Groww", "Upstox"].every((n) => finNames.includes(n)), finNames.join(","));
   check("finance: multi-word name kept whole", finNames.includes("Angel One"), finNames.join(","));
   check("finance: model entity category used", fin.brandMentions.some((b) => b.category === "Company"));
 
-  const phone = load("chatgpt-search-40k.txt", adaptChatGpt, {});
+  const phone = await load("chatgpt-search-40k.txt", adaptChatGpt, {});
   const phoneNames = phone.brandMentions.map((b) => b.brand);
   check("phones: vendors detected", phoneNames.includes("OnePlus") && phoneNames.includes("Google"), phoneNames.join(","));
   check("phones: names are brand-level, not model-level", !phoneNames.some((n) => /\d/.test(n)), phoneNames.join(","));
 
-  const local = load("gemini-local-places.txt", adaptGemini, {});
+  const local = await load("gemini-local-places.txt", adaptGemini, {});
   check("local: business names detected", local.brandMentions.length > 0, local.brandMentions.map((b) => b.brand).join(","));
 
-  const jewel = load("gemini-jewellery-shopping.txt", adaptGemini, {});
+  const jewel = await load("gemini-jewellery-shopping.txt", adaptGemini, {});
   const jNames = jewel.brandMentions.map((b) => b.brand);
   check("jewellery: category headings are not brands",
     !jNames.some((n) => /Necklaces|Rings|Contemporary|Chunky/i.test(n)), jNames.join(","));
@@ -72,14 +72,14 @@ console.log("\ntracked brands label results (they do not drive detection)");
     { name: "Groww", url: "groww.in", relation: "own" },
     { name: "Zerodha", url: "zerodha.com", relation: "competitor" },
   ];
-  const r = load("chatgpt-finance-trading.txt", adaptChatGpt, { tracked });
+  const r = await load("chatgpt-finance-trading.txt", adaptChatGpt, { tracked });
   const own = r.brandMentions.find((b) => b.brand === "Groww");
   const comp = r.brandMentions.find((b) => b.brand === "Zerodha");
   check("own brand labelled", own && own.relation === "own", JSON.stringify(own?.relation));
   check("competitor labelled", comp && comp.relation === "competitor", JSON.stringify(comp?.relation));
   const untracked = r.brandMentions.find((b) => b.brand === "Dhan");
   check("untracked brand still detected, unlabelled", untracked && !untracked.relation);
-  const bare = load("chatgpt-finance-trading.txt", adaptChatGpt, {});
+  const bare = await load("chatgpt-finance-trading.txt", adaptChatGpt, {});
   check("same brands found with no config at all", bare.brandMentions.length === r.brandMentions.length);
 }
 
@@ -96,7 +96,7 @@ console.log("\nloader advance guard (hasSignal)");
     const fan = (f.search?.length || 0) + (f.shopping?.length || 0) + (f.image?.length || 0);
     return !!(r.userPrompt || fan || r.sources?.length || r.products?.length || r.places?.length || r.answerChars);
   };
-  const real = load("chatgpt-search-40k.txt", adaptChatGpt);
+  const real = await load("chatgpt-search-40k.txt", adaptChatGpt);
   check("a real turn advances the loader", hasSignal(real) === true);
   check("an empty race-loser does NOT advance", hasSignal(makeRecord({})) === false);
   check("null capture does NOT advance", hasSignal(null) === false);
@@ -127,7 +127,7 @@ console.log("\nCSV formula-injection escaping");
  */
 console.log("\nlong business names are not dropped (was: 40-char cap silently ate them)");
 {
-  const jewel = load("chatgpt-jewellery-wedding.txt", adaptChatGpt, {});
+  const jewel = await load("chatgpt-jewellery-wedding.txt", adaptChatGpt, {});
   const names = jewel.brandMentions.map((b) => b.brand);
   check("all 11 businesses found, not just the short-named ones", names.length === 11, `got ${names.length}: ${names.join(" | ")}`);
   const longOnes = [
@@ -146,12 +146,12 @@ console.log("\nlong business names are not dropped (was: 40-char cap silently at
  */
 console.log("\npassages are human-readable, not raw entity/product/cite JSON");
 {
-  const jewel = load("chatgpt-jewellery-wedding.txt", adaptChatGpt, {});
+  const jewel = await load("chatgpt-jewellery-wedding.txt", adaptChatGpt, {});
   const passages = jewel.brandMentions.map((b) => b.passages[0]).join(" ");
   check("no raw entity[ markup leaks into passages", !/entity\[/.test(passages), passages.slice(0, 80));
   check("no raw product[ markup leaks into passages", !/product\[/.test(passages));
   check("no stray citeturnN markup leaks into passages", !/cite ?turn\d/.test(passages));
-  const phone = load("chatgpt-search-40k.txt", adaptChatGpt, {});
+  const phone = await load("chatgpt-search-40k.txt", adaptChatGpt, {});
   const pp = phone.brandMentions.map((b) => b.passages[0]).join(" ");
   check("product markers cleaned to [Name] form on a second fixture", pp.includes("["), pp.slice(0, 60));
 }
@@ -163,7 +163,7 @@ console.log("\npassages are human-readable, not raw entity/product/cite JSON");
  */
 console.log("\nemoji-prefixed and colon-labelled headings are handled");
 {
-  const r = load("chatgpt-phone-which.txt", adaptChatGpt, {});
+  const r = await load("chatgpt-phone-which.txt", adaptChatGpt, {});
   const names = r.brandMentions.map((b) => b.brand);
   check("iQOO found despite '🥇 Best Overall: iQOO Neo 10' heading", names.includes("iQOO"), names.join(","));
   check("Realme found despite plain '🥈 Realme GT 7' heading", names.includes("Realme"), names.join(","));
@@ -178,7 +178,7 @@ console.log("\nemoji-prefixed and colon-labelled headings are handled");
  */
 console.log("\nChatGPT local-business places (rating/hours/phone/maps — new)");
 {
-  const jewel = load("chatgpt-jewellery-wedding.txt", adaptChatGpt, {});
+  const jewel = await load("chatgpt-jewellery-wedding.txt", adaptChatGpt, {});
   check("places extracted", jewel.places.length === 11, `got ${jewel.places.length}`);
   const p = jewel.places.find((x) => x.name === "Manubhai Jewellers - Flagship Store");
   check("place found by name", !!p);
@@ -192,7 +192,7 @@ console.log("\nChatGPT local-business places (rating/hours/phone/maps — new)")
     check("maps deep-link built from the Google Place id", /^https:\/\/www\.google\.com\/maps\/place\/\?q=place_id:/.test(p.mapsUrl || ""), p.mapsUrl);
   }
   check("map carousel flag reflects real places, not a heuristic that never matched", jewel.carousels.map === true);
-  check("non-local captures have zero places (no false positives)", load("chatgpt-search-40k.txt", adaptChatGpt, {}).places.length === 0);
+  check("non-local captures have zero places (no false positives)", (await load("chatgpt-search-40k.txt", adaptChatGpt, {})).places.length === 0);
 }
 
 /* --- Regression: the bulk "products{selections}" marker was silently dropped ---
@@ -205,13 +205,13 @@ console.log("\nChatGPT local-business places (rating/hours/phone/maps — new)")
  */
 console.log("\nbulk products{} carousel marker is parsed (was silently skipped)");
 {
-  const watches = load("chatgpt-watches.txt", adaptChatGpt, {});
+  const watches = await load("chatgpt-watches.txt", adaptChatGpt, {});
   const names = watches.brandMentions.map((b) => b.brand);
   check("Samsung found (narrated + in carousel)", names.includes("Samsung"));
   check("CMF found (narrated + in carousel)", names.includes("CMF"));
   check("Noise found (carousel-only, never narrated in prose)", names.includes("Noise"), names.join(","));
   check("NoiseFit found (carousel-only, never narrated in prose)", names.includes("NoiseFit"), names.join(","));
-  const tv = load("chatgpt-tv.txt", adaptChatGpt, {});
+  const tv = await load("chatgpt-tv.txt", adaptChatGpt, {});
   check("Acer found on a second fixture (was missing before this fix)", tv.brandMentions.some((b) => b.brand === "Acer"));
   check("bulk marker JSON does not leak into any passage", !/selections/.test(JSON.stringify(watches.brandMentions)));
 }
@@ -225,7 +225,7 @@ console.log("\nbulk products{} carousel marker is parsed (was silently skipped)"
  */
 console.log("\n\"shown but not narrated\" products get count=0, not silently dropped");
 {
-  const watches = load("chatgpt-watches.txt", adaptChatGpt, {});
+  const watches = await load("chatgpt-watches.txt", adaptChatGpt, {});
   const noise = watches.brandMentions.find((b) => b.brand === "Noise");
   check("carousel-only brand has count=0, not omitted", noise && noise.count === 0, noise);
   check("carousel-only brand gets an honest, non-empty passage", noise && noise.passages[0].length > 0);
@@ -240,7 +240,7 @@ console.log("\n\"shown but not narrated\" products get count=0, not silently dro
  */
 console.log('\n"by"-joined brand names are kept ("Wallet by BudgetBakers")');
 {
-  const r = load("chatgpt-expense-apps.txt", adaptChatGpt, {});
+  const r = await load("chatgpt-expense-apps.txt", adaptChatGpt, {});
   const names = r.brandMentions.map((b) => b.brand);
   check('"Wallet by BudgetBakers" kept whole, not dropped', names.includes("Wallet by BudgetBakers"), names.join(","));
 }
@@ -254,9 +254,9 @@ console.log('\n"by"-joined brand names are kept ("Wallet by BudgetBakers")');
  */
 console.log("\ncategory-noun filter no longer rejects brand names ending in s");
 {
-  const r = load("chatgpt-expense-apps.txt", adaptChatGpt, {});
+  const r = await load("chatgpt-expense-apps.txt", adaptChatGpt, {});
   check('"BudgetBakers"-style name not rejected as a fake plural category', r.brandMentions.some((b) => b.brand.includes("BudgetBakers")));
-  const jewel = load("chatgpt-jewellery-wedding.txt", adaptChatGpt, {});
+  const jewel = await load("chatgpt-jewellery-wedding.txt", adaptChatGpt, {});
   check("genuine category headings still filtered (jewellery count unaffected)", jewel.brandMentions.length === 11, jewel.brandMentions.length);
 }
 
@@ -266,7 +266,7 @@ console.log("\ncategory-noun filter no longer rejects brand names ending in s");
  */
 console.log('\nslash-separated heading alternatives are split ("Google Sheets / Excel")');
 {
-  const r = load("chatgpt-expense-apps.txt", adaptChatGpt, {});
+  const r = await load("chatgpt-expense-apps.txt", adaptChatGpt, {});
   const names = r.brandMentions.map((b) => b.brand);
   check("Google Sheets found", names.includes("Google Sheets"), names.join(","));
   check("Excel found as a separate brand, not merged", names.includes("Excel"), names.join(","));
@@ -282,7 +282,7 @@ console.log('\nslash-separated heading alternatives are split ("Google Sheets / 
  */
 console.log("\nregression guard: cleanPassage no longer truncates at the first citation marker");
 {
-  const c = load("chatgpt-finance-trading.txt", adaptChatGpt, {});
+  const c = await load("chatgpt-finance-trading.txt", adaptChatGpt, {});
   const cleaned = cleanPassage(c.answerText);
   check(
     "text after the first citation marker survives cleaning",
@@ -301,7 +301,7 @@ console.log("\nregression guard: cleanPassage no longer truncates at the first c
  */
 console.log("\nsource markerIds join inline citation markers to a specific source");
 {
-  const c = load("chatgpt-finance-trading.txt", adaptChatGpt, {});
+  const c = await load("chatgpt-finance-trading.txt", adaptChatGpt, {});
   const zerodha = c.sources.find((s) => s.domain === "zerodha.com");
   const groww = c.sources.find((s) => s.domain === "groww.in");
   check("zerodha.com carries markerIds", !!(zerodha && zerodha.platformSpecific.markerIds && zerodha.platformSpecific.markerIds.length), zerodha && JSON.stringify(zerodha.platformSpecific.markerIds));
@@ -323,7 +323,7 @@ console.log("\nsource markerIds join inline citation markers to a specific sourc
 console.log("\ntokenizeAnswerMarkup segments losslessly and leaks no PUA characters");
 {
   for (const [name, opts] of [["chatgpt-jewellery-wedding.txt", {}], ["chatgpt-watches.txt", {}], ["chatgpt-tv.txt", {}]]) {
-    const r = load(name, adaptChatGpt, opts);
+    const r = await load(name, adaptChatGpt, opts);
     const segs = tokenizeAnswerMarkup(r.answerText);
     const reassembled = segs.reduce((n, s) => n + (s.type === "text" ? s.value.length : s.end - s.start), 0);
     check(`${name}: segments cover the full answer length`, reassembled === r.answerText.length, `${reassembled}/${r.answerText.length}`);
@@ -333,7 +333,7 @@ console.log("\ntokenizeAnswerMarkup segments losslessly and leaks no PUA charact
   // The bare OPEN+"map"+CLOSE flag marker (local/places carousel indicator,
   // has no MID-delimited body unlike entity/product/cite) must be recognized
   // as its own segment type, not leaked as literal "map" text.
-  const jewel = load("chatgpt-jewellery-wedding.txt", adaptChatGpt, {});
+  const jewel = await load("chatgpt-jewellery-wedding.txt", adaptChatGpt, {});
   const jewelSegs = tokenizeAnswerMarkup(jewel.answerText);
   check("bare 'map' marker recognized as its own segment", jewelSegs.some((s) => s.type === "map"));
 }
@@ -345,13 +345,13 @@ console.log("\ntokenizeAnswerMarkup segments losslessly and leaks no PUA charact
  */
 console.log("\nbuildExportModel: ChatGPT footnotes vs Gemini's footnote-free source list");
 {
-  const c = load("chatgpt-finance-trading.txt", adaptChatGpt, {});
+  const c = await load("chatgpt-finance-trading.txt", adaptChatGpt, {});
   const cModel = buildExportModel(c);
   check("ChatGPT export model resolves footnotes", cModel.footnotes.length >= 2, cModel.footnotes.length);
   check("ChatGPT export model flags no unresolved citations on a fresh capture", cModel.unresolvedCitations === false);
   check("ChatGPT export body contains rendered HTML (not raw markdown)", cModel.bodyHtml.includes("<table>") && !cModel.bodyHtml.includes("|---|"), cModel.bodyHtml.slice(0, 60));
 
-  const g = load("gemini-streamgenerate.txt", adaptGemini, {});
+  const g = await load("gemini-streamgenerate.txt", adaptGemini, {});
   const gModel = buildExportModel(g);
   check("Gemini export model has NO inline footnotes (documented platform limitation)", gModel.footnotes.length === 0);
   check("Gemini export model still lists sources for the appendix", gModel.sources.length > 0, gModel.sources.length);
@@ -390,7 +390,7 @@ console.log('\nregression guard: marker names containing a literal quote (27") p
  */
 console.log("\nbuildExportModel surfaces product/carousel images");
 {
-  const phone = load("chatgpt-phone-under.txt", adaptChatGpt, {});
+  const phone = await load("chatgpt-phone-under.txt", adaptChatGpt, {});
   const model = buildExportModel(phone);
   check("export model carries product images", model.products.some((p) => p.image), model.products.map((p) => !!p.image));
   check("export model carries the carousel images[] array", model.images.length > 0, model.images.length);
@@ -406,7 +406,7 @@ console.log("\nbuildExportModel surfaces product/carousel images");
  */
 console.log("\nregression guard: single-conversation export doesn't repeat the prompt");
 {
-  const c = load("chatgpt-finance-trading.txt", adaptChatGpt, {});
+  const c = await load("chatgpt-finance-trading.txt", adaptChatGpt, {});
   const model = buildExportModel(c);
   const single = renderStandaloneHtml([model]);
   check("single export has no top-level <h1>", !single.includes("<h1>"));
