@@ -1,4 +1,4 @@
-# Citely
+# CitoSkeleton
 
 A Chrome (MV3) extension that **passively** captures what ChatGPT and Gemini actually do
 behind an answer — the hidden search queries they fire, every source they read, which of
