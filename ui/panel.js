@@ -2961,7 +2961,7 @@ function renderCampaignSetup(profile, dis) {
       role: "checkbox", "aria-checked": String(selected), tabIndex: pillDisabled ? -1 : 0,
     });
     pill.dataset.value = e.id;
-    pill.append(el("span", { className: "llm-icon" }, ENGINE_ICONS[e.id] || "🔷"));
+    pill.append(engineIconEl(e.id));
     pill.append(el("span", { className: "llm-label" }, e.label));
     // Unavailable engines are shown disabled rather than hidden: the roadmap
     // stays visible, and a metric can never silently under-count because a
@@ -3003,7 +3003,34 @@ function renderCampaignSetup(profile, dis) {
   return card;
 }
 
-const ENGINE_ICONS = { chatgpt: "💬", gemini: "✦", perplexity: "🔍", claude: "✳️", grok: "🤖" };
+/* Real brand marks, as inline SVG, instead of the stand-in emoji this used to
+   use (chatgpt was "💬" — a generic speech balloon that looks nothing like
+   OpenAI's logo, which is what made the engine list read as wrong).
+   Inline rather than image files so they stay crisp at any size, need no
+   extra web_accessible_resources, and cost no extra requests.
+
+   OpenAI's and xAI's marks are monochrome by design, so they use
+   currentColor and follow the surrounding text in both light and dark
+   themes. Gemini, Claude and Perplexity are drawn in their own brand
+   colours, which hold up against both themes' backgrounds.
+
+   These identify which engine a row or pill refers to — the marks are used
+   nominatively, to name the service, not to imply any endorsement. */
+const ENGINE_ICON_SVG = {
+  chatgpt: `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/></svg>`,
+  gemini: `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><defs><linearGradient id="ck-gem" x1="0" y1="24" x2="24" y2="0" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#1C7DFF"/><stop offset=".52" stop-color="#8E6FF7"/><stop offset="1" stop-color="#D96570"/></linearGradient></defs><path fill="url(#ck-gem)" d="M12 24A14.304 14.304 0 0 0 0 12A14.304 14.304 0 0 0 12 0a14.305 14.305 0 0 0 12 12a14.305 14.305 0 0 0-12 12"/></svg>`,
+  claude: `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><g fill="#D97757"><path d="M11.1 1.6h1.8v20.8h-1.8z"/><path d="M1.6 11.1h20.8v1.8H1.6z"/><path d="M4.08 2.81l1.27-1.27 14.7 14.7-1.27 1.28z" opacity=".92"/><path d="M19.92 2.81l1.27 1.28-14.7 14.7-1.27-1.28z" opacity=".92"/></g></svg>`,
+  perplexity: `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><g fill="none" stroke="#20808D" stroke-width="1.9" stroke-linecap="round"><path d="M12 3.2v17.6"/><path d="M12 7.4L5.2 3.2v7.2h13.6V3.2L12 7.4z"/><path d="M12 16.6l-6.8 4.2v-7.2h13.6v7.2L12 16.6z"/><path d="M3.4 10.4h17.2"/></g></svg>`,
+  grok: `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M6.1 21.5H3.2L14.4 6.2h2.9L6.1 21.5zM17.4 21.5h-2.7l-3.3-4.5 1.4-1.9 4.6 6.4zM9.6 8.9L6.3 4.4h2.7l3.3 4.5-1.4 1.9-1.3-1.9z"/><path d="M20.8 2.5l-6.4 8.7 6.4 8.7v-4.1l-3.4-4.6 3.4-4.6V2.5z" opacity=".55"/></svg>`,
+};
+
+// Builds a fresh element each call — the same node can't be appended in two
+// places, and these get rendered once per pill and once per table column.
+function engineIconEl(id) {
+  const svg = ENGINE_ICON_SVG[id];
+  if (!svg) return el("span", { className: "llm-icon" }, "🔷");
+  return el("span", { className: "llm-icon", innerHTML: svg });
+}
 
 // After a bulk add, tell the user what got skipped as a duplicate (and why)
 // rather than silently dropping it — only speaks up when there's something
@@ -3506,7 +3533,11 @@ async function refreshPromptPerformance(profile, prompts, since, until) {
     };
 
     const headerCells = [el("th", {}, "Prompt")];
-    engineIds.forEach((id) => headerCells.push(el("th", {}, `${ENGINE_ICONS[id] || "🔷"} ${engineLabel(id)}`)));
+    engineIds.forEach((id) =>
+      headerCells.push(
+        el("th", {}, el("span", { className: "engine-th" }, engineIconEl(id), el("span", {}, engineLabel(id))))
+      )
+    );
     headerCells.push(el("th", {}, "Time"), el("th", { style: "width:90px" }, ""));
     const table = el("table", { className: "prompt-perf-table" }, el("tr", {}, ...headerCells));
 
