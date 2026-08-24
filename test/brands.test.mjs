@@ -229,5 +229,40 @@ console.log("\nparseMarkdownTables: a real table is identified by its separator 
   );
 }
 
+/*
+ * Real bug, reported against a live capture: "there are times when a
+ * platform's cited name comes under the mention section, like amazon."
+ * A product card with no explicit brand field but a marketplace merchant
+ * ("Amazon.in") turned the platform into a brand candidate; if "Amazon"
+ * then appeared anywhere in the prose (as most shopping answers do), it
+ * was reported as a mentioned brand alongside the real competitors being
+ * compared. The same leak existed independently via cited source domains
+ * (amazon.in, dir.indiamart.com) with no exclusion at all.
+ */
+console.log("\nmarketplace platforms never appear in Brand Mentions, even when named in prose");
+{
+  const answer = "The Bourbon Classic pack is widely available on Amazon and other retailers.";
+  const out = detectBrands(answer, answer, {
+    products: [{ name: "Bourbon Classic", merchant: "Amazon.in", brand: "" }],
+    sources: [{ domain: "amazon.in" }],
+  }).brands.map((b) => b.brand);
+  check("Amazon is not reported as a brand", !out.some((n) => /amazon/i.test(n)), out.join(", "));
+
+  const indiamart = names("IndiaMART lists several dealers for Bourbon biscuits.", {
+    sources: [{ domain: "dir.indiamart.com" }],
+  });
+  check("a B2B directory domain is not reported as a brand", indiamart.length === 0, indiamart.join(", "));
+
+  // A genuine, non-marketplace merchant is exactly the opposite case and
+  // must still come through — many real product cards carry no OTHER
+  // brand signal at all.
+  const answer2 = "The Modern Gold Drape Bar Necklace is sold by PNG Jewellers.";
+  const real = detectBrands(answer2, answer2, {
+    products: [{ name: "Modern Gold Drape Bar Necklace", merchant: "PNG Jewellers", brand: "" }],
+  }).brands.map((b) => b.brand);
+  check("a real, non-marketplace merchant is still used as a brand signal", real.includes("PNG Jewellers"), real.join(", "));
+  check("the product title is not used as a fallback when a real merchant exists", !real.includes("Modern"), real.join(", "));
+}
+
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
 process.exit(failures ? 1 : 0);

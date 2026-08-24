@@ -266,6 +266,43 @@ export function structuralCandidates(answerText) {
 }
 
 /* ---------- 4. cited domains ---------- */
+// Pure horizontal marketplaces and B2B listing directories: platforms that
+// host OTHER companies' products/listings across every vertical, rather than
+// making anything themselves. A source citing amazon.in or dir.indiamart.com
+// is telling you where the answer's information came from, not naming a
+// brand being evaluated — so these never become brand candidates no matter
+// how their name is written in the prose. Deliberately narrow and global:
+// each entry is unambiguous in EVERY industry, unlike a vertical-specific
+// retailer (Croma, Reliance Digital, Nykaa) which this project keeps out of
+// the core detector on purpose.
+const MARKETPLACE_DOMAINS = new Set([
+  "amazon.com", "amazon.in", "amazon.co.uk", "amazon.ae", "amazon.de", "amazon.ca",
+  "flipkart.com", "myntra.com", "meesho.com", "snapdeal.com", "shopclues.com",
+  "ebay.com", "ebay.in", "walmart.com", "aliexpress.com", "alibaba.com", "etsy.com",
+  "jiomart.com", "olx.in", "olx.com", "quikr.com",
+  "indiamart.com", "tradeindia.com", "exportersindia.com", "justdial.com",
+  "dhgate.com", "made-in-china.com", "wish.com", "rakuten.com",
+]);
+
+function isMarketplaceDomain(domain) {
+  const host = String(domain || "").trim().toLowerCase().replace(/^www\./, "");
+  if (!host) return false;
+  for (const d of MARKETPLACE_DOMAINS) {
+    if (host === d || host.endsWith("." + d)) return true;
+  }
+  return false;
+}
+
+// Same platforms as MARKETPLACE_DOMAINS, matched by bare name instead of
+// hostname — for the merchant FIELD on a product card, which is a plain
+// string ("Amazon.in", "PNG Jewellers", "Mia by Tanishq"), not a URL. Only
+// the leading word is checked, since that's what identifies the seller.
+const MARKETPLACE_NAME_RE =
+  /^(amazon|flipkart|myntra|meesho|snapdeal|shopclues|ebay|walmart|aliexpress|alibaba|etsy|jiomart|olx|quikr|indiamart|tradeindia|exportersindia|justdial|dhgate|wish|rakuten)\b/i;
+function isMarketplaceName(name) {
+  return MARKETPLACE_NAME_RE.test(String(name || "").trim());
+}
+
 // Second-level registry labels that are never themselves the brand:
 // "example.co.uk", "woolworths.com.au", "dbs.com.sg", "toyota.co.jp".
 // Everything NOT in this set is treated as a public suffix, so the label
@@ -435,13 +472,24 @@ export function detectBrands(answerText, plainText, ctx = {}) {
   // products silently vanish (0 text hits → dropped) despite being shown to the user.
   productNames.forEach((p) => addCand(vendorFromProductName(p), "product_vendor", null, "default", true));
   (ctx.products || []).forEach((p) => {
-    // shownOnly only for the product's actual BRAND (manufacturer) — a retailer
-    // that merely sells it (Amazon, Croma, Flipkart) isn't the brand being
-    // evaluated, and giving it the same 0-count fallback would clutter Brand
-    // Mentions with sellers instead of makers.
+    // shownOnly only for the product's actual BRAND (manufacturer) — a
+    // marketplace that merely sells it (Amazon, Flipkart) isn't the brand
+    // being evaluated, and giving it the same 0-count fallback would clutter
+    // Brand Mentions with the platform instead of the maker.
+    //
+    // When `brand` is empty the `merchant` field is still checked, but ONLY
+    // when it isn't itself a marketplace — most merchants in real payloads
+    // are legitimate, specific sellers ("PNG Jewellers", "Mia by Tanishq",
+    // "Quirksmith") that are frequently the ONLY brand signal a product
+    // card carries. A marketplace merchant ("Amazon.in") is excluded the
+    // same way a marketplace CITED DOMAIN is below, so "available on
+    // Amazon" can't turn the platform into a reported competitor.
     if (p.brand) addCand(p.brand, "product_vendor", null, "default", true);
-    else if (p.merchant) addCand(String(p.merchant).split(/[+,]/)[0].trim(), "product_vendor");
-    else addCand(vendorFromProductName(p.name), "product_vendor", null, "default", true);
+    else if (p.merchant && !isMarketplaceName(p.merchant)) {
+      addCand(String(p.merchant).split(/[+,]/)[0].trim(), "product_vendor");
+    } else {
+      addCand(vendorFromProductName(p.name), "product_vendor", null, "default", true);
+    }
   });
   // Local/place answers: the businesses themselves are the brands (structured
   // listing data, not a text guess — trusted, long names OK, and "shown" by definition).
@@ -482,8 +530,17 @@ export function detectBrands(answerText, plainText, ctx = {}) {
       if (source === "table" || (hasDigit && multiWord)) addCand(vendorFromProductName(part), null, null, "structural");
     }
   });
-  // 4. cited domains
-  (ctx.sources || []).forEach((s) => addCand(brandFromDomain(s.domain), "cited_domain"));
+  // 4. cited domains. A cited source is where an answer got its information —
+  // not automatically a brand being evaluated. Horizontal marketplaces and B2B
+  // listing directories (Amazon, Flipkart, IndiaMART, eBay…) turn up as sources
+  // constantly, in every vertical, simply because they host product listings —
+  // and when their name also appears in the prose ("available on Amazon"),
+  // domain-derived detection reported the PLATFORM as a mentioned brand
+  // alongside the real competitors the answer was actually comparing.
+  (ctx.sources || []).forEach((s) => {
+    if (isMarketplaceDomain(s.domain)) return;
+    addCand(brandFromDomain(s.domain), "cited_domain");
+  });
   // The user's tracked brands are added as candidates too so their share of voice
   // is reported even at zero — but they are NOT what makes detection work. The
   // user typed this exact name, so trust it whole regardless of word count.
