@@ -2225,6 +2225,39 @@ tr.own-brand td { background: var(--accent-subtle); font-weight: 600; }
   padding: 2px 8px 8px 22px;
 }
 .funnel-models { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-bottom: 2px; }
+
+/* ---- Brand Mentions: order of appearance ----
+   Reported: "I don't get an idea of which brand was mentioned 1st and which
+   was last." The list was already in first-appearance order; nothing showed
+   it. The ordinal is the position in the answer's prose, so #1 is the brand
+   the model named first. A dash means the brand appeared in a product/place
+   card and was never named in the writing at all — it has no position. */
+.brand-ordinal {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  color: var(--fg-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.brand-ordinal.first {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.brand-ordinal.muted-ordinal { color: var(--fg-muted); font-weight: 600; }
+
+/* ---- Sources list ---- */
+.src-more-row { list-style: none; padding: 8px 0 2px; text-align: center; }
+.src-more { font-size: 11.5px; }
 .prompt-link { color: var(--accent); text-decoration: none; font-weight: 500; }
 .prompt-link:hover { text-decoration: underline; }
 .platform-result { display: flex; flex-direction: column; gap: 1px; white-space: nowrap; }

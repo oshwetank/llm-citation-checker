@@ -23,6 +23,8 @@
 
 import { tokenizeAnswerMarkup } from "../adapters/chatgpt.js";
 import { ANSWER_TEXT_CAP } from "../schema.js";
+import { computeSearchFunnel } from "./funnel-omitted.js";
+import { analyzeFanout } from "./fanout.js";
 
 function esc(s) {
   return String(s ?? "")
@@ -270,6 +272,37 @@ export function buildExportModel(record) {
     products: record.products || [],
     places: record.places || [],
     entities: record.entities || [],
+    // The Analyze tab's own analysis, carried into the document so an export
+    // is a complete record of what the tool concluded — not just the
+    // conversation it concluded it from. Asked for so a whole Analyze view
+    // can be shared for diagnosis in one file.
+    funnel: computeSearchFunnel(record),
+    fanoutAnalysis: analyzeFanout(
+      [].concat(
+        (record.fanout && record.fanout.search) || [],
+        (record.fanout && record.fanout.shopping) || [],
+        (record.fanout && record.fanout.image) || []
+      ),
+      record.sources || []
+    ),
+    // Diagnostics, so a shared export can be debugged without also needing
+    // the raw payload: which adapter version produced this, whether it fell
+    // back, and anything it recorded on the way.
+    diagnostics: {
+      captureId: record.captureId,
+      platform: record.platform,
+      model: record.model || null,
+      schemaVersion: record.schemaVersion || null,
+      searched: !!record.searched,
+      turnUseCase: record.turnUseCase || null,
+      answerChars: record.answerChars || 0,
+      sourceCount: (record.sources || []).length,
+      citedCount: (record.sources || []).filter((x) => x.outcome === "cited").length,
+      productCount: (record.products || []).length,
+      placeCount: (record.places || []).length,
+      brandCount: (record.brandMentions || []).length,
+      extraction: record._extraction || null,
+    },
     // Image URLs are hosted externally (images.openai.com / merchant CDNs),
     // not something this extension fetches — the exported document just
     // references them like any normal <img src>, so this works both in the
@@ -330,6 +363,126 @@ function renderSourcesSection(model) {
   return `<h3>Sources</h3>${note}${citedHtml}${restHtml}`;
 }
 
+// At-a-glance numbers, immediately after the header, so a shared export
+// answers "how did we do" before the reader scrolls through the answer.
+function renderSnapshotSection(model) {
+  const d = model.diagnostics || {};
+  const fa = model.fanoutAnalysis || {};
+  const named = (model.brandMentions || []).filter((b) => b.count > 0);
+  const shownOnly = (model.brandMentions || []).length - named.length;
+  const omitted = ((model.funnel || {}).omittedBrands || []).length;
+  const cells = [
+    ["Brands named", String(named.length)],
+    ["Shown, not named", String(shownOnly)],
+    ["Retrieved but dropped", String(omitted)],
+    ["Sources cited", `${d.citedCount || 0} of ${d.sourceCount || 0}`],
+    ["Sub-queries", String(fa.count || 0)],
+    ["Fan-out breadth", (fa.benchmark && fa.benchmark.label) || "—"],
+  ];
+  return `<h3>At a glance</h3><table class="snapshot">${cells
+    .map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`)
+    .join("")}</table>`;
+}
+
+// What the engine retrieved and then left out. The counterpart to Brand
+// Mentions, and the part a reader is most likely to act on.
+function renderFunnelSection(model) {
+  const f = model.funnel || {};
+  const ob = f.omittedBrands || [];
+  const om = f.omittedModels || [];
+  if (!ob.length && !om.length) return "";
+  const brandRows = ob
+    .map((b) => {
+      const models = (b.models || []).map((m) => escText(m.model)).join(", ");
+      return `<li><strong>${escText(b.brand)}</strong> <span class="muted">— appeared in ${
+        b.sourceIdxs.length
+      } source${b.sourceIdxs.length === 1 ? "" : "s"}, never written into the answer</span>${
+        models ? `<div class="snippet">Seen in snippets as: ${models}</div>` : ""
+      }</li>`;
+    })
+    .join("");
+  const modelRows = om
+    .map(
+      (m) =>
+        `<li><strong>${escText(m.brand)}</strong> <span class="muted">— mentioned, but ${
+          m.omittedModels.length
+        } model${m.omittedModels.length === 1 ? "" : "s"} from the sources went unwritten</span><div class="snippet">${m.omittedModels
+          .map((x) => escText(x.model))
+          .join(", ")}</div></li>`
+    )
+    .join("");
+  return `<h3>Search funnel — retrieved but not written</h3>${
+    brandRows ? `<h4>Brands dropped entirely</h4><ul class="src-list">${brandRows}</ul>` : ""
+  }${modelRows ? `<h4>Models skipped</h4><ul class="src-list">${modelRows}</ul>` : ""}`;
+}
+
+// The retrieval strategy read off the sub-queries: which sites the engine
+// scoped to and whether they earned a citation, and what angles it researched.
+function renderFanoutIntel(model) {
+  const fa = model.fanoutAnalysis;
+  if (!fa || !fa.count) return "";
+  const parts = [];
+  if (fa.scopedDomains && fa.scopedDomains.length) {
+    parts.push(
+      `<h4>Searches scoped to specific sites (site:)</h4><ul class="src-list">${fa.scopedDomains
+        .map(
+          (d) =>
+            `<li>${d.cited ? "✓" : "○"} <strong>${escText(d.domain)}</strong>${
+              d.count > 1 ? ` ×${d.count}` : ""
+            } <span class="muted">— ${
+              d.cited ? "searched and used" : "searched, nothing used"
+            }</span></li>`
+        )
+        .join("")}</ul>`
+    );
+  } else {
+    parts.push(
+      `<p class="muted">No site:-scoped searches: the engine queried the open web rather than restricting to domains it already treats as authoritative.</p>`
+    );
+  }
+  if (fa.intents && fa.intents.length) {
+    parts.push(
+      `<h4>What the engine researched</h4><p>${fa.intents
+        .map((i) => `${escText(i.key)} ×${i.count}`)
+        .join(" · ")}</p>`
+    );
+  }
+  const b = fa.benchmark || {};
+  parts.push(
+    `<p class="muted">Breadth: ${esc(b.label || "—")}. Average ${esc(
+      String(fa.avgWords || 0)
+    )} words per query.</p>`
+  );
+  return parts.join("");
+}
+
+// Kept last and deliberately dry: this exists so a shared export can be
+// diagnosed without also needing the raw payload.
+function renderDiagnosticsSection(model) {
+  const d = model.diagnostics;
+  if (!d) return "";
+  const ex = d.extraction || {};
+  const rows = [
+    ["Capture id", d.captureId],
+    ["Platform", d.platform],
+    ["Model", d.model || "—"],
+    ["Schema version", d.schemaVersion == null ? "—" : String(d.schemaVersion)],
+    ["Searched", d.searched ? "yes" : "no"],
+    ["Turn use case", d.turnUseCase || "—"],
+    ["Answer characters", String(d.answerChars)],
+    ["Adapter version", ex.adapterVersion || "—"],
+    ["Used fallback parser", ex.usedFallback ? "yes" : "no"],
+  ];
+  const notes = (ex.notes || []).length
+    ? `<h4>Extraction notes</h4><ul class="src-list muted">${ex.notes
+        .map((n) => `<li>${escText(n)}</li>`)
+        .join("")}</ul>`
+    : "";
+  return `<h3>Diagnostics</h3><table class="snapshot">${rows
+    .map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(String(v))}</td></tr>`)
+    .join("")}</table>${notes}`;
+}
+
 function renderFanoutSection(model) {
   const { search, shopping, image } = model.fanout;
   if (!search.length && !shopping.length && !image.length) return "";
@@ -340,16 +493,20 @@ function renderFanoutSection(model) {
 
 function renderBrandsSection(model) {
   if (!model.brandMentions.length) return "";
+  // Ordered by first appearance in the answer, and it says so — the order is
+  // the point of this section and was previously implicit in the list only.
+  let pos = 0;
   const rows = model.brandMentions
     .map((b) => {
+      const ord = b.count > 0 ? `#${++pos} ` : "";
       const badge = b.count > 0 ? `${b.count} mention${b.count === 1 ? "" : "s"}` : "Shown, not named";
       const passage = stripMarkdownNoise((b.passages && b.passages[0]) || b.passage);
-      return `<li><strong>${escText(b.brand)}</strong> <span class="muted">— ${badge}</span>${
+      return `<li><span class="ord">${esc(ord)}</span><strong>${escText(b.brand)}</strong> <span class="muted">— ${badge}</span>${
         passage ? `<div class="snippet">"${escText(passage)}"</div>` : ""
       }</li>`;
     })
     .join("\n");
-  return `<h3>Brand &amp; entity mentions</h3><ul class="brand-list">${rows}</ul>`;
+  return `<h3>Brand mentions <span class="muted">(in order of first appearance)</span></h3><ul class="brand-list">${rows}</ul>`;
 }
 
 // A broken/expired external image degrades to just hiding the <img> (via
@@ -422,18 +579,27 @@ function renderOneConversation(model, { anchorId, showPrompt = true } = {}) {
         ${showPrompt ? `<h2 class="prompt">${esc(model.prompt)}</h2>` : ""}
       </header>
       ${flags.join("")}
+      ${renderSnapshotSection(model)}
       <div class="answer">${model.bodyHtml}</div>
-      ${renderSourcesSection(model)}
-      ${renderFanoutSection(model)}
       ${renderBrandsSection(model)}
+      ${renderFunnelSection(model)}
+      ${renderFanoutSection(model)}
+      ${renderFanoutIntel(model)}
+      ${renderSourcesSection(model)}
       ${renderProductsSection(model)}
       ${renderImagesSection(model)}
       ${renderPlacesSection(model)}
       ${renderReasoningSection(model)}
+      ${renderDiagnosticsSection(model)}
     </section>`;
 }
 
 const DOC_STYLE = `
+  table.snapshot { border-collapse: collapse; margin: 6px 0 14px; font-size: 13px; }
+  table.snapshot th { text-align: left; font-weight: 600; color: #475569; padding: 3px 14px 3px 0; white-space: nowrap; }
+  table.snapshot td { padding: 3px 0; color: #0f172a; }
+  .brand-list .ord { display: inline-block; min-width: 26px; color: #64748b; font-weight: 700; font-variant-numeric: tabular-nums; }
+
   /* Deliberately light-only, regardless of OS/browser dark mode. This
      document is meant to be printed, saved as PDF, or shared — a report that
      silently comes out with a near-black page background because the

@@ -1050,9 +1050,28 @@ function renderAnalyze() {
     const bc = el("div", { className: "card", id: "card-brand-mentions" }, el("h3", {}, `Brand Mentions (${cleanMentions.length})`));
     const list = el("div", { className: "brand-list" });
     
-    cleanMentions.forEach((b) => {
+    // rec.brandMentions arrives sorted by first appearance in the answer, and
+    // a "shown but not named" entry carries MAX_SAFE_INTEGER so it sorts last.
+    // That order is the single most asked-for thing on this card — "which
+    // brand was mentioned 1st and which was last" — and it was previously
+    // invisible, since every card looked identical. The ordinal makes the
+    // sequence explicit instead of implicit in the stacking.
+    const narratedCount = cleanMentions.filter((b) => b.count > 0).length;
+    cleanMentions.forEach((b, bIdx) => {
       const item = el("div", { className: "brand-item" });
       const head = el("div", { className: "brand-head" });
+      if (b.count > 0) {
+        const pos = bIdx + 1;
+        const label = pos === 1 ? "Named first in the answer"
+          : pos === narratedCount ? "Named last in the answer"
+          : `Named ${pos}${["th","st","nd","rd"][(pos % 100 - 20) % 10] || ["th","st","nd","rd"][pos % 100] || "th"} in the answer`;
+        head.append(el("span", {
+          className: `brand-ordinal${pos === 1 ? " first" : ""}`,
+          title: label,
+        }, String(pos)));
+      } else {
+        head.append(el("span", { className: "brand-ordinal muted-ordinal", title: "Shown in a card but never named in the answer" }, "–"));
+      }
       
       const { rank, category } = extractRankAndCategory(b.brand, (b.passages || []).join(" "), rec.answerText || "");
       const brandTitle = el("span", { className: "brand-name" });
@@ -1336,6 +1355,15 @@ function renderAnalyze() {
         fc.append(el("div", { className: "muted small", style: "margin-top:6px" },
           `${fa.scopedNotCited.length} of ${fa.scopedDomains.length} scoped ${fa.scopedNotCited.length === 1 ? "domain was" : "domains were"} searched but not cited — the engine went looking there and used nothing.`));
       }
+    } else {
+      // A bare "0" tile says nothing. Zero site:-scoped searches is itself a
+      // finding for GEO work — it means the engine went to the open web for
+      // this prompt instead of restricting to domains it already trusts, so
+      // ranking in open search is what decides whether you appear.
+      fc.append(el("div", { className: "muted small", style: "margin-top:2px" },
+        "No site:-scoped searches: the engine queried the open web rather than restricting to " +
+        "domains it already treats as authoritative. Ranking in ordinary search is what decides " +
+        "inclusion here."));
     }
 
     if (fa.excludedDomains.length) {
@@ -1425,9 +1453,20 @@ function renderAnalyze() {
 
   // 3. Top URLs Card (Merged list with Rank, Snippets & Char Counts)
   if (rec.sources.length) {
-    const sc = el("div", { className: "card", id: "card-sources" }, el("h3", {}, `Top URLs / Captured Sources (${rec.sources.length})`));
-    sc.append(el("p", { className: "muted small", style: "margin:-4px 0 10px" },
-      "Snippets are what ChatGPT's search returned for each page, not necessarily the exact sentence that justified a citation — click one to try jumping to that text on the source page itself."));
+    const sc = el("div", { className: "card", id: "card-sources" });
+    // Snippets are off by default: they are what the engine's search returned
+    // for a page, not the sentence that justified the citation, and at ~27
+    // sources they were the single biggest block of text on the page. The
+    // toggle keeps the jump-to-passage links one click away rather than
+    // deleting them.
+    let showSnippets = false;
+    let showAllSources = false;
+    const snipToggle = el("button", { className: "linkbtn", type: "button" }, "Show snippets");
+    const srcHead = el("div", { className: "card-header" },
+      el("h3", {}, `Sources (${rec.sources.length})`),
+      snipToggle
+    );
+    sc.append(srcHead);
 
     // Filter Pills
     const filterBar = el("div", { className: "filter-bar" });
@@ -1443,7 +1482,13 @@ function renderAnalyze() {
       });
 
       const order = { cited: 0, fetched: 1, mentioned: 2, unknown: 3 };
-      [...filtered].sort((a, b) => (order[a.outcome] ?? 9) - (order[b.outcome] ?? 9)).forEach((s, idx) => {
+      const ranked = [...filtered].sort((a, b) => (order[a.outcome] ?? 9) - (order[b.outcome] ?? 9));
+      // Cited sources sort first, so the first ten are the ones that actually
+      // shaped the answer — the long fetched-but-unused tail is one click away
+      // instead of running the card to several screens.
+      const SRC_PREVIEW = 10;
+      const visible = showAllSources ? ranked : ranked.slice(0, SRC_PREVIEW);
+      visible.forEach((s, idx) => {
         const li = el("li", { className: "src-item" });
         const header = el("div", { className: "src-header" });
         
@@ -1458,7 +1503,7 @@ function renderAnalyze() {
         header.append(titleLink);
         li.append(header);
         
-        const snippetText = s.snippet ? s.snippet.trim() : null;
+        const snippetText = showSnippets && s.snippet ? s.snippet.trim() : null;
         if (snippetText) {
           const snipBox = el("div", { className: "url-snippet-box" });
           // Text-fragment deep link: jumps to where this exact text appears
@@ -1498,6 +1543,22 @@ function renderAnalyze() {
         
         ul.append(li);
       });
+
+      if (ranked.length > visible.length) {
+        const more = el("button", { className: "linkbtn src-more", type: "button" },
+          `Show all ${ranked.length} sources`);
+        more.onclick = () => { showAllSources = true; renderSrcList(); };
+        ul.append(el("li", { className: "src-more-row" }, more));
+      } else if (showAllSources && ranked.length > 10) {
+        const less = el("button", { className: "linkbtn src-more", type: "button" }, "Show fewer");
+        less.onclick = () => { showAllSources = false; renderSrcList(); };
+        ul.append(el("li", { className: "src-more-row" }, less));
+      }
+    };
+    snipToggle.onclick = () => {
+      showSnippets = !showSnippets;
+      snipToggle.textContent = showSnippets ? "Hide snippets" : "Show snippets";
+      renderSrcList();
     };
 
     const filters = [
