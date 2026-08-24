@@ -1,5 +1,7 @@
 # CitoSkeleton
 
+_Formerly listed on the Chrome Web Store as "LLM Citation & Fan-Out Checker."_
+
 A Chrome (MV3) extension that **passively** captures what ChatGPT and Gemini actually do
 behind an answer — the hidden search queries they fire, every source they read, which of
 those they *cite* versus merely *fetch*, and which brands they name — then measures your
@@ -8,7 +10,7 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.25.0** — ChatGPT and Gemini. See [ARCHITECTURE.md](ARCHITECTURE.md) for the design
+> **v0.26.0** — ChatGPT and Gemini. See [ARCHITECTURE.md](ARCHITECTURE.md) for the design
 > and [RESEARCH.md](RESEARCH.md) for the original feasibility research.
 
 ## Two modes, deliberately kept apart
