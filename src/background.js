@@ -903,6 +903,29 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
 
+        // The content script tried to type and submit this turn's prompt and
+        // couldn't (composer never mounted, or the send control never accepted
+        // it). Previously it just stopped trying and said nothing, so the run
+        // sat idle until the 90s per-turn watchdog fired — ten prompts meant a
+        // quarter of an hour of a run that looked hung. Fail the turn now and
+        // move to the next prompt. Token-and-tab checked exactly as
+        // loader-verify does, so an arbitrary page can't derail a run.
+        case "loader-submit-failed": {
+          const tabId = sender?.tab?.id;
+          let plat = null;
+          if (loader.running && tabId != null) {
+            for (const [name, p] of Object.entries(loader.platforms)) {
+              if (p.tabId === tabId && p.token && p.token === msg.token) { plat = name; break; }
+            }
+          }
+          if (plat) {
+            const why = typeof msg.reason === "string" && msg.reason ? msg.reason : "submit failed";
+            failTurnAndAdvance(plat, `submit: ${why}`.slice(0, 120), 800);
+          }
+          sendResponse({ ok: !!plat });
+          break;
+        }
+
         case "settings-get":
           sendResponse({ ok: true, settings: await getSettings() });
           break;

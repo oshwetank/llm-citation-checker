@@ -126,49 +126,167 @@
     function begin() {
       const plat = getPlatform();
       const sel = SEL[plat];
-      let tries = 0;
+
+      // Reading "is this control usable" correctly matters more than it looks.
+      // ChatGPT's send button is frequently present but inert, marked with
+      // aria-disabled rather than the disabled property — so a plain
+      // `!send.disabled` check reads it as clickable, clicks nothing, and the
+      // old code then cleared its timer as if the prompt had been sent. The
+      // turn only failed 90s later when the background watchdog gave up.
+      const isUsable = (node) => {
+        if (!node) return false;
+        if (node.disabled) return false;
+        if (node.getAttribute && node.getAttribute("aria-disabled") === "true") return false;
+        if (node.closest && node.closest("[aria-disabled='true']")) return false;
+        return true;
+      };
+
+      const composerText = (box) => {
+        if (!box) return "";
+        return /^(textarea|input)$/i.test(box.tagName) ? String(box.value || "") : String(box.innerText || "");
+      };
+
+      // ChatGPT also reads ?q= itself and can pre-fill the composer from it.
+      // Inserting on top of that produced the prompt twice in one turn, which
+      // is one of the ways a run "ran but not properly". Always clear first.
+      const clearComposer = (box) => {
+        try {
+          box.focus();
+          if (/^(textarea|input)$/i.test(box.tagName)) { box.value = ""; return; }
+          const r = document.createRange();
+          r.selectNodeContents(box);
+          const s2 = window.getSelection();
+          s2.removeAllRanges();
+          s2.addRange(r);
+          document.execCommand("delete", false, null);
+        } catch (_) { /* best effort */ }
+      };
+
+      const insertText = (box, text) => {
+        box.focus();
+        let ok = false;
+        try { ok = document.execCommand("insertText", false, text); } catch (_) { ok = false; }
+        if (!ok) {
+          // ProseMirror (ChatGPT's composer) ignores a raw textContent write,
+          // so try a real paste event before falling back to it.
+          try {
+            const dt = new DataTransfer();
+            dt.setData("text/plain", text);
+            ok = !box.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: dt }));
+          } catch (_) { /* ignore */ }
+        }
+        if (!ok) {
+          if (/^(textarea|input)$/i.test(box.tagName)) box.value = text;
+          else box.textContent = text;
+        }
+        box.dispatchEvent(new InputEvent("input", { bubbles: true }));
+        box.dispatchEvent(new Event("change", { bubbles: true }));
+      };
+
+      const pressEnter = (box) => {
+        const base = { bubbles: true, cancelable: true, key: "Enter", code: "Enter", keyCode: 13, which: 13 };
+        box.dispatchEvent(new KeyboardEvent("keydown", base));
+        box.dispatchEvent(new KeyboardEvent("keypress", base));
+        box.dispatchEvent(new KeyboardEvent("keyup", base));
+      };
+
+      // Tell the run to move on instead of silently dying and leaving the
+      // background watchdog to burn its full 90s per prompt — with ten
+      // prompts that was fifteen minutes of a run looking "stuck".
+      const giveUp = (reason) => {
+        try {
+          chrome.runtime.sendMessage({ type: "loader-submit-failed", token, reason }, () => void chrome.runtime.lastError);
+        } catch (_) { /* worker may be gone; the watchdog still covers us */ }
+      };
+
+      // ChatGPT is a heavy SPA and can take well over the old 12s budget to
+      // mount its composer on a cold navigation; Gemini was usually quicker,
+      // which is part of why this only ever looked broken on ChatGPT.
+      const TICK_MS = 400;
+      const MAX_WAIT_TICKS = 75;    // ~30s for the composer to appear
+      const MAX_SEND_TICKS = 20;    // ~8s of submit attempts once text is in
+      let ticks = 0;
+      let sendTicks = 0;
       let searchDone = false;
+      let injected = false;
+      let submitTried = 0;
+
       const timer = setInterval(() => {
-        if (++tries > 30) return clearInterval(timer);
-        if (pick(sel.streaming)) return clearInterval(timer); // already answering
+        if (++ticks > MAX_WAIT_TICKS) {
+          clearInterval(timer);
+          giveUp(injected ? "prompt typed but never submitted" : "composer never appeared");
+          return;
+        }
+
+        // Already answering — either our submit landed, or the page was
+        // mid-stream when we arrived. Either way we're done here.
+        if (pick(sel.streaming)) { clearInterval(timer); return; }
 
         if (plat === "chatgpt" && wantSearch && !searchDone && !pick(sel.searchActive)) {
           const pill = pick(sel.searchPill);
-          if (pill) {
-            pill.click();
-            searchDone = true;
-            return;
-          }
+          if (pill) { pill.click(); searchDone = true; return; }
         }
 
         const box = pick(sel.composer);
         if (!box) return;
 
-        if (!box.dataset.lcfcInjected) {
-          box.focus();
-          const isField = /^(textarea|input)$/i.test(box.tagName);
-          if (!(document.execCommand && document.execCommand("insertText", false, q))) {
-            if (isField) box.value = q;
-            else box.textContent = q;
-          }
-          box.dispatchEvent(new InputEvent("input", { bubbles: true }));
-          box.dispatchEvent(new Event("change", { bubbles: true }));
-          box.dataset.lcfcInjected = "true";
-          return; // let the send button enable on the next tick
+        if (!injected) {
+          clearComposer(box);
+          insertText(box, q);
+          injected = true;
+          return; // give the framework a tick to enable its send control
         }
 
-        const send = pick(sel.send);
-        if (send && !send.disabled) {
-          (send.closest ? send.closest("button") || send : send).click();
-          clearInterval(timer);
-        } else if (plat === "gemini") {
-          // Gemini's send button state is framework-driven; Enter is more reliable.
-          const ev = { bubbles: true, cancelable: true, key: "Enter", code: "Enter", keyCode: 13 };
-          box.dispatchEvent(new KeyboardEvent("keydown", ev));
-          box.dispatchEvent(new KeyboardEvent("keyup", ev));
-          clearInterval(timer);
+        // Confirm the text actually landed. A contenteditable can accept focus
+        // and still hold nothing if the editor rejected the write, and
+        // submitting an empty composer is what produced "ran but nothing
+        // happened" turns. Re-insert rather than pressing on.
+        const text = composerText(box).replace(/\s+/g, " ").trim();
+        const want = q.replace(/\s+/g, " ").trim();
+        // Only re-type while we have not yet tried to send. Once a submit has
+        // been attempted, an empty composer means the send WORKED — re-filling
+        // it there would submit the same prompt a second time, which is its
+        // own bug (duplicate turns) and worse than the one being fixed.
+        if (submitTried === 0) {
+          if (!text) { injected = false; return; }
+          if (text !== want && text.length < Math.min(12, want.length)) { injected = false; return; }
+        } else if (!text) {
+          clearInterval(timer); // composer emptied after a submit: it went through
+          return;
         }
-      }, 400);
+
+        // Submit. Try the button first, then Enter — ChatGPT accepts Enter in
+        // its composer just as Gemini does, and only Gemini had that fallback
+        // before, which is the asymmetry that made ChatGPT runs fail outright
+        // whenever its send button stayed inert.
+        sendTicks++;
+        const send = pick(sel.send);
+        if (isUsable(send) && submitTried === 0) {
+          (send.closest ? send.closest("button") || send : send).click();
+          submitTried = 1;
+          return; // verify on the next tick instead of assuming it worked
+        }
+        if (submitTried <= 1) {
+          pressEnter(box);
+          submitTried = 2;
+          return;
+        }
+
+        // Neither took effect yet. Keep alternating for a few ticks — the
+        // composer clearing or the stop button appearing is the real proof.
+        if (!composerText(box).trim()) { clearInterval(timer); return; }
+        if (sendTicks > MAX_SEND_TICKS) {
+          clearInterval(timer);
+          giveUp("send control never accepted the prompt");
+          return;
+        }
+        if (sendTicks % 2 === 0) {
+          const s3 = pick(sel.send);
+          if (isUsable(s3)) (s3.closest ? s3.closest("button") || s3 : s3).click();
+        } else {
+          pressEnter(box);
+        }
+      }, TICK_MS);
     }
   })();
 })();
