@@ -264,5 +264,50 @@ console.log("\nmarketplace platforms never appear in Brand Mentions, even when n
   check("the product title is not used as a fallback when a real merchant exists", !real.includes("Modern"), real.join(", "));
 }
 
+/*
+ * Real bug, two live captures (cement + water heaters, both engines): section
+ * labels were reported as brands — "Selection Guidelines", "Next Steps",
+ * "Storage Water Heaters", "Summary & Recommendation". Gemini writes its
+ * headings bold ("### **For Family Baths: Storage Water Heaters**"), so
+ * bold-vs-plain does not separate a name from a label. What does: a brand the
+ * answer is actually about gets written about underneath its own heading.
+ */
+console.log("\nsection labels are not brands, however they are formatted");
+{
+  const answer = [
+    "### Cement Types to Consider",
+    "",
+    "PPC resists moisture and OPC develops strength early.",
+    "",
+    "### **Selection Guidelines**",
+    "",
+    "Use the right grade for the right job.",
+    "",
+    "### Next Steps",
+    "",
+    "Tell me your plot size and I can estimate bags.",
+  ].join("\n");
+  const found = names(answer, {});
+  check("plain heading label rejected", !found.some((n) => /Next Steps/i.test(n)), found.join(", "));
+  check("BOLD heading label also rejected", !found.some((n) => /Selection Guidelines/i.test(n)), found.join(", "));
+}
+
+console.log("\na brand introduced by a heading survives, because the prose uses it");
+{
+  const answer = [
+    "### **Havells 25 L Storage Water Geyser**",
+    "",
+    "The Havells unit has a cold-rolled steel tank and a 4-star rating.",
+    "",
+    "### **For Family Baths: Storage Water Heaters**",
+    "",
+    "Pick capacity by household size.",
+  ].join("\n");
+  const found = names(answer, {});
+  check("Havells is kept (named again in the prose)", found.some((n) => /Havells/i.test(n)), found.join(", "));
+  check("the category heading beside it is dropped",
+    !found.some((n) => /Storage Water Heaters/i.test(n)), found.join(", "));
+}
+
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
 process.exit(failures ? 1 : 0);

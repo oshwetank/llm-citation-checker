@@ -255,11 +255,20 @@ export function structuralCandidates(answerText) {
   // Plain (unbolded) headings: "### Zerodha"
   const heading = /(?:^|\n)#{2,6}[ \t]*([^\n#*]{2,60})/g;
 
-  for (const re of [lineLeadBold, heading]) {
+  // A bold line-lead names a thing ("**Havells 25 L Storage Water Geyser**");
+  // a plain ### heading usually labels a SECTION ("Selection Guidelines",
+  // "Next Steps", "For Family Baths: Storage Water Heaters"). They were both
+  // tagged "heading" and trusted equally, which is how section labels ended up
+  // in Brand Mentions on real captures. Separated so detectBrands can require
+  // corroboration from the weaker one.
+  for (const { re, source } of [
+    { re: lineLeadBold, source: "heading" },
+    { re: heading, source: "section" },
+  ]) {
     let m;
     while ((m = re.exec(answerText))) {
       const s = cleanCandidateText(m[1]);
-      if (s) out.push({ text: s, source: "heading" });
+      if (s) out.push({ text: s, source });
     }
   }
   return out;
@@ -476,7 +485,12 @@ export function detectBrands(answerText, plainText, ctx = {}) {
   // the tight cap, because business names legitimately run long with location
   // qualifiers ("Malabar Gold and Diamonds - Andheri West - Mumbai" is 51 chars).
   const MAX_LEN = { structural: 40, default: 60, trusted: 120 };
-  const addCand = (name, category, description, trust = "default", shownOnly = false) => {
+  // `weak` marks a candidate whose ONLY evidence is a plain ### section
+  // heading. Those label sections far more often than they name companies
+  // ("Selection Guidelines", "Next Steps", "Storage Water Heaters" all
+  // reached Brand Mentions on real captures), so they are required below to
+  // also appear in the prose. Any other signal for the same name clears it.
+  const addCand = (name, category, description, trust = "default", shownOnly = false, weak = false) => {
     const n = String(name || "").trim().replace(/[*_`]/g, "");
     const cap = MAX_LEN[trust] ?? MAX_LEN.default;
     if (!n || n.length < 2 || n.length > cap) return;
@@ -487,10 +501,11 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     // data that already asserts this IS one name — never split them into their
     // head word later, however many words they run.
     const keepWhole = trust === "trusted";
-    if (!prev) candidates.set(k, { name: n, category: category || null, description: description || null, keepWhole, shownOnly });
+    if (!prev) candidates.set(k, { name: n, category: category || null, description: description || null, keepWhole, shownOnly, weak });
     else {
       if (keepWhole) prev.keepWhole = true;
       if (shownOnly) prev.shownOnly = true;
+      if (!weak) prev.weak = false;
       if (!prev.category && category) {
         prev.category = category;
         prev.description = prev.description || description || null;
@@ -556,7 +571,12 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     // of evaluating the joined phrase as one (wrong) name.
     const parts = / \/ /.test(s) ? s.split(/ \/ /).map((p) => p.trim()).filter(Boolean) : [s];
     for (const part of parts) {
-      if (looksLikeProperName(part)) { addCand(part, null, null, "structural"); continue; }
+      // Gemini bolds its section headings ("### **For Family Baths: Storage
+      // Water Heaters**"), so bold-vs-plain does not separate a name from a
+      // section label. Both heading kinds are therefore weak; a table's first
+      // column stays strong, since that column IS the subject by construction.
+      const weak = source === "section" || source === "heading";
+      if (looksLikeProperName(part)) { addCand(part, null, null, "structural", false, weak); continue; }
       const hasDigit = /\d/.test(part);
       // vendorFromProductName only makes sense on a multi-word phrase — it
       // extracts the LEADING token of a longer name ("Vivo V70" → "Vivo"). On
@@ -566,7 +586,9 @@ export function detectBrands(answerText, plainText, ctx = {}) {
       // / BGMI → Kreo Harpy") used to read as a brand: it has a digit, so the
       // digit-fallback fired, but there was nothing to extract a vendor FROM.
       const multiWord = part.trim().split(/\s+/).length > 1;
-      if (source === "table" || (hasDigit && multiWord)) addCand(vendorFromProductName(part), null, null, "structural");
+      if (source === "table" || (hasDigit && multiWord)) {
+        addCand(vendorFromProductName(part), null, null, "structural", false, weak);
+      }
     }
   });
   // 4. cited domains. A cited source is where an answer got its information —
@@ -599,6 +621,19 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     if (candidates.has(headKey) && headKey !== k) candidates.delete(k);
   }
 
+  // Character offsets that fall on a markdown heading line. A name that only
+  // ever occurs inside a heading is labelling that section; a brand the answer
+  // is actually about gets written about underneath its own heading.
+  const headingSpans = [];
+  {
+    let at = 0;
+    for (const line of text.split("\n")) {
+      if (/^\s*#{1,6}\s/.test(line)) headingSpans.push([at, at + line.length]);
+      at += line.length + 1;
+    }
+  }
+  const inHeadingLine = (_t, idx) => headingSpans.some(([a, b]) => idx >= a && idx <= b);
+
   // Count mentions in the plain text, longest-first so "Angel One" wins over
   // "Angel" and a name isn't double-counted inside a longer one.
   const ordered = [...candidates.values()].sort((a, b) => b.name.length - a.name.length);
@@ -623,6 +658,16 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     // anything corroborated by an entity marker, product card, table row or
     // heading has a non-"cited_domain" category and never reaches this.
     if (isDomain && alwaysAttributed(text, hits)) continue;
+    // A section heading that is never referred to again in the prose is a
+    // section label, not a company. A real brand introduced by a heading gets
+    // written about underneath it, so it clears this easily.
+    // A name that occurs exactly once, and only on a heading line, is
+    // labelling that section ("Storage Water Heaters", "Selection Guidelines",
+    // "Next Steps", "Summary & Recommendation" all reached Brand Mentions on
+    // real captures). Being written about underneath its own heading clears
+    // this, and so does being named twice — a product line the answer heads
+    // several sections with ("Ocean Man") is a real detection, not a label.
+    if (cand.weak && hits.length < 2 && !hits.some((h) => !inHeadingLine(text, h.start))) continue;
     // Prefer how the answer itself writes the name ("HDFC Bank", "PhonePe")
     // over the mangled title-cased domain label ("Hdfcbank", "Phonepe").
     const displayName = isDomain && hits.length

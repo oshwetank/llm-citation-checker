@@ -279,13 +279,26 @@ export function computeSearchFunnel(rec, { maxModelsPerBrand = 5 } = {}) {
   const omittedModels = [];
   const ansTextLower = (rec.answerText || "").toLowerCase();
 
+
+  // "Retrieved but not written" means exactly that: if the name occurs
+  // anywhere in the answer, it was written. Two real false positives came from
+  // skipping this check. A ChatGPT cement answer discussed OPC and PPC at
+  // length — they are cement TYPE codes, and the engine had put them in its
+  // fan-out query — so both were reported as brands the model dropped. And a
+  // product shown only in a carousel ("Racold") was already listed in Brand
+  // Mentions as "Shown, not named", then listed AGAIN here as omitted; one
+  // finding should appear in one place.
+  const inAnswer = (name) => ansTextLower.includes(String(name).toLowerCase());
+
   brandCanonical.forEach((canonical, key) => {
     const models = [...modelEntries.values()]
       .filter((m) => m.brand.toLowerCase() === key)
       .slice(0, maxModelsPerBrand)
       .map((m) => ({ ...m, sourceIdxs: [...m.sourceIdxs] }));
     if (!isMentioned(canonical)) {
-      omittedBrands.push({ brand: canonical, sourceIdxs: [...brandSourceIdxs.get(key)], models });
+      if (!inAnswer(canonical)) {
+        omittedBrands.push({ brand: canonical, sourceIdxs: [...brandSourceIdxs.get(key)], models });
+      }
     } else {
       const unmentioned = models.filter((m) => !ansTextLower.includes(m.model.toLowerCase()));
       if (unmentioned.length) omittedModels.push({ brand: canonical, omittedModels: unmentioned });

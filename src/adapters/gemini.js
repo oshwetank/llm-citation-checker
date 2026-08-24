@@ -27,6 +27,38 @@ export const ADAPTER_VERSION = "gemini@0.2.0";
 const FAVICON_RE = /gstatic\.com|googleusercontent|favicon-tbn/i;
 
 
+// The assistant's answer sits at a stable slot in every streamed frame and
+// grows as the response streams, so the longest value across all frames is
+// the finished answer.
+//
+// This replaced picking "the longest markdown-ish string anywhere in the
+// largest frame", which is only right when the answer happens to be the
+// longest text present. On real shopping answers it is not: a Gemini reply
+// that renders product cards also carries each product's scraped marketing
+// copy, and those blobs are longer than the answer. Two captures reported as
+// "lots of issues with Gemini" had answerText set to a V-Guard Luxecube ad
+// and to ACC "Product Highlights" boilerplate — so every brand count, every
+// passage and every downstream metric was computed against text the model
+// never wrote. Verified against six real captures: the path is correct in
+// all six, the old heuristic in three.
+function answerAtPath(payload) {
+  try {
+    const v = payload[4][0][1][0];
+    return typeof v === "string" ? v : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function extractAnswerFromFrames(payloads) {
+  let best = "";
+  for (const p of payloads) {
+    const v = answerAtPath(p);
+    if (v && v.length > best.length) best = v;
+  }
+  return best;
+}
+
 function extractAnswerAndReasoning(payload) {
   const mdStrings = [];
   walk({ payload }, (v) => {
@@ -99,7 +131,20 @@ function extractPrompt(reqBody) {
     const dec = decodeURIComponent(reqBody.replace(/^f\.req=/, ""));
     // dec looks like: [null,"[[\"best camera phone under 50K\",0,null,…
     const m = dec.match(/\[\[\\?"((?:[^"\\]|\\.)*?)\\?"/);
-    if (m) return m[1].replace(/\\"/g, '"');
+    // The payload is double-encoded, so a newline the user typed (or Gemini's
+    // own trailing one) arrives as the literal characters \\n and survived
+    // into the prompt as visible backslash-n — "…utterpredesh\\n". That text
+    // is the key a campaign matches a prompt on, so the escapes have to come
+    // out before it is stored.
+    if (m) {
+      return m[1]
+        .replace(/\\{2,}n/g, "\n")
+        .replace(/\\n/g, "\n")
+        .replace(/\\t/g, " ")
+        .replace(/\\"/g, '"')
+        .replace(/\\{2,}/g, "\\")
+        .trim();
+    }
   } catch (_) {
     /* ignore */
   }
@@ -282,7 +327,16 @@ export async function adapt(rawCapture, opts = {}) {
   }
   model = model ? `Gemini ${model}` : "gemini";
 
-  const { answer, reasoning } = bestPayload ? extractAnswerAndReasoning(bestPayload) : { answer: "", reasoning: null };
+  const { answer: heuristicAnswer, reasoning } = bestPayload
+    ? extractAnswerAndReasoning(bestPayload)
+    : { answer: "", reasoning: null };
+  // Prefer the structural slot; keep the shape scan as a fallback so a future
+  // payload reshuffle degrades to the old behaviour instead of to nothing.
+  const pathAnswer = extractAnswerFromFrames(payloads);
+  const answer = pathAnswer || heuristicAnswer;
+  if (!pathAnswer && heuristicAnswer) {
+    diag.notes.push("answer: stable slot missing, fell back to a shape scan (payload may have drifted)");
+  }
   const brandMentions = await extractBrandMentions(answer, {
     products,
     places,

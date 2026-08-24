@@ -131,6 +131,44 @@ console.log("\nomitted MODELS are reported for a brand that was mentioned");
     JSON.stringify(omittedModels));
 }
 
+/*
+ * Real bug, two live captures. "Retrieved but not written" has to mean
+ * exactly that. A ChatGPT cement answer discussed OPC and PPC throughout —
+ * cement TYPE codes the engine had also put in its fan-out query — and both
+ * were reported as brands the model dropped. Separately a carousel-only
+ * product ("Racold") was listed in Brand Mentions as "Shown, not named" and
+ * then listed AGAIN here as omitted.
+ */
+console.log("\na name that appears in the answer is never 'retrieved but not written'");
+{
+  const rec = {
+    answerText: "Use OPC 53 Grade for foundations and PPC for plastering. UltraTech is the pick.",
+    brandMentions: [{ brand: "UltraTech", count: 1 }],
+    products: [], places: [], entities: [],
+    fanout: { search: [{ query: "best cement brands India OPC 53 PPC IS 269" }], shopping: [], image: [] },
+    sources: [
+      { title: "OPC vs PPC cement guide", snippet: "OPC 53 grade and PPC compared" },
+      { title: "UltraTech OPC 53", snippet: "PPC and OPC options" },
+    ],
+  };
+  const names2 = computeSearchFunnel(rec).omittedBrands.map((b) => b.brand);
+  check("a type code discussed in the answer is not an omitted brand",
+    !names2.some((n) => /^(OPC|PPC)$/i.test(n)), names2.join(", "));
+}
+
+console.log("\na carousel-only brand is reported once, not in two places at once");
+{
+  // count:0 means Brand Mentions already shows it as "Shown, not named".
+  const rec = {
+    answerText: 'Storage models are better for winter. products{"selections":[["turn0product4","Racold 15L Storage Water Heater"]]}',
+    brandMentions: [{ brand: "Racold", count: 0 }],
+    products: [], places: [], entities: [],
+    sources: [{ title: "Racold 15L review", snippet: "Racold storage geyser" }],
+  };
+  const names2 = computeSearchFunnel(rec).omittedBrands.map((b) => b.brand);
+  check("not duplicated into the Search Funnel", !names2.some((n) => /Racold/i.test(n)), names2.join(", "));
+}
+
 console.log("\ndegenerate input never throws");
 {
   check("no sources", computeSearchFunnel({ sources: [] }).omittedBrands.length === 0);
