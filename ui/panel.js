@@ -10,7 +10,7 @@ import {
   partitionRecords, allTags, runDue, runVolume, makeProfile,
 } from "../src/lib/geo.js";
 import { parseCsv, parseXlsx, rowsToPrompts } from "../src/lib/xlsxLite.js";
-import { matchCompressedLabel, vendorFromProductName } from "../src/lib/brands.js";
+import { computeSearchFunnel } from "../src/lib/funnel-omitted.js";
 import { analyzeFanout, FANOUT_BENCHMARK } from "../src/lib/fanout.js";
 
 // chrome.runtime.sendMessage throws SYNCHRONOUSLY — not via the callback —
@@ -645,53 +645,7 @@ function extractBrandAspects(passages) {
 // in THIS capture (src/lib/brands.js — entity markers, product/place data and
 // cited domains), so it carries no industry vocabulary of its own.
 //
-// Two things are deliberately NOT in this vocabulary, because tested against
-// real captures both filled the card with confident nonsense:
-//   - source domains. Most retrieved sources are publishers, so domain-derived
-//     names surfaced "Gadgets360" and "Smartprix" as omitted BRANDS. Requiring
-//     another domain to name them too was not enough to separate a brand being
-//     written about from the site writing about it.
-//   - retailers/merchants. A seller that stocks the product ("Flipkart",
-//     "Reliance Digital + others") is not one of the brands being evaluated —
-//     src/lib/brands.js draws the same line for the same reason.
-// What remains is precise: the card stays silent rather than inventing an
-// omission, and it still catches the case that matters most — a product the
-// model was SHOWN (carousel/place data) and chose not to narrate.
-function buildBrandVocabulary(rec) {
-  const vocab = new Map(); // normalized key -> display name
-  // "Angel One" and the angelone.in label are one company; keying on
-  // letters-and-digits only keeps them from being reported as two, one of
-  // which then looks "omitted" purely because of the space.
-  const norm = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, "");
-  const add = (name) => {
-    const t = String(name || "").trim().replace(/[*_`]/g, "");
-    if (t.length < 3 || t.length > 60) return;
-    const k = norm(t);
-    if (k.length >= 3 && !vocab.has(k)) vocab.set(k, t);
-  };
 
-  (rec.brandMentions || []).forEach((b) => add(b.brand));
-  (rec.products || []).forEach((p) => add(p.brand || vendorFromProductName(p.name)));
-  (rec.places || []).forEach((p) => add(p.name));
-  (rec.entities || []).forEach((e) => {
-    if (/brand|company|organization|vendor|place|business/i.test(e.category || "")) add(e.text);
-  });
-
-  return vocab;
-}
-
-// Which vocabulary entries actually appear in one source's title/snippet.
-// Matching goes through matchCompressedLabel so a squashed name still lines up
-// with how the snippet writes it ("hdfcbank" ↔ "HDFC Bank").
-function extractBrandsFromText(text, vocab) {
-  if (!text || !vocab || !vocab.size) return [];
-  const found = [];
-  vocab.forEach((display) => {
-    const verbatim = new RegExp(`\\b${escapeRegExp(display)}\\b`, "i").test(text);
-    if (verbatim || matchCompressedLabel(text, display).length) found.push({ brand: display });
-  });
-  return found;
-}
 
 function openDomainModal(domainName, rec) {
   const existing = document.getElementById("domain-modal-backdrop");
@@ -1179,144 +1133,87 @@ function renderAnalyze() {
     brandCard = bc;
   }
 
-  // 4b. Evaluated vs. Omitted (Search Funnel Analysis)
+  // 4b. Search Funnel — what the engine RETRIEVED vs. what it actually wrote.
+  //
+  // Held in a variable (not appended to the sidebar) so it can be placed
+  // directly beneath Brand Mentions in both layouts: this only makes sense
+  // read second, as the counterpart to "who did get mentioned". It used to
+  // live in the sidebar, which in the narrow popup renders BEFORE the brand
+  // card — the reverse of the intended reading order.
+  //
+  // All of the analysis lives in src/lib/funnel-omitted.js; this is rendering
+  // only. It was moved out because every bug this section has had was a logic
+  // bug unreachable by tests while it sat inside a DOM-building function.
+  let funnelCard = null;
   if (rec.sources && rec.sources.length) {
-    const ALIAS_MAP_OMIT = {
-      "google pixel": "Google", "pixel": "Google", "galaxy": "Samsung", "iphone": "Apple",
-      "ipad": "Apple", "macbook": "Apple", "surface": "Microsoft", "rog": "Asus",
-      "tuf": "Asus", "vivobook": "Asus", "ideapad": "Lenovo", "thinkpad": "Lenovo",
-      "victus": "HP", "pavilion": "HP", "inspiron": "Dell", "alienware": "Dell",
-      "legion": "Lenovo", "predator": "Acer"
-    };
-    // Words that mean a "model" match actually ran on past the model name into
-    // ordinary sentence text — reject anywhere in the candidate, not just a
-    // leading word, since a phrase like "Bravia 8 so you do" only fails a
-    // leading-word check.
-    const FILLER_RE = /\b(so|you|do|the|is|was|are|an|and|but|that|this|which|who|how|why|what|its|it's|from|has|have|will|can|could|would|were)\b/i;
-
-    // Only brands the answer actually NARRATED count as mentioned. A count=0
-    // entry is one the model was shown (product carousel, place listing) and
-    // never wrote about — the single most useful thing this card can surface,
-    // so treating it as "mentioned" would hide exactly the wrong case.
-    const mentionedBrandKeys = new Set(
-      (rec.brandMentions || [])
-        .filter((b) => b.count > 0)
-        .map((b) => (ALIAS_MAP_OMIT[b.brand.toLowerCase()] || b.brand).toLowerCase())
-    );
-    const brandCanonical = new Map(); // lower -> display name
-    const brandSourceIdxs = new Map(); // lower -> Set(source index)
-    const modelEntries = new Map(); // "brand||model" -> { brand, model, sourceIdxs: Set }
-
-    // Extracted PER SOURCE (title+snippet of one source at a time) rather than
-    // one giant blob of every source concatenated — a regex match could
-    // previously bleed across the boundary between two unrelated sources'
-    // text, which is what produced garbled "model names" that were actually
-    // fragments of the next source's sentence.
-    const brandVocab = buildBrandVocabulary(rec);
-    rec.sources.forEach((s, idx) => {
-      const srcText = `${s.title || ""} ${s.snippet || ""}`;
-      extractBrandsFromText(srcText, brandVocab).forEach((sb) => {
-        const canonical = ALIAS_MAP_OMIT[sb.brand.toLowerCase()] || sb.brand;
-        const key = canonical.toLowerCase();
-        brandCanonical.set(key, canonical);
-        if (!brandSourceIdxs.has(key)) brandSourceIdxs.set(key, new Set());
-        brandSourceIdxs.get(key).add(idx);
-
-        const modelRe = new RegExp(`\\b${escapeRegExp(sb.brand)}\\s+([A-Z0-9][a-zA-Z0-9\\-\\.\\s]{1,20})`, "gi");
-        let mm; let loopCap = 0;
-        while ((mm = modelRe.exec(srcText)) !== null && loopCap++ < 20) {
-          if (mm.index === modelRe.lastIndex) modelRe.lastIndex++;
-          const candidate = mm[1].trim().split(/[\n,;:\(\)]/)[0].trim();
-          if (candidate.length < 2 || candidate.length > 24) continue;
-          if (FILLER_RE.test(candidate)) continue;
-          if (/^(and|or|with|for|in|under|laptop|phone|price|spec|review)/i.test(candidate)) continue;
-          const mKey = `${key}||${candidate.toLowerCase()}`;
-          if (!modelEntries.has(mKey)) modelEntries.set(mKey, { brand: canonical, model: candidate, sourceIdxs: new Set() });
-          modelEntries.get(mKey).sourceIdxs.add(idx);
-        }
-      });
-    });
-
-    const omittedBrandsList = [];
-    const omittedModelsList = [];
-    const ansTextLower = (rec.answerText || "").toLowerCase();
-
-    brandCanonical.forEach((canonical, key) => {
-      const modelsForBrand = [...modelEntries.values()].filter((m) => m.brand.toLowerCase() === key);
-      if (!mentionedBrandKeys.has(key)) {
-        omittedBrandsList.push({ brand: canonical, sourceIdxs: [...brandSourceIdxs.get(key)], models: modelsForBrand });
-      } else {
-        const unmentioned = modelsForBrand.filter((m) => !ansTextLower.includes(m.model.toLowerCase()));
-        if (unmentioned.length) omittedModelsList.push({ brand: canonical, omittedModels: unmentioned });
-      }
-    });
+    const { omittedBrands: omittedBrandsList, omittedModels: omittedModelsList } =
+      computeSearchFunnel(rec);
 
     if (omittedBrandsList.length || omittedModelsList.length) {
-      const omitCard = el("div", { className: "card", id: "card-omitted-analysis" },
+      const fc = el("div", { className: "card", id: "card-omitted-analysis" });
+      fc.append(
         el("div", { className: "card-header" },
-          el("h3", {}, "Evaluated vs. Omitted (Search Funnel)"),
-          el("span", { className: "tag fetched", style: "font-size: 10px;" }, "From Search Snippets")
+          el("h3", {}, "Search Funnel"),
+          el("span", { className: "tag fetched", style: "font-size:10px" },
+            `${omittedBrandsList.length} dropped`)
         ),
-        el("div", { className: "muted", style: "font-size: 11px; margin-bottom: 10px; line-height: 1.4;" },
-          "Brands and models evaluated in ChatGPT's raw search snippets that were dropped in its final written answer. Click a chip to see which sources it came from."
-        )
+        el("div", { className: "muted", style: "font-size:11px; margin-bottom:10px; line-height:1.45" },
+          "Names the engine retrieved in its search snippets but never wrote into the answer. " +
+          "Click a row to see the sources it came from.")
       );
 
-      // Clicking a brand/model chip reveals the sources whose title/snippet
-      // actually contained it — the evidence behind the chip, not just an
-      // asserted count, and a real answer to "which sources contributed to
-      // this visibility."
-      const sourceChip = (label, sourceIdxs, style) => {
-        const wrap = el("div", {});
-        const chip = el("button", { className: "tag model-tag", style: `cursor:pointer;${style || ""}` }, label);
-        const list = el("div", { className: "omit-source-list", style: "display:none" });
-        sourceIdxs.forEach((idx) => {
+      // One expandable row per finding. Sources are revealed on click so the
+      // card stays scannable — this section was previously the single biggest
+      // source of vertical clutter on the page.
+      const rowFor = (label, badge, badgeClass, sourceIdxs, models, accent) => {
+        const row = el("div", { className: "funnel-row" });
+        const head = el("button", { className: "funnel-head", type: "button" });
+        head.append(
+          el("span", { className: "funnel-dot", style: `background:${accent}` }),
+          el("span", { className: "funnel-name" }, label),
+          el("span", { className: `tag ${badgeClass} funnel-badge` }, badge)
+        );
+        const body = el("div", { className: "funnel-body", style: "display:none" });
+        if (models && models.length) {
+          const mr = el("div", { className: "funnel-models" });
+          mr.append(el("span", { className: "brand-label" }, "In snippets:"));
+          models.forEach((m) => mr.append(el("span", { className: "tag model-tag" }, m.model)));
+          body.append(mr);
+        }
+        (sourceIdxs || []).forEach((idx) => {
           const s = rec.sources[idx];
           if (!s) return;
-          list.append(el("a", { href: s.url, target: "_blank", rel: "noreferrer", className: "omit-source-link" }, s.title || s.domain || s.url));
+          body.append(el("a", {
+            href: s.url, target: "_blank", rel: "noreferrer", className: "omit-source-link",
+          }, s.title || s.domain || s.url));
         });
-        chip.onclick = () => { list.style.display = list.style.display === "none" ? "flex" : "none"; };
-        wrap.append(chip, list);
-        return wrap;
+        head.onclick = () => {
+          const open = body.style.display !== "none";
+          body.style.display = open ? "none" : "flex";
+          row.classList.toggle("open", !open);
+        };
+        row.append(head, body);
+        return row;
       };
 
-      const omitList = el("div", { className: "brand-list" });
-
-      omittedBrandsList.forEach(ob => {
-        const item = el("div", { className: "brand-item", style: "border-left: 3px solid #ef4444;" });
-        const head = el("div", { className: "brand-head" },
-          el("span", { className: "brand-name", style: "color: #b91c1c;" }, `❌ ${ob.brand}`),
-          el("span", { className: "tag danger" }, "Omitted Brand")
-        );
-        item.append(head);
-        item.append(sourceChip(`Seen in ${ob.sourceIdxs.length} source${ob.sourceIdxs.length === 1 ? "" : "s"}`, ob.sourceIdxs));
-
-        if (ob.models.length) {
-          const modRow = el("div", { className: "brand-models-row", style: "margin-top: 4px; flex-wrap:wrap;" },
-            el("span", { className: "brand-label" }, "Models in Search:"));
-          ob.models.forEach((m) => modRow.append(sourceChip(m.model, [...m.sourceIdxs])));
-          item.append(modRow);
-        }
-        omitList.append(item);
+      const list = el("div", { className: "funnel-list" });
+      omittedBrandsList.forEach((ob) => {
+        list.append(rowFor(
+          ob.brand,
+          `${ob.sourceIdxs.length} source${ob.sourceIdxs.length === 1 ? "" : "s"}`,
+          "danger", ob.sourceIdxs, ob.models, "#ef4444"
+        ));
       });
-
-      omittedModelsList.forEach(om => {
-        const item = el("div", { className: "brand-item", style: "border-left: 3px solid #f59e0b;" });
-        const head = el("div", { className: "brand-head" },
-          el("span", { className: "brand-name" }, `⚠️ ${om.brand}`),
-          el("span", { className: "tag fetched" }, "Omitted Models")
-        );
-        item.append(head);
-
-        const modRow = el("div", { className: "brand-models-row", style: "margin-top: 4px; flex-wrap:wrap;" },
-          el("span", { className: "brand-label" }, "Ignored Models:"));
-        om.omittedModels.forEach((m) => modRow.append(sourceChip(m.model, [...m.sourceIdxs], "background: #fef3c7; color: #b45309;")));
-        item.append(modRow);
-        omitList.append(item);
+      omittedModelsList.forEach((om) => {
+        const idxs = [...new Set(om.omittedModels.flatMap((m) => [...m.sourceIdxs]))];
+        list.append(rowFor(
+          om.brand,
+          `${om.omittedModels.length} model${om.omittedModels.length === 1 ? "" : "s"} skipped`,
+          "fetched", idxs, om.omittedModels, "#f59e0b"
+        ));
       });
-
-      omitCard.append(omitList);
-      sidebar.append(omitCard);
+      fc.append(list);
+      funnelCard = fc;
     }
   }
 
@@ -1355,6 +1252,13 @@ function renderAnalyze() {
 
   // Column 2: Main Area (Fan-outs, Top Domains, Top URLs, Places, Products)
   const mainCol = el("div", { className: "analyze-main" });
+
+  // Search Funnel goes first in the main column so it reads immediately after
+  // Brand Mentions in BOTH layouts — the popup stacks brand slot then main,
+  // and the full-screen grid puts the brand card at the top of this same
+  // column. It answers the follow-up question to Brand Mentions ("who got
+  // left out"), so anywhere else breaks the narrative.
+  if (funnelCard) mainCol.append(funnelCard);
 
   // 1. Query Fan-Out queries card
   //

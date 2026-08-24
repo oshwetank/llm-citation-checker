@@ -293,6 +293,45 @@ function isMarketplaceDomain(domain) {
   return false;
 }
 
+// Reporting verbs that mark a name as the SOURCE of a claim rather than its
+// SUBJECT: "Gadgets 360 currently lists it around ₹49,850", "91mobiles rated
+// it 8.5/10", "according to Smartprix". A review site, publisher or aggregator
+// gets cited constantly and is then named in the prose this way — which made
+// it indistinguishable from a real brand once cited-domain matching learned to
+// span words ("gadgets360" -> "Gadgets 360"). The brands being COMPARED are
+// never introduced like this; they're the thing the sentence is about.
+//
+// This is a closed set of ordinary English reporting verbs, not industry
+// vocabulary, so it stays vertical-neutral — and it only ever gates the
+// weakest signal (a cited domain). A name that also arrived via an entity
+// marker, a product card, a table row or a heading is never touched by it.
+// The verb must be what the NAME itself does — at most a couple of adverbs
+// may sit between. An earlier version allowed any 40 characters before the
+// verb, which read "DLF is the largest listed developer" as an attribution
+// because "listed" appeared somewhere downstream: there, "listed" is an
+// adjective describing DLF, not DLF reporting something. Verbs that commonly
+// double as adjectives or nouns out of this position (found, puts, calls,
+// prices) are left out entirely rather than guarded.
+const ATTRIB_VERBS =
+  "says?|said|reports?|reported|notes?|noted|lists?|listed|rates?|rated|ranks?|ranked|reviews?|reviewed|claims?|writes?|wrote|tested|recommends?|suggests?|estimates?|observes?";
+const ATTRIB_AFTER_RE = new RegExp(
+  `^[,;:]?\\s*(?:(?:also|now|currently|recently|already|still|further|however)\\s+|\\w+ly\\s+){0,2}(?:${ATTRIB_VERBS})\\b`,
+  "i"
+);
+// Possessive attribution: "Gadgets 360's review put it third".
+const ATTRIB_POSSESSIVE_RE = /^['’]s\s+(review|report|test|testing|analysis|round-?up|verdict|listing)\b/i;
+const ATTRIB_BEFORE_RE = /\b(according to|per|via|source:?)\s+$/i;
+
+// True when EVERY occurrence of this name reads as an attribution.
+function alwaysAttributed(text, hits) {
+  if (!hits.length) return false;
+  return hits.every((h) => {
+    const after = text.slice(h.end, h.end + 60);
+    const before = text.slice(Math.max(0, h.start - 20), h.start);
+    return ATTRIB_AFTER_RE.test(after) || ATTRIB_POSSESSIVE_RE.test(after) || ATTRIB_BEFORE_RE.test(before);
+  });
+}
+
 // Same platforms as MARKETPLACE_DOMAINS, matched by bare name instead of
 // hostname — for the merchant FIELD on a product card, which is a plain
 // string ("Amazon.in", "PNG Jewellers", "Mia by Tanishq"), not a URL. Only
@@ -576,6 +615,14 @@ export function detectBrands(answerText, plainText, ctx = {}) {
       : [...text.matchAll(new RegExp(`\\b${escapeRegExp(cand.name)}\\b`, "gi"))]
           .map((m) => ({ start: m.index, end: m.index + cand.name.length }))
           .filter((h) => !claimed.some(([cs, ce]) => h.start >= cs && h.end <= ce));
+    // A cited domain whose every mention reads as an attribution is the
+    // SOURCE of a claim, not a brand being compared — a review site or
+    // aggregator ("Gadgets 360 currently lists it at ₹49,850", "91mobiles
+    // rated it 8.5/10"). Drop it rather than report the publisher next to
+    // the phones it was writing about. Only the domain signal is gated:
+    // anything corroborated by an entity marker, product card, table row or
+    // heading has a non-"cited_domain" category and never reaches this.
+    if (isDomain && alwaysAttributed(text, hits)) continue;
     // Prefer how the answer itself writes the name ("HDFC Bank", "PhonePe")
     // over the mangled title-cased domain label ("Hdfcbank", "Phonepe").
     const displayName = isDomain && hits.length
