@@ -51,10 +51,12 @@ window.addEventListener("resize", applyMode);
 // Reading it from the manifest — the single source of truth chrome.runtime
 // already exposes — means it can't drift out of sync again.
 (function syncVersionBadge() {
-  const el = document.querySelector(".version-badge");
-  if (!el) return;
+  // querySelectorAll, not querySelector: there are two badges (the header
+  // and the About hero). Only syncing the first left the About one frozen at
+  // whatever was hardcoded in panel.html, which is exactly how it drifted to
+  // "v0.26" while the manifest said 0.27.0.
   const v = chrome.runtime.getManifest().version;
-  el.textContent = `v${v}`;
+  document.querySelectorAll(".version-badge").forEach((el) => { el.textContent = `v${v}`; });
 })();
 
 const $ = (sel, root = document) => root.querySelector(sel);
