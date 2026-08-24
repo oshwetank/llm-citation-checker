@@ -484,12 +484,50 @@ body.popup .app-content {
   gap: 16px;
 }
 
+/* Narrow / popup layout: a plain flex column. Brand Mentions is a direct
+   child of the grid (not nested in the sidebar) so the full-screen layout
+   below can place it independently — `order` keeps it in sensible reading
+   order here: the sidebar's summary cards, then brands, then the fan-out
+   detail in the main column. */
+.analyze-grid > .analyze-sidebar { order: 1; }
+.analyze-grid > .analyze-brand-slot { order: 2; }
+.analyze-grid > .analyze-main { order: 3; }
+
 @media (min-width: 900px) {
   body.tab .analyze-grid {
     display: grid;
+    /* Two explicit rows: brand mentions occupies the top of the wide right
+       column, the rest of the main column sits beneath it, and the sidebar
+       spans both rows down the left. */
     grid-template-columns: 360px minmax(0, 1fr);
+    grid-template-rows: auto auto;
     gap: 20px;
     align-items: start;
+  }
+
+  /* Full-screen: Brand Mentions is the headline card — top of the wide
+     column, where Query Fan-Out used to be. Fan-Out (and everything else in
+     .analyze-main) moves down a row. */
+  body.tab .analyze-grid > .analyze-brand-slot {
+    grid-column: 2;
+    grid-row: 1;
+    margin-bottom: 0;
+  }
+  body.tab .analyze-grid > .analyze-main {
+    grid-column: 2;
+    grid-row: 2;
+  }
+  body.tab .analyze-grid > .analyze-sidebar {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+  }
+
+  /* With more width to work with, the brand list can run as columns instead
+     of one long stack squeezed into the old 360px sidebar. */
+  body.tab .analyze-brand-slot .brand-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 10px;
   }
 }
 
@@ -2205,4 +2243,66 @@ body.popup .tag-sidebar-list { flex-basis: 100%; width: 100%; }
 
 .credit-footer a:hover {
   text-decoration: underline;
+}
+
+/* ---------- Fan-out retrieval-strategy read-out (Analyze) ---------- */
+
+.fanout-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+  margin: 10px 0 12px;
+}
+.fanout-stat {
+  background: var(--accent-subtle, rgba(37, 99, 235, 0.06));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  text-align: center;
+}
+.fanout-stat-n { font-size: 20px; font-weight: 700; line-height: 1.15; }
+.fanout-stat-l {
+  font-size: 10.5px;
+  color: var(--fg-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-top: 2px;
+}
+
+.fanout-verdict {
+  font-size: 11.5px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  color: var(--fg-secondary);
+}
+.fanout-verdict.band-narrow { border-color: #f59e0b; color: #b45309; background: rgba(245, 158, 11, 0.08); }
+.fanout-verdict.band-typical { border-color: #10b981; color: #047857; background: rgba(16, 185, 129, 0.08); }
+.fanout-verdict.band-broad { border-color: #3b82f6; color: #1d4ed8; background: rgba(59, 130, 246, 0.08); }
+
+.fanout-sub {
+  margin-top: 10px;
+  margin-bottom: 4px;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-secondary);
+}
+
+/* A site:-scoped domain that earned a citation vs one that didn't — the
+   distinction is the actionable part, so it's carried by colour AND a
+   ✓/○ glyph rather than colour alone. */
+.chip.site-cited { border-color: #10b981; color: #047857; background: rgba(16, 185, 129, 0.10); }
+.chip.site-uncited { border-color: #f59e0b; color: #b45309; background: rgba(245, 158, 11, 0.10); }
+.chip.site-excluded { border-color: #ef4444; color: #b91c1c; background: rgba(239, 68, 68, 0.08); }
+
+@media (prefers-color-scheme: dark) {
+  .fanout-verdict.band-narrow { color: #fbbf24; }
+  .fanout-verdict.band-typical { color: #34d399; }
+  .fanout-verdict.band-broad { color: #93c5fd; }
+  .chip.site-cited { color: #34d399; }
+  .chip.site-uncited { color: #fbbf24; }
+  .chip.site-excluded { color: #fca5a5; }
 }

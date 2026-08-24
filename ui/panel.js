@@ -11,6 +11,7 @@ import {
 } from "../src/lib/geo.js";
 import { parseCsv, parseXlsx, rowsToPrompts } from "../src/lib/xlsxLite.js";
 import { matchCompressedLabel, vendorFromProductName } from "../src/lib/brands.js";
+import { analyzeFanout, FANOUT_BENCHMARK } from "../src/lib/fanout.js";
 
 // chrome.runtime.sendMessage throws SYNCHRONOUSLY — not via the callback —
 // when this page's connection to the extension is dead ("Extension context
@@ -1030,6 +1031,15 @@ function renderAnalyze() {
   sidebar.append(globCard);
 
   // 4. Brand Mentions (with model extraction, ranking, and aspect context)
+  //
+  // Held in a variable rather than appended straight into the sidebar: this
+  // card is the single most important thing on the page for GEO work, so in
+  // the full-screen (tab) layout it is placed at the TOP of the wide column
+  // — where Query Fan-Out used to sit — instead of being squeezed into the
+  // 360px sidebar. It is a direct child of .analyze-grid so CSS can position
+  // it per breakpoint (see .analyze-brand-slot in panel.css); the narrow
+  // popup layout keeps it in normal reading order via flex `order`.
+  let brandCard = null;
   if (rec.brandMentions && rec.brandMentions.length) {
     const ALIAS_MAP = {
       "google pixel": "Google",
@@ -1165,7 +1175,8 @@ function renderAnalyze() {
       list.append(item);
     });
     bc.append(list);
-    sidebar.append(bc);
+    bc.classList.add("analyze-brand-slot");
+    brandCard = bc;
   }
 
   // 4b. Evaluated vs. Omitted (Search Funnel Analysis)
@@ -1370,6 +1381,76 @@ function renderAnalyze() {
         el("span", { className: "tag cited" }, `${rec.model || rec.platform || "unknown model"}`)
       )
     );
+    // Retrieval-strategy read-out. The raw sub-queries were already listed
+    // below; this surfaces what's IN them — which sites the engine scoped
+    // its searches to, how long/specific the queries are, and what angles it
+    // researched. See src/lib/fanout.js for why each of these is tracked.
+    const allQ = []
+      .concat(rec.fanout.search || [], rec.fanout.shopping || [], rec.fanout.image || []);
+    const fa = analyzeFanout(allQ, rec.sources || []);
+
+    const stats = el("div", { className: "fanout-stats" });
+    const statTile = (n, label, title) =>
+      el("div", { className: "fanout-stat", title: title || "" },
+        el("div", { className: "fanout-stat-n" }, String(n)),
+        el("div", { className: "fanout-stat-l" }, label));
+    stats.append(statTile(fa.count, "sub-queries",
+      `Typical is ${FANOUT_BENCHMARK.typicalBandLow}-${FANOUT_BENCHMARK.typicalBandHigh} per prompt (mean ~${FANOUT_BENCHMARK.meanPerPrompt}); longest chain observed in published study data is ${FANOUT_BENCHMARK.maxObserved}.`));
+    stats.append(statTile(fa.avgWords, "avg words/query",
+      `Fan-out queries have grown from ~${FANOUT_BENCHMARK.priorMeanWords} words to ~${FANOUT_BENCHMARK.meanWords}. Longer queries reward pages matching specific detail over broad head terms.`));
+    stats.append(statTile(fa.scopedDomains.length, "site: domains",
+      "Domains the engine restricted a search to with the site: operator — a direct read on which sources it treats as authoritative here."));
+    stats.append(statTile(fa.temporalCount, "time-qualified",
+      "Sub-queries carrying a year or a recency word — the engine explicitly wanted current information."));
+    fc.append(stats);
+
+    const verdict = el("div", { className: `fanout-verdict band-${fa.benchmark.band}` },
+      `Breadth: ${fa.benchmark.label}.`);
+    fc.append(verdict);
+
+    // site: is the headline operator — ChatGPT has moved to using it heavily
+    // to curate which sources it pulls from, so which domains it scoped to
+    // (and whether they actually earned a citation) is the useful part.
+    if (fa.scopedDomains.length) {
+      fc.append(el("div", { className: "fanout-sub" }, "Searches scoped to specific sites (site:)"));
+      const sd = el("div", { className: "chips" });
+      fa.scopedDomains.forEach((d) => {
+        const chip = el("span", {
+          className: `chip site-chip${d.cited ? " site-cited" : " site-uncited"}`,
+          title: d.cited
+            ? `${d.domain} was searched directly and something from it was used in the answer.`
+            : `${d.domain} was searched directly, but nothing from it made it into the answer — the engine looked there and wasn't satisfied.`,
+        }, `${d.cited ? "✓" : "○"} ${d.domain}${d.count > 1 ? ` ×${d.count}` : ""}`);
+        sd.append(chip);
+      });
+      fc.append(sd);
+      if (fa.scopedNotCited.length) {
+        fc.append(el("div", { className: "muted small", style: "margin-top:6px" },
+          `${fa.scopedNotCited.length} of ${fa.scopedDomains.length} scoped ${fa.scopedNotCited.length === 1 ? "domain was" : "domains were"} searched but not cited — the engine went looking there and used nothing.`));
+      }
+    }
+
+    if (fa.excludedDomains.length) {
+      fc.append(el("div", { className: "fanout-sub" }, "Explicitly excluded (-site:)"));
+      const ed = el("div", { className: "chips" });
+      fa.excludedDomains.forEach((d) => ed.append(el("span", { className: "chip site-excluded" }, `− ${d.domain}`)));
+      fc.append(ed);
+    }
+
+    if (fa.intents.length) {
+      fc.append(el("div", { className: "fanout-sub" }, "What the engine researched"));
+      const ic2 = el("div", { className: "chips" });
+      fa.intents.forEach((i) => ic2.append(el("span", { className: "chip" }, `${i.key} ×${i.count}`)));
+      fc.append(ic2);
+    }
+
+    if (fa.operators.length) {
+      fc.append(el("div", { className: "fanout-sub" }, "Search operators used"));
+      const oc = el("div", { className: "chips" });
+      fa.operators.forEach((o) => oc.append(el("span", { className: "chip" }, `${o.key} ×${o.count}`)));
+      fc.append(oc);
+    }
+
     let qIdx = 1;
     for (const [bucket, arr] of Object.entries(rec.fanout)) {
       if (!arr.length) continue;
@@ -1663,7 +1744,11 @@ function renderAnalyze() {
   }
 
   // Append columns to layout grid
-  grid.append(sidebar, mainCol);
+  // Order matters for the narrow popup (a plain flex column); the tab layout
+  // overrides placement explicitly with grid-area rules.
+  grid.append(sidebar);
+  if (brandCard) grid.append(brandCard);
+  grid.append(mainCol);
   root.append(grid);
   } catch (err) {
     console.error("renderAnalyze failed:", err);

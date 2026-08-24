@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "CitoSkeleton",
-  "version": "0.26.1",
+  "version": "0.27.0",
   "description": "Capture ChatGPT & Gemini fan-out, cited/fetched sources, products & brand mentions. Local-only — nothing leaves your device.",
   "permissions": [
     "storage",
