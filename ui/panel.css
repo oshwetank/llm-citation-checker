@@ -286,9 +286,6 @@ body::before {
   white-space: nowrap;
 }
 
-body.tab .popout-btn {
-  display: none;
-}
 
 /* Nav Tabs */
 .nav-tabs {
@@ -364,10 +361,6 @@ body.tab .app-content {
   max-height: none;
 }
 
-body.popup .app-content {
-  max-height: 520px;
-  overflow-y: auto;
-}
 
 .panel {
   display: none;
@@ -1065,6 +1058,11 @@ select.filter {
    link plus a "viewing capture N of M / Go to latest" notice), so this is
    a wrapping row of parts rather than a fixed two-slot layout. */
 .viewing {
+  /* Was justify-content:space-between, tuned for exactly two children (a
+     message + one trailing button). This banner can now carry a leading
+     "← Back to X" as well, so a fixed 2-slot layout would space three+
+     items unevenly — plain left-to-right flow with wrapping reads fine
+     with any number of parts. */
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -1078,6 +1076,7 @@ select.filter {
   color: var(--indigo-fg);
 }
 .viewing-sep { opacity: 0.45; }
+.viewing .linkbtn { font-weight: 600; }
 
 .linkbtn {
   background: none;
@@ -1619,23 +1618,58 @@ body.popup .type-tag-group .tag {
 }
 
 .modal-content {
-  background: var(--card-bg);
-  border: 1px solid var(--border-hover);
-  border-radius: 12px;
+  /* Was the same translucent --card-bg every card uses, sitting on a 70%
+     black backdrop — with nothing colourful directly behind it (the page's
+     gradient blobs are hidden under the backdrop), that translucency just
+     read as flat grey. A modal doesn't need to look like glass; it reads
+     better as a solid, slightly-elevated sheet with its own accent wash. */
+  position: relative;
+  background: linear-gradient(165deg, #ffffff 0%, #f8fafc 100%);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 16px;
   width: 100%;
-  max-width: 520px;
-  max-height: 80vh;
+  max-width: 560px;
+  max-height: 82vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  box-shadow: 0 24px 60px -8px rgba(0, 0, 0, 0.5), 0 4px 16px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  animation: modalPop 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes modalPop {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .modal-content { animation: none; }
 }
 
 .modal-header {
-  padding: 14px 16px;
+  position: relative;
+  padding: 16px 18px;
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
+  gap: 12px;
   justify-content: space-between;
+  /* The one colour accent this whole surface gets — a soft wash behind the
+     title, the same "lit glass edge" trick every card uses, so the modal
+     doesn't feel like a disconnected grey sheet dropped on the page. */
+  background: linear-gradient(180deg, var(--accent-subtle) 0%, transparent 100%);
+}
+.modal-header-titles { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.modal-avatar {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  box-shadow: 0 3px 8px -1px rgba(15, 23, 42, 0.35);
 }
 
 .modal-close-btn {
@@ -1708,6 +1742,12 @@ body.popup .type-tag-group .tag {
   flex-direction: column;
   gap: 6px;
 }
+/* Whole-row hover for the ad-hoc Dashboard's clickable Top Domains list —
+   same affordance as tr.clickable-row in the campaign competitor table, so
+   the two "click a domain/brand for its drill-down" patterns feel like one
+   consistent interaction instead of two differently-styled ones. */
+.itemlist-clickable { transition: background 0.12s ease, border-color 0.12s ease; }
+.itemlist-clickable:hover { background: var(--accent-subtle); border-color: var(--border-hover); }
 
 .item-head {
   display: flex;
@@ -1905,6 +1945,38 @@ body.popup .drill-table th:first-child { min-width: 180px; }
 }
 .item.inactive { opacity: 0.5; }
 tr.own-brand td { background: var(--accent-subtle); font-weight: 600; }
+/* Every brand row (own AND competitors) opens that brand's per-prompt
+   breakdown now — previously only the campaign's own brand could be
+   inspected that way. First cell reads as a link; the whole row is
+   clickable so the hit target isn't a thin strip of text. */
+tr.clickable-row { cursor: pointer; transition: background 0.12s ease; }
+tr.clickable-row:hover { background: rgba(0, 122, 255, 0.06); }
+tr.clickable-row:hover td:first-child { color: var(--accent); text-decoration: underline; }
+tr.clickable-row.own-brand:hover td { background: rgba(0, 122, 255, 0.14); }
+
+/* ---------- Brand drill-down modal (openBrandDetailModal) ---------- */
+.brand-drill { display: flex; flex-direction: column; gap: 2px; }
+.brand-drill-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 4px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.brand-drill-row:last-child { border-bottom: none; }
+.brand-drill-row.idle { opacity: 0.65; }
+.brand-drill-prompt {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+button.brand-drill-prompt { color: var(--accent); font-weight: 500; }
+.brand-drill-badges { display: flex; align-items: center; gap: 10px; flex-shrink: 0; flex-wrap: wrap; }
+.brand-drill-engine { display: inline-flex; align-items: center; gap: 5px; }
 .geo-note { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--border); }
 
 /* ---------- Campaigns tab (setup wizard + prompt table + run) ---------- */
@@ -2172,7 +2244,6 @@ tr.own-brand td { background: var(--accent-subtle); font-weight: 600; }
 .omit-source-link:hover { text-decoration: underline; }
 .prompt-link { color: var(--accent); text-decoration: none; font-weight: 500; }
 .prompt-link:hover { text-decoration: underline; }
-.platform-result { display: flex; flex-direction: column; gap: 1px; white-space: nowrap; }
 
 .campaign-summary .campaign-meta {
   display: flex;
@@ -2182,14 +2253,6 @@ tr.own-brand td { background: var(--accent-subtle); font-weight: 600; }
   color: var(--fg-secondary);
 }
 
-/* Shrink the Dashboard's export dropdown — it reads as a compact icon-style
-   action, not a full button, so it shouldn't compete with primary actions. */
-.dl-picker {
-  padding: 2px 6px !important;
-  font-size: 10.5px !important;
-  min-width: 0;
-  max-width: 100px;
-}
 
 /* In the 540px popup there isn't room for a side-by-side tag rail — stack it
    above the table instead of squeezing both into unreadable slivers. */
@@ -2306,3 +2369,650 @@ body.popup .tag-sidebar-list { flex-basis: 100%; width: 100%; }
   .chip.site-uncited { color: #fbbf24; }
   .chip.site-excluded { color: #fca5a5; }
 }
+
+/* ==========================================================================
+   Popup shell, search, menus, drill-down tables and the About tab.
+   ========================================================================== */
+
+/* ---------- popup shell -------------------------------------------------
+   The popup used to size its scroller with a magic `max-height: 520px`
+   measured against `height: 600px` minus a guessed header + footer. Any
+   change to either (and the taller two-line header at some zoom levels)
+   either clipped content or let the footer drift off the bottom. A flex
+   column with `min-height: 0` on the scrolling child is the actual fix:
+   header and footer take their natural height, content takes the rest. */
+body.popup .app-wrapper {
+  display: flex;
+  flex-direction: column;
+}
+body.popup .app-header,
+body.popup .credit-footer {
+  flex: 0 0 auto;
+}
+body.popup .app-content {
+  flex: 1 1 auto;
+  min-height: 0;          /* without this a flex child refuses to shrink */
+  max-height: none;
+  overflow-y: auto;
+  overflow-x: hidden;     /* tables scroll inside .drill-scroll, not the page */
+}
+
+/* ---------- "Full tab" button ------------------------------------------
+   Was `.nav-tab tab ghost`: a tab's padding, no button affordance, and a
+   bare 14px glyph that read as a stray mark next to the title. */
+.popout-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-secondary);
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 9px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: var(--glass-highlight);
+}
+.popout-btn:hover {
+  color: var(--accent);
+  border-color: var(--border-hover);
+  background: #ffffff;
+  box-shadow: 0 2px 8px rgba(0, 122, 255, 0.14), var(--glass-highlight);
+}
+.popout-btn svg { flex-shrink: 0; }
+.popout-label { letter-spacing: -0.005em; }
+/* Already viewing the full tab — the button has nothing left to do. */
+body.tab .popout-btn { display: none; }
+
+/* ---------- search inputs ---------------------------------------------- */
+.search-input {
+  min-width: 150px;
+  flex: 1 1 160px;
+  max-width: 260px;
+}
+body.popup .search-input { max-width: none; }
+mark.search-hit {
+  background: rgba(255, 214, 10, 0.42);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 1px;
+  font-weight: 600;
+}
+
+/* ---------- compact dropdown menu (Export) ------------------------------
+   Replaces a native <select>, which always sized itself to its longest
+   option no matter what max-width it was given. */
+.menu-wrap { position: relative; display: inline-block; }
+.menu-btn { font-size: 11.5px; padding: 4px 9px; gap: 4px; }
+.menu-caret { font-size: 9px; opacity: 0.7; }
+.menu-pop {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 5px);
+  z-index: 60;
+  min-width: 190px;
+  padding: 5px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.97);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: 0 12px 28px -6px rgba(15, 23, 42, 0.22), var(--glass-highlight);
+}
+.menu-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  background: none;
+  border: none;
+  border-radius: 7px;
+  padding: 6px 9px;
+  cursor: pointer;
+  color: var(--fg-primary);
+}
+.menu-item:hover { background: var(--accent-subtle); }
+.menu-item-label { font-size: 12px; font-weight: 600; }
+.menu-item-sub { font-size: 10.5px; line-height: 1.3; }
+
+/* ---------- Prompt Performance -----------------------------------------
+   The old cell was one string: "✓ #1 / Domain cited ✕". Two ticks and two
+   crosses answering two different questions, stacked, with no visual weight
+   on the answer that matters. These are two distinct badges instead. */
+.pp-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.pp-sum {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 8px 11px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+}
+.pp-sum.good { border-color: var(--green-border); background: var(--green-bg); }
+.pp-sum-n {
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.15;
+  color: var(--fg-primary);
+  font-variant-numeric: tabular-nums;
+}
+.pp-sum.good .pp-sum-n { color: var(--green-fg); }
+.pp-sum-l { font-size: 10.5px; color: var(--fg-muted); line-height: 1.25; }
+
+.pp-stack { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+.pp-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.3;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.pp-badge.rank { background: var(--indigo-bg); color: var(--indigo-fg); border-color: var(--indigo-border); }
+/* Top-3 is the only rank that changes anyone's behaviour, so it's the only
+   one that gets colour weight. */
+.pp-badge.rank.top { background: var(--green-bg); color: var(--green-fg); border-color: var(--green-border); }
+.pp-badge.shown { background: var(--amber-bg); color: var(--amber-fg); border-color: var(--amber-border); }
+.pp-badge.miss { background: var(--bg-subtle); color: var(--fg-muted); border-color: var(--border); font-weight: 600; }
+.pp-badge.none { background: transparent; color: var(--fg-muted); border-style: dashed; border-color: var(--border); font-weight: 500; }
+/* Every badge that has a real run behind it opens that capture — this is
+   the affordance for it: a small lift + glow on hover so it reads as
+   pressable without shouting over the rest of the row. */
+.pp-clickable { cursor: pointer; transition: transform 0.12s ease, box-shadow 0.12s ease; }
+.pp-clickable:hover { transform: translateY(-1px); box-shadow: 0 3px 8px -1px rgba(0, 122, 255, 0.35); }
+.pp-clickable:active { transform: translateY(0); }
+.pp-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.3;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.pp-chip::before { content: "●"; font-size: 7px; }
+.pp-chip.cited { background: var(--green-bg); color: var(--green-fg); border-color: var(--green-border); }
+.pp-chip.notcited { background: transparent; color: var(--fg-muted); border-color: var(--border); }
+.pp-cell { white-space: nowrap; }
+.pp-time { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pp-col-idx { width: 30px; text-align: right; font-variant-numeric: tabular-nums; }
+.pp-col-more { width: 62px; }
+.pp-row-idle .prompt-cell { opacity: 0.72; }
+.pp-legend {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  line-height: 1.6;
+}
+
+/* ---------- Source Domains / URLs table --------------------------------- */
+.src-head-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+/* This table is 4–6 short columns. Inheriting .drill-table's 620px floor —
+   which was tuned for wide prompt/query tables — guaranteed a horizontal
+   scrollbar and a clipped "CITATIONS" header inside a 540px popup. */
+.src-table { min-width: 380px; }
+body.popup .src-table { min-width: 340px; }
+body.popup .src-table td:first-child,
+body.popup .src-table th:first-child { min-width: 30px; }
+.src-col-idx { width: 28px; text-align: right; font-variant-numeric: tabular-nums; }
+.src-table td.td-domain { max-width: none; white-space: normal; min-width: 150px; }
+.src-bar-cell { width: 34%; min-width: 92px; }
+.src-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 18px;
+  border-radius: 5px;
+  background: var(--bg-subtle);
+  overflow: hidden;
+}
+.src-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: linear-gradient(90deg, rgba(0, 122, 255, 0.85), rgba(0, 122, 255, 0.45));
+  border-radius: 5px;
+}
+.src-bar-n {
+  position: relative;
+  margin-left: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--fg-primary);
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 3px rgba(255, 255, 255, 0.85);
+}
+
+/* ---------- drill-down modal ------------------------------------------- */
+.modal-title { margin: 0; font-size: 16px; font-weight: 700; color: var(--fg-primary); overflow-wrap: anywhere; text-transform: none; letter-spacing: -0.01em; line-height: 1.3; }
+.modal-sub { overflow-wrap: anywhere; margin-top: 2px; }
+.modal-content { max-width: 620px; }
+.modal-body { padding: 18px; }
+.modal-statgrid { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); margin-bottom: 16px; }
+/* Colour-coded so the two halves of the story — what got credited, what
+   didn't — read apart at a glance instead of four identical grey boxes. */
+.modal-statgrid .stat.tone-good { background: var(--green-bg); border-color: var(--green-border); }
+.modal-statgrid .stat.tone-good .n { color: var(--green-fg); }
+.modal-statgrid .stat.tone-muted { background: var(--bg-subtle); }
+.modal-statgrid .stat.tone-muted .n { color: var(--fg-secondary); }
+.modal-statgrid .stat.tone-accent { background: var(--accent-subtle); border-color: rgba(0, 122, 255, 0.28); }
+.modal-statgrid .stat.tone-accent .n { color: var(--accent); }
+.modal-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+  margin: 4px 0 4px;
+}
+.url-drill { display: flex; flex-direction: column; gap: 7px; }
+.url-drill-item {
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: #ffffff;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.url-drill-item:hover { border-color: var(--border-hover); box-shadow: 0 4px 12px -2px rgba(0, 122, 255, 0.14); }
+.url-drill-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  background: none;
+  border: none;
+  padding: 10px 12px;
+  cursor: pointer;
+  color: var(--fg-primary);
+}
+.url-drill-head:hover { background: var(--accent-subtle); }
+.url-drill-caret {
+  color: var(--accent);
+  font-size: 11px;
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--accent-subtle);
+}
+.url-drill-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11.5px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.url-drill-meta { display: flex; gap: 4px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+.url-drill-runs { border-top: 1px solid var(--border); background: var(--bg-subtle); }
+.url-drill-run {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  padding: 7px 10px 7px 28px;
+  cursor: pointer;
+  color: var(--fg-secondary);
+}
+.url-drill-run:last-child { border-bottom: none; }
+.url-drill-run:hover { background: var(--accent-subtle); color: var(--fg-primary); }
+.url-drill-prompt { font-size: 12px; font-weight: 500; color: var(--accent); }
+.url-drill-run-meta { font-size: 10.5px; }
+
+/* In the popup the URL + its two count chips can't share a row legibly. */
+body.popup .url-drill-head { flex-wrap: wrap; }
+body.popup .url-drill-meta { width: 100%; justify-content: flex-start; padding-left: 18px; }
+
+/* ---------- Compare ----------------------------------------------------- */
+.cmp-pickers { align-items: center; }
+.cmp-prompt-select { flex: 2 1 220px; min-width: 0; max-width: 100%; }
+.cmp-run-table { min-width: 620px; }
+.cmp-matrix { min-width: 420px; }
+.cmp-matrix .cmp-col { min-width: 44px; }
+.cmp-matrix td.cmp-absent { color: var(--fg-muted); opacity: 0.55; }
+.cmp-warn {
+  background: var(--amber-bg);
+  border: 1px solid var(--amber-border);
+  color: var(--amber-fg);
+  border-radius: 10px;
+  padding: 9px 12px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  margin-bottom: 10px;
+}
+
+/* ---------- About ------------------------------------------------------- */
+.about-hero { display: flex; gap: 14px; align-items: flex-start; }
+.about-hero-icon {
+  width: 56px;
+  height: 56px;
+  flex-shrink: 0;
+  border-radius: 14px;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+}
+.about-title {
+  margin: 0 0 4px;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--fg-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.about-tagline { margin: 0 0 8px; font-size: 12.5px; color: var(--fg-secondary); line-height: 1.5; }
+/* One-line continuity note after the rename from "LLM Citation & Fan-Out
+   Checker" — existing Store users whose installed extension's name just
+   changed underneath them need this before the privacy line, not buried
+   in a changelog they won't read. */
+.about-formerly { margin: 0 0 8px; }
+.about-formerly em { font-style: normal; font-weight: 600; color: var(--fg-secondary); }
+.about-privacy {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--green-fg);
+  background: var(--green-bg);
+  border: 1px solid var(--green-border);
+  border-radius: 8px;
+  padding: 6px 9px;
+}
+.about-lock { flex-shrink: 0; }
+
+.about-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.about-steps li { display: flex; gap: 10px; align-items: flex-start; font-size: 12.5px; }
+.about-step-n {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--accent-gradient);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 6px rgba(0, 122, 255, 0.28);
+}
+.about-steps .muted { margin-top: 2px; line-height: 1.45; }
+.about-foot { margin: 14px 0 0; padding-top: 10px; border-top: 1px dashed var(--border); line-height: 1.5; }
+
+/* The old settings row was one sentence broken across three text nodes —
+   "Keep at most [n] captures · skip payloads over [n] MB" — so neither field
+   had a label of its own and neither could say what it did. */
+.settings-form { display: flex; flex-direction: column; gap: 12px; }
+.setting-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  justify-content: space-between;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.setting-row:last-child { border-bottom: none; padding-bottom: 0; }
+.setting-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg-primary);
+  min-width: 0;
+}
+.setting-label .muted { font-weight: 400; line-height: 1.4; }
+.setting-field { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.setting-field input[type="number"] {
+  width: 92px;
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.85);
+  color: var(--fg-primary);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.setting-field input[type="number"]:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-subtle); }
+.setting-unit { font-size: 11px; color: var(--fg-muted); }
+.settings-actions { display: flex; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+.settings-storage { margin-top: 8px; }
+
+.maint-row { display: flex; align-items: flex-start; gap: 14px; justify-content: space-between; }
+.maint-row .muted { line-height: 1.45; margin-top: 2px; }
+.maint-row .btn { flex-shrink: 0; }
+
+/* The capture debugger is a developer tool that was previously a permanent
+   card taking up as much room as the actual settings. */
+.about-details { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.about-details summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-secondary);
+  list-style: none;
+}
+.about-details summary::-webkit-details-marker { display: none; }
+.about-details summary::before { content: "▸ "; color: var(--fg-muted); }
+.about-details[open] summary::before { content: "▾ "; }
+.about-details summary:hover { color: var(--accent); }
+.about-details > p { margin: 8px 0; }
+
+/* Narrow-popup stacking for the two-column rows above. */
+body.popup .about-hero { flex-direction: column; gap: 10px; }
+body.popup .setting-row,
+body.popup .maint-row { flex-direction: column; gap: 8px; }
+body.popup .setting-field,
+body.popup .maint-row .btn { align-self: flex-start; }
+
+/* --- column-width overrides where a table borrows .drill-table -----------
+   .drill-table gives its FIRST column a 220px floor because that column is
+   normally the long free-text one (prompt / query / URL). These tables lead
+   with a narrow row-number column instead, so without this the "#" column
+   would claim 220px and shove everything else off the edge. */
+.prompt-perf-table td:first-child,
+.prompt-perf-table th:first-child,
+.src-table td:first-child,
+.src-table th:first-child,
+.cmp-run-table td:first-child,
+.cmp-run-table th:first-child,
+body.popup .prompt-perf-table td:first-child,
+body.popup .prompt-perf-table th:first-child,
+body.popup .src-table td:first-child,
+body.popup .src-table th:first-child,
+body.popup .cmp-run-table td:first-child,
+body.popup .cmp-run-table th:first-child {
+  min-width: 26px;
+  max-width: 44px;
+  white-space: nowrap;
+}
+/* …and hand the floor to the column that actually holds the free text. */
+.prompt-perf-table td:nth-child(2),
+.prompt-perf-table th:nth-child(2),
+.src-table td:nth-child(2),
+.src-table th:nth-child(2) {
+  white-space: normal;
+  min-width: 170px;
+  max-width: 420px;
+}
+.prompt-perf-table { min-width: 520px; }
+body.popup .prompt-perf-table { min-width: 480px; }
+
+/* ---------- Prompt Performance: popup card layout -----------------------
+   The table needs ~530px of columns; the popup offers ~444px. Rather than
+   ship a permanently sideways-scrolling table with half its columns hidden,
+   the popup gets the same data stacked. See promptPerfCards() in panel.js. */
+.pp-cards { display: flex; flex-direction: column; gap: 8px; }
+.pp-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.6);
+}
+.pp-card.idle { opacity: 0.72; }
+.pp-card-title {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.pp-card-idx {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 14px;
+}
+.pp-card-engines { display: flex; flex-direction: column; gap: 5px; margin-top: 8px; }
+.pp-card-engine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.pp-card-engine-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-secondary);
+  white-space: nowrap;
+}
+.pp-card-badges { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
+.pp-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 9px;
+  padding-top: 7px;
+  border-top: 1px dashed var(--border);
+  flex-wrap: wrap;
+}
+.pp-card-history {
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+/* Two summary tiles per row reads better than four slivers at 524px. */
+body.popup .pp-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+/* ---------- Source table in the popup -----------------------------------
+   Six columns at the default 10px cell padding came to ~502px against ~450px
+   of usable width, which is what clipped the "CITATIONS" header. */
+body.popup .src-table { min-width: 0; }
+body.popup .src-table th,
+body.popup .src-table td { padding: 7px 4px; font-size: 11.5px; }
+body.popup .src-table td:nth-child(2),
+body.popup .src-table th:nth-child(2) { min-width: 108px; }
+body.popup .src-bar-cell { width: 24%; min-width: 54px; }
+body.popup .src-bar-n { font-size: 10px; margin-left: 4px; }
+body.popup .pp-badge,
+body.popup .pp-chip { font-size: 9.5px; }
+
+/* ---------- Delayed tooltip ---------- */
+.app-tooltip {
+  position: absolute;
+  z-index: 2000;
+  display: none;
+  max-width: 260px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: #1a2333;
+  color: #f1f5f9;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.45;
+  box-shadow: 0 10px 26px -6px rgba(15, 23, 42, 0.4), 0 2px 8px rgba(15, 23, 42, 0.25);
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity 0.14s ease, transform 0.14s ease;
+  pointer-events: none;
+}
+.app-tooltip.show { opacity: 1; transform: translateY(0); }
+.app-tooltip::after {
+  content: "";
+  position: absolute;
+  left: var(--tip-arrow-x, 20px);
+  width: 8px;
+  height: 8px;
+  background: #1a2333;
+  transform: translateX(-50%) rotate(45deg);
+}
+.app-tooltip[data-placement="top"]::after { bottom: -4px; }
+.app-tooltip[data-placement="bottom"]::after { top: -4px; }
+[data-tip] { cursor: help; }
+
+/* ---------- Engine badges ---------- */
+.engine-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.25);
+  vertical-align: -3px;
+}
+.engine-badge-fallback {
+  width: auto;
+  height: auto;
+  border-radius: 0;
+  box-shadow: none;
+  font-size: 12px;
+  vertical-align: -1px;
+}
+.engine-chip { display: inline-flex; align-items: center; gap: 5px; }
