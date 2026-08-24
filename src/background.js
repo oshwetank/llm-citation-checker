@@ -19,8 +19,8 @@ import { enrichBrandsWithAI } from "./lib/ai-brands.js";
 import { adapt as adaptGemini } from "./adapters/gemini.js";
 import {
   MAX_PROFILES, TRASH_RETENTION_DAYS, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
-  selectTracked, computeMetrics, computeSeries, brandPresence, trackedBrandsOf, normName,
-  hasSignal, countCompletedForRun,
+  selectTracked, computeMetrics, computeSeries, brandPresence, normName,
+  effectiveTrackedBrands, hasSignal, countCompletedForRun,
 } from "./lib/geo.js";
 export { hasSignal };
 
@@ -1191,11 +1191,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               if (s.domain) domainSet.add(s.domain);
             }
           }
+          // With no competitors configured, every brand-facing number here
+          // would be the own brand talking to itself. Fall back to the brands
+          // the answers themselves name, flagged `auto` so the UI can say so.
+          const brands = effectiveTrackedBrands(profile, scoped);
           sendResponse({
             ok: true,
-            metrics: computeMetrics(scoped, profile),
-            series: computeSeries(scoped, profile, msg.bucket || "day"),
+            metrics: computeMetrics(scoped, profile, brands),
+            series: computeSeries(scoped, profile, msg.bucket || "day", brands),
             responses: scoped.length,
+            autoCompetitors: brands.filter((b) => b.auto).map((b) => b.name),
             overview: { captures: scoped.length, searched, fanTotal, domainCount: domainSet.size, citedTotal, fetchedTotal },
           });
           break;
@@ -1228,7 +1233,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             since: msg.since,
             until: msg.until,
           });
-          const brands = trackedBrandsOf(profile);
+          const brands = effectiveTrackedBrands(profile, scoped);
           const focusKey = msg.focusBrand ? normName(msg.focusBrand) : null;
           const focus = focusKey ? brands.find((b) => normName(b.name) === focusKey) : brands.find((b) => b.isOwn);
 
@@ -1273,40 +1278,67 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "geo-url-detail": {
           // One URL can surface under several different prompts (or several
           // times for the same prompt) — this answers "which prompts pulled
-          // in this exact URL, and which brands showed up in that response,"
-          // for the modal opened by clicking a URL in the Source Domains
-          // breakdown.
+          // in this exact URL, how each response used it, and which brands
+          // showed up in that response," for the modal opened by clicking a
+          // URL in the Source Domains breakdown.
           const profile = await db.get("profiles", msg.profileId);
           if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
           const all = await db.getAll("derived");
-          const scoped = selectTracked(all, {
+          const campaign = selectTracked(all, {
             profileId: msg.profileId,
             engines: msg.engines,
             tags: msg.tags,
             since: msg.since,
             until: msg.until,
-          }).filter((rec) => (rec.sources || []).some((s) => s.url === msg.url));
+          });
+          const scoped = campaign.filter((rec) => (rec.sources || []).some((s) => s.url === msg.url));
 
-          const brands = trackedBrandsOf(profile);
+          // Inferred from the WHOLE campaign, not from the handful of
+          // responses that happen to cite this one URL — otherwise the brand
+          // set would change from URL to URL and the Brands column would mean
+          // something different in every modal.
+          const brands = effectiveTrackedBrands(profile, campaign);
           const own = brands.find((b) => b.isOwn);
           const promptsAll = await db.getAll("trackedPrompts");
           const promptById = new Map(promptsAll.map((p) => [p.id, p]));
 
           const rows = scoped.map((rec) => {
             const pres = brandPresence(rec, brands);
+            const ranked = pres.filter((p) => p.firstIndex !== null).sort((a, b) => a.firstIndex - b.firstIndex);
             const ownPres = own ? pres.find((p) => p.isOwn) : null;
             const prompt = promptById.get(rec.geo && rec.geo.promptId);
+            const hit = (rec.sources || []).find((s) => s.url === msg.url) || {};
+            const rankIdx = ownPres ? ranked.findIndex((p) => p.isOwn) : -1;
             return {
               captureId: rec.captureId,
               capturedAt: rec.capturedAt,
               platform: rec.platform,
               promptText: prompt ? prompt.text : "(prompt no longer tracked)",
               mentioned: ownPres ? ownPres.present : null,
-              brands: pres.filter((p) => p.present).map((p) => p.name),
+              position: rankIdx >= 0 ? rankIdx + 1 : null,
+              cited: ownPres ? ownPres.citedSource : null,
+              // How this URL was used in THIS response — cited in the answer,
+              // or only fetched while researching it. The same URL is often
+              // one in some responses and the other in others, which is the
+              // whole reason to open this modal.
+              outcome: hit.outcome || "",
+              title: hit.title || "",
+              // Ordered by where each brand FIRST appears in the answer, so
+              // the modal can show who led and who trailed. A brand present
+              // only in a carousel has no position in the prose — it is still
+              // present, so it is appended rather than dropped.
+              brands: ranked.map((p) => p.name)
+                .concat(pres.filter((p) => p.present && p.firstIndex === null).map((p) => p.name)),
             };
           }).sort((a, b) => b.capturedAt - a.capturedAt);
 
-          sendResponse({ ok: true, rows });
+          sendResponse({
+            ok: true,
+            rows,
+            hasBrand: !!own,
+            ownBrand: own ? own.name : "",
+            autoCompetitors: brands.filter((b) => b.auto).map((b) => b.name),
+          });
           break;
         }
 

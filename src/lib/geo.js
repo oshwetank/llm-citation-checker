@@ -258,6 +258,91 @@ export function trackedBrandsOf(profile) {
   return out;
 }
 
+/**
+ * Competitors inferred from the campaign's own captures.
+ *
+ * A campaign with no competitors configured measures almost nothing: every
+ * brand-facing surface here — Share of Voice, the Brands column, the omitted
+ * funnel — is computed against trackedBrandsOf(), which is just the own brand
+ * on its own. The answers themselves already name who the competitors are, so
+ * when the user hasn't said, the detected brands ARE the answer.
+ *
+ * Ranked by how many responses each appears in, not by raw mention count: a
+ * brand named once in each of ten answers is a more consistent competitor than
+ * one named ten times in a single answer.
+ *
+ * Returned separately rather than folded into trackedBrandsOf() so a caller
+ * can always tell an inferred competitor from one the user typed, and label it
+ * as such. Nothing here is ever written to the profile without the user asking.
+ */
+export function autoCompetitorsFrom(records, profile, limit = 8) {
+  const ownKey = normName(profile?.brand?.name || "");
+  const configured = new Set((profile?.competitors || []).map((c) => normName(c.name)));
+
+  // Pass 1: every distinct name the captures name, with its best spelling.
+  const spelling = new Map(); // key -> name
+  for (const rec of records || []) {
+    for (const b of rec.brandMentions || []) {
+      const name = String(b.brand || "").trim();
+      const key = normName(name);
+      if (!key || key === ownKey || configured.has(key)) continue;
+      if (!spelling.has(key)) spelling.set(key, name);
+    }
+  }
+
+  // A competitor is a BRAND, not a SKU. Detection legitimately returns both
+  // "Vivo" and "vivo X200 FE" from the same corpus; counted separately they
+  // split one competitor's share of voice across two rows, and the SKU row
+  // then under-matches, because brandPresence looks for that exact string and
+  // plain "Vivo" mentions don't contain it. So a name whose leading words are
+  // another detected name collapses onto the shorter one.
+  const canon = new Map(); // key -> the key it counts as
+  const keys = [...spelling.keys()].sort((a, b) => a.length - b.length);
+  for (const key of keys) {
+    let root = key;
+    for (const other of keys) {
+      if (other.length >= key.length) break;
+      if (key === other || key.startsWith(other + " ")) { root = other; break; }
+    }
+    canon.set(key, root);
+  }
+
+  const seenIn = new Map(); // key -> { name, responses }
+  for (const rec of records || []) {
+    const perResponse = new Set();
+    for (const b of rec.brandMentions || []) {
+      // A count-0 entry was shown in a carousel but never written about; it is
+      // still a real competitor appearance, so it counts here.
+      const raw = normName(b.brand);
+      const key = canon.get(raw);
+      if (!key) continue;
+      if (perResponse.has(key)) continue;
+      perResponse.add(key);
+      const cur = seenIn.get(key) || { name: spelling.get(key), responses: 0 };
+      cur.responses++;
+      seenIn.set(key, cur);
+    }
+  }
+
+  return [...seenIn.values()]
+    .sort((a, b) => b.responses - a.responses || a.name.localeCompare(b.name))
+    .slice(0, Math.max(0, limit))
+    .map((c) => ({ name: c.name, url: "", isOwn: false, auto: true, responses: c.responses }));
+}
+
+/**
+ * The brand set a campaign should actually be measured against: what the user
+ * configured, plus — only when they configured no competitors at all —
+ * whatever the captures show they are competing with.
+ */
+export function effectiveTrackedBrands(profile, records) {
+  const configured = trackedBrandsOf(profile);
+  const hasCompetitors = configured.some((b) => !b.isOwn);
+  if (hasCompetitors) return configured;
+  const auto = autoCompetitorsFrom(records, profile).map(({ name, url, isOwn, auto }) => ({ name, url, isOwn, auto }));
+  return configured.concat(auto);
+}
+
 /* ---------------- the metrics ---------------- */
 
 /**
@@ -265,10 +350,12 @@ export function trackedBrandsOf(profile) {
  *
  * @param records  responses (already filtered to one profile / period / tags)
  * @param profile  the brand profile (supplies brand + competitors)
+ * @param brands   the brand set to measure against; defaults to whatever the
+ *                 profile configures. Pass effectiveTrackedBrands() to include
+ *                 competitors inferred from the captures.
  * @returns { totalResponses, brands: [...], sentiment: null }
  */
-export function computeMetrics(records, profile) {
-  const brands = trackedBrandsOf(profile);
+export function computeMetrics(records, profile, brands = trackedBrandsOf(profile)) {
   const totalResponses = records.length;
 
   const acc = new Map(
@@ -278,6 +365,10 @@ export function computeMetrics(records, profile) {
         name: b.name,
         url: b.url || "",
         isOwn: !!b.isOwn,
+        // Inferred from the captures rather than typed by the user; carried
+        // through so the UI can label the row instead of implying the user
+        // chose to track this brand.
+        auto: !!b.auto,
         responsesPresent: 0,
         mentions: 0,
         positions: [],
@@ -318,6 +409,7 @@ export function computeMetrics(records, profile) {
     name: a.name,
     url: a.url,
     isOwn: a.isOwn,
+    auto: a.auto,
     // Peec: "Visibility = (responses mentioning your brand / total responses) × 100"
     visibility: totalResponses ? (a.responsesPresent / totalResponses) * 100 : 0,
     // Peec: "SoV = (your mentions) / (total mentions of all tracked brands) × 100"
@@ -356,8 +448,15 @@ export function bucketKey(ts, bucket = "day") {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
 }
 
-/** Metrics per time bucket, for trend charts. */
-export function computeSeries(records, profile, bucket = "day") {
+/**
+ * Metrics per time bucket, for trend charts.
+ *
+ * `brands` is resolved once for the whole series rather than per bucket: a set
+ * inferred from the captures would otherwise differ from day to day and the
+ * trend lines would appear and vanish for reasons that have nothing to do with
+ * the trend.
+ */
+export function computeSeries(records, profile, bucket = "day", brands = trackedBrandsOf(profile)) {
   const groups = new Map();
   for (const r of records) {
     const k = bucketKey(r.capturedAt, bucket);
@@ -366,7 +465,7 @@ export function computeSeries(records, profile, bucket = "day") {
   }
   return [...groups.entries()]
     .sort((a, b) => (a[0] < b[0] ? -1 : 1))
-    .map(([key, recs]) => ({ key, ...computeMetrics(recs, profile) }));
+    .map(([key, recs]) => ({ key, ...computeMetrics(recs, profile, brands) }));
 }
 
 /** Every distinct tag across a prompt list (for the filter chips). */

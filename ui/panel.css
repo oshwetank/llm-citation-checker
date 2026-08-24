@@ -1604,6 +1604,10 @@ body.popup .type-tag-group .tag {
 
 
 /* Clickable Domain Button */
+/* Reported as "the domains are no more clickable" — they were clickable, but
+   the only affordance appeared on hover, so at rest a domain was
+   indistinguishable from plain text. The dotted underline says "there is
+   something behind this" before the pointer arrives. */
 .td-domain-btn {
   background: none;
   border: none;
@@ -1613,11 +1617,17 @@ body.popup .type-tag-group .tag {
   cursor: pointer;
   padding: 0;
   text-align: left;
-  transition: color 0.15s ease;
-}
-.td-domain-btn:hover {
-  color: var(--accent);
   text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--border-hover);
+  transition: color 0.15s ease, text-decoration-color 0.15s ease;
+}
+.td-domain-btn:hover,
+.td-domain-btn:focus-visible {
+  color: var(--accent);
+  text-decoration-style: solid;
+  text-decoration-color: currentColor;
 }
 
 /* Domain Details Modal Popup */
@@ -1660,6 +1670,9 @@ body.popup .type-tag-group .tag {
 @media (prefers-reduced-motion: reduce) {
   .modal-content { animation: none; }
 }
+
+/* A modal carrying a real table. See openDetailModal's `wide` option. */
+.modal-content.modal-wide { max-width: 940px; }
 
 .modal-header {
   position: relative;
@@ -1853,6 +1866,47 @@ body.popup .type-tag-group .tag {
 body.popup .drill-table { min-width: 560px; }
 body.popup .drill-table td:first-child,
 body.popup .drill-table th:first-child { min-width: 180px; }
+
+/* ---------- source drill-down modal ---------- */
+/* How a source was used in ONE response: cited in the written answer, or only
+   read while researching it. The same URL is routinely one in some responses
+   and the other in others, which is the whole reason to open the drill-down. */
+.src-outcome {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.src-outcome.is-cited { background: rgba(16, 185, 129, 0.14); color: #047857; }
+.src-outcome.is-fetched { background: rgba(100, 116, 139, 0.14); color: #475569; }
+
+/* Inferred-competitor notice. Deliberately styled as a notice, not an error:
+   the numbers below it are real, they're just measured against a set the tool
+   chose rather than one the user typed. */
+.auto-comp-banner {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: 10px;
+  background: rgba(59, 130, 246, 0.07);
+}
+.auto-comp-banner .tagline { margin: 0; }
+.auto-tag {
+  margin-left: 6px;
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.16);
+  color: #1d4ed8;
+  vertical-align: middle;
+}
 
 /* ---------- GEO brand tracking ---------- */
 .geo-switcher { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -2456,6 +2510,9 @@ body.popup .tag-sidebar-list { flex-basis: 100%; width: 100%; }
   .chip.site-cited { color: #34d399; }
   .chip.site-uncited { color: #fbbf24; }
   .chip.site-excluded { color: #fca5a5; }
+  .src-outcome.is-cited { background: rgba(16, 185, 129, 0.18); color: #6ee7b7; }
+  .src-outcome.is-fetched { background: rgba(148, 163, 184, 0.18); color: #cbd5e1; }
+  .auto-tag { background: rgba(59, 130, 246, 0.24); color: #93c5fd; }
 }
 
 /* ==========================================================================

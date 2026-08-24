@@ -3709,6 +3709,41 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
   );
   mc.append(kpis);
 
+  /* Competitors the user never typed.
+     A campaign with no competitors configured measures nothing: Share of
+     Voice, Position and the Brands columns are all computed against the
+     tracked set, which would be the own brand talking to itself. So when the
+     user hasn't said who they compete with, the answers are asked instead —
+     but the inference is stated out loud, and never written into the profile
+     without the user clicking to accept it. */
+  if (r.autoCompetitors && r.autoCompetitors.length) {
+    const banner = el("div", { className: "auto-comp-banner" });
+    banner.append(el("div", { className: "small" },
+      el("strong", {}, "Competitors inferred from your captures. "),
+      el("span", { className: "muted" },
+        `You haven't set any competitors on this campaign, so the ${r.autoCompetitors.length} brand${r.autoCompetitors.length === 1 ? "" : "s"} `
+        + "these answers named most often are being used instead. Nothing has been saved to the campaign.")));
+    const chips = el("div", { className: "tagline" });
+    r.autoCompetitors.forEach((n) => chips.append(el("span", { className: "tag" }, n)));
+    banner.append(chips);
+    const save = el("button", { className: "btn sm ghost" }, "Save these as competitors");
+    save.onclick = async () => {
+      save.disabled = true;
+      const res = await send({
+        type: "geo-profile-save",
+        profile: { ...profile, competitors: r.autoCompetitors.map((n) => ({ name: n, url: "" })) },
+      });
+      save.disabled = false;
+      if (!res.ok) { showToast(res.error || "Couldn't save competitors", "error"); return; }
+      showToast(`Saved ${r.autoCompetitors.length} competitors to ${profile.name || "this campaign"}`);
+      loadGeo();
+      refreshGeoMetrics(res.profile, prompts, since, until);
+      refreshPromptPerformance(res.profile, prompts, since, until);
+    };
+    banner.append(save);
+    mc.append(banner);
+  }
+
   /* competitor table — every row is clickable, own brand included, so a
      competitor's numbers can be broken down per-prompt exactly the same way
      the campaign's own brand can be in the full Prompt Performance table
@@ -3726,7 +3761,9 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
   m.brands.forEach((b) => {
     const tr = el("tr", { className: `clickable-row${b.isOwn ? " own-brand" : ""}`, title: `Click for ${b.name}'s per-prompt performance` });
     tr.onclick = () => openBrandDetailModal(profile, b, prompts, since, until);
-    tr.append(el("td", { className: "td-domain" }, b.isOwn ? `${b.name} (you)` : b.name));
+    const nameCell = el("td", { className: "td-domain" }, b.isOwn ? `${b.name} (you)` : b.name);
+    if (b.auto) nameCell.append(el("span", { className: "auto-tag", title: "Detected in your captures — not a competitor you configured" }, "auto"));
+    tr.append(nameCell);
     tr.append(el("td", { className: "num" }, fmtPct(b.visibility)));
     tr.append(el("td", { className: "num" }, fmtPct(b.shareOfVoice)));
     tr.append(el("td", { className: "num" }, String(b.mentions)));
@@ -3743,8 +3780,8 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
 
   const dl = el("button", { className: "btn sm ghost", style: "margin-top:10px" }, "⬇ Export metrics CSV");
   dl.onclick = () => {
-    const rows = [["Brand", "Is own", "Visibility %", "Share of Voice %", "Mentions", "Avg position", "Citations", "Source visibility %", "Responses present", "Total responses"]];
-    m.brands.forEach((b) => rows.push([b.name, b.isOwn ? "yes" : "no", b.visibility.toFixed(2), b.shareOfVoice.toFixed(2), b.mentions, b.avgPosition == null ? "" : b.avgPosition.toFixed(2), b.citations, b.sourceVisibility.toFixed(2), b.responsesPresent, m.totalResponses]));
+    const rows = [["Brand", "Is own", "Auto-detected", "Visibility %", "Share of Voice %", "Mentions", "Avg position", "Citations", "Source visibility %", "Responses present", "Total responses"]];
+    m.brands.forEach((b) => rows.push([b.name, b.isOwn ? "yes" : "no", b.auto ? "yes" : "no", b.visibility.toFixed(2), b.shareOfVoice.toFixed(2), b.mentions, b.avgPosition == null ? "" : b.avgPosition.toFixed(2), b.citations, b.sourceVisibility.toFixed(2), b.responsesPresent, m.totalResponses]));
     download(`citoskeleton-tracking-${profile.name.replace(/\W+/g, "-")}-${Date.now()}.csv`, csvOf(rows), "text/csv");
   };
   mc.append(dl);
@@ -4204,7 +4241,10 @@ function openDetailModal(title, subtitle, opts = {}) {
   if (existing) existing.remove();
 
   const backdrop = el("div", { id: "url-modal-backdrop", className: "modal-backdrop" });
-  const modal = el("div", { className: "modal-content" });
+  // `wide` is for a modal carrying a real table. The 520px default is right
+  // for a list or a confirm dialog; at seven columns everything past the
+  // prompt sits off the edge behind a scrollbar nobody notices.
+  const modal = el("div", { className: `modal-content${opts.wide ? " modal-wide" : ""}` });
   const header = el("div", { className: "modal-header" });
   const titles = el("div", { className: "modal-header-titles" });
   if (opts.avatarText) {
@@ -4373,7 +4413,7 @@ function openDomainDetailModal(row, subtitle, unit = "prompt") {
  *  worse than no chart). Rows open the capture in Analyze, the same as the
  *  domain drill-down. */
 async function openUrlDetailModal(url, profile, since, until) {
-  const { backdrop, body } = openDetailModal("Rankings by Source URL", url);
+  const { backdrop, body } = openDetailModal("Rankings by Source URL", url, { wide: true });
   body.append(el("div", { className: "muted small" }, "Loading…"));
 
   const r = await send({ type: "geo-url-detail", profileId: profile.id, url, tags: geoTagFilter, engines: geoEngineFilter, since, until });
@@ -4382,20 +4422,41 @@ async function openUrlDetailModal(url, profile, since, until) {
   if (!r.rows.length) { body.append(el("div", { className: "empty" }, "No responses matched for this URL under the current filters.")); return; }
 
   const mentionedN = r.rows.filter((row) => row.mentioned).length;
+  const citedN = r.rows.filter((row) => row.outcome === "cited").length;
   const stats = el("div", { className: "statgrid modal-statgrid" });
   stats.append(
     modalStat(r.rows.length, "Responses"),
     modalStat(new Set(r.rows.map((row) => row.promptText)).size, "Prompts"),
-    modalStat(mentionedN, "You mentioned"),
+    // The same page is often cited in one answer and merely read in the next,
+    // so the split matters more than the total.
+    modalStat(citedN, "Cited", "good", "Responses that credited this page in the written answer."),
+    modalStat(r.rows.length - citedN, "Read-only", "muted",
+      "Responses that pulled this page in as a source without crediting it in the answer."),
+    modalStat(mentionedN, r.hasBrand ? `${r.ownBrand} mentioned` : "You mentioned"),
   );
   body.append(stats);
+
+  if (r.autoCompetitors && r.autoCompetitors.length) {
+    body.append(el("div", { className: "muted small", style: "margin-bottom:8px" },
+      "No competitors configured — the brands below are the ones these answers named."));
+  }
+
   body.append(el("div", { className: "modal-section-title" }, "Responses that pulled in this page"));
 
   const table = el("table", { className: "drill-table" });
-  table.append(el("tr", {}, el("th", {}, "Prompt"), el("th", {}, "You"), el("th", {}, "Brands in the answer"), el("th", {}, "Date")));
+  table.append(el("tr", {},
+    el("th", {}, "Prompt"),
+    el("th", {}, "Engine"),
+    el("th", { "data-tip": "Cited = credited in the written answer. Read-only = pulled in as a source but never credited." }, "Used as"),
+    el("th", {}, "You"),
+    el("th", { className: "num", "data-tip": "Rank of your brand among the tracked brands, by where each first appears in this answer." }, "Position"),
+    el("th", {}, "Brands in the answer"),
+    el("th", {}, "Date")));
   r.rows.forEach((row) => {
+    // Numbered, because the order brands appear in an answer is the thing the
+    // ranking is about — an unordered chip row hides who led and who trailed.
     const brandChips = el("div", { className: "tagline" });
-    row.brands.forEach((b) => brandChips.append(el("span", { className: "tag" }, b)));
+    row.brands.forEach((b, i) => brandChips.append(el("span", { className: "tag" }, `${i + 1}. ${b}`)));
     const promptCell = el("td", {});
     if (row.captureId) {
       const link = el("button", { className: "linkbtn td-domain-btn", title: "Open this capture in Analyze" }, row.promptText);
@@ -4406,9 +4467,13 @@ async function openUrlDetailModal(url, profile, since, until) {
     }
     table.append(el("tr", {},
       promptCell,
+      el("td", {}, engineChip(row.platform, ENGINES.find((e) => e.id === row.platform)?.label || row.platform)),
+      el("td", {}, el("span", { className: `pp-chip ${row.outcome === "cited" ? "cited" : "notcited"}` },
+        row.outcome === "cited" ? "cited" : "read-only")),
       el("td", {}, row.mentioned == null
         ? el("span", { className: "pp-badge none" }, "—")
         : el("span", { className: `pp-badge ${row.mentioned ? "rank" : "miss"}` }, row.mentioned ? "mentioned" : "absent")),
+      el("td", { className: "num" }, row.position == null ? "—" : `#${row.position}`),
       el("td", {}, brandChips),
       el("td", { className: "muted small", title: new Date(row.capturedAt).toLocaleString() }, relTime(row.capturedAt)),
     ));
