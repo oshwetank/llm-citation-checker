@@ -374,8 +374,16 @@ body.popup .app-content {
   opacity: 0;
 }
 
+/* opacity is set EXPLICITLY here, never left to the animation below.
+   Visibility must not depend on an animation actually running: the
+   reduced-motion block near the end of this file sets `animation: none`,
+   and when that was the only thing bringing opacity from 0 to 1, every
+   panel stayed fully transparent — the whole UI rendered blank for anyone
+   with the OS "reduce motion" accessibility setting enabled. The animation
+   is decoration on top of an already-visible panel. */
 .panel.active {
   display: block;
+  opacity: 1;
   animation: panelFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
@@ -430,7 +438,10 @@ body.popup .app-content {
 /* Respect users who've asked the OS to reduce motion — no lift, no fades. */
 @media (prefers-reduced-motion: reduce) {
   .card, .card:hover { transition: none; transform: none; }
-  .panel.active { animation: none; }
+  /* opacity is restated alongside `animation: none` so this block can never
+     again be the thing that makes the panel invisible, even if the base
+     .panel.active rule above is edited later. */
+  .panel.active { animation: none; opacity: 1; }
 }
 
 .card-header {
@@ -2052,7 +2063,30 @@ tr.own-brand td { background: var(--accent-subtle); font-weight: 600; }
   transition: all 0.15s ease;
 }
 .llm-pill:hover { border-color: var(--border-hover); background: var(--card-hover); }
-.llm-pill .llm-icon { font-size: 20px; line-height: 1; }
+/* .llm-icon now wraps an inline SVG brand mark rather than an emoji glyph,
+   so it needs to be a flex box sized in px — font-size no longer drives it.
+   The emoji fallback (unknown engine id) still renders fine inside this. */
+.llm-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  font-size: 18px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.llm-icon svg { display: block; width: 20px; height: 20px; }
+
+/* Engine column headers: mark + label on one baseline. */
+.engine-th {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.engine-th .llm-icon { width: 16px; height: 16px; }
+.engine-th .llm-icon svg { width: 16px; height: 16px; }
 .llm-pill .llm-label { font-size: 11.5px; font-weight: 500; color: var(--fg-secondary); }
 .llm-pill .llm-check {
   position: absolute; top: 6px; right: 8px; font-size: 11px; color: var(--accent); opacity: 0; transition: opacity 0.15s ease;
