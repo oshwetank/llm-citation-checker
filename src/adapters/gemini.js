@@ -20,7 +20,7 @@
 
 import { makeRecord, makeSource } from "../schema.js";
 import { walk, isHttpUrl, domainOf } from "../lib/deep.js";
-import { detectBrandsAI } from "../lib/ai-brands.js";
+import { detectBrands } from "../lib/brands.js";
 
 export const ADAPTER_VERSION = "gemini@0.2.0";
 
@@ -76,7 +76,9 @@ function extractAnswerAndReasoning(payload) {
 // drives detection, so the tool works on any vertical with zero configuration.
 async function extractBrandMentions(text, ctx = {}) {
   if (!text) return [];
-  const { brands } = await detectBrandsAI(text, text, ctx);
+  // Synchronous, non-AI detection: the optional AI tier runs after the capture
+  // is stored (background.js enrichCaptureWithAI), so it can't delay the write.
+  const { brands } = detectBrands(text, text, ctx);
   return brands;
 }
 

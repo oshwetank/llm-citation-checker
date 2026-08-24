@@ -14,7 +14,8 @@
 
 import { db } from "./lib/db.js";
 import { gzipString, gunzipToString } from "./lib/gzip.js";
-import { adapt as adaptChatGpt } from "./adapters/chatgpt.js";
+import { adapt as adaptChatGpt, cleanPassage } from "./adapters/chatgpt.js";
+import { enrichBrandsWithAI } from "./lib/ai-brands.js";
 import { adapt as adaptGemini } from "./adapters/gemini.js";
 import {
   MAX_PROFILES, TRASH_RETENTION_DAYS, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
@@ -144,6 +145,50 @@ async function storeCapture(payload, meta) {
 }
 
 // Build a derived record from a raw row. `rawText` optional (avoids re-gunzip).
+/**
+ * Optional on-device AI enrichment, AFTER the capture is already saved.
+ *
+ * This used to run inside the adapter, so storeCapture() could not finish —
+ * and the panel had nothing to show — until Chrome's on-device model had
+ * finished an inference over up to 6000 characters. On a machine where that
+ * model is available it is the difference between a capture appearing at once
+ * and appearing ~20 seconds after the answer was already fully written.
+ *
+ * Best-effort by construction: it only ever ADDS or upgrades names (see
+ * mergeAiNames in lib/ai-brands.js), and the record it improves is already
+ * durable. If it finds nothing, times out, throws, or the service worker is
+ * torn down before it lands, the stored record simply stays as the
+ * deterministic detector produced it — which is exactly what every machine
+ * without the on-device model gets anyway.
+ */
+async function enrichCaptureWithAI(record) {
+  try {
+    if (!record || !record.answerText) return;
+    // Each adapter counts mentions against its own cleaned text; match that
+    // here so the AI merge verifies names against the same string.
+    const plain = record.platform === "chatgpt"
+      ? cleanPassage(record.answerText)
+      : record.answerText;
+    const improved = await enrichBrandsWithAI(record.brandMentions || [], plain);
+    if (!improved) return;
+
+    // Re-read rather than reusing the in-memory copy: a reprocess or a delete
+    // may have landed while the model was thinking.
+    const current = await db.get("derived", record.captureId);
+    if (!current) return;
+    current.brandMentions = improved;
+    await db.put("derived", current);
+    try {
+      chrome.runtime.sendMessage(
+        { type: "capture-updated", captureId: record.captureId },
+        () => void chrome.runtime.lastError
+      );
+    } catch (_) {}
+  } catch (_) {
+    /* enrichment is optional; never let it surface as a capture failure */
+  }
+}
+
 async function deriveAndStore(rawRow, rawText, settings) {
   const raw = rawText ?? (await gunzipToString(rawRow.gz));
   const cfg = settings || (await getSettings());
@@ -881,6 +926,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             try {
               chrome.runtime.sendMessage({ type: "new-capture", captureId: res.captureId }, () => void chrome.runtime.lastError);
             } catch (_) {}
+            // Deliberately NOT awaited: the capture is already saved and shown.
+            enrichCaptureWithAI(res.record);
           }
           sendResponse({ ok: true, captureId: res?.captureId || null, skipped: res?.skipped || null });
           break;

@@ -88,6 +88,18 @@ export async function isNanoAvailable() {
 // Returns string[] of entity names as the model wrote them, or null on any
 // failure/unavailability — callers always have a deterministic fallback
 // and should never treat null as an error worth surfacing to the user.
+// On-device inference has no server to time it out, and a wedged session
+// would otherwise leave the caller awaiting forever. Enrichment is optional by
+// design, so giving up is always safe: the caller keeps the non-AI result.
+const NANO_TIMEOUT_MS = 20000;
+function withTimeout(promise, ms) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("nano timeout")), ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 export async function extractEntitiesWithNano(text) {
   if (!text || !text.trim()) return null;
   const lm = resolveLanguageModel();
@@ -95,16 +107,20 @@ export async function extractEntitiesWithNano(text) {
 
   let session;
   try {
-    session = await lm.create({
-      initialPrompts: [{ role: "system", content: SYSTEM_PROMPT }],
-    });
+    session = await withTimeout(
+      lm.create({ initialPrompts: [{ role: "system", content: SYSTEM_PROMPT }] }),
+      NANO_TIMEOUT_MS
+    );
     // Real capture answers can run long; Gemini Nano has a limited context
     // window. This cap has been enough for every real fixture in this
     // repo's test suite while staying well under typical on-device limits.
     const clipped = text.length > 6000 ? text.slice(0, 6000) : text;
-    const raw = await session.prompt(
-      `Extract every brand, product, and company name from this text:\n\n${clipped}`,
-      { responseConstraint: ENTITY_SCHEMA }
+    const raw = await withTimeout(
+      session.prompt(
+        `Extract every brand, product, and company name from this text:\n\n${clipped}`,
+        { responseConstraint: ENTITY_SCHEMA }
+      ),
+      NANO_TIMEOUT_MS
     );
     const parsed = JSON.parse(raw);
     if (!parsed || !Array.isArray(parsed.entities)) return null;

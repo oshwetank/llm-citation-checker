@@ -815,6 +815,12 @@ chrome.runtime.onMessage.addListener((msg) => {
     load();
     showToast("New LLM citation captured!");
   }
+  // The optional on-device AI pass finished and improved a record that is
+  // already on screen. Refresh silently: the capture was announced moments
+  // ago, and a second toast for the same prompt reads like a second capture.
+  if (msg?.type === "capture-updated") {
+    load();
+  }
 });
 
 /* ---------- Analyze (most recent capture) ---------- */

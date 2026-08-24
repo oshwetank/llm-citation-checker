@@ -20,7 +20,7 @@
 
 import { makeRecord, makeSource } from "../schema.js";
 import { walk, collectByKey, collectObjects, firstPath, isHttpUrl, domainOf } from "../lib/deep.js";
-import { detectBrandsAI } from "../lib/ai-brands.js";
+import { detectBrands } from "../lib/brands.js";
 
 export const ADAPTER_VERSION = "chatgpt@0.2.0";
 
@@ -229,7 +229,11 @@ export function tokenizeAnswerMarkup(text) {
 // reason now that this call is async.
 async function detectBrandsForCapture(answerText, products, tracked, sources, places) {
   if (!answerText) return { brands: [], entities: [] };
-  return detectBrandsAI(answerText, cleanPassage(answerText), {
+  // Deliberately the synchronous, non-AI detector. The optional on-device AI
+  // tier runs AFTER the capture is stored (see background.js's
+  // enrichCaptureWithAI) — inside here it blocked the write, so nothing
+  // appeared in the UI until an on-device inference finished.
+  return detectBrands(answerText, cleanPassage(answerText), {
     products,
     places,
     sources,

@@ -110,6 +110,51 @@ function mergeAiNames(base, aiNames, plainText) {
  * unavailable or fails; nothing below this comment is allowed to make the
  * result worse than a plain detectBrands() call would have been.
  */
+/**
+ * Run ONLY the AI tiers over already-detected brands, and return an improved
+ * list — or null when no tier is available or nothing changed.
+ *
+ * Split out of detectBrandsAI() because the AI call must not sit in the path
+ * that stores a capture. It did, and on a machine where Chrome's on-device
+ * model IS available that meant nothing was written to the database — and the
+ * panel showed nothing — until an on-device inference over up to 6000
+ * characters finished. Reported as the tool taking ~20 seconds to show a
+ * prompt that had already finished answering.
+ *
+ * Nothing about the RESULT changes: this is the same merge, over the same
+ * names, producing the same list. Only when it happens changes — the base
+ * result is stored and shown immediately, and this upgrades it in place a
+ * moment later.
+ */
+export async function enrichBrandsWithAI(brands, plainText) {
+  const text = plainText || "";
+  if (!text.trim()) return null;
+
+  const merge = (names) => {
+    if (!names || !names.length) return null;
+    const merged = mergeAiNames({ brands: brands || [], entities: [] }, names, text);
+    return merged.brands;
+  };
+
+  try {
+    if (await isNanoAvailable()) {
+      const out = merge(await extractEntitiesWithNano(text));
+      if (out) return out;
+    }
+  } catch (_) {
+    // Any failure means "no enrichment", never a thrown error into the caller.
+  }
+  try {
+    if (tierBExtractor) {
+      const out = merge(await tierBExtractor(text));
+      if (out) return out;
+    }
+  } catch (_) {
+    /* same */
+  }
+  return null;
+}
+
 export async function detectBrandsAI(answerText, plainText, ctx = {}) {
   const base = detectBrands(answerText, plainText, ctx);
   const text = plainText || answerText || "";
