@@ -933,6 +933,7 @@ function renderAnalyze() {
   const rawBtn = el("button", { className: "btn sm ghost", style: "margin-top:6px; width: 100%;" }, "Download raw payload");
   rawBtn.onclick = () => downloadRaw(rec.captureId, "analyze");
   meta.append(rawBtn);
+  meta.classList.add("analyze-meta");
   sidebar.append(meta);
 
   // 2. Technical Information Card (RESONEO parity)
@@ -964,6 +965,7 @@ function renderAnalyze() {
     .join(", ");
   if (refStr) addTechKv("Ref Types", refStr);
   techCard.append(techKv);
+  techCard.classList.add("analyze-ref");
   sidebar.append(techCard);
 
   // 3. Global Statistics Card
@@ -982,6 +984,7 @@ function renderAnalyze() {
     el("div", { className: "stat-box" }, el("div", { className: "num" }, diversity), el("div", { className: "lbl" }, "Domain Diversity"))
   );
   globCard.append(globGrid);
+  globCard.classList.add("analyze-ref");
   sidebar.append(globCard);
 
   // 4. Brand Mentions (with model extraction, ranking, and aspect context)
@@ -1246,7 +1249,8 @@ function renderAnalyze() {
       );
       t.append(totalRow);
       summaryCard.append(t);
-      sidebar.append(summaryCard);
+      summaryCard.classList.add("analyze-ref");
+  sidebar.append(summaryCard);
     }
   }
 

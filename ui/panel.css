@@ -484,14 +484,31 @@ body.popup .app-content {
   gap: 16px;
 }
 
-/* Narrow / popup layout: a plain flex column. Brand Mentions is a direct
-   child of the grid (not nested in the sidebar) so the full-screen layout
-   below can place it independently — `order` keeps it in sensible reading
-   order here: the sidebar's summary cards, then brands, then the fan-out
-   detail in the main column. */
-.analyze-grid > .analyze-sidebar { order: 1; }
+/* Narrow / popup layout: a plain flex column, ordered by what the reader
+   needs first rather than by how the DOM happens to be grouped.
+   1  General Information — which capture is this, plus the export buttons
+   2  Brand Mentions      — the headline answer: did we show up, and where
+   3  everything analytical (Search Funnel first, then fan-out, sources…)
+   4  Technical / Global Statistics / Summary — reference, read last
+   The sidebar becomes `display: contents` so its four cards can take
+   independent positions in this list; it re-forms as a real column in the
+   full-screen layout below. Previously all four reference cards painted
+   BEFORE Brand Mentions, so the popup opened on metadata. */
 .analyze-grid > .analyze-brand-slot { order: 2; }
 .analyze-grid > .analyze-main { order: 3; }
+
+/* Below the two-column breakpoint (the popup, and a narrow tab window) the
+   sidebar has no box of its own, so its four cards become flex items of the
+   grid and can be ordered individually. `order` applies to the items
+   themselves, so these selectors deliberately match through .analyze-sidebar
+   — a `.analyze-grid > .analyze-meta` child combinator would never match,
+   since display:contents changes the box tree, not the DOM the selector
+   engine walks. */
+@media (max-width: 899px) {
+  .analyze-sidebar { display: contents; }
+  .analyze-sidebar > .analyze-meta { order: 1; }
+  .analyze-sidebar > .analyze-ref { order: 4; }
+}
 
 @media (min-width: 900px) {
   body.tab .analyze-grid {
