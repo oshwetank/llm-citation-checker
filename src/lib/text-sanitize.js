@@ -1,0 +1,68 @@
+/*
+ * text-sanitize.js — sanitizeText(), the cleanup pass every short excerpt
+ * shown to the user goes through (brand-mention quote cards, model-name
+ * extraction, CSV cells, cluster fallback text). Extracted from ui/panel.js
+ * into its own dependency-free module — it's pure string logic with no DOM
+ * or chrome.* dependency, and panel.js itself can't be imported by a Node
+ * test (it touches `document`/`chrome` at load time), so this was
+ * previously untestable outside a live browser. That mattered here: a real
+ * bug (markdown links leaking verbatim into brand-mention cards) shipped
+ * and went unnoticed until a user screenshot caught it.
+ */
+
+function sanitizeText(t) {
+  if (!t) return "";
+  let text = String(t);
+  text = text.replace(/[\uE200-\uE202]?products\{[^}]*\}[\uE200-\uE202]?/gi, ""); // Remove products carousel tokens
+  text = text.replace(/products\{"selections":\[[^\]]*\]\}/gi, ""); // Remove selections JSON
+  text = text.replace(/entity\[[^\]]*\]/gi, ""); // Remove internal ChatGPT SSE entity annotations
+  text = text.replace(/image_group\{[^}]*\}/gi, ""); // Remove JSON leaks
+  text = text.replace(/[\uE200-\uE202][^\uE200-\uE202\n]*[\uE200-\uE202]?/g, ""); // Remove PUA cite markers
+  // Markdown links — [Realme Narzo Power 5G](http://googleusercontent.com/shopping_content/1_card...)
+  // leaked straight into brand-mention quote cards verbatim. Gemini's shopping-
+  // carousel answer text embeds these internal, meaningless-to-the-reader
+  // stable links around every product name; keep the visible label (it's
+  // usually the brand/model already shown as the card title, redundant but
+  // harmless), drop the URL.
+  //
+  // Passages arrive here as short slices of a much longer answer (see the
+  // ~230-char SLICES note on cleanPassage in adapters/chatgpt.js), so a link
+  // this long routinely gets sliced mid-URL, before its closing ")" ever
+  // shows up — the naive "complete link" pattern below leaves that case
+  // untouched, so a dangling "[Label](https://not-fini" survives to the
+  // screen. These two run FIRST, most specific (has a label) before least
+  // (bare "(https://..." with no label at all, e.g. "...battery...(http:").
+  text = text.replace(/\[([^\]]*)\]\s*\(https?:\/\/\S*$/g, "$1");
+  text = text.replace(/\(https?:\/\/\S*$/g, "");
+  // Truncated one step earlier still: the slice ends right after the closing
+  // "]", before "(" ever appears — "...The [OPPO K14 5G]" with nothing after
+  // it. Only at the END of the string, so a legitimate "[Sponsored]"-style
+  // bracket note in the middle of real prose is left alone.
+  text = text.replace(/\[([^\]]*)\]$/g, "$1");
+  // A complete link — tolerates a space before "(", seen in practice when
+  // the link survives a line-wrap in the source text.
+  text = text.replace(/\[([^\]]+)\]\s*\([^)]*\)/g, "$1");
+  // Any bare URL left over (not part of a markdown link) — a raw tracking/
+  // internal link adds nothing inside a short excerpt and only clutters it.
+  text = text.replace(/https?:\/\/\S+/gi, "");
+  // Cleanup: URL-stripping above can leave an orphaned empty "()" or a lone
+  // trailing "(" with nothing after it — tidy those rather than leaving a
+  // stray bracket as the last thing the reader sees.
+  text = text.replace(/\(\s*\)/g, "");
+  text = text.replace(/\(\s*$/, "");
+  text = text.replace(/\*\*/g, ""); // Strip markdown bold asterisks
+  text = text.replace(/\*/g, ""); // Strip italic asterisks
+  text = text.replace(/\|/g, " "); // Replace table pipes with space
+  text = text.replace(/\-{2,}/g, " "); // Remove markdown table dash dividers
+  // Heading marks. Two patterns, kept separate on purpose: `##`+ (2 or more
+  // hashes in a row) is unambiguously a markdown heading — nothing legitimate
+  // ever repeats '#' — so it's stripped outright, unlike a single '#' which
+  // could start a real hashtag or color hex and is only stripped when
+  // immediately followed by hex/word chars (the line below, unchanged).
+  text = text.replace(/#{2,}/g, "");
+  text = text.replace(/#(?:[a-f0-9]{3,6}|[a-z0-9_-]+)/gi, ""); // Remove markdown header hashes
+  text = text.replace(/Phone\s+Best\s+For|Phone\s+Approx\.?\s+Price|Best\s+For\s+Approx\.?\s+Price/gi, ""); // Remove table headers
+  return text.replace(/\s+/g, " ").trim();
+}
+
+export { sanitizeText };

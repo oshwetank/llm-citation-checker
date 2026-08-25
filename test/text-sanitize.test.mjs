@@ -1,0 +1,81 @@
+/*
+ * text-sanitize.test.mjs — guards sanitizeText() against the bug a user
+ * screenshot caught: markdown links (and their truncated remnants) leaking
+ * verbatim into brand-mention quote cards. Gemini's shopping-carousel
+ * answer text wraps every product name in a markdown link to an internal
+ * googleusercontent.com/shopping_content/... URL, and since quote passages
+ * are short slices of a longer answer (~230 chars, see the note in
+ * adapters/chatgpt.js), that link routinely gets cut mid-way rather than
+ * arriving whole — so every truncation stage needs its own case here, not
+ * just the complete-link one.
+ */
+import { sanitizeText } from "../src/lib/text-sanitize.js";
+
+let failures = 0;
+const check = (label, cond, detail) => {
+  if (cond) console.log(`  ✓ ${label}`);
+  else {
+    failures++;
+    console.log(`  ✗ ${label}${detail !== undefined ? ` — ${detail}` : ""}`);
+  }
+};
+
+console.log("\nsanitizeText: markdown links — the real bug (screenshot capture)");
+{
+  const out = sanitizeText(
+    "0,000: ### Top High-End Fast Charging Options ... The [Realme Narzo Power 5G] (http://googleusercontent.com/shopping_content/1_card_link) offers 68W"
+  );
+  check("label kept, URL and brackets gone", out.includes("Realme Narzo Power 5G"), out);
+  check("no raw URL left", !out.includes("http"), out);
+  check("no stray brackets/parens", !/[[\]()]/.test(out), out);
+  check("### heading marker gone, not just a single #", !out.includes("#"), out);
+}
+
+console.log("\nsanitizeText: link truncated after the label, mid-URL (no closing paren)");
+{
+  const out = sanitizeText(
+    "The Motorola Edge 70 Fusion offers 68W TurboPower charging with a 7000 mAh batter...(http://googleusercontent.com/shopping_content/2_card)"
+  );
+  check("prose kept intact up to the truncation", out.startsWith("The Motorola Edge 70 Fusion offers 68W TurboPower charging with a 7000 mAh batter"), out);
+  check("no raw URL leaked", !out.includes("http"), out);
+  check("no dangling open paren left as the last character", !out.endsWith("("), out);
+}
+
+console.log("\nsanitizeText: link truncated with a bare '(http' fragment, no label bracket at all");
+{
+  const out = sanitizeText("Balanced everyday performance. The Tecno Pova Curve 2 5G (http://googleusercontent.com/shopping_content/5_");
+  check("prose kept, dangling '(http...' fragment removed", out === "Balanced everyday performance. The Tecno Pova Curve 2 5G", out);
+}
+
+console.log("\nsanitizeText: truncated even earlier — right after the label's closing ']', no '(' at all");
+{
+  // This is the exact shape from card #4 ('OPPO K14 5G') in the reported screenshot.
+  const out = sanitizeText("rved AMOLED screen, and an 8000 mAh battery. The [OPPO K14 5G]");
+  check("bracket label kept, brackets themselves stripped", out === "rved AMOLED screen, and an 8000 mAh battery. The OPPO K14 5G", out);
+}
+
+console.log("\nsanitizeText: a complete markdown link mid-sentence (not at the truncation boundary)");
+{
+  const out = sanitizeText(
+    "Balanced Everyday Performance & Battery Options http://googleusercontent.com/shopping_content/4_card The [Tecno Pova Curve 2 5G](http://googleusercontent.com/shopping_content/5_link..."
+  );
+  check("both links resolved to just their labels", out === "Balanced Everyday Performance & Battery Options The Tecno Pova Curve 2 5G", out);
+}
+
+console.log("\nsanitizeText: does not over-match — legitimate content survives");
+{
+  check("a real mid-sentence bracket note is left alone", sanitizeText("Something [Sponsored] appears mid sentence and continues normally") === "Something [Sponsored] appears mid sentence and continues normally");
+  check("a single '#' before a word (hashtag-shaped) is still stripped, unchanged behavior", sanitizeText("#YOLO trending phones 2026") === "trending phones 2026");
+  check("'C#' is not mistaken for a heading (single #, no run of 2+)", sanitizeText("A genuine C# developer tool review") === "A genuine C# developer tool review");
+  check("markdown bold/italic/table noise still stripped as before", sanitizeText("**bold** text | with | pipes --- and a #hexcolorlike ref") === "bold text with pipes and a ref");
+}
+
+console.log("\nsanitizeText: degrades safely on empty/null input");
+{
+  check("null -> empty string, no throw", sanitizeText(null) === "");
+  check("undefined -> empty string, no throw", sanitizeText(undefined) === "");
+  check("empty string -> empty string", sanitizeText("") === "");
+}
+
+console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
+process.exit(failures ? 1 : 0);
