@@ -714,6 +714,40 @@ try {
           modal.stats.some((x) => /Cited/.test(x)) && modal.stats.some((x) => /Read-only/.test(x)),
           modal.stats.join(" | "));
         check("which engine produced each response is shown", modal.engines > 0, String(modal.engines));
+
+        // Reported from this exact modal: "Gemini logo is missing" — the
+        // ChatGPT rows showed their mark and the Gemini rows showed bare
+        // text. Gemini's is the only mark painted with a gradient, and
+        // `fill="url(#id)"` resolves against the WHOLE document: every copy
+        // emitted the same id, so all of them pointed at whichever copy came
+        // first in the DOM. Re-rendering a section destroys that node, and a
+        // modal — which lives on document.body and is not re-rendered —
+        // is left pointing at a gradient that no longer exists. The path then
+        // paints with no fill: an invisible icon in a space that still takes
+        // up room, which is what the screenshot showed.
+        const icons = await page.evaluate(() => {
+          const grads = [...document.querySelectorAll(".llm-icon linearGradient")].map((g) => g.id);
+          return { count: grads.length, unique: new Set(grads).size, sample: grads.slice(0, 3) };
+        });
+        check("the gradient-painted mark renders more than once", icons.count > 1, String(icons.count));
+        check("every instance owns its own gradient id",
+          icons.count === icons.unique, `${icons.count} icons, ${icons.unique} distinct ids`);
+        check("none uses a shared id", !icons.sample.includes("ck-gem"), icons.sample.join(", "));
+
+        // The failure itself, reproduced: destroy the page section that owns
+        // one gradient and check an icon living on document.body still paints.
+        const survived = await page.evaluate(() => {
+          const gem = [...document.querySelectorAll(".llm-icon")].filter((i) => i.querySelector("linearGradient"));
+          if (gem.length < 2) return { tooFew: gem.length };
+          const survivor = gem[gem.length - 1];
+          document.body.appendChild(survivor);
+          gem[0].closest(".card")?.remove();
+          const fill = survivor.querySelector("path")?.getAttribute("fill") || "";
+          const gradId = fill.replace(/^url\(#/, "").replace(/\)$/, "");
+          return { resolves: !!survivor.querySelector(`#${CSS.escape(gradId)}`), gradId };
+        });
+        check("an icon that outlives its section still resolves its fill",
+          survived.resolves === true, JSON.stringify(survived));
         check("cited vs read-only is shown per response", modal.outcomes.length > 0, modal.outcomes.join(", "));
         check("brands are numbered by the order they appear in the answer",
           modal.firstRowBrands.length > 0 && modal.firstRowBrands.every((b) => /^\d+\. /.test(b)),

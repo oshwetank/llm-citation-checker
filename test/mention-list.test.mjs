@@ -121,5 +121,57 @@ console.log("\ndegenerate input never throws");
   check("a non-numeric count", normalizeMentions([{ brand: "Acme", count: "x" }])[0].count === 0);
 }
 
+console.log("\nvendor names the capture states outright are used as roots");
+{
+  // Reported: "Brand Mention and the Products & Entities section is not
+  // matching with brands." The card listed SKUs — "Realme P4", "iQOO Z11x",
+  // "OnePlus Nord CE6 Lite" — while the Entities card right below it listed
+  // the vendors ChatGPT itself had tagged: Realme, iQOO, OnePlus.
+  const vendors = ["Realme", "iQOO", "OnePlus"];
+  const out = normalizeMentions([
+    m("Realme P4", 9),
+    m("iQOO Z11x", 2),
+    m("OnePlus Nord CE6 Lite", 1),
+    m("Motorola Edge 70 Fusion", 1),
+  ], vendors);
+  const names = out.map((b) => b.brand);
+
+  check("rows are labelled with the vendor, not the SKU",
+    names.slice(0, 3).join("|") === "Realme|iQOO|OnePlus", names.join("|"));
+  check("the SKU is kept as a model of its maker",
+    out[0].skus.includes("Realme P4"), out[0].skus.join(", "));
+  check("counts follow the maker", out[0].count === 9, String(out[0].count));
+
+  // A brand with no product card is still a real mention. It stays, and it
+  // stays under its own name — the absence from Products is information (the
+  // engine wrote about it without carding it), not something to paper over.
+  check("a brand with no vendor entity is not dropped",
+    names.includes("Motorola Edge 70 Fusion"), names.join("|"));
+  check("order of first appearance survives", names.length === 4, names.join("|"));
+}
+
+console.log("\na known vendor that was never mentioned gets no row");
+{
+  // The list must agree with the Entities card, not invent mentions from it.
+  const out = normalizeMentions([m("Realme P4", 3)], ["Realme", "Samsung", "Nokia"]);
+  check("only the mentioned vendor appears", out.length === 1, out.map((b) => b.brand).join(", "));
+  check("and it is named correctly", out[0].brand === "Realme", out[0].brand);
+}
+
+console.log("\nvendor roots are held to the same rules as any other name");
+{
+  check("a noise word passed in as a vendor is ignored",
+    normalizeMentions([m("Battery Pack Pro", 1)], ["Battery"]).length === 1);
+  check("whole-word prefixes only",
+    normalizeMentions([m("Applebees", 1)], ["Apple"])[0].brand === "Applebees",
+    normalizeMentions([m("Applebees", 1)], ["Apple"])[0].brand);
+  check("an empty vendor list changes nothing",
+    normalizeMentions([m("Realme P4", 1)], [])[0].brand === "Realme P4");
+  check("a null vendor list is safe",
+    normalizeMentions([m("Realme P4", 1)], null)[0].brand === "Realme P4");
+  check("blank vendor entries are skipped",
+    normalizeMentions([m("Realme P4", 1)], ["", "  "])[0].brand === "Realme P4");
+}
+
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
 process.exit(failures ? 1 : 0);

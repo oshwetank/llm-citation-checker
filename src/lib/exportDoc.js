@@ -485,7 +485,14 @@ function renderBrandsSection(model) {
   // dropped on screen: passages are lifted verbatim, so a brand introduced
   // inside a markdown table arrived as a wall of rating cells, and two brands
   // named in one sentence produced the identical block twice.
-  const brands = normalizeMentions(model.brandMentions);
+  // Same vendor roots the Analyze card uses, so the exported list agrees with
+  // the screen it came from and with the Entities section further down.
+  const vendors = [
+    ...(model.entities || []).filter((e) => e && e.text && /vendor|manufacturer|brand/i.test(e.category || "")).map((e) => e.text),
+    ...(model.products || []).map((p) => String(p.name || "").trim().split(/\s+/)[0])
+      .filter((w) => w && w.length > 1 && /^[A-Za-z][A-Za-z.&'-]*$/.test(w)),
+  ];
+  const brands = normalizeMentions(model.brandMentions, vendors);
   if (!brands.length) return "";
   let pos = 0;
   const rows = brands

@@ -639,6 +639,37 @@ const SENTENCE_START_STOPWORDS = new Set([
   "overall", "in", "at", "for", "with", "while", "when", "then",
 ]);
 
+/**
+ * Vendor names this capture states outright, rather than infers.
+ *
+ * Two sources, both structured: the engine's own "Product Vendor" entity
+ * annotations, and the maker of each carded product. Neither is guesswork, so
+ * they are the right roots to file loose SKU mentions under.
+ */
+function knownVendors(rec) {
+  const out = [];
+  for (const e of rec.entities || []) {
+    if (e && e.text && /vendor|manufacturer|brand/i.test(e.category || "")) out.push(e.text);
+  }
+  for (const p of rec.products || []) {
+    // "Realme P4 5G" -> "Realme". Only the first word, and only when it looks
+    // like a name rather than a spec, so a product called "5G Router" can't
+    // invent a vendor called "5G".
+    const first = String(p.name || "").trim().split(/\s+/)[0];
+    if (first && first.length > 1 && /^[A-Za-z][A-Za-z.&'-]*$/.test(first)) out.push(first);
+  }
+  return [...new Set(out)];
+}
+
+// Bare spec and qualifier tokens that are never a model on their own. A chip
+// reading just "5G" or "Fast" says nothing — these turned up in a real capture
+// as models of "Realme P4" alongside "Power 80W 10".
+const MODEL_STOP_TOKENS = new Set([
+  "5g", "4g", "3g", "lte", "wifi", "wi-fi", "nfc", "gb", "tb", "mah", "hz", "mp",
+  "pro", "plus", "max", "ultra", "lite", "mini", "fast", "power", "series",
+  "edition", "new", "latest", "phone", "phones", "model", "models",
+]);
+
 function extractBrandModels(brandName, products, rawText) {
   const models = new Set();
   const lowerBrand = brandName.toLowerCase();
@@ -691,7 +722,19 @@ function extractBrandModels(brandName, products, rawText) {
     }
   }
   
-  return Array.from(models).slice(0, 5);
+  // A chip reading just "5G" or "Fast" says nothing, and a model already
+  // contained in a longer one is the same model twice. Both showed up in a
+  // real capture as models of "Realme P4": 5G, Fast, Power, Power 80W 10.
+  const list = [...models].filter((m) => {
+    const words = m.toLowerCase().split(/\s+/);
+    return !words.every((w) => MODEL_STOP_TOKENS.has(w.replace(/[^a-z0-9-]/g, "")));
+  });
+  const longestFirst = list.sort((a, b) => b.length - a.length);
+  const out = [];
+  for (const m of longestFirst) {
+    if (!out.some((kept) => kept.toLowerCase().includes(m.toLowerCase()))) out.push(m);
+  }
+  return out.slice(0, 5);
 }
 
 function extractRankAndCategory(brandName, passage, text) {
@@ -1197,7 +1240,13 @@ function renderAnalyze() {
     // src/lib/mention-list.js so the merge rules are testable. A capture that
     // named "Google Pixel 10a" and "Google" used to show both as separate
     // brands, splitting one company's count across two rows.
-    const cleanMentions = normalizeMentions(rec.brandMentions);
+    // The capture already knows the real vendor names for certain: ChatGPT
+    // tags them as "Product Vendor" entities, and every product card carries
+    // one. Reported as "Brand Mention and the Products & Entities section is
+    // not matching with brands" — the card was listing SKUs ("Realme P4")
+    // while the Entities card right below it listed the vendors ("Realme").
+    // Feeding those in as collapse roots makes the two agree.
+    const cleanMentions = normalizeMentions(rec.brandMentions, knownVendors(rec));
     const bc = el("div", { className: "card", id: "card-brand-mentions" },
       el("h3", {}, `Brand Mentions (${cleanMentions.length})`));
 
@@ -1805,6 +1854,11 @@ function renderAnalyze() {
 
   if (allProducts.length) {
     const pc = el("div", { className: "card", id: "card-products" }, el("h3", {}, `Products (${allProducts.length})`));
+    // Same point as the Entities card below: this is the engine's shopping
+    // carousel, not the written answer. A brand it recommended in prose
+    // without carding a product simply isn't here.
+    pc.append(el("div", { className: "muted small", style: "margin-top:-2px" },
+      "From the engine's product cards — not everything it recommended in the answer gets carded."));
     const ul = el("ul", { className: "itemlist" });
     allProducts.forEach((p) => {
       const isHero = !!p.isHero;
@@ -1844,6 +1898,12 @@ function renderAnalyze() {
   // Entities card
   if (rec.entities && rec.entities.length) {
     const ec = el("div", { className: "card", id: "card-entities" }, el("h3", {}, `Entities (${rec.entities.length})`));
+    // Reported as a mismatch with Brand Mentions: a brand the engine WROTE
+    // about but never put in a product card is absent here, and that gap is
+    // the finding, not a bug. Saying where this data comes from is what makes
+    // it readable as one.
+    ec.append(el("div", { className: "muted small", style: "margin-top:-2px" },
+      "Tagged by the engine in its product cards — a brand it only wrote about won't appear here."));
     const byCat = {};
     rec.entities.forEach((e) => (byCat[e.category] = byCat[e.category] || []).push(e.text));
     Object.entries(byCat).forEach(([cat, list]) => {
@@ -3288,7 +3348,10 @@ function renderCampaignSetup(profile, dis) {
    nominatively, to name the service, not to imply any endorsement. */
 const ENGINE_ICON_SVG = {
   chatgpt: `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/></svg>`,
-  gemini: `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><defs><linearGradient id="ck-gem" x1="0" y1="24" x2="24" y2="0" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#1C7DFF"/><stop offset=".52" stop-color="#8E6FF7"/><stop offset="1" stop-color="#D96570"/></linearGradient></defs><path fill="url(#ck-gem)" d="M12 24A14.304 14.304 0 0 0 0 12A14.304 14.304 0 0 0 12 0a14.305 14.305 0 0 0 12 12a14.305 14.305 0 0 0-12 12"/></svg>`,
+  // __UID__ is replaced with a per-instance id by engineIconEl(). An SVG
+  // gradient is referenced by document-wide id, so a fixed one would be
+  // duplicated by every copy of this icon — see the note there.
+  gemini: `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><defs><linearGradient id="__UID__" x1="0" y1="24" x2="24" y2="0" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#1C7DFF"/><stop offset=".52" stop-color="#8E6FF7"/><stop offset="1" stop-color="#D96570"/></linearGradient></defs><path fill="url(#__UID__)" d="M12 24A14.304 14.304 0 0 0 0 12A14.304 14.304 0 0 0 12 0a14.305 14.305 0 0 0 12 12a14.305 14.305 0 0 0-12 12"/></svg>`,
   claude: `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><g fill="#D97757"><path d="M11.1 1.6h1.8v20.8h-1.8z"/><path d="M1.6 11.1h20.8v1.8H1.6z"/><path d="M4.08 2.81l1.27-1.27 14.7 14.7-1.27 1.28z" opacity=".92"/><path d="M19.92 2.81l1.27 1.28-14.7 14.7-1.27-1.28z" opacity=".92"/></g></svg>`,
   perplexity: `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><g fill="none" stroke="#20808D" stroke-width="1.9" stroke-linecap="round"><path d="M12 3.2v17.6"/><path d="M12 7.4L5.2 3.2v7.2h13.6V3.2L12 7.4z"/><path d="M12 16.6l-6.8 4.2v-7.2h13.6v7.2L12 16.6z"/><path d="M3.4 10.4h17.2"/></g></svg>`,
   grok: `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M6.1 21.5H3.2L14.4 6.2h2.9L6.1 21.5zM17.4 21.5h-2.7l-3.3-4.5 1.4-1.9 4.6 6.4zM9.6 8.9L6.3 4.4h2.7l3.3 4.5-1.4 1.9-1.3-1.9z"/><path d="M20.8 2.5l-6.4 8.7 6.4 8.7v-4.1l-3.4-4.6 3.4-4.6V2.5z" opacity=".55"/></svg>`,
@@ -3296,10 +3359,28 @@ const ENGINE_ICON_SVG = {
 
 // Builds a fresh element each call — the same node can't be appended in two
 // places, and these get rendered once per pill and once per table column.
+//
+// Reported: "Gemini logo is missing" — in a modal, while the same icon
+// rendered fine on the page behind it. Gemini's mark is the only one that
+// paints with a gradient, and `fill="url(#id)"` resolves against the WHOLE
+// document: every copy of the icon emitted `id="ck-gem"`, so all of them
+// pointed at whichever one happened to be first in the DOM. Re-rendering a
+// section (every filter change does) destroys that node, and every surviving
+// copy — including one in an open modal, which lives on document.body and is
+// not re-rendered — is left referencing a gradient that no longer exists.
+// The path then paints with no fill: an invisible icon in a space that still
+// takes up room, which is exactly what the screenshot showed.
+//
+// Each instance now owns its gradient, so no icon can depend on another one's
+// lifetime.
+let iconUid = 0;
 function engineIconEl(id) {
   const svg = ENGINE_ICON_SVG[id];
   if (!svg) return el("span", { className: "llm-icon" }, "🔷");
-  return el("span", { className: "llm-icon", innerHTML: svg });
+  return el("span", {
+    className: "llm-icon",
+    innerHTML: svg.replaceAll("__UID__", `ck-icon-${id}-${++iconUid}`),
+  });
 }
 
 // icon + label as one inline unit, for the Prompt Performance card/table

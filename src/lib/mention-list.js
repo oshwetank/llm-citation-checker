@@ -64,20 +64,40 @@ export const NOISE_BRAND_WORDS = new Set([
 const norm = (s) => String(s ?? "").toLowerCase().trim();
 
 /**
- * @param mentions rec.brandMentions, already in first-appearance order
+ * @param mentions    rec.brandMentions, already in first-appearance order
+ * @param knownBrands vendor names the capture already knows for certain —
+ *                    ChatGPT's own "Product Vendor" entities and the makers
+ *                    behind the product carousel. Seeded as collapse roots so
+ *                    "Realme P4 5G" is filed under "Realme" even when the
+ *                    prose never says "Realme" on its own. A known brand that
+ *                    was never mentioned does NOT get a row: this makes the
+ *                    list agree with the Entities card, it does not invent
+ *                    mentions.
  * @returns [{ brand, count, passages, relation, skus }] — same order, merged.
  *          `skus` holds the longer product names folded into this row.
  */
-export function normalizeMentions(mentions) {
+export function normalizeMentions(mentions, knownBrands = []) {
   const kept = (mentions || []).filter((b) => b && b.brand && !NOISE_BRAND_WORDS.has(norm(b.brand)));
 
   // Pass 1: apply aliases, so the SKU pass below can see the real parents.
   const aliased = kept.map((b) => ({ ...b, brand: ALIAS_MAP[norm(b.brand)] || b.brand }));
 
   // Pass 2: work out what each name counts as. A name collapses onto the
-  // shortest detected name that is a whole-word prefix of it — whole-word so
+  // shortest KNOWN name that is a whole-word prefix of it — whole-word so
   // "Applebees" never lands under "Apple".
-  const names = [...new Set(aliased.map((b) => norm(b.brand)))].sort((a, b) => a.length - b.length);
+  //
+  // The vendor names come first, because a capture usually names the maker
+  // only inside its products ("Realme P4 5G") and never on its own. Without
+  // them the card listed SKUs as if they were brands, which is what made
+  // Brand Mentions disagree with the Entities card sitting under it.
+  const vendorSpelling = new Map();
+  for (const v of knownBrands || []) {
+    const key = norm(v);
+    if (!key || NOISE_BRAND_WORDS.has(key)) continue;
+    if (!vendorSpelling.has(key)) vendorSpelling.set(key, String(v).trim());
+  }
+  const names = [...new Set([...vendorSpelling.keys(), ...aliased.map((b) => norm(b.brand))])]
+    .sort((a, b) => a.length - b.length);
   const rootOf = new Map();
   for (const name of names) {
     let root = name;
@@ -100,7 +120,11 @@ export function normalizeMentions(mentions) {
         ...b,
         // The parent's own spelling if it was detected, otherwise the first
         // spelling seen — never a lowercased key.
-        brand: isSku ? (aliased.find((x) => norm(x.brand) === key)?.brand || b.brand) : b.brand,
+        // The maker's own spelling wherever it is known: from a vendor
+        // entity first, then from the answer, and only then the SKU itself.
+        brand: isSku
+          ? (vendorSpelling.get(key) || aliased.find((x) => norm(x.brand) === key)?.brand || b.brand)
+          : b.brand,
         count: 0,
         passages: [],
         skus: [],
