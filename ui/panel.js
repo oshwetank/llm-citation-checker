@@ -12,6 +12,7 @@ import {
 import { parseCsv, parseXlsx, rowsToPrompts } from "../src/lib/xlsxLite.js";
 import { computeSearchFunnel } from "../src/lib/funnel-omitted.js";
 import { analyzeFanout, FANOUT_BENCHMARK } from "../src/lib/fanout.js";
+import { sanitizeText } from "../src/lib/text-sanitize.js";
 
 // chrome.runtime.sendMessage throws SYNCHRONOUSLY — not via the callback —
 // when this page's connection to the extension is dead ("Extension context
@@ -530,23 +531,6 @@ function downloadData(filename, content) {
   URL.revokeObjectURL(url);
 }
 
-function sanitizeText(t) {
-  if (!t) return "";
-  let text = String(t);
-  text = text.replace(/[\uE200-\uE202]?products\{[^}]*\}[\uE200-\uE202]?/gi, ""); // Remove products carousel tokens
-  text = text.replace(/products\{"selections":\[[^\]]*\]\}/gi, ""); // Remove selections JSON
-  text = text.replace(/entity\[[^\]]*\]/gi, ""); // Remove internal ChatGPT SSE entity annotations
-  text = text.replace(/image_group\{[^}]*\}/gi, ""); // Remove JSON leaks
-  text = text.replace(/[\uE200-\uE202][^\uE200-\uE202\n]*[\uE200-\uE202]?/g, ""); // Remove PUA cite markers
-  text = text.replace(/\*\*/g, ""); // Strip markdown bold asterisks
-  text = text.replace(/\*/g, ""); // Strip italic asterisks
-  text = text.replace(/\|/g, " "); // Replace table pipes with space
-  text = text.replace(/\-{2,}/g, " "); // Remove markdown table dash dividers
-  text = text.replace(/#(?:[a-f0-9]{3,6}|[a-z0-9_-]+)/gi, ""); // Remove markdown header hashes
-  text = text.replace(/Phone\s+Best\s+For|Phone\s+Approx\.?\s+Price|Best\s+For\s+Approx\.?\s+Price/gi, ""); // Remove table headers
-  return text.replace(/\s+/g, " ").trim();
-}
-
 function cleanPassage(p) {
   if (!p) return "";
   let text = sanitizeText(p);
@@ -775,7 +759,6 @@ function extractBrandAspects(passages) {
 // in THIS capture (src/lib/brands.js — entity markers, product/place data and
 // cited domains), so it carries no industry vocabulary of its own.
 //
-
 
 function openDomainModal(domainName, rec) {
   const existing = document.getElementById("domain-modal-backdrop");
@@ -1889,7 +1872,6 @@ function renderAnalyze() {
     }
   }
 }
-
 
 let dashboardModelFilter = ""; 
 let dashboardTimeFilter = "";
