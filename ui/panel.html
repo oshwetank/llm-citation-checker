@@ -101,9 +101,17 @@
                ("Keep at most" / "captures - skip payloads over" / "MB"). It's
                now: what this is -> how to use it -> settings as a real
                labelled form -> the dev-only debugger behind a disclosure. -->
+          <!-- One header, not two: the identity block and the diagnostic action
+               used to be sibling flex items with no relationship between them —
+               different intrinsic widths, wildly different heights (a five-line
+               identity block next to a two-line action), so the row read as two
+               unrelated pieces of UI that happened to share a card ("bifurcated"
+               header). Now the identity block is the only thing that grows, the
+               diagnostic control is a fixed-width aside pinned to the header's
+               top-right with a divider, and everything shares one baseline. -->
           <div class="card about-hero">
             <div class="about-hero-icon"><img src="../icons/icon128.png" width="40" height="40" alt="" /></div>
-            <div>
+            <div class="about-hero-main">
               <h2 class="about-title">CitoSkeleton <span class="version-badge">v0.27.0</span></h2>
               <p class="about-tagline">
                 See what ChatGPT and Gemini actually read before they answer — the
@@ -116,9 +124,9 @@
                 Everything stays on this device. No account, no server, no network calls of our own.
               </p>
             </div>
-            <div class="proj-row" style="margin-top:12px">
+            <div class="about-hero-diag">
               <button id="diagReport" class="btn sm ghost">🩺 Copy diagnostic report</button>
-              <span class="muted">Storage counts and campaign run history/timing/failure reasons only — never prompt text, answers, URLs or brand names. Shown for review before anything is copied; nothing is ever sent anywhere automatically.</span>
+              <span class="muted small">Storage counts and campaign run history/timing/failure reasons only — never prompt text, answers, URLs or brand names. Shown for review before anything is copied; nothing is ever sent anywhere automatically.</span>
             </div>
           </div>
 

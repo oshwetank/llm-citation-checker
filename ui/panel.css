@@ -3038,7 +3038,12 @@ body.popup .url-drill-meta { width: 100%; justify-content: flex-start; padding-l
 }
 
 /* ---------- About ------------------------------------------------------- */
-.about-hero { display: flex; gap: 14px; align-items: flex-start; }
+/* One header, one relationship: the identity block grows to fill the row,
+   the diagnostic control is a fixed-width aside with its own divider, both
+   share the same top edge. Two unrelated-looking columns ("bifurcated") was
+   the reported problem — this makes the split a deliberate one instead. */
+.about-hero { display: flex; gap: 20px; align-items: flex-start; }
+.about-hero-main { flex: 1 1 auto; min-width: 0; }
 .about-hero-icon {
   width: 56px;
   height: 56px;
@@ -3051,6 +3056,18 @@ body.popup .url-drill-meta { width: 100%; justify-content: flex-start; padding-l
   justify-content: center;
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
 }
+.about-hero-diag {
+  flex: 0 0 240px;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding-left: 20px;
+  border-left: 1px solid var(--border);
+}
+.about-hero-diag .btn { align-self: flex-start; }
+.about-hero-diag .muted.small { line-height: 1.5; }
 .about-title {
   margin: 0 0 4px;
   font-size: 18px;
@@ -3165,6 +3182,29 @@ body.popup .url-drill-meta { width: 100%; justify-content: flex-start; padding-l
 
 /* Narrow-popup stacking for the two-column rows above. */
 body.popup .about-hero { flex-direction: column; gap: 10px; }
+/* Stacked (popup width, or the narrow end of a responsive tab), the divider
+   between the two zones has to move from the left edge to the top edge — a
+   left border makes no sense once the diagnostic block is no longer beside
+   the identity block but below it. */
+body.popup .about-hero-diag {
+  flex-basis: auto;
+  align-self: stretch;
+  padding-left: 0;
+  padding-top: 12px;
+  border-left: none;
+  border-top: 1px solid var(--border);
+}
+@media (max-width: 720px) {
+  .about-hero { flex-direction: column; }
+  .about-hero-diag {
+    flex-basis: auto;
+    align-self: stretch;
+    padding-left: 0;
+    padding-top: 12px;
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+}
 body.popup .setting-row,
 body.popup .maint-row { flex-direction: column; gap: 8px; }
 body.popup .setting-field,
