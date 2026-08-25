@@ -765,6 +765,23 @@ td.num, th.num {
   font-weight: 500;
 }
 
+/* Unconditional per-row engine badge — see the note in panel.js. Sized to sit
+   inline with .capture-date and the fan-out/source tags rather than standing
+   out as its own separate row. */
+.capture-engine {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-secondary);
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+}
+.capture-engine .engine-chip-icon.llm-icon { width: 13px; height: 13px; }
+.capture-engine .engine-chip-icon.llm-icon svg { width: 13px; height: 13px; }
+
 .capture-prompt {
   font-size: 13px;
   font-weight: 500;

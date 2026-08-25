@@ -2457,9 +2457,21 @@ function renderDashboardImpl() {
         renderClusterContent(); 
       };
 
+      // Reported: "if same prompt is not run on both the llms you won't know
+      // which one was run on which platform." The platform pills below only
+      // ever appeared when a cluster held more than one run — the common case
+      // of a prompt captured on just ONE engine showed no engine at all
+      // anywhere on the row. This badge is unconditional: every saved
+      // conversation states which engine produced it, whether or not its
+      // prompt was also run elsewhere.
+      const engineLabel = ENGINES.find((e) => e.id === activeRecord.platform)?.label || activeRecord.platform || "Unknown";
+      const engineBadge = el("span", { className: "capture-engine", title: `Captured on ${engineLabel}` },
+        engineChip(activeRecord.platform, engineLabel));
+
       const metaRow = el("div", { className: "capture-meta", style: "margin-top: 4px;" },
         el("label", { className: "capture-select" }, cb),
         el("span", { className: "capture-date" }, new Date(activeRecord.capturedAt).toLocaleString()),
+        engineBadge,
         el("span", { className: "tag cited" }, `${fan} fan-out`),
         el("span", { className: "tag fetched" }, `${activeRecord.sources.length} src`),
         el("div", { className: "row-actions", style: "margin-left: auto;" }, rawB, del)
