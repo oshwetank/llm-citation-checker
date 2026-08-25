@@ -65,4 +65,41 @@ function sanitizeText(t) {
   return text.replace(/\s+/g, " ").trim();
 }
 
-export { sanitizeText };
+/*
+ * Make a raw fragment safe to show as a chip label.
+ *
+ * The "Cited for" chips are captured out of numbered-list headers, and
+ * sanitizeText() has already replaced markdown table pipes with spaces by the
+ * time they are read — so a row like
+ *
+ *     | Samsung Galaxy S25 FE | Video & Long-Term Reliability | Approx. ₹35,000 |
+ *
+ * arrives as one line and a capture that runs to end-of-line swallows the next
+ * column: the chip read "Video & Long-Term Reliability Approx". The pipes
+ * cannot be kept (they would show in every excerpt), so the label is bounded
+ * here instead — at the first sign of a following column, then by word count.
+ *
+ * Returns "" when nothing sensible survives, which callers treat as "no label"
+ * rather than rendering an empty chip.
+ */
+function trimLabel(raw, maxWords = 5) {
+  let s = String(raw ?? "").replace(/\s+/g, " ").trim();
+  if (!s) return "";
+
+  // The next table column usually announces itself: a price, a rating, a
+  // date, or the word that introduces one.
+  s = s.split(/\s+(?:approx\.?|from|starting|price|rs\.?|inr|usd)\b/i)[0];
+  s = s.split(/[₹$€£]/)[0];
+  s = s.split(/\s+\d[\d,.]*\s*(?:%|★|\/\s*\d)/)[0];
+
+  const words = s.split(" ").filter(Boolean).slice(0, maxWords);
+  // A label ending on a connective was cut mid-phrase; the dangling word says
+  // less than nothing.
+  while (words.length && /^(?:and|or|for|with|the|a|an|of|in|to|at|by|approx\.?|vs\.?|plus|&)$/i.test(words[words.length - 1])) {
+    words.pop();
+  }
+  s = words.join(" ").replace(/[\s,;:.\-–—&/]+$/, "").trim();
+  return s.length < 3 ? "" : s;
+}
+
+export { sanitizeText, trimLabel };

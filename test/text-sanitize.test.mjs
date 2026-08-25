@@ -9,7 +9,7 @@
  * arriving whole — so every truncation stage needs its own case here, not
  * just the complete-link one.
  */
-import { sanitizeText } from "../src/lib/text-sanitize.js";
+import { sanitizeText, trimLabel } from "../src/lib/text-sanitize.js";
 
 let failures = 0;
 const check = (label, cond, detail) => {
@@ -75,6 +75,46 @@ console.log("\nsanitizeText: degrades safely on empty/null input");
   check("null -> empty string, no throw", sanitizeText(null) === "");
   check("undefined -> empty string, no throw", sanitizeText(undefined) === "");
   check("empty string -> empty string", sanitizeText("") === "");
+}
+
+console.log("\ntrimLabel: a chip label must not run into the next table column");
+{
+  // The reported case, from a real capture. sanitizeText() replaces markdown
+  // pipes with spaces (it has to — they would show in every excerpt), so a
+  // capture that runs to end of line picks up the price column behind it.
+  check("the price column is dropped",
+    trimLabel("Video & Long-Term Reliability Approx. ₹35,000") === "Video & Long-Term Reliability",
+    trimLabel("Video & Long-Term Reliability Approx. ₹35,000"));
+  check("a bare currency column is dropped",
+    trimLabel("Portrait Photography & Selfies ₹28,999") === "Portrait Photography & Selfies",
+    trimLabel("Portrait Photography & Selfies ₹28,999"));
+  check("so is a rating column",
+    trimLabel("Battery Life 4.5 / 5") === "Battery Life", trimLabel("Battery Life 4.5 / 5"));
+  check("and a 'from ₹' lead-in",
+    trimLabel("Clean Software from ₹19,999") === "Clean Software", trimLabel("Clean Software from ₹19,999"));
+
+  // A label cut mid-phrase ends on a connective, which says less than nothing.
+  check("a dangling connective is removed",
+    trimLabel("Camera and") === "Camera", trimLabel("Camera and"));
+  check("trailing punctuation is removed",
+    trimLabel("Price & Value —") === "Price & Value", trimLabel("Price & Value —"));
+
+  check("a long phrase is capped, not truncated mid-word",
+    trimLabel("one two three four five six seven") === "one two three four five",
+    trimLabel("one two three four five six seven"));
+  check("the cap is adjustable", trimLabel("one two three", 2) === "one two");
+
+  check("a genuine label is left alone",
+    trimLabel("Price & Value") === "Price & Value", trimLabel("Price & Value"));
+  check("whitespace is collapsed",
+    trimLabel("  Trust  &   Reputation  ") === "Trust & Reputation", trimLabel("  Trust  &   Reputation  "));
+
+  // Nothing sensible left means no chip, rather than an empty one.
+  check("a stub returns empty", trimLabel("of") === "", `"${trimLabel("of")}"`);
+  check("punctuation only returns empty", trimLabel("—") === "", `"${trimLabel("—")}"`);
+  check("null returns empty", trimLabel(null) === "");
+  check("undefined returns empty", trimLabel() === "");
+  check("a price on its own returns empty", trimLabel("₹35,000") === "", `"${trimLabel("₹35,000")}"`);
 }
 
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");

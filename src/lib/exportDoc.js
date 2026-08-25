@@ -25,6 +25,7 @@ import { tokenizeAnswerMarkup } from "../adapters/chatgpt.js";
 import { ANSWER_TEXT_CAP } from "../schema.js";
 import { computeSearchFunnel } from "./funnel-omitted.js";
 import { analyzeFanout } from "./fanout.js";
+import { normalizeMentions } from "./mention-list.js";
 
 function esc(s) {
   return String(s ?? "")
@@ -49,20 +50,6 @@ function decodeEntities(s) {
 }
 function escText(s) {
   return esc(decodeEntities(s));
-}
-
-// Brand-mention passages are short raw excerpts (see cleanPassage in
-// adapters/chatgpt.js) — PUA markers are already cleaned, but markdown table
-// syntax around them isn't, since that function only ever aimed to strip the
-// invisible marker junk. This appendix list isn't full-answer markdown
-// rendering like the main body, so just flatten the noise for readability.
-function stripMarkdownNoise(s) {
-  return String(s ?? "")
-    .replace(/\*\*/g, "")
-    .replace(/\|/g, " ")
-    .replace(/-{2,}/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 function fmtDate(ts) {
@@ -492,18 +479,22 @@ function renderFanoutSection(model) {
 }
 
 function renderBrandsSection(model) {
-  if (!model.brandMentions.length) return "";
-  // Ordered by first appearance in the answer, and it says so — the order is
-  // the point of this section and was previously implicit in the list only.
+  // The same list the Analyze card shows, through the same merge — a shared
+  // report that disagreed with the screen it was exported from would be worse
+  // than no report. Quotes are omitted here for the same reason they were
+  // dropped on screen: passages are lifted verbatim, so a brand introduced
+  // inside a markdown table arrived as a wall of rating cells, and two brands
+  // named in one sentence produced the identical block twice.
+  const brands = normalizeMentions(model.brandMentions);
+  if (!brands.length) return "";
   let pos = 0;
-  const rows = model.brandMentions
+  const rows = brands
     .map((b) => {
       const ord = b.count > 0 ? `#${++pos} ` : "";
       const badge = b.count > 0 ? `${b.count} mention${b.count === 1 ? "" : "s"}` : "Shown, not named";
-      const passage = stripMarkdownNoise((b.passages && b.passages[0]) || b.passage);
-      return `<li><span class="ord">${esc(ord)}</span><strong>${escText(b.brand)}</strong> <span class="muted">— ${badge}</span>${
-        passage ? `<div class="snippet">"${escText(passage)}"</div>` : ""
-      }</li>`;
+      const models = (b.skus || []).length
+        ? `<div class="muted">Models: ${escText(b.skus.join(", "))}</div>` : "";
+      return `<li><span class="ord">${esc(ord)}</span><strong>${escText(b.brand)}</strong> <span class="muted">— ${badge}</span>${models}</li>`;
     })
     .join("\n");
   return `<h3>Brand mentions <span class="muted">(in order of first appearance)</span></h3><ul class="brand-list">${rows}</ul>`;

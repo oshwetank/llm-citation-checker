@@ -532,13 +532,10 @@ body.tab .app-content {
     grid-row: 1 / span 2;
   }
 
-  /* With more width to work with, the brand list can run as columns instead
-     of one long stack squeezed into the old 360px sidebar. */
-  body.tab .analyze-brand-slot .brand-list {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-    gap: 10px;
-  }
+  /* Deliberately NOT columns any more. The rows are one line each now, and
+     splitting a ranking across two columns means #1 and #4 sit side by side —
+     the order is the point of this card. Tighter gap instead. */
+  body.tab .analyze-brand-slot .brand-list { gap: 6px; }
 }
 
 /* Stat Grid & KPI Cards */
@@ -1262,32 +1259,77 @@ html {
   margin-top: 8px;
 }
 
+/* One row per brand. The quote block that used to sit inside each card was
+   the tallest element on the page and the least reliable — see the note in
+   panel.js. Without it every row is short and the same height, so the list
+   reads as the ranking it is. */
 .brand-item {
   background: rgba(255, 255, 255, 0.65);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 10px 12px;
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  padding: 8px 12px;
+  transition: border-color 0.15s ease, background 0.15s ease;
 }
 .brand-item:hover {
   border-color: var(--border-hover);
   background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.04);
 }
 
 .brand-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
 }
 
 .brand-name {
   font-weight: 600;
   font-size: 13px;
   color: var(--fg-primary);
+  /* Takes the slack so the meter and count stay right-aligned in a column of
+     rows, which is what makes them comparable down the list. */
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
+
+/* Scaled to the most-mentioned brand in THIS answer, not to any absolute —
+   the question is who dominates this response. A column of "×5 ×9 ×4" never
+   showed the distribution; the bar does. */
+.brand-meter {
+  flex-shrink: 0;
+  width: 56px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.28);
+  overflow: hidden;
+}
+.brand-meter-fill { height: 100%; border-radius: 999px; background: var(--accent); }
+.brand-count {
+  flex-shrink: 0;
+  min-width: 26px;
+  text-align: right;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-secondary);
+}
+.brand-shown-tag { flex-shrink: 0; }
+
+/* Models and aspects on one wrapping line. Two half-empty chip rows per brand
+   was most of the old card's height. */
+.brand-chips {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  padding-left: 28px;      /* clears the ordinal, so chips line up under the name */
+  font-size: 11px;
+}
+.brand-chips .brand-label:not(:first-child) { margin-left: 6px; }
 
 .brand-quote {
   font-size: 11px;
@@ -1378,16 +1420,6 @@ html {
 }
 
 /* Model & Aspect Tags in Brand Mentions */
-.brand-models-row,
-.brand-aspects-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 6px;
-  flex-wrap: wrap;
-  font-size: 11px;
-}
-
 .brand-label {
   color: var(--fg-muted);
   font-weight: 500;

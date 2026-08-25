@@ -12,9 +12,10 @@ import {
 import { parseCsv, parseXlsx, rowsToPrompts } from "../src/lib/xlsxLite.js";
 import { computeSearchFunnel } from "../src/lib/funnel-omitted.js";
 import { GLOSSARY, glossaryGroups } from "../src/lib/glossary.js";
+import { normalizeMentions } from "../src/lib/mention-list.js";
 import { aggregateSources, aggregateSourcesFromCaptures } from "../src/lib/sources.js";
 import { analyzeFanout, FANOUT_BENCHMARK } from "../src/lib/fanout.js";
-import { sanitizeText } from "../src/lib/text-sanitize.js";
+import { sanitizeText, trimLabel } from "../src/lib/text-sanitize.js";
 
 // chrome.runtime.sendMessage throws SYNCHRONOUSLY — not via the callback —
 // when this page's connection to the extension is dead ("Extension context
@@ -709,8 +710,12 @@ function extractRankAndCategory(brandName, passage, text) {
   if (listMatch) {
     rank = `#${listMatch[1]}`;
     if (listMatch[2]) {
-      const candidate = listMatch[2].trim();
-      if (!isGenericHeaderOrNoise(candidate)) {
+      // Bounded before the generic-noise check: the capture runs to end of
+      // line, and sanitizeText() has already flattened the table pipes, so
+      // without this the next column comes along for the ride ("Video &
+      // Long-Term Reliability Approx").
+      const candidate = trimLabel(listMatch[2]);
+      if (candidate && !isGenericHeaderOrNoise(candidate)) {
         category = candidate;
       }
     }
@@ -723,8 +728,9 @@ function extractRankAndCategory(brandName, passage, text) {
       "i"
     );
     const summaryMatch = fullText.match(summaryRegex);
-    if (summaryMatch && summaryMatch[1] && !isGenericHeaderOrNoise(summaryMatch[1])) {
-      category = summaryMatch[1].trim();
+    if (summaryMatch && summaryMatch[1]) {
+      const candidate = trimLabel(summaryMatch[1]);
+      if (candidate && !isGenericHeaderOrNoise(candidate)) category = candidate;
     }
   }
 
@@ -795,9 +801,10 @@ function extractBrandAspects(passages) {
   let m;
   ASPECT_PHRASE_RE.lastIndex = 0;
   while ((m = ASPECT_PHRASE_RE.exec(raw))) {
-    const phrase = m[1].trim().replace(/\s+/g, " ").replace(/[,'-]+$/, "");
-    if (phrase.length < 3 || ASPECT_PHRASE_STOP.test(phrase)) continue;
-    if (phrase.split(/\s+/).length > 5) continue;
+    // Same bounding as the list-header path, so both chip sources are
+    // trimmed by one rule rather than two that drift apart.
+    const phrase = trimLabel(m[1]);
+    if (!phrase || ASPECT_PHRASE_STOP.test(phrase)) continue;
     push(phrase.charAt(0).toUpperCase() + phrase.slice(1));
     if (aspects.length >= 3) return aspects;
   }
@@ -1186,68 +1193,41 @@ function renderAnalyze() {
   // popup layout keeps it in normal reading order via flex `order`.
   let brandCard = null;
   if (rec.brandMentions && rec.brandMentions.length) {
-    const ALIAS_MAP = {
-      "google pixel": "Google",
-      "pixel": "Google",
-      "galaxy": "Samsung",
-      "iphone": "Apple",
-      "ipad": "Apple",
-      "macbook": "Apple",
-      "surface": "Microsoft",
-      "rog": "Asus",
-      "tuf": "Asus",
-      "vivobook": "Asus",
-      "ideapad": "Lenovo",
-      "thinkpad": "Lenovo",
-      "victus": "HP",
-      "pavilion": "HP",
-      "inspiron": "Dell",
-      "alienware": "Dell",
-      "legion": "Lenovo",
-      "predator": "Acer"
-    };
+    // Noise removal, aliasing and SKU collapsing all live in
+    // src/lib/mention-list.js so the merge rules are testable. A capture that
+    // named "Google Pixel 10a" and "Google" used to show both as separate
+    // brands, splitting one company's count across two rows.
+    const cleanMentions = normalizeMentions(rec.brandMentions);
+    const bc = el("div", { className: "card", id: "card-brand-mentions" },
+      el("h3", {}, `Brand Mentions (${cleanMentions.length})`));
 
-    // Generic words the detector could mistake for a brand — deliberately NOT a
-    // place for real brand names. "sony" used to be listed here, which silently
-    // dropped every genuine Sony mention (TVs, cameras, audio...) from this
-    // card for every industry, permanently — a correctness bug, not a filter.
-    const NOISE_BRAND_WORDS = new Set([
-      "battery", "software", "camera", "cameras", "display", "performance", "design",
-      "overall", "budget", "value", "rating", "phone", "phones", "mobile", "mobiles",
-      "recommendation", "recommendations", "processor", "chipset", "storage", "memory",
-      "charging", "screen", "gaming", "price", "pros", "cons", "specs", "life",
-      "option", "options", "pick", "picks", "android", "ios", "best"
-    ]);
-
-    const normalizedBrands = new Map();
-    rec.brandMentions.forEach((b) => {
-      const lower = (b.brand || "").toLowerCase().trim();
-      if (NOISE_BRAND_WORDS.has(lower)) return;
-      const canonical = ALIAS_MAP[lower] || b.brand;
-      const key = canonical.toLowerCase();
-      if (!normalizedBrands.has(key)) {
-        normalizedBrands.set(key, { ...b, brand: canonical, passages: [...(b.passages || [])] });
-      } else {
-        const existing = normalizedBrands.get(key);
-        existing.count += b.count;
-        if (b.passages && b.passages.length) existing.passages.push(...b.passages);
-      }
-    });
-
-    const cleanMentions = Array.from(normalizedBrands.values());
-    const bc = el("div", { className: "card", id: "card-brand-mentions" }, el("h3", {}, `Brand Mentions (${cleanMentions.length})`));
+    // One row per brand instead of a card per brand.
+    //
+    // Reported: "Brand Mention section doesn't need snippet information for
+    // each mentioned brand. The brand mention UI needs to be fixed."
+    //
+    // The quote is gone. It was the tallest thing in each card and the least
+    // reliable: passages are lifted from the answer verbatim, so a brand
+    // introduced inside a markdown table arrived as a wall of ⭐ rating cells,
+    // and two brands named in the same sentence showed the identical block of
+    // text. Everything it was there to convey — who, how often, in what order,
+    // for what — is on the row itself.
+    //
+    // Without it the rows are short and uniform, so they read as a ranking:
+    // a bar scaled to the most-mentioned brand makes the distribution visible
+    // at a glance, which a column of "×5 ×9 ×4" never did.
     const list = el("div", { className: "brand-list" });
-    
+    const maxCount = Math.max(1, ...cleanMentions.map((b) => b.count || 0));
+
     // rec.brandMentions arrives sorted by first appearance in the answer, and
     // a "shown but not named" entry carries MAX_SAFE_INTEGER so it sorts last.
     // That order is the single most asked-for thing on this card — "which
-    // brand was mentioned 1st and which was last" — and it was previously
-    // invisible, since every card looked identical. The ordinal makes the
-    // sequence explicit instead of implicit in the stacking.
+    // brand was mentioned 1st and which was last".
     const narratedCount = cleanMentions.filter((b) => b.count > 0).length;
     cleanMentions.forEach((b, bIdx) => {
       const item = el("div", { className: "brand-item" });
       const head = el("div", { className: "brand-head" });
+
       if (b.count > 0) {
         const pos = bIdx + 1;
         const label = pos === 1 ? "Named first in the answer"
@@ -1260,12 +1240,10 @@ function renderAnalyze() {
       } else {
         head.append(el("span", { className: "brand-ordinal muted-ordinal", title: "Shown in a card but never named in the answer" }, "–"));
       }
-      
+
       const { rank, category } = extractRankAndCategory(b.brand, (b.passages || []).join(" "), rec.answerText || "");
       const brandTitle = el("span", { className: "brand-name" });
-      if (rank) {
-        brandTitle.append(el("span", { className: "tag rank-tag", style: "margin-right:6px;" }, rank), " ");
-      }
+      if (rank) brandTitle.append(el("span", { className: "tag rank-tag" }, rank), " ");
       brandTitle.append(b.brand);
       // Label the user's own brand / tracked competitors so share of voice is
       // readable at a glance. Detection itself is automatic and unaffected.
@@ -1274,68 +1252,47 @@ function renderAnalyze() {
       } else if (b.relation === "competitor") {
         brandTitle.append(" ", el("span", { className: "tag fetched", title: "Tracked competitor" }, "COMP"));
       }
+      head.append(brandTitle);
 
       // count=0 means "shown in a product/place card, but the model never named
-      // it in prose" — a real, useful GEO signal (distinct from actual absence),
-      // so it gets its own badge instead of a confusing "×0".
-      head.append(
-        brandTitle,
-        b.count > 0
-          ? el("span", { className: "tag mentioned" }, `×${b.count}`)
-          : el("span", { className: "tag fetched", title: "Appeared in a product/place card but was not named in the written answer" }, "Shown, not named")
-      );
+      // it in prose" — a real, useful signal distinct from actual absence, so
+      // it gets its own badge instead of a confusing "×0" and no bar.
+      if (b.count > 0) {
+        head.append(el("div", { className: "brand-meter", title: `Named ${b.count} time${b.count === 1 ? "" : "s"} in this answer` },
+          el("div", { className: "brand-meter-fill", style: `width:${Math.round((b.count / maxCount) * 100)}%` })));
+        head.append(el("span", { className: "brand-count" }, `×${b.count}`));
+      } else {
+        head.append(el("span", { className: "tag fetched brand-shown-tag", title: "Appeared in a product/place card but was not named in the written answer" }, "Shown, not named"));
+      }
       item.append(head);
 
-      // Extract specific models
-      const models = extractBrandModels(b.brand, rec.products, rec.answerText || b.passages[0] || "");
+      // Models and aspects share one wrapping line: two half-empty rows of
+      // chips per brand was most of the old card's height.
+      const chips = el("div", { className: "brand-chips" });
+      // The SKUs folded in by normalizeMentions are models by definition, and
+      // are the most specific thing known about this brand in this answer.
+      const models = [...new Set([
+        ...(b.skus || []),
+        ...extractBrandModels(b.brand, rec.products, rec.answerText || b.passages[0] || ""),
+      ])];
       if (models.length) {
-        const modelRow = el("div", { className: "brand-models-row" });
-        modelRow.append(el("span", { className: "brand-label" }, "Models:"));
-        models.forEach((m) => {
-          modelRow.append(el("span", { className: "tag model-tag" }, m));
-        });
-        item.append(modelRow);
+        chips.append(el("span", { className: "brand-label" }, "Models"));
+        models.forEach((mName) => chips.append(el("span", { className: "tag model-tag" }, mName)));
       }
-
-      // Extract cited aspects / intent around this brand — skip for count=0
-      // entries, whose "passage" is a synthetic note, not real narration.
       if (b.count > 0) {
         const aspects = extractBrandAspects(b.passages);
-        const aspectRow = el("div", { className: "brand-aspects-row" });
-        aspectRow.append(el("span", { className: "brand-label" }, "Cited for:"));
-
-        if (category) {
-          aspectRow.append(el("span", { className: "tag aspect-tag highlight-aspect" }, category));
-        }
+        const shown = [];
+        if (category) shown.push(category);
         aspects.forEach((asp) => {
-          if (!category || !category.toLowerCase().includes(asp.toLowerCase())) {
-            aspectRow.append(el("span", { className: "tag aspect-tag" }, asp));
-          }
+          if (!category || !category.toLowerCase().includes(asp.toLowerCase())) shown.push(asp);
         });
-        item.append(aspectRow);
+        if (shown.length) {
+          chips.append(el("span", { className: "brand-label" }, "Cited for"));
+          shown.forEach((asp, i) => chips.append(
+            el("span", { className: `tag aspect-tag${i === 0 && category ? " highlight-aspect" : ""}` }, asp)));
+        }
       }
-
-      // A count=0 "shown, not named" passage is our own synthetic note, not real
-      // conversation text — a "jump to this passage" link for it would point at
-      // text that doesn't exist on the page, so skip the quote block entirely.
-      const cleaned = b.count > 0 ? cleanPassage(b.passages[0]) : null;
-      if (cleaned) {
-        // Deep-link back into the source conversation. `pageUrl` is the field the
-        // schema actually carries (there is no `rec.url`), so this used to be a
-        // dead link that rendered as clickable but did nothing.
-        const textTarget = encodeURIComponent(cleaned.slice(0, 50).trim());
-        const quoteUrl = rec.pageUrl ? `${rec.pageUrl}#:~:text=${textTarget}` : null;
-        
-        const quoteDiv = el("a", {
-          className: "brand-quote",
-          style: `display: block; text-decoration: none; color: inherit;${quoteUrl ? " cursor: pointer;" : ""}`,
-          ...(quoteUrl
-            ? { href: quoteUrl, target: "_blank", rel: "noreferrer", title: "Jump to this passage in the conversation" }
-            : {}),
-        }, quoteUrl ? `"${cleaned}" ↗` : `"${cleaned}"`);
-        
-        item.append(quoteDiv);
-      }
+      if (chips.childNodes.length) item.append(chips);
       list.append(item);
     });
     bc.append(list);

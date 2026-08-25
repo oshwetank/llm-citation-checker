@@ -102,6 +102,32 @@ async function orderAt(context, extId, width, height) {
 
 const idx = (order, id) => order.findIndex((o) => o.id === id);
 
+/** Shape of the Brand Mentions card as actually rendered. */
+async function brandCardShape(context, extId, width, height) {
+  const page = await context.newPage();
+  await page.setViewportSize({ width, height });
+  await page.goto(`chrome-extension://${extId}/ui/panel.html${width > 640 ? "?mode=tab" : ""}`);
+  await page.waitForTimeout(1200);
+  const out = await page.evaluate(() => {
+    const card = document.getElementById("card-brand-mentions");
+    if (!card) return null;
+    const rows = [...card.querySelectorAll(".brand-item")];
+    const heights = rows.map((r) => Math.round(r.getBoundingClientRect().height));
+    return {
+      rows: rows.length,
+      quotes: card.querySelectorAll(".brand-quote").length,
+      ordinals: card.querySelectorAll(".brand-ordinal").length,
+      meters: card.querySelectorAll(".brand-meter").length,
+      chips: [...card.querySelectorAll(".tag")].map((t) => t.textContent),
+      minHeight: Math.min(...heights),
+      maxHeight: Math.max(...heights),
+      cardHeight: Math.round(card.getBoundingClientRect().height),
+    };
+  });
+  await page.close();
+  return out;
+}
+
 const context = await chromium.launchPersistentContext(PROFILE_BASE, {
   headless: false,
   args: [
@@ -132,6 +158,26 @@ try {
       // The reported bug, stated as an assertion.
       check("Search Funnel comes AFTER Brand Mentions", funnel > brand, `funnel@${funnel} brand@${brand}`);
     }
+
+    // Reported: "Brand Mention section doesn't need snippet information for
+    // each mentioned brand." The quote was the tallest element in each card
+    // and the least reliable — a brand introduced inside a markdown table
+    // arrived as a wall of rating cells, and two brands named in the same
+    // sentence showed the identical block of text.
+    const bm = await brandCardShape(context, extId, 540, 900);
+    check("no per-brand quote block", bm.quotes === 0, `${bm.quotes} quotes`);
+    check("every brand still shows its position in the answer",
+      bm.ordinals === bm.rows, `${bm.ordinals} of ${bm.rows}`);
+    check("and its mention count as a comparable bar",
+      bm.meters > 0 && bm.meters <= bm.rows, `${bm.meters} of ${bm.rows}`);
+    // Uniform rows are what makes the list read as a ranking.
+    check("rows are the same height, give or take one wrapped chip line",
+      bm.maxHeight - bm.minHeight < 40, `${bm.minHeight}-${bm.maxHeight}px`);
+    check("the card is no longer the tallest thing on the page",
+      bm.cardHeight < 520, `${bm.cardHeight}px for ${bm.rows} brands`);
+    // A chip that ran into the next table column read "… Reliability Approx".
+    check("no chip label trails into the next table column",
+      !bm.chips.some((c) => /\b(approx|₹|\$)\b/i.test(c)), bm.chips.join(" | "));
     if (general !== -1) {
       check("General Information comes before Brand Mentions", general < brand, `general@${general} brand@${brand}`);
     }
