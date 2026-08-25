@@ -181,6 +181,9 @@ let geoEngineFilter = [];
 // so a competitor can be analysed with the same depth as your own brand
 // instead of being a row you can only read across.
 let geoFocusBrand = null;
+// Whether the campaign card's supporting-detail disclosure is open. Kept
+// across re-renders so changing a filter doesn't close it mid-read.
+let geoDetailOpen = false;
 // Campaigns tab (formerly Tracking + Loader) state
 let promptTagFilter = []; // tag chips selected in the prompt table sidebar
 let promptOnlyUnassigned = false;
@@ -3618,16 +3621,21 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
   if (!r.ok) { mc.append(el("div", { className: "empty" }, r.error || "Couldn't load metrics.")); return; }
   const m = r.metrics;
 
+  // The card is ordered by what the campaign is FOR: who am I looking at,
+  // how visible are they, how does that compare. Everything else — the
+  // capture/crawl counts, the per-engine split, whether your own site got
+  // cited — is supporting detail and lives in one disclosure at the bottom.
+  // Twelve tiles of numbers above the fold was the reported clutter.
+  //
   // Timeframe is the same filter as the rest of the Dashboard (see
-  // renderDashboardImpl) — no separate "Last 7/30/90 days" selector here
-  // anymore, so there's only ever one time filter to reason about.
-  const filters = el("div", { className: "proj-row" });
-  const eng = el("select", { className: "filter" });
+  // renderDashboardImpl) — no separate "Last 7/30/90 days" selector here, so
+  // there's only ever one time filter to reason about.
+  const controls = el("div", { className: "campaign-controls" });
+  const eng = el("select", { className: "filter", title: "Limit every number below to one engine" });
   eng.append(el("option", { value: "" }, "All engines"));
   availableEngines().forEach((e) => eng.append(el("option", { value: e.id, selected: geoEngineFilter[0] === e.id }, e.label)));
   eng.onchange = () => { geoEngineFilter = eng.value ? [eng.value] : []; refreshGeoMetrics(profile, prompts, since, until); refreshPromptPerformance(profile, prompts, since, until); };
-  filters.append(eng);
-  mc.append(filters);
+  head.append(controls);
 
   const tags = allTags(prompts);
   if (tags.length) {
@@ -3655,20 +3663,8 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
     mc.append(tw);
   }
 
-  // Overview row — the same shape of aggregate as the ad-hoc "Performance
-  // Overview" (captures / with-search / fan-out / domains / cited / fetched),
-  // but for this campaign's tracked responses specifically. Folding it in
-  // here is what "merges" the two sections once a campaign is selected.
-  if (r.overview) {
-    const ov = r.overview;
-    const ovStats = el("div", { className: "statgrid", style: "margin-top:10px" });
-    [[ov.captures, "Captures"], [ov.searched, "With search"], [ov.fanTotal, "Fan-out queries"],
-     [ov.domainCount, "Unique domains"], [ov.citedTotal, "Cited"], [ov.fetchedTotal, "Read-only"]].forEach(([n, l]) =>
-      ovStats.append(el("div", { className: "stat" }, el("div", { className: "n" }, String(n)), el("div", { className: "l" }, l))));
-    mc.append(ovStats);
-  }
-
   if (!m.totalResponses) {
+    controls.append(eng);
     mc.append(el("div", { className: "empty", style: "margin-top:10px" },
       "No tracked responses yet for these filters. Head to the Campaigns tab to start a run."));
     return;
@@ -3685,26 +3681,29 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
   const own = focusRow || m.own;
   if (!focusRow) geoFocusBrand = null;
 
-  if (m.brands.length > 1) {
-    const sw = el("div", { className: "brand-switcher" });
-    sw.append(el("span", { className: "muted small brand-switcher-label" }, "Analysing"));
-    m.brands.forEach((b) => {
-      const on = own && b.name === own.name;
-      const chip = el("button", {
-        className: `brand-chip${on ? " on" : ""}${b.isOwn ? " is-own" : ""}`,
-        title: b.isOwn ? "Your own brand" : `Point the whole campaign view at ${b.name}`,
-      });
-      chip.append(el("span", {}, b.isOwn ? `${b.name} (you)` : b.name));
-      chip.append(el("span", { className: "brand-chip-n" }, fmtPct(b.visibility)));
-      chip.onclick = () => {
-        geoFocusBrand = b.isOwn ? null : b.name;
-        refreshGeoMetrics(profile, prompts, since, until);
-        refreshPromptPerformance(profile, prompts, since, until);
-      };
-      sw.append(chip);
-    });
-    mc.append(sw);
-  }
+  // A dropdown, not chips: a campaign can legitimately end up tracking twenty
+  // brands, and a wrapping chip row would push the numbers off the screen at
+  // exactly the point the campaign gets interesting. Each option carries its
+  // visibility so the list is still a ranking you can read.
+  const picker = el("select", { className: "filter brand-picker", title: "Point the whole campaign view at one brand" });
+  const ownGroup = el("optgroup", { label: "Your brand" });
+  const compGroup = el("optgroup", { label: `Competitors (${m.brands.filter((b) => !b.isOwn).length})` });
+  m.brands.forEach((b) => {
+    const opt = el("option", {
+      value: b.name,
+      selected: !!(own && b.name === own.name),
+    }, `${b.isOwn ? `${b.name} (you)` : b.name} · ${fmtPct(b.visibility)}`);
+    (b.isOwn ? ownGroup : compGroup).append(opt);
+  });
+  if (ownGroup.childNodes.length) picker.append(ownGroup);
+  if (compGroup.childNodes.length) picker.append(compGroup);
+  picker.onchange = () => {
+    const chosen = m.brands.find((b) => b.name === picker.value);
+    geoFocusBrand = chosen && chosen.isOwn ? null : picker.value;
+    refreshGeoMetrics(profile, prompts, since, until);
+    refreshPromptPerformance(profile, prompts, since, until);
+  };
+  controls.append(picker, eng);
 
   /* KPI row */
   const kpis = el("div", { className: "geo-kpis" });
@@ -3719,48 +3718,24 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
   // misleading once the view is pointed at a competitor.
   const whose = own?.isOwn ? "your" : `${own?.name || "this brand"}'s`;
   const Whose = own?.isOwn ? "Your" : `${own?.name || "This brand"}'s`;
+  // Four headline numbers, not six. Source Visibility and Citations are about
+  // whether YOUR WEBSITE got used as a source — a different question from
+  // whether the brand got mentioned, and one most campaigns can't act on
+  // until the first one is answered. They move into the detail below.
   kpis.append(
+    // The brand is named here rather than on every tile: four big numbers
+    // floating under a dropdown you have already scrolled past need one
+    // anchor, not four repetitions.
+    kpi("Brand Visibility", fmtPct(own?.visibility),
+      `${own?.name || "—"} in ${own?.responsesPresent || 0} of ${m.totalResponses} responses`,
+      `Responses mentioning ${whose} brand ÷ total responses. (Peec.ai's published formula.)`),
     kpi("Share of Voice", fmtPct(own?.shareOfVoice), `${own?.mentions || 0} of ${m.mentionPool} tracked mentions`,
       `${Whose} mentions ÷ total mentions of ALL tracked brands combined. (Peec.ai's published formula.)`),
-    kpi("Brand Visibility", fmtPct(own?.visibility), `${own?.responsesPresent || 0} of ${m.totalResponses} responses`,
-      `Responses mentioning ${whose} brand ÷ total responses. (Peec.ai's published formula.)`),
-    kpi("Mentions", String(own?.mentions ?? 0), "times named in answers"),
-    kpi("Source Visibility", fmtPct(own?.sourceVisibility), `${whose} domain in ${own?.sourceResponses || 0} responses`,
-      `Responses where ${whose} own domain surfaced as a source at all — cited or merely read, not just cited.`),
-    kpi("Citations", String(own?.citations ?? 0), `responses citing ${whose} domain`),
     kpi("Avg position", fmtPos(own?.avgPosition), "rank among tracked brands",
       `Average rank by where ${whose} brand first appears in the written answer, among all tracked brands — only counted for responses where it appears at all.`),
+    kpi("Mentions", String(own?.mentions ?? 0), "times named in answers"),
   );
   mc.append(kpis);
-
-  /* Per-engine split for the focused brand.
-     "Strong on ChatGPT, invisible on Gemini" is one of the few findings that
-     changes what you would actually do, and a profile-wide average hides it
-     completely. Only shown when there is more than one engine to compare —
-     with one engine these numbers are the KPI row again. */
-  const engineIdsWithData = Object.keys(r.byEngine || {});
-  if (engineIdsWithData.length > 1 && own) {
-    const box = el("div", { className: "engine-split" });
-    box.append(el("div", { className: "engine-split-title muted small" },
-      `${own.name} by engine`));
-    const grid = el("div", { className: "engine-split-grid" });
-    engineIdsWithData.forEach((id) => {
-      const eng = r.byEngine[id];
-      const row = eng.metrics.brands.find((b) => b.name === own.name);
-      const cell = el("div", { className: "engine-split-cell" });
-      cell.append(el("div", { className: "engine-split-head" },
-        engineChip(id, ENGINES.find((e) => e.id === id)?.label || id),
-        el("span", { className: "muted small" }, `${eng.responses} response${eng.responses === 1 ? "" : "s"}`)));
-      cell.append(el("div", { className: "engine-split-nums" },
-        el("div", {}, el("strong", {}, fmtPct(row?.visibility)), el("span", { className: "muted small" }, "Visibility")),
-        el("div", {}, el("strong", {}, fmtPct(row?.shareOfVoice)), el("span", { className: "muted small" }, "Share of Voice")),
-        el("div", {}, el("strong", {}, fmtPos(row?.avgPosition)), el("span", { className: "muted small" }, "Avg position")),
-        el("div", {}, el("strong", {}, String(row?.mentions ?? 0)), el("span", { className: "muted small" }, "Mentions"))));
-      grid.append(cell);
-    });
-    box.append(grid);
-    mc.append(box);
-  }
 
   /* Competitors the user never typed.
      A campaign with no competitors configured measures nothing: Share of
@@ -3887,6 +3862,80 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
   wrap.append(t);
   mc.append(wrap);
 
+  /* Supporting detail, in one disclosure rather than three toggles.
+     Everything here is real and sometimes wanted — it just isn't the answer
+     the campaign exists to give, and above the fold it was burying the answer
+     under twelve tiles of numbers. Open state is remembered across re-renders
+     so changing a filter doesn't shut it while you're reading it. */
+  const more = el("details", { className: "more-detail", ...(geoDetailOpen ? { open: "open" } : {}) });
+  more.append(el("summary", {}, "More detail",
+    el("span", { className: "muted small" }, " — your site as a source, by engine, data collected")));
+  more.addEventListener("toggle", () => { geoDetailOpen = more.open; });
+
+  // 1. Your site as a source. A different question from brand visibility:
+  //    "did anyone get MENTIONED" vs "did MY PAGES get used".
+  const siteBox = el("div", { className: "detail-block" });
+  siteBox.append(el("div", { className: "detail-title muted small" }, `${own?.name || "This brand"} as a source`));
+  const siteStats = el("div", { className: "statgrid" });
+  [[fmtPct(own?.sourceVisibility), "Source visibility",
+    `Responses where ${whose} own domain surfaced as a source at all — cited or merely read, not just cited.`],
+   [String(own?.citations ?? 0), "Citations", `Responses that cited ${whose} own domain as a source.`],
+   [String(own?.sourceResponses ?? 0), "Responses with your site", `Responses where ${whose} domain appeared in any form.`],
+  ].forEach(([n, l, tip]) => siteStats.append(
+    el("div", { className: "stat", ...(tip ? { "data-tip": tip } : {}) },
+      el("div", { className: "n" }, n), el("div", { className: "l" }, l))));
+  siteBox.append(siteStats);
+  if (!own?.url) {
+    siteBox.append(el("div", { className: "muted small", style: "margin-top:6px" },
+      own?.isOwn
+        ? "No website set on this campaign, so there is nothing to match sources against — add one in the Campaigns tab."
+        : `No website on record for ${own?.name}, so its pages can't be recognised in the source list.`));
+  }
+  more.append(siteBox);
+
+  /* 2. Per-engine split for the focused brand.
+     "Strong on ChatGPT, invisible on Gemini" is one of the few findings that
+     changes what you would actually do, and a profile-wide average hides it
+     completely. Only shown when there is more than one engine to compare —
+     with one engine these numbers are the KPI row again. */
+  const engineIdsWithData = Object.keys(r.byEngine || {});
+  if (engineIdsWithData.length > 1 && own) {
+    const box = el("div", { className: "detail-block engine-split" });
+    box.append(el("div", { className: "detail-title muted small" }, `${own.name} by engine`));
+    const grid = el("div", { className: "engine-split-grid" });
+    engineIdsWithData.forEach((id) => {
+      const engRow = r.byEngine[id];
+      const row = engRow.metrics.brands.find((b) => b.name === own.name);
+      const cell = el("div", { className: "engine-split-cell" });
+      cell.append(el("div", { className: "engine-split-head" },
+        engineChip(id, ENGINES.find((e) => e.id === id)?.label || id),
+        el("span", { className: "muted small" }, `${engRow.responses} response${engRow.responses === 1 ? "" : "s"}`)));
+      cell.append(el("div", { className: "engine-split-nums" },
+        el("div", {}, el("strong", {}, fmtPct(row?.visibility)), el("span", { className: "muted small" }, "Visibility")),
+        el("div", {}, el("strong", {}, fmtPct(row?.shareOfVoice)), el("span", { className: "muted small" }, "Share of Voice")),
+        el("div", {}, el("strong", {}, fmtPos(row?.avgPosition)), el("span", { className: "muted small" }, "Avg position")),
+        el("div", {}, el("strong", {}, String(row?.mentions ?? 0)), el("span", { className: "muted small" }, "Mentions"))));
+      grid.append(cell);
+    });
+    box.append(grid);
+    more.append(box);
+  }
+
+  // 3. What was collected. Diagnostics about the crawl, not about the brand —
+  //    which is why it used to be the first thing on screen and shouldn't be.
+  if (r.overview) {
+    const ov = r.overview;
+    const box = el("div", { className: "detail-block" });
+    box.append(el("div", { className: "detail-title muted small" }, "Data collected"));
+    const ovStats = el("div", { className: "statgrid" });
+    [[ov.captures, "Captures"], [ov.searched, "With search"], [ov.fanTotal, "Fan-out queries"],
+     [ov.domainCount, "Unique domains"], [ov.citedTotal, "Cited"], [ov.fetchedTotal, "Read-only"]].forEach(([n, l]) =>
+      ovStats.append(el("div", { className: "stat" }, el("div", { className: "n" }, String(n)), el("div", { className: "l" }, l))));
+    box.append(ovStats);
+    more.append(box);
+  }
+  mc.append(more);
+
   /* honest gap, stated in the UI rather than left for the user to discover */
   mc.append(el("div", { className: "geo-note muted small" }, `Sentiment: not measured. ${SENTIMENT_NOTE}`));
 
@@ -3981,7 +4030,7 @@ const promptPerfLegend = (whose = "your") => el("div", { className: "pp-legend m
  * hidden behind a scrollbar. The full-tab view keeps the table, where the
  * width is genuinely there and scanning a column beats reading cards.
  */
-function promptPerfCards(filteredPrompts, engineIds, engineLabel, runsOf, rerender) {
+function promptPerfCards(filteredPrompts, engineIds, engineLabel, runsOf, rerender, whose) {
   const wrap = el("div", { className: "pp-cards" });
   filteredPrompts.forEach((p, i) => {
     const runs = runsOf(p);
@@ -4011,7 +4060,7 @@ function promptPerfCards(filteredPrompts, engineIds, engineLabel, runsOf, rerend
       row.append(el("span", { className: "pp-card-engine-name" }, engineChip(id, engineLabel(id))));
       // resultCell builds a <td>; lift its badges out so the same markup and
       // the same wording drive both layouts.
-      const cell = resultCell(run);
+      const cell = resultCell(run, whose);
       const stack = cell.firstElementChild;
       row.append(stack && stack.classList.contains("pp-stack")
         ? el("span", { className: "pp-card-badges" }, ...stack.childNodes)
@@ -4039,7 +4088,7 @@ function promptPerfCards(filteredPrompts, engineIds, engineLabel, runsOf, rerend
       runs.slice(1).forEach((run) => {
         const row = el("div", { className: "pp-card-engine" });
         row.append(el("span", { className: "pp-card-engine-name muted" }, engineChip(run.platform, relTime(run.capturedAt))));
-        const cell = resultCell(run);
+        const cell = resultCell(run, whose);
         const stack = cell.firstElementChild;
         row.append(el("span", { className: "pp-card-badges" }, ...(stack && stack.classList.contains("pp-stack") ? stack.childNodes : cell.childNodes)));
         hist.append(row);
@@ -4077,6 +4126,11 @@ async function refreshPromptPerformance(profile, prompts, since, until) {
   const focused = r.focusBrand && !r.focusIsOwn ? r.focusBrand : null;
   const ppSubject = focused || "your brand";   // "mention your brand" / "mention OnePlus"
   const ppPoss = focused ? `${focused}'s` : "your";
+  // resultCell's badge tooltips default to "Your brand was not named" — right
+  // for the own brand, wrong the moment the table is pointed at a competitor.
+  const ppWhoseTip = focused
+    ? { subject: focused, domain: `${focused}'s domain` }
+    : { subject: "Your brand", domain: "Your own domain" };
   const head = el("div", { className: "card-header" },
     el("h3", {}, r.focusBrand && !r.focusIsOwn ? `Prompt Performance — ${r.focusBrand}` : "Prompt Performance"));
   root.append(head);
@@ -4144,7 +4198,7 @@ async function refreshPromptPerformance(profile, prompts, since, until) {
     // so it's clear whether a brand showed up on ChatGPT vs. Gemini rather
     // than one merged result that could be from either.
     if (document.body.classList.contains("popup")) {
-      root.append(promptPerfCards(filteredPrompts, engineIds, engineLabel, runsOf, rerender));
+      root.append(promptPerfCards(filteredPrompts, engineIds, engineLabel, runsOf, rerender, ppWhoseTip));
       root.append(promptPerfLegend(ppPoss));
     } else {
       const headerCells = [el("th", { className: "pp-col-idx" }, "#"), el("th", {}, "Prompt")];
@@ -4172,13 +4226,13 @@ async function refreshPromptPerformance(profile, prompts, since, until) {
 
         const cells = [el("td", { className: "pp-col-idx muted" }, String(i + 1)), promptCell];
         if (!runs.length) {
-          engineIds.forEach(() => cells.push(resultCell(null)));
+          engineIds.forEach(() => cells.push(resultCell(null, ppWhoseTip)));
           cells.push(el("td", { className: "muted small" }, "never"), el("td", {}));
           table.append(el("tr", { className: "pp-row-idle" }, ...cells));
           return;
         }
 
-        engineIds.forEach((id) => cells.push(resultCell(runs.find((run) => run.platform === id) || null)));
+        engineIds.forEach((id) => cells.push(resultCell(runs.find((run) => run.platform === id) || null, ppWhoseTip)));
         cells.push(el("td", { className: "pp-time", title: new Date(runs[0].capturedAt).toLocaleString() }, relTime(runs[0].capturedAt)));
 
         const expandCell = el("td", { className: "pp-col-more" });
@@ -4198,7 +4252,7 @@ async function refreshPromptPerformance(profile, prompts, since, until) {
         if (runs.length > 1 && expandedPromptRuns.has(p.id)) {
           runs.slice(1).forEach((run) => {
             const subCells = [el("td", { className: "pp-col-idx" }), el("td", { className: "muted small" }, "earlier run")];
-            engineIds.forEach((id) => subCells.push(run.platform === id ? resultCell(run) : el("td", {})));
+            engineIds.forEach((id) => subCells.push(run.platform === id ? resultCell(run, ppWhoseTip) : el("td", {})));
             subCells.push(el("td", { className: "pp-time muted small", title: new Date(run.capturedAt).toLocaleString() }, relTime(run.capturedAt)), el("td", {}));
             table.append(el("tr", { className: "prompt-perf-subrow" }, ...subCells));
           });
@@ -4566,102 +4620,198 @@ async function openUrlDetailModal(url, profile, since, until) {
   body.append(el("div", { className: "drill-scroll" }, table));
 }
 
-/** Per-prompt performance for ONE brand on this campaign — own brand or any
- *  competitor. Every row in the Campaign Performance table opens this now,
- *  not just the campaign's own brand: `geo-prompt-performance` accepts a
- *  `focusBrand` name and computes mentioned/position/cited against THAT
- *  brand instead of always "own" (see background.js), so a competitor gets
- *  the exact same breakdown the campaign's own brand gets in the full-page
- *  Prompt Performance table below — just scoped to one brand, in a modal. */
+/**
+ * Everything about ONE brand on this campaign — own brand or any competitor.
+ *
+ * Reported: "when I click on any brand I don't get to know much about that
+ * competition's visibility, I don't get data to analyse it."
+ *
+ * It used to show four chips and a per-prompt list. The chips were already on
+ * the table behind the modal, so opening it added almost nothing. What a
+ * competitor actually raises is a comparative question the aggregate metrics
+ * can't answer, because computeMetrics reduces each brand to its own column
+ * and throws the PAIRING away:
+ *
+ *   - which answers let them in and kept you out          (headToHead)
+ *   - when you both appear, who gets named first          (headToHead)
+ *   - what the engine was reading when it named them      (brandSourceDomains)
+ *   - whether that differs by engine                      (byEngine)
+ *   - and then, per prompt, both brands side by side
+ *
+ * All of it needs answerText to rank by first appearance, so it is assembled
+ * in one geo-brand-detail round trip rather than reconstructed here.
+ */
 async function openBrandDetailModal(profile, brand, prompts, since, until) {
   const { backdrop, body } = openDetailModal(
     brand.isOwn ? `${brand.name} (you)` : brand.name,
-    `Prompt performance · ${profile.name || "Untitled campaign"}`,
-    { avatarText: brand.name.slice(0, 1).toUpperCase(), avatarKey: brand.name },
+    `Brand analysis · ${profile.name || "Untitled campaign"}`,
+    { avatarText: brand.name.slice(0, 1).toUpperCase(), avatarKey: brand.name, wide: true },
   );
   body.append(el("div", { className: "muted small" }, "Loading…"));
 
   const r = await send({
-    type: "geo-prompt-performance", profileId: profile.id, focusBrand: brand.name,
+    type: "geo-brand-detail", profileId: profile.id, brand: brand.name,
     tags: geoTagFilter, engines: geoEngineFilter, since, until,
   });
   body.textContent = "";
-  if (!r.ok) { body.append(el("div", { className: "empty" }, r.error || "Couldn't load this brand's performance.")); return; }
-  if (!r.hasBrand) { body.append(el("div", { className: "empty" }, `${brand.name} couldn't be matched against the tracked runs — check its name on the Campaigns tab.`)); return; }
+  if (!r.ok) { body.append(el("div", { className: "empty" }, r.error || "Couldn't load this brand's analysis.")); return; }
+  const row = r.row;
+  if (!row) { body.append(el("div", { className: "empty" }, `${brand.name} couldn't be matched against the tracked runs.`)); return; }
 
-  const engineIds = (profile.engines && profile.engines.length) ? profile.engines : [];
-  // What resultCell's tooltips should call this brand — the default inside
-  // resultCell says "Your brand" / "Your own domain", which is correct ONLY
-  // for the campaign's own brand. Every other row in the competitor table
-  // opens this same modal for a brand that is emphatically not "yours".
-  const whose = brand.isOwn ? undefined : { subject: brand.name, domain: `${brand.name}'s domain` };
-  const runsByPromptId = new Map(Object.entries(r.prompts || {}));
-  // Same tag filter the full-page Prompt Performance table applies — without
-  // it, the denominator here (and the row list) would silently include
-  // prompts the rest of the Dashboard has filtered out.
-  const filteredPrompts = (geoTagFilter.length
-    ? (prompts || []).filter((p) => geoTagFilter.some((t) => (p.tags || []).includes(t)))
-    : (prompts || [])
-  ).slice().sort((a, b) => a.text.localeCompare(b.text));
+  const engineLabel = (id) => ENGINES.find((e) => e.id === id)?.label || id;
 
-  let withRuns = 0, anyMention = 0, anyCite = 0, rankSum = 0, rankN = 0;
-  filteredPrompts.forEach((p) => {
-    const runs = runsByPromptId.get(p.id) || [];
-    if (!runs.length) return;
-    withRuns++;
-    if (runs.some((x) => x.mentioned)) anyMention++;
-    if (runs.some((x) => x.cited)) anyCite++;
-    runs.forEach((x) => { if (x.position != null) { rankSum += x.position; rankN++; } });
-  });
-  const summary = el("div", { className: "pp-summary" });
-  const sChip = (n, l, tone) => el("div", { className: `pp-sum ${tone || ""}` },
-    el("span", { className: "pp-sum-n" }, String(n)), el("span", { className: "pp-sum-l" }, l));
-  summary.append(
-    sChip(`${withRuns}/${filteredPrompts.length}`, "prompts with runs"),
-    sChip(anyMention, "mentioned", anyMention ? "good" : ""),
-    sChip(anyCite, "domain cited", anyCite ? "good" : ""),
-    sChip(rankN ? `#${(rankSum / rankN).toFixed(1)}` : "—", "average rank"),
+  /* --- headline --- */
+  const stats = el("div", { className: "statgrid modal-statgrid" });
+  stats.append(
+    modalStat(fmtPct(row.visibility), "Visibility", "accent",
+      `Mentioned in ${row.responsesPresent} of ${r.responses} responses.`),
+    modalStat(fmtPct(row.shareOfVoice), "Share of Voice", "accent",
+      "This brand's mentions ÷ total mentions of all tracked brands."),
+    modalStat(fmtPos(row.avgPosition), "Avg position", "",
+      "Average rank by where this brand first appears in the written answer — counted only where it appears."),
+    modalStat(row.mentions, "Mentions", "", "Times named across all answers."),
+    modalStat(row.citations, "Citations", row.citations ? "good" : "muted",
+      "Responses that cited this brand's own domain as a source."),
   );
-  body.append(summary);
-
-  if (!filteredPrompts.length) {
-    body.append(el("div", { className: "empty" }, "No prompts match the current filters."));
-    return;
+  body.append(stats);
+  if (r.auto) {
+    body.append(el("div", { className: "muted small", style: "margin-bottom:10px" },
+      "Inferred from your captures — not a competitor you configured."));
   }
 
-  const list = el("div", { className: "brand-drill" });
-  filteredPrompts.forEach((p) => {
-    const runs = runsByPromptId.get(p.id) || [];
-    const row = el("div", { className: `brand-drill-row${runs.length ? "" : " idle"}` });
-    if (runs[0]) {
-      const link = el("button", { className: "linkbtn brand-drill-prompt", title: "Open the latest capture of this prompt" }, p.text);
-      link.onclick = () => { backdrop.remove(); openCapture(runs[0].captureId); };
-      row.append(link);
-    } else {
-      row.append(el("span", { className: "brand-drill-prompt muted" }, p.text));
+  /* --- head to head: the question a competitor actually raises --- */
+  if (r.headToHead && r.ownBrand) {
+    const h = r.headToHead;
+    body.append(el("div", { className: "modal-section-title" }, `${r.brand} vs ${r.ownBrand}`));
+    const h2h = el("div", { className: "h2h" });
+    const seg = (n, label, tone, tip) => {
+      const pct = h.responses ? (n / h.responses) * 100 : 0;
+      const cell = el("div", { className: `h2h-seg tone-${tone}`, ...(tip ? { "data-tip": tip } : {}) });
+      cell.append(el("div", { className: "h2h-n" }, String(n)));
+      cell.append(el("div", { className: "h2h-l muted small" }, label));
+      cell.append(el("div", { className: "h2h-bar" }, el("div", { className: "h2h-fill", style: `width:${pct}%` })));
+      return cell;
+    };
+    h2h.append(
+      // Listed first on purpose: this is the gap you can act on.
+      seg(h.aOnly, `Only ${r.brand}`, "bad",
+        `Answers that named ${r.brand} and did not name ${r.ownBrand} at all. This is the gap.`),
+      seg(h.both, "Both named", "neutral", `Answers naming both ${r.brand} and ${r.ownBrand}.`),
+      seg(h.bOnly, `Only ${r.ownBrand}`, "good",
+        `Answers that named ${r.ownBrand} and not ${r.brand}.`),
+      seg(h.neither, "Neither", "muted", "Answers naming neither brand."),
+    );
+    body.append(h2h);
+
+    if (h.both) {
+      const lead = el("div", { className: "h2h-lead muted small" });
+      lead.append(el("span", {}, "When both appear: "));
+      lead.append(el("strong", {}, `${r.brand} first in ${h.aheadA}`));
+      lead.append(el("span", {}, " · "));
+      lead.append(el("strong", {}, `${r.ownBrand} first in ${h.aheadB}`));
+      if (h.bothUnranked) {
+        lead.append(el("span", {},
+          ` · ${h.bothUnranked} with no order (shown in a product card rather than written about, so neither is "first")`));
+      }
+      body.append(lead);
     }
-    const badges = el("div", { className: "brand-drill-badges" });
+  }
+
+  /* --- by engine --- */
+  const engineIds = Object.keys(r.byEngine || {});
+  if (engineIds.length > 1) {
+    body.append(el("div", { className: "modal-section-title" }, "By engine"));
+    const grid = el("div", { className: "engine-split-grid" });
     engineIds.forEach((id) => {
-      const run = runs.find((x) => x.platform === id) || null;
-      // resultCell's own click handler opens the capture but has no idea
-      // this badge is sitting inside a modal — override it here so the
-      // modal actually closes before Analyze renders behind it, instead
-      // of leaving the backdrop stuck on top of the new tab.
-      const cell = resultCell(run, whose);
-      const stack = cell.firstElementChild;
-      const nodes = stack && stack.classList.contains("pp-stack") ? [...stack.childNodes] : [...cell.childNodes];
-      if (run) nodes.forEach((n) => {
-        if (!n.classList?.contains("pp-clickable")) return;
-        n.onclick = (ev) => { ev.stopPropagation(); backdrop.remove(); openCapture(run.captureId); };
-      });
-      const wrap = el("span", { className: "brand-drill-engine" });
-      wrap.append(engineIcon(id), ...nodes);
-      badges.append(wrap);
+      const e = r.byEngine[id];
+      const cell = el("div", { className: "engine-split-cell" });
+      cell.append(el("div", { className: "engine-split-head" },
+        engineChip(id, engineLabel(id)),
+        el("span", { className: "muted small" }, `${e.responses} response${e.responses === 1 ? "" : "s"}`)));
+      cell.append(el("div", { className: "engine-split-nums" },
+        el("div", {}, el("strong", {}, fmtPct(e.row?.visibility)), el("span", { className: "muted small" }, "Visibility")),
+        el("div", {}, el("strong", {}, fmtPct(e.row?.shareOfVoice)), el("span", { className: "muted small" }, "Share of Voice")),
+        el("div", {}, el("strong", {}, fmtPos(e.row?.avgPosition)), el("span", { className: "muted small" }, "Avg position")),
+        el("div", {}, el("strong", {}, String(e.row?.mentions ?? 0)), el("span", { className: "muted small" }, "Mentions"))));
+      grid.append(cell);
     });
-    row.append(badges);
-    list.append(row);
+    body.append(grid);
+  }
+
+  /* --- what the engine was reading --- */
+  if (r.sourceDomains && r.sourceDomains.length) {
+    body.append(el("div", { className: "modal-section-title" }, `Sources cited when ${r.brand} is named`));
+    // Named for what it measures. This is NOT "sites that write about this
+    // brand" — a source can be cited for a reason unrelated to a name three
+    // paragraphs later. It is "when the engine says this name, what was it
+    // reading", which is the honest version and still the useful one.
+    body.append(el("div", { className: "muted small", style: "margin-bottom:8px" },
+      `Domains cited in the ${row.responsesPresent} answer${row.responsesPresent === 1 ? "" : "s"} that mention ${r.brand}. `
+      + "Not proof the page is about them — but it is what the engine had in front of it."));
+    const t = el("table", { className: "drill-table" });
+    t.append(el("tr", {}, el("th", {}, "Domain"),
+      el("th", { className: "num", "data-tip": `Share of the answers mentioning ${r.brand} that cited this domain.` }, "Share"),
+      el("th", { className: "num" }, "Citations")));
+    r.sourceDomains.forEach((d) => t.append(el("tr", {},
+      el("td", { className: "td-domain" }, d.domain),
+      el("td", { className: "num" }, fmtPct(d.visibility)),
+      el("td", { className: "num" }, String(d.citations)))));
+    body.append(el("div", { className: "drill-scroll" }, t));
+  }
+
+  /* --- per prompt, both brands side by side --- */
+  if (!r.prompts.length) {
+    body.append(el("div", { className: "empty" }, "No tracked prompts matched the current filters."));
+    return;
+  }
+  body.append(el("div", { className: "modal-section-title" }, "Prompt by prompt"));
+  body.append(el("div", { className: "muted small", style: "margin-bottom:8px" },
+    r.isOwn
+      ? "Prompts are listed with the runs behind them — click one to open that capture in Analyze."
+      : `Prompts where ${r.brand} appears and ${r.ownBrand || "your brand"} does not are listed first — that is the gap. Click a prompt to open the capture.`));
+
+  const table = el("table", { className: "drill-table" });
+  table.append(el("tr", {},
+    el("th", {}, "Prompt"),
+    el("th", {}, "Engine"),
+    el("th", {}, r.brand),
+    ...(r.isOwn ? [] : [el("th", {}, r.ownBrand || "You")]),
+    el("th", {}, "Date")));
+
+  const verdict = (present, position) => {
+    if (!present) return el("span", { className: "pp-badge miss" }, "absent");
+    if (position == null) return el("span", { className: "pp-badge shown" }, "shown");
+    return el("span", { className: "pp-badge rank" }, `#${position}`);
+  };
+
+  r.prompts.forEach((p) => {
+    p.runs.forEach((run, i) => {
+      const promptCell = el("td", { className: "prompt-cell" });
+      if (i === 0) {
+        const link = el("a", { href: "#", className: "prompt-link" }, p.promptText);
+        link.onclick = (ev) => { ev.preventDefault(); backdrop.remove(); openCapture(run.captureId); };
+        promptCell.append(link);
+        if (p.tags.length) {
+          const tw = el("div", { className: "tagline" });
+          p.tags.forEach((t) => tw.append(el("span", { className: "tag" }, t)));
+          promptCell.append(tw);
+        }
+      }
+      // A row where they are in and you are out is the one to notice.
+      const gap = !r.isOwn && run.present && run.ownPresent === false;
+      const cells = [
+        promptCell,
+        el("td", {}, engineChip(run.platform, engineLabel(run.platform))),
+        el("td", {}, verdict(run.present, run.position)),
+      ];
+      if (!r.isOwn) cells.push(el("td", {}, run.ownPresent == null
+        ? el("span", { className: "pp-badge none" }, "—")
+        : verdict(run.ownPresent, run.ownPosition)));
+      cells.push(el("td", { className: "muted small", title: new Date(run.capturedAt).toLocaleString() }, relTime(run.capturedAt)));
+      table.append(el("tr", { className: gap ? "h2h-gap-row" : "" }, ...cells));
+    });
   });
-  body.append(list);
+  body.append(el("div", { className: "drill-scroll" }, table));
 }
 
 /* ---------- wiring ---------- */

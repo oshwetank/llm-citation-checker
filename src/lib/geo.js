@@ -560,3 +560,89 @@ export function countCompletedForRun(records, runId, platform) {
   }
   return n;
 }
+
+/* ---------------- competitive analysis for one brand ---------------- */
+
+/**
+ * Head-to-head between two tracked brands over the same responses.
+ *
+ * The competitor question a campaign is actually asked is not "what is their
+ * Share of Voice" — that is on the table already — but "where do they get in
+ * and we don't". Only a per-response comparison can answer that, and the
+ * aggregate metrics deliberately throw the pairing away.
+ *
+ * `aheadA` / `aheadB` compare where each brand FIRST appears in the prose.
+ * Only responses where both are locatable in the text can be ordered; a brand
+ * present only via a carousel has no position, so those land in `bothUnranked`
+ * rather than being scored as a loss for either side.
+ *
+ * @returns { responses, both, aOnly, bOnly, neither, aheadA, aheadB, bothUnranked }
+ */
+export function headToHead(records, trackedBrands, aName, bName) {
+  const aKey = normName(aName);
+  const bKey = normName(bName);
+  const out = { responses: 0, both: 0, aOnly: 0, bOnly: 0, neither: 0, aheadA: 0, aheadB: 0, bothUnranked: 0 };
+  if (!aKey || !bKey || aKey === bKey) return out;
+
+  for (const rec of records || []) {
+    out.responses++;
+    const pres = brandPresence(rec, trackedBrands);
+    const a = pres.find((p) => p.key === aKey);
+    const b = pres.find((p) => p.key === bKey);
+    const aIn = !!a?.present;
+    const bIn = !!b?.present;
+
+    if (aIn && bIn) {
+      out.both++;
+      if (a.firstIndex !== null && b.firstIndex !== null) {
+        if (a.firstIndex < b.firstIndex) out.aheadA++;
+        else if (b.firstIndex < a.firstIndex) out.aheadB++;
+        else out.bothUnranked++;   // same offset: neither is "first"
+      } else out.bothUnranked++;
+    } else if (aIn) out.aOnly++;
+    else if (bIn) out.bOnly++;
+    else out.neither++;
+  }
+  return out;
+}
+
+/**
+ * The domains cited in the answers that mention a given brand.
+ *
+ * Deliberately named for what it measures. This is NOT "the sites that write
+ * about this brand" — a source can be cited in an answer for a reason nothing
+ * to do with the brand named three paragraphs later. It is "when the engine
+ * says this name, what was it reading", which is the honest and still useful
+ * version of the question, and the closest thing the captured data supports.
+ *
+ * @returns [{ domain, citations, citedResponses, visibility }] — visibility is
+ *          over the responses MENTIONING the brand, not over all responses.
+ */
+export function brandSourceDomains(records, trackedBrands, name, limit = 10) {
+  const key = normName(name);
+  if (!key) return [];
+
+  const agg = new Map();
+  let mentioning = 0;
+  for (const rec of records || []) {
+    const pres = brandPresence(rec, trackedBrands).find((p) => p.key === key);
+    if (!pres?.present) continue;
+    mentioning++;
+
+    const citedHere = new Set();
+    for (const s of rec.sources || []) {
+      if (!s.domain || s.outcome !== "cited") continue;
+      const row = agg.get(s.domain) || { domain: s.domain, citations: 0, citedResponses: 0 };
+      row.citations++;
+      agg.set(s.domain, row);
+      citedHere.add(s.domain);
+    }
+    for (const d of citedHere) agg.get(d).citedResponses++;
+  }
+
+  return [...agg.values()]
+    .map((r) => ({ ...r, visibility: mentioning ? (r.citedResponses / mentioning) * 100 : 0 }))
+    .sort((a, b) => b.citedResponses - a.citedResponses || b.citations - a.citations
+      || a.domain.localeCompare(b.domain))
+    .slice(0, Math.max(0, limit));
+}

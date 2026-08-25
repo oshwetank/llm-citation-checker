@@ -289,26 +289,40 @@ try {
 
   console.log("\nthe campaign view can be pointed at any brand");
   {
-    const sw = await page.evaluate(() => ({
-      chips: [...document.querySelectorAll(".brand-chip")].map((c) => c.textContent),
-      active: [...document.querySelectorAll(".brand-chip.on")].map((c) => c.textContent),
-    }));
-    check("there is a brand switcher", sw.chips.length > 1, `${sw.chips.length} chips`);
-    check("exactly one brand is selected", sw.active.length === 1, sw.active.join(", "));
-    check("it starts on the own brand", /\(you\)/.test(sw.active[0] || ""), sw.active[0]);
+    // A dropdown rather than chips: twenty tracked brands is a realistic
+    // campaign, and a wrapping chip row would push the numbers off screen at
+    // exactly the point the campaign gets interesting.
+    const sw = await page.evaluate(() => {
+      const sel = document.querySelector(".brand-picker");
+      if (!sel) return null;
+      return {
+        options: [...sel.options].map((o) => o.textContent),
+        groups: [...sel.querySelectorAll("optgroup")].map((g) => g.label),
+        value: sel.value,
+        selected: sel.options[sel.selectedIndex]?.textContent || "",
+      };
+    });
+    check("the brand selector is a dropdown, so it survives many brands", !!sw);
+    check("every tracked brand is an option", sw && sw.options.length > 1, sw && String(sw.options.length));
+    check("your brand and competitors are grouped",
+      sw && sw.groups.length === 2, sw && sw.groups.join(" | "));
+    check("each option carries its visibility, so the list is still a ranking",
+      sw && sw.options.every((o) => /\d+(\.\d+)?%$/.test(o.trim())), sw && sw.options[0]);
+    check("it starts on the own brand", /\(you\)/.test(sw?.selected || ""), sw?.selected);
 
     const target = await page.evaluate(() => {
-      const chip = [...document.querySelectorAll(".brand-chip:not(.is-own)")][0];
-      if (!chip) return null;
-      const name = chip.querySelector("span").textContent;
-      chip.click();
-      return name;
+      const sel = document.querySelector(".brand-picker");
+      const opt = [...sel.options].find((o) => !/\(you\)/.test(o.textContent));
+      if (!opt) return null;
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+      return opt.value;
     });
     check("a competitor can be selected", !!target, String(target));
     if (target) {
       await page.waitForTimeout(1600);
       const after = await page.evaluate(() => ({
-        active: document.querySelector(".brand-chip.on span")?.textContent || "",
+        active: document.querySelector(".brand-picker")?.value || "",
         kpiSub: [...document.querySelectorAll("#geoMetrics .k-sub")].map((k) => k.textContent).join(" | "),
         sov: document.querySelector("#geoMetrics .geo-kpi .k-value")?.textContent || "",
         focusedRow: document.querySelector("#geoMetrics tr.focused-brand td")?.textContent || "",
@@ -317,8 +331,12 @@ try {
       check("the switcher follows the click", after.active === target, after.active);
       // The KPI row is the whole point: a row in a table can be read, a view
       // pointed at a brand can be analysed.
-      check("the KPI row now describes that brand, not \"your\" brand",
+      // The headline tiles must name the brand they are about, and must not
+      // say "your" about a competitor.
+      check("the KPI row names the brand it is describing",
         after.kpiSub.includes(target), after.kpiSub);
+      check("and never calls a competitor \"your\" brand",
+        !/\byour\b/i.test(after.kpiSub), after.kpiSub);
       check("the brand table highlights the selected row",
         after.focusedRow.includes(target), after.focusedRow);
       check("Prompt Performance re-points at it too",
@@ -328,8 +346,35 @@ try {
 
   console.log("\ndeep per-brand data, not just one row");
   {
+    // The supporting detail now lives in a disclosure — the reported clutter
+    // was twelve tiles of numbers above the fold. Open it to inspect.
+    const opened = await page.evaluate(() => {
+      const d = document.querySelector("#geoMetrics .more-detail");
+      if (!d) return null;
+      const wasOpen = d.open;
+      d.open = true;
+      return { wasOpen };
+    });
+    check("supporting detail is behind a disclosure, not stacked on top", !!opened);
+    check("and it starts closed, so the answer is what you see first",
+      opened && opened.wasOpen === false, String(opened && opened.wasOpen));
+
+    const headline = await page.evaluate(() =>
+      [...document.querySelectorAll("#geoMetrics .geo-kpi .k-label")].map((k) => k.textContent));
+    check("four headline numbers, not six",
+      headline.length === 4, headline.join(" | "));
+    check("they are the brand-visibility ones",
+      ["Brand Visibility", "Share of Voice", "Avg position", "Mentions"].every((h) => headline.includes(h)),
+      headline.join(" | "));
+    const moved = await page.evaluate(() =>
+      [...document.querySelectorAll("#geoMetrics .more-detail .stat .l")].map((x) => x.textContent));
+    check("your-site-as-a-source moved into the detail",
+      moved.includes("Source visibility") && moved.includes("Citations"), moved.join(" | "));
+    check("and so did the capture counts",
+      moved.includes("Captures") && moved.includes("Fan-out queries"), moved.join(" | "));
+
     const split = await page.evaluate(() => {
-      const box = document.querySelector(".engine-split");
+      const box = document.querySelector("#geoMetrics .engine-split");
       if (!box) return null;
       return {
         title: box.querySelector(".engine-split-title")?.textContent || "",
@@ -350,6 +395,73 @@ try {
       }
     } else {
       check(`only one engine in this data (${engines}) — per-engine split correctly omitted`, !split);
+    }
+  }
+
+  console.log("\nclicking a competitor gives you something to analyse");
+  {
+    // Reported: "when I click on any brand I don't get to know much about
+    // that competition's visibility, I don't get data to analyse it." The old
+    // modal showed four chips that were already on the table behind it.
+    const clicked = await page.evaluate(() => {
+      const row = [...document.querySelectorAll("#geoMetrics table tr")]
+        .find((r) => r.classList.contains("clickable-row") && !r.classList.contains("own-brand"));
+      if (!row) return null;
+      const name = (row.cells[0]?.textContent || "").replace(/auto|×/gi, "").trim();
+      row.click();
+      return name;
+    });
+    check("a competitor row opens a drill-down", !!clicked, String(clicked));
+    if (clicked) {
+      await page.waitForTimeout(1500);
+      const m = await page.evaluate(() => {
+        const b = document.getElementById("url-modal-backdrop");
+        if (!b) return null;
+        return {
+          title: b.querySelector(".modal-title")?.textContent || "",
+          sections: [...b.querySelectorAll(".modal-section-title")].map((x) => x.textContent),
+          stats: [...b.querySelectorAll(".modal-statgrid .l")].map((x) => x.textContent),
+          h2h: [...b.querySelectorAll(".h2h-seg")].map((x) => ({
+            n: x.querySelector(".h2h-n")?.textContent,
+            l: x.querySelector(".h2h-l")?.textContent,
+          })),
+          lead: b.querySelector(".h2h-lead")?.textContent || "",
+          engines: b.querySelectorAll(".engine-split-cell").length,
+          headers: [...b.querySelectorAll(".drill-table th")].map((x) => x.textContent),
+          gapRows: b.querySelectorAll("tr.h2h-gap-row").length,
+        };
+      });
+      check("the drill-down opens", !!m);
+      if (m) {
+        check("titled for the brand", m.title.includes(clicked), m.title);
+        check("it leads with that brand's own metrics",
+          ["Visibility", "Share of Voice", "Avg position", "Mentions"].every((x) => m.stats.includes(x)),
+          m.stats.join(" | "));
+
+        // The comparison the table behind it cannot express.
+        check("a head-to-head against your brand is present",
+          m.sections.some((x) => /\bvs\b/.test(x)), m.sections.join(" | "));
+        check("it counts answers that named them and not you — the gap",
+          m.h2h.some((x) => (x.l || "").startsWith("Only ") && (x.l || "").includes(clicked)),
+          m.h2h.map((x) => `${x.l}=${x.n}`).join(", "));
+        check("and answers that named you and not them",
+          m.h2h.length === 4, m.h2h.map((x) => x.l).join(", "));
+        check("when both appear, it says who was named first",
+          /first in \d+/.test(m.lead), m.lead);
+
+        check("the brand is broken down per engine", m.engines > 1, String(m.engines));
+        check("the sources cited when it is named are listed",
+          m.sections.some((x) => /Sources cited when/.test(x)), m.sections.join(" | "));
+
+        // Per prompt, both brands side by side — a row is a comparison, not
+        // an isolated fact.
+        check("a prompt-by-prompt table is present",
+          m.sections.includes("Prompt by prompt"), m.sections.join(" | "));
+        check("with a column for each brand",
+          m.headers.includes(clicked) && m.headers.some((h) => h === seeded.ownBrand),
+          m.headers.join(" | "));
+      }
+      await page.evaluate(() => document.getElementById("url-modal-backdrop")?.remove());
     }
   }
 

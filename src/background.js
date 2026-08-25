@@ -20,7 +20,8 @@ import { adapt as adaptGemini } from "./adapters/gemini.js";
 import {
   MAX_PROFILES, TRASH_RETENTION_DAYS, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
   selectTracked, computeMetrics, computeSeries, brandPresence, normName,
-  effectiveTrackedBrands, hasSignal, countCompletedForRun,
+  effectiveTrackedBrands, headToHead, brandSourceDomains,
+  hasSignal, countCompletedForRun,
 } from "./lib/geo.js";
 export { hasSignal };
 
@@ -1305,6 +1306,109 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             focusBrand: focus ? focus.name : null,
             focusIsOwn: !!focus?.isOwn,
             prompts: Object.fromEntries(byPrompt),
+          });
+          break;
+        }
+
+        case "geo-brand-detail": {
+          // Everything about ONE brand, own or competitor, in a single round
+          // trip: its own metrics, the same metrics per engine, a per-response
+          // head-to-head against the campaign's own brand, the sources cited
+          // in the answers that name it, and its per-prompt results.
+          //
+          // Assembled here rather than in the panel because all of it needs
+          // answerText — brandPresence ranks by where a name first appears in
+          // the prose — and `get-records` strips answerText to keep the popup
+          // fast. Computing it UI-side produced null positions for everything.
+          const profile = await db.get("profiles", msg.profileId);
+          if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
+          const all = await db.getAll("derived");
+          const scoped = selectTracked(all, {
+            profileId: msg.profileId,
+            engines: msg.engines,
+            tags: msg.tags,
+            since: msg.since,
+            until: msg.until,
+          });
+
+          const brands = effectiveTrackedBrands(profile, scoped);
+          const key = normName(msg.brand);
+          const brand = brands.find((b) => normName(b.name) === key);
+          if (!brand) { sendResponse({ ok: false, error: "That brand isn't tracked on this campaign." }); break; }
+          const ownBrand = brands.find((b) => b.isOwn);
+
+          const rowFor = (recs) => {
+            const m = computeMetrics(recs, profile, brands);
+            return m.brands.find((b) => normName(b.name) === key) || null;
+          };
+
+          const byEngine = {};
+          for (const id of new Set(scoped.map((r) => r.platform).filter(Boolean))) {
+            const only = scoped.filter((r) => r.platform === id);
+            byEngine[id] = { responses: only.length, row: rowFor(only) };
+          }
+
+          // Per prompt, so the drill-down can show WHERE this brand wins and
+          // loses rather than only how often.
+          const promptsAll = await db.getAll("trackedPrompts");
+          const promptById = new Map(promptsAll.map((p) => [p.id, p]));
+          const byPrompt = new Map();
+          for (const rec of scoped) {
+            const promptId = rec.geo && rec.geo.promptId;
+            if (!promptId) continue;
+            const pres = brandPresence(rec, brands);
+            const ranked = pres.filter((p) => p.firstIndex !== null).sort((a, b) => a.firstIndex - b.firstIndex);
+            const mine = pres.find((p) => p.key === key);
+            const theirs = ownBrand ? pres.find((p) => p.isOwn) : null;
+            const rankIdx = ranked.findIndex((p) => p.key === key);
+            const ownRankIdx = ranked.findIndex((p) => p.isOwn);
+            if (!byPrompt.has(promptId)) {
+              const p = promptById.get(promptId);
+              byPrompt.set(promptId, {
+                promptId,
+                promptText: p ? p.text : "(prompt no longer tracked)",
+                tags: p ? p.tags || [] : [],
+                runs: [],
+              });
+            }
+            byPrompt.get(promptId).runs.push({
+              captureId: rec.captureId,
+              capturedAt: rec.capturedAt,
+              platform: rec.platform,
+              present: !!mine?.present,
+              position: rankIdx >= 0 ? rankIdx + 1 : null,
+              mentions: mine?.mentions || 0,
+              cited: !!mine?.citedSource,
+              // The own brand's result on the same response, so a row reads as
+              // a comparison instead of an isolated fact.
+              ownPresent: theirs ? !!theirs.present : null,
+              ownPosition: ownRankIdx >= 0 ? ownRankIdx + 1 : null,
+            });
+          }
+          const prompts = [...byPrompt.values()];
+          for (const p of prompts) p.runs.sort((a, b) => b.capturedAt - a.capturedAt);
+          prompts.sort((a, b) => {
+            // Prompts where this brand appears and the own brand does not come
+            // first: that is the list the reader is here for.
+            const gap = (x) => x.runs.some((run) => run.present && run.ownPresent === false);
+            return (gap(b) ? 1 : 0) - (gap(a) ? 1 : 0)
+              || a.promptText.localeCompare(b.promptText);
+          });
+
+          sendResponse({
+            ok: true,
+            brand: brand.name,
+            isOwn: !!brand.isOwn,
+            auto: !!brand.auto,
+            ownBrand: ownBrand ? ownBrand.name : "",
+            responses: scoped.length,
+            row: rowFor(scoped),
+            byEngine,
+            headToHead: ownBrand && !brand.isOwn
+              ? headToHead(scoped, brands, brand.name, ownBrand.name)
+              : null,
+            sourceDomains: brandSourceDomains(scoped, brands, brand.name),
+            prompts,
           });
           break;
         }

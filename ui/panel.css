@@ -1881,42 +1881,81 @@ body.popup .drill-table th:first-child { min-width: 180px; }
 .src-outcome.is-cited { background: rgba(16, 185, 129, 0.14); color: #047857; }
 .src-outcome.is-fetched { background: rgba(100, 116, 139, 0.14); color: #475569; }
 
-/* ---------- brand switcher ---------- */
-/* The campaign view points at one brand at a time. A row in a table can be
-   read; a view pointed at a brand can be analysed — which is the difference
-   between seeing a competitor's number and understanding it. */
-.brand-switcher {
+/* ---------- campaign card structure ---------- */
+/* The card is ordered by what the campaign is FOR. The selector and the
+   engine filter belong beside the title (they change what everything below
+   means); the answer is four large numbers; the supporting detail is one
+   disclosure at the bottom. */
+.campaign-controls {
   display: flex;
   flex-wrap: wrap;
+  gap: 6px;
   align-items: center;
-  gap: 6px;
-  margin-top: 12px;
+  margin-left: auto;
 }
-.brand-switcher-label { margin-right: 2px; }
-.brand-chip {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  font: inherit;
-  font-size: 12px;
-  padding: 5px 11px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--card-bg, rgba(255, 255, 255, 0.5));
-  color: var(--fg-primary);
+.campaign-controls .filter { max-width: 240px; }
+.brand-picker { font-weight: 500; }
+
+.more-detail {
+  margin-top: 14px;
+  border-top: 1px dashed var(--border);
+  padding-top: 10px;
+}
+.more-detail > summary {
   cursor: pointer;
-  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-primary);
+  list-style: none;
+  padding: 4px 0;
 }
-.brand-chip:hover { border-color: var(--border-hover); }
-.brand-chip .brand-chip-n { font-variant-numeric: tabular-nums; opacity: 0.6; font-size: 11px; }
-.brand-chip.is-own { font-weight: 600; }
-.brand-chip.on {
-  border-color: var(--accent);
-  background: rgba(0, 122, 255, 0.1);
-  color: var(--accent);
+.more-detail > summary::-webkit-details-marker { display: none; }
+.more-detail > summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 14px;
+  color: var(--fg-muted, #64748b);
+  transition: transform 0.15s ease;
 }
-.brand-chip.on .brand-chip-n { opacity: 0.85; }
-.brand-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.more-detail[open] > summary::before { transform: rotate(90deg); }
+.more-detail > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.detail-block { margin-top: 12px; }
+.detail-title { text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; }
+
+/* ---------- head to head ---------- */
+/* The comparison the aggregate metrics cannot express: computeMetrics reduces
+   each brand to its own column and throws the pairing away, so "answers that
+   named them and not us" has to be counted per response. */
+.h2h {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.h2h-seg {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.45);
+}
+.h2h-n { font-size: 20px; font-weight: 600; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.h2h-l { margin-top: 1px; }
+.h2h-bar {
+  margin-top: 8px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.28);
+  overflow: hidden;
+}
+.h2h-fill { height: 100%; border-radius: 999px; background: currentColor; }
+.h2h-seg.tone-bad { color: #b91c1c; border-color: rgba(220, 38, 38, 0.3); background: rgba(220, 38, 38, 0.05); }
+.h2h-seg.tone-good { color: #047857; border-color: rgba(16, 185, 129, 0.3); background: rgba(16, 185, 129, 0.05); }
+.h2h-seg.tone-neutral { color: #1d4ed8; }
+.h2h-seg.tone-muted { color: #64748b; }
+.h2h-seg .h2h-l { color: var(--fg-muted, #64748b); }
+.h2h-lead { margin-bottom: 12px; }
+/* A prompt where they are in and you are out. */
+.drill-table tr.h2h-gap-row > td { background: rgba(220, 38, 38, 0.05); }
 
 /* ---------- per-engine split for the focused brand ---------- */
 .engine-split { margin-top: 12px; }
@@ -2127,28 +2166,6 @@ tr.clickable-row:hover td:first-child { color: var(--accent); text-decoration: u
 tr.clickable-row.own-brand:hover td { background: rgba(0, 122, 255, 0.14); }
 
 /* ---------- Brand drill-down modal (openBrandDetailModal) ---------- */
-.brand-drill { display: flex; flex-direction: column; gap: 2px; }
-.brand-drill-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 9px 4px;
-  border-bottom: 1px solid var(--border);
-  flex-wrap: wrap;
-}
-.brand-drill-row:last-child { border-bottom: none; }
-.brand-drill-row.idle { opacity: 0.65; }
-.brand-drill-prompt {
-  flex: 1 1 auto;
-  min-width: 0;
-  text-align: left;
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-button.brand-drill-prompt { color: var(--accent); font-weight: 500; }
-.brand-drill-badges { display: flex; align-items: center; gap: 10px; flex-shrink: 0; flex-wrap: wrap; }
-.brand-drill-engine { display: inline-flex; align-items: center; gap: 5px; }
 .geo-note { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--border); }
 
 /* ---------- Campaigns tab (setup wizard + prompt table + run) ---------- */
@@ -2614,9 +2631,13 @@ body.popup .tag-sidebar-list { flex-basis: 100%; width: 100%; }
   .src-outcome.is-cited { background: rgba(16, 185, 129, 0.18); color: #6ee7b7; }
   .src-outcome.is-fetched { background: rgba(148, 163, 184, 0.18); color: #cbd5e1; }
   .auto-tag { background: rgba(59, 130, 246, 0.24); color: #93c5fd; }
-  .brand-chip { background: rgba(255, 255, 255, 0.06); }
-  .brand-chip.on { background: rgba(0, 122, 255, 0.22); }
   .engine-split-cell { background: rgba(255, 255, 255, 0.05); }
+  .h2h-seg { background: rgba(255, 255, 255, 0.05); }
+  .h2h-seg.tone-bad { color: #fca5a5; background: rgba(220, 38, 38, 0.12); }
+  .h2h-seg.tone-good { color: #6ee7b7; background: rgba(16, 185, 129, 0.12); }
+  .h2h-seg.tone-neutral { color: #93c5fd; }
+  .h2h-seg.tone-muted { color: #cbd5e1; }
+  .drill-table tr.h2h-gap-row > td { background: rgba(220, 38, 38, 0.12); }
   .drill-table tr.focused-brand > td { background: rgba(0, 122, 255, 0.16); }
 }
 
