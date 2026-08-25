@@ -11,6 +11,7 @@ import {
 } from "../src/lib/geo.js";
 import { parseCsv, parseXlsx, rowsToPrompts } from "../src/lib/xlsxLite.js";
 import { computeSearchFunnel } from "../src/lib/funnel-omitted.js";
+import { GLOSSARY, glossaryGroups } from "../src/lib/glossary.js";
 import { aggregateSources, aggregateSourcesFromCaptures } from "../src/lib/sources.js";
 import { analyzeFanout, FANOUT_BENCHMARK } from "../src/lib/fanout.js";
 import { sanitizeText } from "../src/lib/text-sanitize.js";
@@ -220,22 +221,60 @@ function defaultRecordId() {
   return (withSignal || RECORDS[0] || null)?.captureId || null;
 }
 
+/* ---------- Smooth section swaps ----------
+ * Reported: "when you apply a filter the layout change effect is like a
+ * sudden glitch."
+ *
+ * It was: a re-render clears the card (`node.textContent = ""`) and rebuilds
+ * it. Between those two the card is zero-height, so the whole page below
+ * jumps up and then back down within a single frame — the flash reads as a
+ * glitch even though nothing is wrong.
+ *
+ * The fix is to hold the old height as a floor across the swap and release it
+ * on the next frame, once the new content has laid out, so the card resizes
+ * from its real old height to its real new one instead of via zero. The new
+ * content fades in over that.
+ *
+ * Called immediately before the `textContent = ""` that starts a rebuild.
+ * Everything the caller then appends is synchronous, so by the time the first
+ * rAF runs the new layout exists and the floor can go.
+ */
+function beginSwap(node) {
+  if (!node) return;
+  const h = node.offsetHeight;
+  if (h) node.style.minHeight = `${h}px`;
+  node.classList.remove("swap-in");
+  requestAnimationFrame(() => {
+    node.classList.add("swap-in");
+    requestAnimationFrame(() => { node.style.minHeight = ""; });
+  });
+}
+
 /* ---------- Delayed tooltip ----------
  * `title` attributes are already used throughout this app to explain what a
  * number or badge actually means (e.g. "distinct prompts whose answer cited
  * this source") — but the native browser tooltip fires almost immediately,
  * fights for attention on a screen that's mostly numbers, and doesn't exist
  * at all on touch. This is a slow, deliberate replacement: it only appears
- * after a real pause (~4s), so it never competes with the eye scanning the
- * page, and it's opt-in per element via `data-tip` rather than a blanket
- * upgrade of every `title` in the app — reserved for the things worth a
- * pause to read (metric definitions, badge semantics), not routine buttons.
+ * after a real pause (2s), so it never competes with the eye scanning the
+ * page, and it's opt-in per element rather than a blanket upgrade of every
+ * `title` in the app — reserved for the things worth a pause to read (metric
+ * definitions, badge semantics), not routine buttons.
+ *
+ * Two flavours:
+ *   data-term="visibility"  a metric from src/lib/glossary.js, rendered in a
+ *                           fixed format — name, what it measures, the
+ *                           formula, and the caveat that stops it being
+ *                           misread. One definition per term, tool-wide, so
+ *                           the same metric can't be explained three
+ *                           different ways on three different screens.
+ *   data-tip="free text"    a one-off explanation of something local.
  *
  * One delegated listener on `document` (set up once, survives every
  * render's full DOM teardown) rather than per-node handlers that would need
  * re-wiring on every re-render.
  */
-const TOOLTIP_DELAY = 4200;
+const TOOLTIP_DELAY = 2000;
 let tipTimer = null;
 let tipEl = null;
 function ensureTipEl() {
@@ -245,10 +284,23 @@ function ensureTipEl() {
   return tipEl;
 }
 function showTooltip(target) {
+  const key = target.getAttribute("data-term");
   const text = target.getAttribute("data-tip");
-  if (!text) return;
+  const g = key ? GLOSSARY[key] : null;
+  if (!g && !text) return;
   const tip = ensureTipEl();
-  tip.textContent = text;
+  tip.textContent = "";
+  if (g) {
+    // Always the same four slots, in the same order. A definition that is
+    // sometimes a formula and sometimes a sentence teaches nothing.
+    tip.append(el("div", { className: "tip-term" }, g.term));
+    tip.append(el("div", { className: "tip-what" }, g.what));
+    if (g.formula) tip.append(el("div", { className: "tip-formula" }, g.formula));
+    if (g.note) tip.append(el("div", { className: "tip-note" }, g.note));
+  } else {
+    tip.append(el("div", { className: "tip-what" }, text));
+  }
+  tip.classList.toggle("is-term", !!g);
   tip.style.display = "block";
   tip.style.visibility = "hidden";
   const r = target.getBoundingClientRect();
@@ -272,13 +324,13 @@ function hideTooltip() {
   if (tipEl) { tipEl.classList.remove("show"); tipEl.style.display = "none"; }
 }
 document.addEventListener("mouseover", (ev) => {
-  const target = ev.target.closest?.("[data-tip]");
+  const target = ev.target.closest?.("[data-tip],[data-term]");
   if (!target) return;
   clearTimeout(tipTimer);
   tipTimer = setTimeout(() => showTooltip(target), TOOLTIP_DELAY);
 });
 document.addEventListener("mouseout", (ev) => {
-  const target = ev.target.closest?.("[data-tip]");
+  const target = ev.target.closest?.("[data-tip],[data-term]");
   if (!target || (ev.relatedTarget && target.contains(ev.relatedTarget))) return;
   hideTooltip();
 });
@@ -1997,6 +2049,7 @@ function renderDrilldown(recs) {
 function renderDashboard() { withScrollPreserved(renderDashboardImpl); }
 function renderDashboardImpl() {
   const root = $("#dashboard");
+  beginSwap(root);
   root.textContent = "";
 
   const now = Date.now();
@@ -2105,19 +2158,32 @@ function renderDashboardImpl() {
   
   filterRow.append(timeContainer);
 
-  // 2. Model Filter
-  const modelSel = el("select", { className: "filter" });
-  const modelOpts = [
-    { v: "", l: "All Models" },
-    { v: "chatgpt", l: "ChatGPT" },
-    { v: "gemini", l: "Gemini" }
-  ];
-  modelOpts.forEach(o => {
-    const opt = el("option", { value: o.v }, o.l);
-    if (o.v === dashboardModelFilter) opt.selected = true;
+  // 2. Model Filter — the single engine control for this whole tab, campaign
+  // section included. Re-synced on every render so no other code path can
+  // leave the campaign reading a different engine than the one shown here.
+  geoEngineFilter = dashboardModelFilter ? [dashboardModelFilter] : [];
+  const modelSel = el("select", { className: "filter", title: "Limit every number on this tab — including the campaign below — to one engine" });
+  // Built from the engines that actually have adapters rather than a hardcoded
+  // pair, so adding one doesn't leave a filter that can never select it.
+  [{ id: "", label: "All Models" }, ...availableEngines()].forEach((o) => {
+    const opt = el("option", { value: o.id }, o.label);
+    if (o.id === dashboardModelFilter) opt.selected = true;
     modelSel.append(opt);
   });
-  modelSel.onchange = () => { dashboardModelFilter = modelSel.value; renderDashboard(); };
+  // Reported: "when I change the model the data in the campaign doesn't
+  // change at all." It didn't: this select drove only the ad-hoc record list,
+  // while the campaign section read a SEPARATE geoEngineFilter set by its own
+  // dropdown. Two controls, same word, one of them silently inert over the
+  // section people were actually looking at.
+  //
+  // Unified rather than merely connected — the campaign card's duplicate
+  // dropdown is gone, the same way the "Last 7/30/90 days" selector was
+  // removed when the time filter was unified. One control, one meaning.
+  modelSel.onchange = () => {
+    dashboardModelFilter = modelSel.value;
+    geoEngineFilter = modelSel.value ? [modelSel.value] : [];
+    renderDashboard();
+  };
   filterRow.append(modelSel);
 
   // 3. Campaign Filter — picks which campaign's performance shows below.
@@ -3614,6 +3680,7 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
     engines: geoEngineFilter,
     since, until,
   });
+  beginSwap(mc);
   mc.textContent = "";
   const head = el("div", { className: "card-header" }, el("h3", {}, `Campaign Performance — ${profile.name || "Untitled"}`));
   mc.append(head);
@@ -3631,11 +3698,15 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
   // renderDashboardImpl) — no separate "Last 7/30/90 days" selector here, so
   // there's only ever one time filter to reason about.
   const controls = el("div", { className: "campaign-controls" });
-  const eng = el("select", { className: "filter", title: "Limit every number below to one engine" });
-  eng.append(el("option", { value: "" }, "All engines"));
-  availableEngines().forEach((e) => eng.append(el("option", { value: e.id, selected: geoEngineFilter[0] === e.id }, e.label)));
-  eng.onchange = () => { geoEngineFilter = eng.value ? [eng.value] : []; refreshGeoMetrics(profile, prompts, since, until); refreshPromptPerformance(profile, prompts, since, until); };
   head.append(controls);
+  // The engine filter lives in the Dashboard's own filter row, above — one
+  // control for the whole tab. A second one here read a different variable
+  // and was the reported "changing the model changes nothing" bug.
+  if (geoEngineFilter.length) {
+    const only = availableEngines().find((e) => e.id === geoEngineFilter[0]);
+    head.append(el("span", { className: "scope-note muted small" },
+      `${only ? only.label : geoEngineFilter[0]} only`));
+  }
 
   const tags = allTags(prompts);
   if (tags.length) {
@@ -3664,7 +3735,6 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
   }
 
   if (!m.totalResponses) {
-    controls.append(eng);
     mc.append(el("div", { className: "empty", style: "margin-top:10px" },
       "No tracked responses yet for these filters. Head to the Campaigns tab to start a run."));
     return;
@@ -3703,13 +3773,16 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
     refreshGeoMetrics(profile, prompts, since, until);
     refreshPromptPerformance(profile, prompts, since, until);
   };
-  controls.append(picker, eng);
+  controls.append(picker);
 
   /* KPI row */
   const kpis = el("div", { className: "geo-kpis" });
-  const kpi = (label, value, sub, tip) => {
+  // `term` is a key into src/lib/glossary.js — the definition, formula and
+  // caveat all come from there so the same metric reads identically wherever
+  // it appears.
+  const kpi = (label, value, sub, term) => {
     const b = el("div", { className: "geo-kpi" });
-    b.append(el("div", { className: "k-label", ...(tip ? { "data-tip": tip } : {}) }, label));
+    b.append(el("div", { className: "k-label", ...(term ? { "data-term": term } : {}) }, label));
     b.append(el("div", { className: "k-value" }, value));
     if (sub) b.append(el("div", { className: "k-sub muted" }, sub));
     return b;
@@ -3727,13 +3800,12 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
     // floating under a dropdown you have already scrolled past need one
     // anchor, not four repetitions.
     kpi("Brand Visibility", fmtPct(own?.visibility),
-      `${own?.name || "—"} in ${own?.responsesPresent || 0} of ${m.totalResponses} responses`,
-      `Responses mentioning ${whose} brand ÷ total responses. (Peec.ai's published formula.)`),
-    kpi("Share of Voice", fmtPct(own?.shareOfVoice), `${own?.mentions || 0} of ${m.mentionPool} tracked mentions`,
-      `${Whose} mentions ÷ total mentions of ALL tracked brands combined. (Peec.ai's published formula.)`),
-    kpi("Avg position", fmtPos(own?.avgPosition), "rank among tracked brands",
-      `Average rank by where ${whose} brand first appears in the written answer, among all tracked brands — only counted for responses where it appears at all.`),
-    kpi("Mentions", String(own?.mentions ?? 0), "times named in answers"),
+      `${own?.name || "—"} in ${own?.responsesPresent || 0} of ${m.totalResponses} responses`, "visibility"),
+    kpi("Share of Voice", fmtPct(own?.shareOfVoice),
+      el("span", { "data-term": "mentionPool" }, `${own?.mentions || 0} of ${m.mentionPool} tracked mentions`),
+      "shareOfVoice"),
+    kpi("Avg position", fmtPos(own?.avgPosition), "rank among tracked brands", "avgPosition"),
+    kpi("Mentions", String(own?.mentions ?? 0), "times named in answers", "mentions"),
   );
   mc.append(kpis);
 
@@ -3747,7 +3819,7 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
   if (r.autoCompetitors && r.autoCompetitors.length) {
     const banner = el("div", { className: "auto-comp-banner" });
     banner.append(el("div", { className: "small" },
-      el("strong", {}, "Competitors inferred from your captures. "),
+      el("strong", { "data-term": "autoCompetitor" }, "Competitors inferred from your captures. "),
       el("span", { className: "muted" },
         `You haven't set any competitors on this campaign, so the ${r.autoCompetitors.length} brand${r.autoCompetitors.length === 1 ? "" : "s"} `
         + "these answers named most often are being used instead. Nothing has been saved to the campaign.")));
@@ -3819,12 +3891,12 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
   const t = el("table", { className: "drill-table" });
   t.append(el("tr", {},
     el("th", {}, "Brand"),
-    el("th", { className: "num", "data-tip": "Peec.ai formula: responses mentioning this brand ÷ total responses." }, "Visibility"),
-    el("th", { className: "num", "data-tip": "Peec.ai formula: this brand's mentions ÷ total mentions of ALL tracked brands combined." }, "Share of Voice"),
-    el("th", { className: "num", "data-tip": "Total times this brand was named in an answer, across all responses." }, "Mentions"),
-    el("th", { className: "num", "data-tip": "Average rank among tracked brands, by where each first appears in the written answer — only counted for responses where this brand appears." }, "Avg position"),
-    el("th", { className: "num", "data-tip": "Responses that cited this brand's own domain as a source." }, "Citations"),
-    el("th", { className: "num", "data-tip": "Responses where this brand's own domain surfaced as a source at all — cited or merely read." }, "Source vis.")));
+    el("th", { className: "num", "data-term": "visibility" }, "Visibility"),
+    el("th", { className: "num", "data-term": "shareOfVoice" }, "Share of Voice"),
+    el("th", { className: "num", "data-term": "mentions" }, "Mentions"),
+    el("th", { className: "num", "data-term": "avgPosition" }, "Avg position"),
+    el("th", { className: "num", "data-term": "citations" }, "Citations"),
+    el("th", { className: "num", "data-term": "sourceVisibility" }, "Source vis.")));
   m.brands.forEach((b) => {
     const focused = own && b.name === own.name;
     const tr = el("tr", {
@@ -3877,12 +3949,11 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
   const siteBox = el("div", { className: "detail-block" });
   siteBox.append(el("div", { className: "detail-title muted small" }, `${own?.name || "This brand"} as a source`));
   const siteStats = el("div", { className: "statgrid" });
-  [[fmtPct(own?.sourceVisibility), "Source visibility",
-    `Responses where ${whose} own domain surfaced as a source at all — cited or merely read, not just cited.`],
-   [String(own?.citations ?? 0), "Citations", `Responses that cited ${whose} own domain as a source.`],
-   [String(own?.sourceResponses ?? 0), "Responses with your site", `Responses where ${whose} domain appeared in any form.`],
-  ].forEach(([n, l, tip]) => siteStats.append(
-    el("div", { className: "stat", ...(tip ? { "data-tip": tip } : {}) },
+  [[fmtPct(own?.sourceVisibility), "Source visibility", "sourceVisibility"],
+   [String(own?.citations ?? 0), "Citations", "citations"],
+   [String(own?.sourceResponses ?? 0), "Responses with your site", "responses"],
+  ].forEach(([n, l, term]) => siteStats.append(
+    el("div", { className: "stat", "data-term": term },
       el("div", { className: "n" }, n), el("div", { className: "l" }, l))));
   siteBox.append(siteStats);
   if (!own?.url) {
@@ -3928,16 +3999,19 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
     const box = el("div", { className: "detail-block" });
     box.append(el("div", { className: "detail-title muted small" }, "Data collected"));
     const ovStats = el("div", { className: "statgrid" });
-    [[ov.captures, "Captures"], [ov.searched, "With search"], [ov.fanTotal, "Fan-out queries"],
-     [ov.domainCount, "Unique domains"], [ov.citedTotal, "Cited"], [ov.fetchedTotal, "Read-only"]].forEach(([n, l]) =>
-      ovStats.append(el("div", { className: "stat" }, el("div", { className: "n" }, String(n)), el("div", { className: "l" }, l))));
+    [[ov.captures, "Captures", "captures"], [ov.searched, "With search", "withSearch"],
+     [ov.fanTotal, "Fan-out queries", "fanout"], [ov.domainCount, "Unique domains", "uniqueDomains"],
+     [ov.citedTotal, "Cited", "citedOutcome"], [ov.fetchedTotal, "Read-only", "readOnly"]].forEach(([n, l, term]) =>
+      ovStats.append(el("div", { className: "stat", "data-term": term },
+        el("div", { className: "n" }, String(n)), el("div", { className: "l" }, l))));
     box.append(ovStats);
     more.append(box);
   }
   mc.append(more);
 
   /* honest gap, stated in the UI rather than left for the user to discover */
-  mc.append(el("div", { className: "geo-note muted small" }, `Sentiment: not measured. ${SENTIMENT_NOTE}`));
+  mc.append(el("div", { className: "geo-note muted small", "data-term": "sentiment" },
+    `Sentiment: not measured. ${SENTIMENT_NOTE}`));
 
   const dl = el("button", { className: "btn sm ghost", style: "margin-top:10px" }, "⬇ Export metrics CSV");
   dl.onclick = () => {
@@ -4118,6 +4192,7 @@ async function refreshPromptPerformance(profile, prompts, since, until) {
     engines: geoEngineFilter,
     since, until,
   });
+  beginSwap(root);
   root.textContent = "";
   const rerender = () => refreshPromptPerformance(profile, prompts, since, until);
 
@@ -4314,21 +4389,15 @@ async function refreshPromptPerformance(profile, prompts, since, until) {
     const unit = sourceViewMode === "domain" ? "domain" : "page";
     const srcTable = el("table", { className: "drill-table src-table" });
     const hdr = [el("th", { className: "src-col-idx" }, "#"), el("th", {}, sourceViewMode === "domain" ? "Domain" : "URL")];
-    if (sourceViewMode === "domain") hdr.push(el("th", { className: "num" }, "URLs"));
+    if (sourceViewMode === "domain") hdr.push(el("th", { className: "num", "data-term": "distinctUrls" }, "URLs"));
     hdr.push(
       // The bar is on Visibility, not Citations: a percentage has a fixed 0-100
       // scale a bar can honestly represent, where a bar over an unbounded count
       // only ever shows the ratio to whatever the top row happens to be.
-      el("th", { "data-tip":
-        `Responses where this ${unit} was cited at least once, ÷ all ${srcResponses} responses in this view. `
-        + "Cited three times in one answer is still one response — that's reach, not volume." }, "Visibility"),
-      el("th", { className: "num", "data-tip":
-        `Every time this ${unit} was cited in an answer. Cited three times in one answer counts three — that's volume, not reach.` }, "Citations"),
-      el("th", { className: "num", "data-tip": `Distinct tracked prompts whose answer cited this ${unit}.` }, "Prompts"),
-      el("th", {
-        className: "num", "data-tip":
-          "Pulled in as a source this many times, but never cited in the written answer. Not “never retrieved” — every count here was actually read; it just wasn't credited in the answer.",
-      }, "Read-only"));
+      el("th", { "data-term": "domainVisibility" }, "Visibility"),
+      el("th", { className: "num", "data-term": "domainCitations" }, "Citations"),
+      el("th", { className: "num", "data-term": "distinctPrompts" }, "Prompts"),
+      el("th", { className: "num", "data-term": "readOnly" }, "Read-only"));
     srcTable.append(el("tr", {}, ...hdr));
 
     shown.forEach((row, i) => {
@@ -4424,9 +4493,12 @@ function openDetailModal(title, subtitle, opts = {}) {
   return { backdrop, body };
 }
 
-const modalStat = (n, l, tone, tip) => el(
+const modalStat = (n, l, tone, tip, term) => el(
   "div",
-  { className: `stat${tone ? " tone-" + tone : ""}`, ...(tip ? { "data-tip": tip } : {}) },
+  {
+    className: `stat${tone ? " tone-" + tone : ""}`,
+    ...(term ? { "data-term": term } : tip ? { "data-tip": tip } : {}),
+  },
   el("div", { className: "n" }, String(n)),
   el("div", { className: "l" }, l),
 );
@@ -4472,17 +4544,11 @@ function openDomainDetailModal(row, subtitle, unit = "prompt") {
     // Reach first, then volume. They answer different questions and the order
     // says which one to read first: "how often do the engines reach for this
     // publisher at all" before "how hard do they lean on it when they do".
-    modalStat(fmtPct(row.visibility), "Visibility", "accent",
-      row.totalResponses
-        ? `Cited in ${row.citedResponses} of ${row.totalResponses} responses. Cited three times in one answer is still one response.`
-        : "Responses citing this domain at least once, ÷ all responses in this view."),
-    modalStat(row.citations, "Citations", "good",
-      "Every time a page on this domain was cited in an answer — three citations in one answer counts three."),
-    modalStat(row.fetched, "Read-only", "muted",
-      "Pulled in as a source but never cited in the written answer. Not “never retrieved” — every count here was actually read; it just wasn't credited."),
-    modalStat(row.urls.size, "URLs", "accent", `Distinct pages on ${row.key} that appeared as a source.`),
-    modalStat(row.citedPromptIds.size, `${plural(row.citedPromptIds.size)} ${inOn}`, "accent",
-      `${unit === "prompt" ? "Tracked prompts" : "Captures"} whose answer cited at least one page from this domain.`),
+    modalStat(fmtPct(row.visibility), "Visibility", "accent", null, "domainVisibility"),
+    modalStat(row.citations, "Citations", "good", null, "domainCitations"),
+    modalStat(row.fetched, "Read-only", "muted", null, "readOnly"),
+    modalStat(row.urls.size, "URLs", "accent", null, "distinctUrls"),
+    modalStat(row.citedPromptIds.size, `${plural(row.citedPromptIds.size)} ${inOn}`, "accent", null, "distinctPrompts"),
   );
   body.append(stats);
 
@@ -4564,13 +4630,12 @@ async function openUrlDetailModal(url, profile, since, until) {
   const citedN = r.rows.filter((row) => row.outcome === "cited").length;
   const stats = el("div", { className: "statgrid modal-statgrid" });
   stats.append(
-    modalStat(r.rows.length, "Responses"),
-    modalStat(new Set(r.rows.map((row) => row.promptText)).size, "Prompts"),
+    modalStat(r.rows.length, "Responses", "", null, "responses"),
+    modalStat(new Set(r.rows.map((row) => row.promptText)).size, "Prompts", "", null, "distinctPrompts"),
     // The same page is often cited in one answer and merely read in the next,
     // so the split matters more than the total.
-    modalStat(citedN, "Cited", "good", "Responses that credited this page in the written answer."),
-    modalStat(r.rows.length - citedN, "Read-only", "muted",
-      "Responses that pulled this page in as a source without crediting it in the answer."),
+    modalStat(citedN, "Cited", "good", null, "citedOutcome"),
+    modalStat(r.rows.length - citedN, "Read-only", "muted", null, "readOnly"),
     modalStat(mentionedN, r.hasBrand ? `${r.ownBrand} mentioned` : "You mentioned"),
   );
   body.append(stats);
@@ -4586,9 +4651,9 @@ async function openUrlDetailModal(url, profile, since, until) {
   table.append(el("tr", {},
     el("th", {}, "Prompt"),
     el("th", {}, "Engine"),
-    el("th", { "data-tip": "Cited = credited in the written answer. Read-only = pulled in as a source but never credited." }, "Used as"),
+    el("th", { "data-term": "citedOutcome" }, "Used as"),
     el("th", {}, "You"),
-    el("th", { className: "num", "data-tip": "Rank of your brand among the tracked brands, by where each first appears in this answer." }, "Position"),
+    el("th", { className: "num", "data-term": "avgPosition" }, "Position"),
     el("th", {}, "Brands in the answer"),
     el("th", {}, "Date")));
   r.rows.forEach((row) => {
@@ -4618,6 +4683,27 @@ async function openUrlDetailModal(url, profile, since, until) {
     ));
   });
   body.append(el("div", { className: "drill-scroll" }, table));
+}
+
+/**
+ * Open the campaign's domain drill-down for one domain, from anywhere.
+ *
+ * The Source Domains table already has the aggregated row to hand; a link
+ * elsewhere in the UI does not, so it re-derives it from the same
+ * geo-prompt-performance data through the same aggregateSources() — the two
+ * paths cannot report different numbers for the same domain.
+ */
+async function openCampaignDomainModal(profile, domain, prompts, since, until) {
+  const r = await send({
+    type: "geo-prompt-performance", profileId: profile.id,
+    tags: geoTagFilter, engines: geoEngineFilter, since, until,
+  });
+  if (!r.ok) { showToast(r.error || "Couldn't load that domain", "error"); return; }
+  const { domains } = aggregateSources(r.prompts || {},
+    new Map((prompts || []).map((p) => [p.id, p.text])));
+  const row = domains.get(domain);
+  if (!row) { showToast(`No captured sources from ${domain} under the current filters.`, "error"); return; }
+  openDomainDetailModal(row, `Source breakdown · ${profile.name || "Untitled campaign"}`, "prompt");
 }
 
 /**
@@ -4663,15 +4749,11 @@ async function openBrandDetailModal(profile, brand, prompts, since, until) {
   /* --- headline --- */
   const stats = el("div", { className: "statgrid modal-statgrid" });
   stats.append(
-    modalStat(fmtPct(row.visibility), "Visibility", "accent",
-      `Mentioned in ${row.responsesPresent} of ${r.responses} responses.`),
-    modalStat(fmtPct(row.shareOfVoice), "Share of Voice", "accent",
-      "This brand's mentions ÷ total mentions of all tracked brands."),
-    modalStat(fmtPos(row.avgPosition), "Avg position", "",
-      "Average rank by where this brand first appears in the written answer — counted only where it appears."),
-    modalStat(row.mentions, "Mentions", "", "Times named across all answers."),
-    modalStat(row.citations, "Citations", row.citations ? "good" : "muted",
-      "Responses that cited this brand's own domain as a source."),
+    modalStat(fmtPct(row.visibility), "Visibility", "accent", null, "visibility"),
+    modalStat(fmtPct(row.shareOfVoice), "Share of Voice", "accent", null, "shareOfVoice"),
+    modalStat(fmtPos(row.avgPosition), "Avg position", "", null, "avgPosition"),
+    modalStat(row.mentions, "Mentions", "", null, "mentions"),
+    modalStat(row.citations, "Citations", row.citations ? "good" : "muted", null, "citations"),
   );
   body.append(stats);
   if (r.auto) {
@@ -4684,9 +4766,9 @@ async function openBrandDetailModal(profile, brand, prompts, since, until) {
     const h = r.headToHead;
     body.append(el("div", { className: "modal-section-title" }, `${r.brand} vs ${r.ownBrand}`));
     const h2h = el("div", { className: "h2h" });
-    const seg = (n, label, tone, tip) => {
+    const seg = (n, label, tone, term) => {
       const pct = h.responses ? (n / h.responses) * 100 : 0;
-      const cell = el("div", { className: `h2h-seg tone-${tone}`, ...(tip ? { "data-tip": tip } : {}) });
+      const cell = el("div", { className: `h2h-seg tone-${tone}`, "data-term": term });
       cell.append(el("div", { className: "h2h-n" }, String(n)));
       cell.append(el("div", { className: "h2h-l muted small" }, label));
       cell.append(el("div", { className: "h2h-bar" }, el("div", { className: "h2h-fill", style: `width:${pct}%` })));
@@ -4694,18 +4776,16 @@ async function openBrandDetailModal(profile, brand, prompts, since, until) {
     };
     h2h.append(
       // Listed first on purpose: this is the gap you can act on.
-      seg(h.aOnly, `Only ${r.brand}`, "bad",
-        `Answers that named ${r.brand} and did not name ${r.ownBrand} at all. This is the gap.`),
-      seg(h.both, "Both named", "neutral", `Answers naming both ${r.brand} and ${r.ownBrand}.`),
-      seg(h.bOnly, `Only ${r.ownBrand}`, "good",
-        `Answers that named ${r.ownBrand} and not ${r.brand}.`),
-      seg(h.neither, "Neither", "muted", "Answers naming neither brand."),
+      seg(h.aOnly, `Only ${r.brand}`, "bad", "onlyThem"),
+      seg(h.both, "Both named", "neutral", "bothNamed"),
+      seg(h.bOnly, `Only ${r.ownBrand}`, "good", "onlyYou"),
+      seg(h.neither, "Neither", "muted", "neitherNamed"),
     );
     body.append(h2h);
 
     if (h.both) {
       const lead = el("div", { className: "h2h-lead muted small" });
-      lead.append(el("span", {}, "When both appear: "));
+      lead.append(el("span", { "data-term": "namedFirst" }, "When both appear: "));
       lead.append(el("strong", {}, `${r.brand} first in ${h.aheadA}`));
       lead.append(el("span", {}, " · "));
       lead.append(el("strong", {}, `${r.ownBrand} first in ${h.aheadB}`));
@@ -4740,7 +4820,8 @@ async function openBrandDetailModal(profile, brand, prompts, since, until) {
 
   /* --- what the engine was reading --- */
   if (r.sourceDomains && r.sourceDomains.length) {
-    body.append(el("div", { className: "modal-section-title" }, `Sources cited when ${r.brand} is named`));
+    body.append(el("div", { className: "modal-section-title", "data-term": "brandSources" },
+      `Sources cited when ${r.brand} is named`));
     // Named for what it measures. This is NOT "sites that write about this
     // brand" — a source can be cited for a reason unrelated to a name three
     // paragraphs later. It is "when the engine says this name, what was it
@@ -4751,11 +4832,24 @@ async function openBrandDetailModal(profile, brand, prompts, since, until) {
     const t = el("table", { className: "drill-table" });
     t.append(el("tr", {}, el("th", {}, "Domain"),
       el("th", { className: "num", "data-tip": `Share of the answers mentioning ${r.brand} that cited this domain.` }, "Share"),
-      el("th", { className: "num" }, "Citations")));
-    r.sourceDomains.forEach((d) => t.append(el("tr", {},
-      el("td", { className: "td-domain" }, d.domain),
-      el("td", { className: "num" }, fmtPct(d.visibility)),
-      el("td", { className: "num" }, String(d.citations)))));
+      el("th", { className: "num", "data-term": "domainCitations" }, "Citations")));
+    r.sourceDomains.forEach((d) => {
+      // Clickable, exactly like the campaign's Source Domains table — the
+      // question "which pages on this host, under which prompts" is the same
+      // question wherever a domain is shown, so it gets the same answer.
+      // Aggregated over the whole campaign, not just this brand's answers,
+      // because the drill-down is about the SOURCE; the brand context is the
+      // list you arrived from.
+      const btn = el("button", {
+        className: "linkbtn td-domain-btn",
+        title: `Click for ${d.domain}'s pages and the prompts they came from`,
+      }, d.domain);
+      btn.onclick = () => { backdrop.remove(); openCampaignDomainModal(profile, d.domain, prompts, since, until); };
+      t.append(el("tr", {},
+        el("td", { className: "td-domain" }, btn),
+        el("td", { className: "num" }, fmtPct(d.visibility)),
+        el("td", { className: "num" }, String(d.citations))));
+    });
     body.append(el("div", { className: "drill-scroll" }, t));
   }
 
@@ -5637,6 +5731,30 @@ if (cmpSearchInp) {
 });
 
 loadSettings();
+
+/* The metric reference in About, generated from the same glossary the hover
+   definitions come from — a reference that can drift from the tooltips is
+   worse than none. Rendered once; the table is static. */
+(function renderGlossary() {
+  const host = $("#glossaryList");
+  if (!host) return;
+  // Grouped, because two different things are legitimately both called
+  // "Citations" — a brand's own site being cited, and a source being cited.
+  // A flat list showed the same word twice with no way to tell them apart.
+  glossaryGroups().forEach(({ group, terms }) => {
+    host.append(el("div", { className: "glossary-group-title muted small" }, group));
+    const grid = el("div", { className: "glossary-list" });
+    terms.forEach((g) => {
+      const item = el("div", { className: "glossary-item" });
+      item.append(el("div", { className: "glossary-term" }, g.term));
+      item.append(el("div", { className: "glossary-what" }, g.what));
+      if (g.formula) item.append(el("div", { className: "glossary-formula" }, g.formula));
+      if (g.note) item.append(el("div", { className: "glossary-note muted small" }, g.note));
+      grid.append(item);
+    });
+    host.append(grid);
+  });
+})();
 // .catch() is the whole point here: load() is fired-and-forgotten (nothing
 // awaits it), so ANY exception anywhere in its chain — not just the
 // send()-throws case handled inside load() itself — becomes a silent

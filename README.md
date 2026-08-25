@@ -53,14 +53,16 @@ a brand's Visibility — and the numbers would stop being reproducible.
 | **Citations** | responses citing the brand's own domain |
 | **Source Visibility** | responses where the brand's domain appeared as a source at all |
 
-Visibility and Share of Voice implement [Peec.ai's published formulas](https://docs.peec.ai/metrics/brand-metrics/visibility)
-verbatim, so the numbers are comparable with that tool; the test suite reproduces their own
-worked examples.
+Every metric has exactly one definition, in [`src/lib/glossary.js`](src/lib/glossary.js):
+the term, what it measures, the formula, and the caveat that stops it being misread. The UI
+marks an element with `data-term` and the tooltip is built from that table, so a metric
+cannot end up explained three different ways on three different screens. The test suite
+checks the arithmetic against worked examples.
 
-**Sentiment is deliberately not implemented.** The published definition gives a 0–100 scale
-but neither a formula nor an aggregation method. In a tool whose value is trustworthy
-measurement, a fabricated score is worse than a visible gap — so the UI reports it as
-"not measured" and says why. It needs an LLM-judge pass or a documented lexicon first.
+**Sentiment is deliberately not implemented.** Scoring whether an answer speaks about a
+brand favourably needs either a language model reading every answer or a documented word
+list. In a tool whose value is trustworthy measurement, a fabricated score is worse than a
+visible gap — so the UI reports it as "not measured" and says why.
 
 ## Engine support
 
@@ -128,7 +130,7 @@ for t in test/*.test.mjs; do node "$t"; done
 | `adapter.test.mjs` | Both adapters against real capture fixtures |
 | `behaviour.test.mjs` | Regressions that once broke silently — answer-text persistence, marker parsing, export rendering |
 | `brands.test.mjs` | Industry-agnostic brand detection across many verticals |
-| `geo.test.mjs` | Campaign metrics, including Peec's published worked examples, and the ad-hoc/campaign isolation |
+| `geo.test.mjs` | Campaign metrics, worked examples for each formula, and the ad-hoc/campaign isolation |
 | `xlsxlite.test.mjs` | The dependency-free XLSX reader |
 
 Because raw payloads are kept, **↻ Reprocess all captures** (About tab) re-derives every

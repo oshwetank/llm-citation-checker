@@ -20,7 +20,7 @@
  *
  *  - Query length. The same studies put average fan-out query length at
  *    roughly 3x what it was (~5 -> ~15 words in Nectiv's sample; ~6 -> ~12
- *    across Peec's 20M-query set). Long, heavily-qualified queries reward
+ *    across a published 20M-query analysis). Long, heavily-qualified queries reward
  *    pages that match specific detail rather than broad head terms, so the
  *    word-count distribution is a signal worth having per capture.
  *
@@ -46,7 +46,7 @@ export const FANOUT_BENCHMARK = {
   typicalBandLow: 6,
   typicalBandHigh: 12,
   maxObserved: 29,
-  meanWords: 15,             // Nectiv (~600 queries); Peec's 20M set puts it ~12
+  meanWords: 15,             // ~600-query sample; a 20M-query analysis puts it ~12
   priorMeanWords: 5,
 };
 

@@ -1894,6 +1894,16 @@ body.popup .drill-table th:first-child { min-width: 180px; }
   margin-left: auto;
 }
 .campaign-controls .filter { max-width: 240px; }
+/* States the filter this card is under, since the control itself lives in the
+   Dashboard's filter row above. */
+.scope-note {
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(0, 122, 255, 0.1);
+  color: var(--accent);
+  white-space: nowrap;
+}
 .brand-picker { font-weight: 500; }
 
 .more-detail {
@@ -2632,6 +2642,8 @@ body.popup .tag-sidebar-list { flex-basis: 100%; width: 100%; }
   .src-outcome.is-fetched { background: rgba(148, 163, 184, 0.18); color: #cbd5e1; }
   .auto-tag { background: rgba(59, 130, 246, 0.24); color: #93c5fd; }
   .engine-split-cell { background: rgba(255, 255, 255, 0.05); }
+  .glossary-item { background: rgba(255, 255, 255, 0.05); }
+  .glossary-formula { background: rgba(255, 255, 255, 0.08); }
   .h2h-seg { background: rgba(255, 255, 255, 0.05); }
   .h2h-seg.tone-bad { color: #fca5a5; background: rgba(220, 38, 38, 0.12); }
   .h2h-seg.tone-good { color: #6ee7b7; background: rgba(16, 185, 129, 0.12); }
@@ -3267,7 +3279,82 @@ body.popup .pp-chip { font-size: 9.5px; }
 }
 .app-tooltip[data-placement="top"]::after { bottom: -4px; }
 .app-tooltip[data-placement="bottom"]::after { top: -4px; }
-[data-tip] { cursor: help; }
+[data-tip], [data-term] { cursor: help; }
+
+/* A section being rebuilt after a filter change. beginSwap() holds the old
+   height as a floor across the swap so the page doesn't jump to zero and back
+   within one frame; this fades the new content in over that, so the card
+   resizes from its real old height to its real new one. */
+.swap-in { animation: swapIn 180ms ease-out; }
+@keyframes swapIn {
+  from { opacity: 0; transform: translateY(-2px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .swap-in { animation: none; }
+}
+
+/* A glossary tooltip always renders the same four slots in the same order:
+   the term, what it measures, the formula, and the caveat that stops it being
+   misread. Consistency is the point — the same metric explained three
+   different ways on three screens is what this replaced. */
+.app-tooltip.is-term { max-width: 320px; }
+.app-tooltip .tip-term {
+  font-weight: 600;
+  font-size: 12px;
+  margin-bottom: 3px;
+  color: #fff;
+}
+.app-tooltip .tip-what { line-height: 1.45; }
+.app-tooltip .tip-formula {
+  margin-top: 6px;
+  padding: 4px 7px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.09);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: #cbd5e1;
+}
+.app-tooltip .tip-note {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  color: #b6c2d4;
+  line-height: 1.45;
+}
+
+/* ---------- glossary reference (About) ---------- */
+.glossary-group-title {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  margin: 14px 0 6px;
+}
+.glossary-group-title:first-child { margin-top: 0; }
+.glossary-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+.glossary-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.45);
+}
+.glossary-term { font-weight: 600; font-size: 12px; margin-bottom: 3px; }
+.glossary-what { font-size: 12px; line-height: 1.45; }
+.glossary-formula {
+  margin-top: 6px;
+  padding: 4px 7px;
+  border-radius: 5px;
+  background: rgba(15, 23, 42, 0.06);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+.glossary-note { margin-top: 6px; line-height: 1.45; }
 
 /* ---------- Engine badges ---------- */
 .engine-badge {

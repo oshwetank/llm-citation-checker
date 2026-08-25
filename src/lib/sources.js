@@ -24,8 +24,8 @@
  * looking at — which is why this file exists rather than a count in the UI.
  *
  * Visibility is measured over RESPONSES, matching Brand Visibility in geo.js
- * (Peec: "responses mentioning your brand ÷ total responses"). With one
- * engine a response is a prompt and the two readings coincide; with two
+ * (responses mentioning the brand ÷ total responses — see glossary.js). With
+ * one engine a response is a prompt and the two readings coincide; with two
  * engines they don't, so the distinct-prompt count is reported alongside
  * rather than substituted for it.
  *

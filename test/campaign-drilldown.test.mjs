@@ -429,6 +429,7 @@ try {
           engines: b.querySelectorAll(".engine-split-cell").length,
           headers: [...b.querySelectorAll(".drill-table th")].map((x) => x.textContent),
           gapRows: b.querySelectorAll("tr.h2h-gap-row").length,
+          sourceBtns: b.querySelectorAll("td.td-domain button.td-domain-btn").length,
         };
       });
       check("the drill-down opens", !!m);
@@ -452,6 +453,11 @@ try {
         check("the brand is broken down per engine", m.engines > 1, String(m.engines));
         check("the sources cited when it is named are listed",
           m.sections.some((x) => /Sources cited when/.test(x)), m.sections.join(" | "));
+        // Requested: the same drill-down a domain gets in the campaign's own
+        // Source Domains table. A domain means the same thing wherever it is
+        // shown, so it should answer the same question.
+        check("those domains are clickable, like everywhere else",
+          m.sourceBtns > 0, String(m.sourceBtns));
 
         // Per prompt, both brands side by side — a row is a comparison, not
         // an isolated fact.
@@ -461,8 +467,142 @@ try {
           m.headers.includes(clicked) && m.headers.some((h) => h === seeded.ownBrand),
           m.headers.join(" | "));
       }
+      // Clicking one must land in the domain drill-down, not just look like a
+      // link — the two paths derive the row through the same aggregation, so
+      // they cannot report different numbers for the same domain.
+      if (m && m.sourceBtns) {
+        await page.evaluate(() =>
+          document.querySelector("#url-modal-backdrop td.td-domain button.td-domain-btn").click());
+        await page.waitForTimeout(1500);
+        const dom = await page.evaluate(() => {
+          const b = document.getElementById("url-modal-backdrop");
+          if (!b) return null;
+          return {
+            title: b.querySelector(".modal-title")?.textContent || "",
+            stats: [...b.querySelectorAll(".modal-statgrid .l")].map((x) => x.textContent),
+            pages: b.querySelectorAll(".url-drill-item").length,
+          };
+        });
+        check("clicking one opens the domain drill-down", !!dom && /\./.test(dom.title), dom && dom.title);
+        check("with the same reach/volume split the campaign table uses",
+          dom && dom.stats.includes("Visibility") && dom.stats.includes("Citations"),
+          dom && dom.stats.join(" | "));
+        check("and the pages behind it", dom && dom.pages > 0, dom && String(dom.pages));
+      }
       await page.evaluate(() => document.getElementById("url-modal-backdrop")?.remove());
     }
+  }
+
+  console.log("\nchanging the engine changes the campaign");
+  {
+    // Reported: "when I change the model the data in the campaign doesn't
+    // change at all. Nothing changes." It didn't: the Dashboard's Model
+    // select drove only the ad-hoc record list, while the campaign section
+    // read a SEPARATE variable set by its own duplicate dropdown.
+    const before = await page.evaluate(() => ({
+      kpis: [...document.querySelectorAll("#geoMetrics .geo-kpi .k-value")].map((k) => k.textContent),
+      rows: document.querySelectorAll("#geoMetrics table tr").length,
+      controls: document.querySelectorAll("#geoMetrics select").length,
+    }));
+    // One engine control for the whole tab, not two with the same word on them.
+    check("the campaign card no longer carries its own engine dropdown",
+      before.controls === 1, `${before.controls} selects`);
+
+    const engines = await page.evaluate(() => {
+      const sel = [...document.querySelectorAll("select")]
+        .find((s) => [...s.options].some((o) => o.textContent === "All Models"));
+      return sel ? [...sel.options].map((o) => o.textContent) : null;
+    });
+    check("the Dashboard has a model filter", !!engines, engines && engines.join(", "));
+
+    const switched = await page.evaluate(() => {
+      const sel = [...document.querySelectorAll("select")]
+        .find((s) => [...s.options].some((o) => o.textContent === "All Models"));
+      const opt = [...sel.options].find((o) => o.value === "chatgpt");
+      if (!opt) return false;
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    });
+    check("ChatGPT can be selected", switched);
+    if (switched) {
+      await page.waitForTimeout(1800);
+      const after = await page.evaluate(() => ({
+        kpis: [...document.querySelectorAll("#geoMetrics .geo-kpi .k-value")].map((k) => k.textContent),
+        scope: document.querySelector("#geoMetrics .scope-note")?.textContent || "",
+        engineSplit: document.querySelectorAll("#geoMetrics .engine-split-cell").length,
+      }));
+      check("the campaign KPIs actually change",
+        after.kpis.join("|") !== before.kpis.join("|"),
+        `${before.kpis.join(", ")}  ->  ${after.kpis.join(", ")}`);
+      check("and the card says which engine it is scoped to",
+        /ChatGPT/i.test(after.scope), after.scope);
+      // With the view narrowed to one engine there is nothing to compare.
+      check("the per-engine split drops away when there is one engine",
+        after.engineSplit <= 1, String(after.engineSplit));
+
+      // Put it back so the sections after this measure the full data set.
+      await page.evaluate(() => {
+        const sel = [...document.querySelectorAll("select")]
+          .find((s) => [...s.options].some((o) => o.textContent === "All Models"));
+        sel.value = "";
+        sel.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      await page.waitForTimeout(1800);
+      const restored = await page.evaluate(() =>
+        [...document.querySelectorAll("#geoMetrics .geo-kpi .k-value")].map((k) => k.textContent));
+      check("and clearing the filter restores the full numbers",
+        restored.join("|") === before.kpis.join("|"),
+        `${restored.join(", ")} vs ${before.kpis.join(", ")}`);
+    }
+  }
+
+  console.log("\nmetric definitions are available wherever a metric is shown");
+  {
+    const terms = await page.evaluate(() => {
+      const nodes = [...document.querySelectorAll("[data-term]")];
+      return {
+        count: nodes.length,
+        keys: [...new Set(nodes.map((n) => n.getAttribute("data-term")))],
+        cursor: nodes[0] ? getComputedStyle(nodes[0]).cursor : "",
+      };
+    });
+    check("metric labels are marked up for definitions",
+      terms.count > 10, `${terms.count} elements, ${terms.keys.length} distinct terms`);
+    check("headline metrics are among them",
+      ["visibility", "shareOfVoice", "avgPosition", "mentions"].every((k) => terms.keys.includes(k)),
+      terms.keys.join(", "));
+    check("source metrics are among them",
+      ["domainVisibility", "domainCitations", "readOnly"].every((k) => terms.keys.includes(k)),
+      terms.keys.join(", "));
+    check("and they signal that they explain themselves", terms.cursor === "help", terms.cursor);
+
+    // The tooltip itself: same four slots, every time.
+    const tip = await page.evaluate(async () => {
+      const t = document.querySelector('[data-term="visibility"]');
+      if (!t) return null;
+      t.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 2600));
+      const el = document.querySelector(".app-tooltip");
+      if (!el || el.style.display === "none") return { shown: false };
+      return {
+        shown: true,
+        term: el.querySelector(".tip-term")?.textContent || "",
+        what: el.querySelector(".tip-what")?.textContent || "",
+        formula: el.querySelector(".tip-formula")?.textContent || "",
+        note: el.querySelector(".tip-note")?.textContent || "",
+      };
+    });
+    check("hovering a metric for ~2s shows a definition", tip && tip.shown, JSON.stringify(tip));
+    if (tip && tip.shown) {
+      check("it names the term", /Visibility/i.test(tip.term), tip.term);
+      check("it says what the metric measures", tip.what.length > 20, tip.what);
+      check("it gives the formula", /÷/.test(tip.formula), tip.formula);
+      check("and the caveat that stops it being misread", tip.note.length > 20, tip.note);
+      check("and never names another product",
+        !/peec/i.test(JSON.stringify(tip)), JSON.stringify(tip));
+    }
+    await page.evaluate(() => document.querySelector(".app-tooltip")?.remove());
   }
 
   console.log("\ndomains report reach and volume as separate numbers");

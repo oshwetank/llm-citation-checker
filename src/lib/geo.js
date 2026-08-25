@@ -15,14 +15,20 @@
  *   reproducible; a stray manual ChatGPT query about an unrelated topic would
  *   silently move a brand's Visibility if it leaked in.
  *
- * METRIC DEFINITIONS — provenance matters here, so it's recorded per metric:
- *   Visibility and Share of Voice use Peec.ai's published formulas verbatim
- *   (docs.peec.ai/metrics/brand-metrics/{visibility,share-of-voice}) so numbers
- *   are comparable with that tool. Position uses the one thing Peec's page does
- *   state ("average ranking across all responses where your brand appears") and
- *   derives rank from our own data. Sentiment is NOT implemented — Peec's page
- *   defines neither a formula nor an aggregation method, and inventing a 0-100
- *   score in a measurement tool would be worse than the gap. See SENTIMENT_NOTE.
+ * METRIC DEFINITIONS live in src/lib/glossary.js — one definition per term,
+ * shared by every surface that shows it, so a metric cannot end up explained
+ * three different ways on three different screens. The arithmetic here must
+ * match the formula stated there.
+ *
+ *   Visibility     responses mentioning the brand ÷ total responses
+ *   Share of Voice this brand's mentions ÷ all tracked brands' mentions
+ *   Position       mean rank by first appearance, over responses where the
+ *                  brand appears — responses without it are excluded rather
+ *                  than scored as a penalty rank
+ *   Sentiment      NOT implemented. Scoring it needs either a language model
+ *                  reading every answer or a documented word list; a
+ *                  fabricated 0-100 number in a measurement tool would be
+ *                  worse than the honest gap. See SENTIMENT_NOTE.
  */
 
 export const MAX_PROFILES = 3;
@@ -33,10 +39,10 @@ export const MAX_PROFILES = 3;
 export const TRASH_RETENTION_DAYS = 7;
 
 export const SENTIMENT_NOTE =
-  "Sentiment is not measured yet. The published definition gives a 0-100 scale " +
-  "but no formula or aggregation method, and a fabricated score would be worse " +
-  "than an honest gap. It needs either an LLM judge pass over each answer or a " +
-  "documented lexicon before it can be trusted.";
+  "Whether an answer speaks about a brand favourably is not measured yet. " +
+  "Scoring it honestly needs either a language model reading every answer or a " +
+  "documented word list, and a made-up number in a measurement tool would be " +
+  "worse than an admitted gap.";
 
 /* ---------------- engine registry ----------------
  * `available` reflects what this extension can ACTUALLY drive today: an engine
@@ -419,7 +425,7 @@ export function computeMetrics(records, profile, brands = trackedBrandsOf(profil
   }
 
   // Share of Voice denominator: mentions of ALL tracked brands combined.
-  // Peec: "SoV = (times your brand was mentioned) / (total brand mentions) × 100".
+  // Share of Voice denominator — see glossary.js `shareOfVoice`.
   const mentionPool = [...acc.values()].reduce((n, a) => n + a.mentions, 0);
 
   const out = [...acc.values()].map((a) => ({
@@ -427,15 +433,15 @@ export function computeMetrics(records, profile, brands = trackedBrandsOf(profil
     url: a.url,
     isOwn: a.isOwn,
     auto: a.auto,
-    // Peec: "Visibility = (responses mentioning your brand / total responses) × 100"
+    // glossary.js `visibility`
     visibility: totalResponses ? (a.responsesPresent / totalResponses) * 100 : 0,
-    // Peec: "SoV = (your mentions) / (total mentions of all tracked brands) × 100"
+    // glossary.js `shareOfVoice`
     shareOfVoice: mentionPool ? (a.mentions / mentionPool) * 100 : 0,
     mentions: a.mentions,
     responsesPresent: a.responsesPresent,
-    // Peec states position averages "across all responses where your brand
-    // appears" — so responses without the brand are excluded rather than
-    // scored as a penalty rank. null when it never appeared.
+    // glossary.js `avgPosition`: averaged across responses where the brand
+    // appears, so responses without it are excluded rather than scored as a
+    // penalty rank. null when it never appeared.
     avgPosition: a.positions.length ? a.positions.reduce((x, y) => x + y, 0) / a.positions.length : null,
     citations: a.citedResponses,
     // Share of responses where this brand's own domain surfaced as a source at
