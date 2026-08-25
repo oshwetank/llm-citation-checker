@@ -78,7 +78,15 @@ const SEED_CAMPAIGN = async () => {
   }
   const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
   if (!ranked.length) return { error: "no brands detected in any capture" };
-  const ownBrand = ranked[0][0];
+  // Prefer a brand that ALSO appears as a longer variant somewhere ("Motorola"
+  // alongside "Motorola Edge 70 Fusion"), because that is the case that broke:
+  // the SKU was proposed as a rival of its own maker.
+  const names = ranked.map(([n]) => n);
+  const withSku = names.find((n) =>
+    names.some((o) => o !== n && o.toLowerCase().startsWith(n.toLowerCase() + " ")));
+  const ownBrand = withSku || names[0];
+  const ownSkus = names.filter((o) => o !== ownBrand
+    && o.toLowerCase().startsWith(ownBrand.toLowerCase() + " "));
 
   const profileId = crypto.randomUUID();
   await put("profiles", {
@@ -103,7 +111,7 @@ const SEED_CAMPAIGN = async () => {
     });
     await put("derived", { ...rec, geo: { profileId, runId, promptId, tags: [] } });
   }
-  return { ownBrand, profileId, captures: derived.length };
+  return { ownBrand, ownSkus, profileId, captures: derived.length };
 };
 
 async function seedFixtures(context, extId) {
@@ -162,6 +170,7 @@ try {
     process.exit(1);
   }
   console.log(`\nseeded: ${seeded.captures} captures, own brand "${seeded.ownBrand}", no competitors configured`);
+  if (seeded.ownSkus.length) console.log(`  own-brand SKUs in the corpus: ${seeded.ownSkus.join(", ")}`);
 
   const page = await context.newPage();
   const pageErrors = [];
@@ -221,6 +230,147 @@ try {
     // of Voice is 100% no matter what the answers said.
     check("Share of Voice is a real number rather than 100% by construction",
       table[0] && !/^\s*100(\.0+)?%/.test(table[0].sov), table[0] && table[0].sov);
+  }
+
+  console.log("\nyour own SKUs are not your competitors");
+  {
+    // Reported: "why is Motorola Edge 70 Fusion considered as a new brand
+    // entirely". The own brand was skipped BEFORE the SKU-collapse map was
+    // built, so its own products had no root to collapse onto and were
+    // proposed as rivals — taking share of voice off their own maker.
+    const table = await page.evaluate(() => [...document.querySelectorAll("#geoMetrics table tr")].slice(1)
+      .map((r) => (r.cells[0]?.textContent || "").replace(/auto|×/gi, "").trim()));
+    const own = seeded.ownBrand.toLowerCase();
+    const leaked = table.filter((n) => {
+      const x = n.replace(/\s*\(you\)$/, "").toLowerCase();
+      return x !== own && x.startsWith(own + " ");
+    });
+    check(`no SKU of ${seeded.ownBrand} is listed as a competitor`,
+      leaked.length === 0, leaked.join(", ") || "none");
+    check("the own brand itself is still there", table.some((n) => /\(you\)/.test(n)), table.join(" | "));
+  }
+
+  console.log("\nbrands you don't compete with can be removed");
+  {
+    const victim = await page.evaluate(() => {
+      const row = [...document.querySelectorAll("#geoMetrics table tr")]
+        .find((r) => r.querySelector(".row-x"));
+      if (!row) return null;
+      const name = (row.cells[0]?.textContent || "").replace(/auto|×/gi, "").trim();
+      row.querySelector(".row-x").click();
+      return name;
+    });
+    check("an inferred row offers a remove control", !!victim, String(victim));
+    if (victim) {
+      await page.waitForTimeout(1400);
+      const after = await page.evaluate(() => ({
+        rows: [...document.querySelectorAll("#geoMetrics table tr")].length,
+        names: [...document.querySelectorAll("#geoMetrics table tr")]
+          .map((r) => (r.cells[0]?.textContent || "").replace(/auto|×/gi, "").trim()),
+        excluded: [...document.querySelectorAll(".excluded-row .tag")].map((t) => t.textContent.replace("↺", "").trim()),
+      }));
+      // Not a row-count assertion: the inference is capped, so removing one
+      // brand promotes the next one in — the table can legitimately stay the
+      // same length. What must be true is that this brand is gone.
+      check("it disappears from the brand table",
+        !after.names.includes(victim), after.names.join(", "));
+      check("and is listed as excluded, so the change is visible",
+        after.excluded.includes(victim), after.excluded.join(", "));
+
+      // An exclusion you cannot undo is a trap.
+      await page.evaluate(() => document.querySelector(".excluded-row .tag-x")?.click());
+      await page.waitForTimeout(1400);
+      const restored = await page.evaluate(() =>
+        [...document.querySelectorAll("#geoMetrics table tr")]
+          .map((r) => (r.cells[0]?.textContent || "").replace(/auto|×/gi, "").trim()));
+      check("restoring it brings it back", restored.includes(victim), restored.join(", "));
+    }
+  }
+
+  console.log("\nthe campaign view can be pointed at any brand");
+  {
+    const sw = await page.evaluate(() => ({
+      chips: [...document.querySelectorAll(".brand-chip")].map((c) => c.textContent),
+      active: [...document.querySelectorAll(".brand-chip.on")].map((c) => c.textContent),
+    }));
+    check("there is a brand switcher", sw.chips.length > 1, `${sw.chips.length} chips`);
+    check("exactly one brand is selected", sw.active.length === 1, sw.active.join(", "));
+    check("it starts on the own brand", /\(you\)/.test(sw.active[0] || ""), sw.active[0]);
+
+    const target = await page.evaluate(() => {
+      const chip = [...document.querySelectorAll(".brand-chip:not(.is-own)")][0];
+      if (!chip) return null;
+      const name = chip.querySelector("span").textContent;
+      chip.click();
+      return name;
+    });
+    check("a competitor can be selected", !!target, String(target));
+    if (target) {
+      await page.waitForTimeout(1600);
+      const after = await page.evaluate(() => ({
+        active: document.querySelector(".brand-chip.on span")?.textContent || "",
+        kpiSub: [...document.querySelectorAll("#geoMetrics .k-sub")].map((k) => k.textContent).join(" | "),
+        sov: document.querySelector("#geoMetrics .geo-kpi .k-value")?.textContent || "",
+        focusedRow: document.querySelector("#geoMetrics tr.focused-brand td")?.textContent || "",
+        ppTitle: document.querySelector("#geoPromptTable h3")?.textContent || "",
+      }));
+      check("the switcher follows the click", after.active === target, after.active);
+      // The KPI row is the whole point: a row in a table can be read, a view
+      // pointed at a brand can be analysed.
+      check("the KPI row now describes that brand, not \"your\" brand",
+        after.kpiSub.includes(target), after.kpiSub);
+      check("the brand table highlights the selected row",
+        after.focusedRow.includes(target), after.focusedRow);
+      check("Prompt Performance re-points at it too",
+        after.ppTitle.includes(target), after.ppTitle);
+    }
+  }
+
+  console.log("\ndeep per-brand data, not just one row");
+  {
+    const split = await page.evaluate(() => {
+      const box = document.querySelector(".engine-split");
+      if (!box) return null;
+      return {
+        title: box.querySelector(".engine-split-title")?.textContent || "",
+        engines: box.querySelectorAll(".engine-split-cell").length,
+        labels: [...box.querySelectorAll(".engine-split-nums span")].map((x) => x.textContent),
+      };
+    });
+    // Only rendered with more than one engine to compare — with one engine it
+    // would just be the KPI row again.
+    const engines = await page.evaluate(() =>
+      new Set([...document.querySelectorAll("#geoPromptTable th .engine-chip")].map((e) => e.textContent)).size);
+    if (engines > 1) {
+      check("the selected brand is broken down per engine", !!split);
+      if (split) {
+        check("one cell per engine", split.engines > 1, String(split.engines));
+        ["Visibility", "Share of Voice", "Avg position", "Mentions"].forEach((l) =>
+          check(`per-engine "${l}"`, split.labels.includes(l), split.labels.join(", ")));
+      }
+    } else {
+      check(`only one engine in this data (${engines}) — per-engine split correctly omitted`, !split);
+    }
+  }
+
+  console.log("\ndomains report reach and volume as separate numbers");
+  {
+    const src = await page.evaluate(() => {
+      const heads = [...document.querySelectorAll("#geoPromptTable .src-table th")].map((t) => t.textContent);
+      const first = document.querySelector("#geoPromptTable .src-table tr:nth-child(2)");
+      return {
+        heads,
+        bar: first?.querySelector(".src-bar-n")?.textContent || "",
+        barTitle: first?.querySelector(".src-bar")?.getAttribute("title") || "",
+        cells: [...(first?.cells || [])].map((c) => c.textContent.trim()),
+      };
+    });
+    check("Visibility is a column", src.heads.some((h) => h.includes("Visibility")), src.heads.join(" | "));
+    check("Citations is a separate column", src.heads.some((h) => h.includes("Citations")), src.heads.join(" | "));
+    check("the bar shows the percentage, which is what a 0-100 bar can honestly show",
+      /%$/.test(src.bar), src.bar);
+    check("and says what it is a percentage OF",
+      /of \d+ responses/.test(src.barTitle), src.barTitle);
   }
 
   console.log("\nsource rows drill down — domains as well as URLs");

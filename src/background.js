@@ -1046,6 +1046,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // Soft delete: recoverable for TRASH_RETENTION_DAYS (see the sweep in
         // geo-profile-list above). Prompts and captures are left alone either
         // way — deleting a profile has never deleted its data, only detached it.
+        // Excluding an inferred competitor is not editing the campaign's
+        // measurement definition, so unlike geo-profile-save it is allowed on
+        // a locked profile: the locked definition is "own brand + configured
+        // competitors", and an inferred brand was never part of it. It only
+        // ever touches excludedBrands.
+        case "geo-brand-exclude": {
+          const profile = await db.get("profiles", msg.profileId);
+          if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
+          const name = String(msg.name || "").trim();
+          if (!name) { sendResponse({ ok: false, error: "No brand given." }); break; }
+          const current = profile.excludedBrands || [];
+          const key = normName(name);
+          const next = msg.restore
+            ? current.filter((n) => normName(n) !== key)
+            : (current.some((n) => normName(n) === key) ? current : current.concat(name));
+          const saved = makeProfile({ ...profile, excludedBrands: next });
+          await db.put("profiles", saved);
+          sendResponse({ ok: true, profile: saved });
+          break;
+        }
+
         case "geo-profile-trash": {
           const profile = await db.get("profiles", msg.id);
           if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
@@ -1195,12 +1216,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // would be the own brand talking to itself. Fall back to the brands
           // the answers themselves name, flagged `auto` so the UI can say so.
           const brands = effectiveTrackedBrands(profile, scoped);
+          // The same metrics per engine, over the same brand set. "We're
+          // strong on ChatGPT and invisible on Gemini" is one of the few
+          // findings that changes what you'd actually do about it, and the
+          // profile-wide average hides it completely. Computed with the
+          // campaign-wide brand set so the columns stay comparable — resolved
+          // per engine, a brand could exist in one column and not the other.
+          const byEngine = {};
+          for (const id of new Set(scoped.map((r) => r.platform).filter(Boolean))) {
+            const only = scoped.filter((r) => r.platform === id);
+            byEngine[id] = { responses: only.length, metrics: computeMetrics(only, profile, brands) };
+          }
           sendResponse({
             ok: true,
             metrics: computeMetrics(scoped, profile, brands),
             series: computeSeries(scoped, profile, msg.bucket || "day", brands),
+            byEngine,
             responses: scoped.length,
             autoCompetitors: brands.filter((b) => b.auto).map((b) => b.name),
+            excludedBrands: profile.excludedBrands || [],
             overview: { captures: scoped.length, searched, fanTotal, domainCount: domainSet.size, citedTotal, fetchedTotal },
           });
           break;

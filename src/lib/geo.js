@@ -101,6 +101,13 @@ export function makeProfile(base = {}) {
     competitors: Array.isArray(base.competitors)
       ? base.competitors.filter((c) => c && c.name).map((c) => ({ name: c.name, url: c.url || "" }))
       : [],
+    // Brands the user has said are NOT competitors — publishers, retailers,
+    // their own sub-brands, anything the detector legitimately found but that
+    // shouldn't count in Share of Voice. Only ever suppresses INFERRED
+    // competitors; a competitor the user typed is removed by deleting it.
+    excludedBrands: Array.isArray(base.excludedBrands)
+      ? [...new Set(base.excludedBrands.map((n) => String(n).trim()).filter(Boolean))]
+      : [],
     engines: Array.isArray(base.engines) && base.engines.length
       ? base.engines.filter((id) => availableEngines().some((e) => e.id === id))
       : availableEngines().map((e) => e.id),
@@ -277,15 +284,24 @@ export function trackedBrandsOf(profile) {
  */
 export function autoCompetitorsFrom(records, profile, limit = 8) {
   const ownKey = normName(profile?.brand?.name || "");
-  const configured = new Set((profile?.competitors || []).map((c) => normName(c.name)));
+  const configured = new Map((profile?.competitors || []).map((c) => [normName(c.name), c.name]));
+  const excluded = new Set((profile?.excludedBrands || []).map((n) => normName(n)));
 
   // Pass 1: every distinct name the captures name, with its best spelling.
+  // The own brand and the configured competitors are seeded in as ROOTS even
+  // though they can never be proposed — a SKU has to have something to
+  // collapse onto, and the most important root of all is the user's own
+  // brand. Without it "Motorola Edge 70 Fusion" became a rival of Motorola,
+  // taking a share of voice off its own maker.
   const spelling = new Map(); // key -> name
+  const roots = new Set();    // keys that exist only to absorb SKUs
+  if (ownKey) { spelling.set(ownKey, profile.brand.name); roots.add(ownKey); }
+  for (const [key, name] of configured) { spelling.set(key, name); roots.add(key); }
   for (const rec of records || []) {
     for (const b of rec.brandMentions || []) {
       const name = String(b.brand || "").trim();
       const key = normName(name);
-      if (!key || key === ownKey || configured.has(key)) continue;
+      if (!key) continue;
       if (!spelling.has(key)) spelling.set(key, name);
     }
   }
@@ -295,14 +311,14 @@ export function autoCompetitorsFrom(records, profile, limit = 8) {
   // split one competitor's share of voice across two rows, and the SKU row
   // then under-matches, because brandPresence looks for that exact string and
   // plain "Vivo" mentions don't contain it. So a name whose leading words are
-  // another detected name collapses onto the shorter one.
+  // another known name collapses onto the shorter one.
   const canon = new Map(); // key -> the key it counts as
   const keys = [...spelling.keys()].sort((a, b) => a.length - b.length);
   for (const key of keys) {
     let root = key;
     for (const other of keys) {
       if (other.length >= key.length) break;
-      if (key === other || key.startsWith(other + " ")) { root = other; break; }
+      if (key.startsWith(other + " ")) { root = other; break; }
     }
     canon.set(key, root);
   }
@@ -313,9 +329,10 @@ export function autoCompetitorsFrom(records, profile, limit = 8) {
     for (const b of rec.brandMentions || []) {
       // A count-0 entry was shown in a carousel but never written about; it is
       // still a real competitor appearance, so it counts here.
-      const raw = normName(b.brand);
-      const key = canon.get(raw);
-      if (!key) continue;
+      const key = canon.get(normName(b.brand));
+      // Roots are absorbers, not candidates: a SKU of the own brand or of a
+      // configured competitor lands on that root and stops there.
+      if (!key || roots.has(key) || excluded.has(key)) continue;
       if (perResponse.has(key)) continue;
       perResponse.add(key);
       const cur = seenIn.get(key) || { name: spelling.get(key), responses: 0 };

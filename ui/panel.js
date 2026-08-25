@@ -11,6 +11,7 @@ import {
 } from "../src/lib/geo.js";
 import { parseCsv, parseXlsx, rowsToPrompts } from "../src/lib/xlsxLite.js";
 import { computeSearchFunnel } from "../src/lib/funnel-omitted.js";
+import { aggregateSources, aggregateSourcesFromCaptures } from "../src/lib/sources.js";
 import { analyzeFanout, FANOUT_BENCHMARK } from "../src/lib/fanout.js";
 import { sanitizeText } from "../src/lib/text-sanitize.js";
 
@@ -174,6 +175,12 @@ let GEO_PROMPTS = [];
 let geoActiveId = null;
 let geoTagFilter = [];
 let geoEngineFilter = [];
+// Which brand the campaign view is pointed at. null = the campaign's own
+// brand. Everything brand-shaped on the Dashboard — the KPI row, the
+// per-engine split, the Prompt Performance columns — answers for THIS brand,
+// so a competitor can be analysed with the same depth as your own brand
+// instead of being a row you can only read across.
+let geoFocusBrand = null;
 // Campaigns tab (formerly Tracking + Loader) state
 let promptTagFilter = []; // tag chips selected in the prompt table sidebar
 let promptOnlyUnassigned = false;
@@ -3667,8 +3674,39 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
     return;
   }
 
+  /* Brand switcher — the campaign view points at one brand at a time.
+     A row in a table can be read but not analysed; pointing the whole view at
+     a brand is what makes a competitor's numbers as inspectable as your own. */
+  const focusRow = geoFocusBrand
+    ? m.brands.find((b) => b.name === geoFocusBrand)
+    : null;
+  // A brand can vanish between renders (filters narrowed, exclusion applied).
+  // Falling back to the own brand beats rendering an empty KPI row.
+  const own = focusRow || m.own;
+  if (!focusRow) geoFocusBrand = null;
+
+  if (m.brands.length > 1) {
+    const sw = el("div", { className: "brand-switcher" });
+    sw.append(el("span", { className: "muted small brand-switcher-label" }, "Analysing"));
+    m.brands.forEach((b) => {
+      const on = own && b.name === own.name;
+      const chip = el("button", {
+        className: `brand-chip${on ? " on" : ""}${b.isOwn ? " is-own" : ""}`,
+        title: b.isOwn ? "Your own brand" : `Point the whole campaign view at ${b.name}`,
+      });
+      chip.append(el("span", {}, b.isOwn ? `${b.name} (you)` : b.name));
+      chip.append(el("span", { className: "brand-chip-n" }, fmtPct(b.visibility)));
+      chip.onclick = () => {
+        geoFocusBrand = b.isOwn ? null : b.name;
+        refreshGeoMetrics(profile, prompts, since, until);
+        refreshPromptPerformance(profile, prompts, since, until);
+      };
+      sw.append(chip);
+    });
+    mc.append(sw);
+  }
+
   /* KPI row */
-  const own = m.own;
   const kpis = el("div", { className: "geo-kpis" });
   const kpi = (label, value, sub, tip) => {
     const b = el("div", { className: "geo-kpi" });
@@ -3677,19 +3715,52 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
     if (sub) b.append(el("div", { className: "k-sub muted" }, sub));
     return b;
   };
+  // Whose numbers these are. "your" is right for the own brand and actively
+  // misleading once the view is pointed at a competitor.
+  const whose = own?.isOwn ? "your" : `${own?.name || "this brand"}'s`;
+  const Whose = own?.isOwn ? "Your" : `${own?.name || "This brand"}'s`;
   kpis.append(
     kpi("Share of Voice", fmtPct(own?.shareOfVoice), `${own?.mentions || 0} of ${m.mentionPool} tracked mentions`,
-      "Your mentions ÷ total mentions of ALL tracked brands combined. (Peec.ai's published formula.)"),
+      `${Whose} mentions ÷ total mentions of ALL tracked brands combined. (Peec.ai's published formula.)`),
     kpi("Brand Visibility", fmtPct(own?.visibility), `${own?.responsesPresent || 0} of ${m.totalResponses} responses`,
-      "Responses mentioning your brand ÷ total responses. (Peec.ai's published formula.)"),
+      `Responses mentioning ${whose} brand ÷ total responses. (Peec.ai's published formula.)`),
     kpi("Mentions", String(own?.mentions ?? 0), "times named in answers"),
-    kpi("Source Visibility", fmtPct(own?.sourceVisibility), `your domain in ${own?.sourceResponses || 0} responses`,
-      "Responses where your own domain surfaced as a source at all — cited or merely read, not just cited."),
-    kpi("Citations", String(own?.citations ?? 0), "responses citing your domain"),
+    kpi("Source Visibility", fmtPct(own?.sourceVisibility), `${whose} domain in ${own?.sourceResponses || 0} responses`,
+      `Responses where ${whose} own domain surfaced as a source at all — cited or merely read, not just cited.`),
+    kpi("Citations", String(own?.citations ?? 0), `responses citing ${whose} domain`),
     kpi("Avg position", fmtPos(own?.avgPosition), "rank among tracked brands",
-      "Average rank by where your brand first appears in the written answer, among all tracked brands — only counted for responses where you appear at all."),
+      `Average rank by where ${whose} brand first appears in the written answer, among all tracked brands — only counted for responses where it appears at all.`),
   );
   mc.append(kpis);
+
+  /* Per-engine split for the focused brand.
+     "Strong on ChatGPT, invisible on Gemini" is one of the few findings that
+     changes what you would actually do, and a profile-wide average hides it
+     completely. Only shown when there is more than one engine to compare —
+     with one engine these numbers are the KPI row again. */
+  const engineIdsWithData = Object.keys(r.byEngine || {});
+  if (engineIdsWithData.length > 1 && own) {
+    const box = el("div", { className: "engine-split" });
+    box.append(el("div", { className: "engine-split-title muted small" },
+      `${own.name} by engine`));
+    const grid = el("div", { className: "engine-split-grid" });
+    engineIdsWithData.forEach((id) => {
+      const eng = r.byEngine[id];
+      const row = eng.metrics.brands.find((b) => b.name === own.name);
+      const cell = el("div", { className: "engine-split-cell" });
+      cell.append(el("div", { className: "engine-split-head" },
+        engineChip(id, ENGINES.find((e) => e.id === id)?.label || id),
+        el("span", { className: "muted small" }, `${eng.responses} response${eng.responses === 1 ? "" : "s"}`)));
+      cell.append(el("div", { className: "engine-split-nums" },
+        el("div", {}, el("strong", {}, fmtPct(row?.visibility)), el("span", { className: "muted small" }, "Visibility")),
+        el("div", {}, el("strong", {}, fmtPct(row?.shareOfVoice)), el("span", { className: "muted small" }, "Share of Voice")),
+        el("div", {}, el("strong", {}, fmtPos(row?.avgPosition)), el("span", { className: "muted small" }, "Avg position")),
+        el("div", {}, el("strong", {}, String(row?.mentions ?? 0)), el("span", { className: "muted small" }, "Mentions"))));
+      grid.append(cell);
+    });
+    box.append(grid);
+    mc.append(box);
+  }
 
   /* Competitors the user never typed.
      A campaign with no competitors configured measures nothing: Share of
@@ -3705,8 +3776,26 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
       el("span", { className: "muted" },
         `You haven't set any competitors on this campaign, so the ${r.autoCompetitors.length} brand${r.autoCompetitors.length === 1 ? "" : "s"} `
         + "these answers named most often are being used instead. Nothing has been saved to the campaign.")));
+    // Each chip can be dismissed. Detection is industry-agnostic and will
+    // sometimes surface a publisher, a retailer, or one of your own
+    // sub-brands; without a way to say "not a competitor" the only options
+    // were to accept a wrong denominator or ignore the feature.
     const chips = el("div", { className: "tagline" });
-    r.autoCompetitors.forEach((n) => chips.append(el("span", { className: "tag" }, n)));
+    r.autoCompetitors.forEach((n) => {
+      const chip = el("span", { className: "tag tag-removable" }, n);
+      const x = el("button", { className: "tag-x", title: `Don't treat ${n} as a competitor` }, "×");
+      x.onclick = async () => {
+        x.disabled = true;
+        const res = await send({ type: "geo-brand-exclude", profileId: profile.id, name: n });
+        if (!res.ok) { x.disabled = false; showToast(res.error || "Couldn't exclude that brand", "error"); return; }
+        showToast(`${n} is no longer counted as a competitor`);
+        if (geoFocusBrand === n) geoFocusBrand = null;
+        refreshGeoMetrics(res.profile, prompts, since, until);
+        refreshPromptPerformance(res.profile, prompts, since, until);
+      };
+      chip.append(x);
+      chips.append(chip);
+    });
     banner.append(chips);
     const save = el("button", { className: "btn sm ghost" }, "Save these as competitors");
     save.onclick = async () => {
@@ -3726,6 +3815,27 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
     mc.append(banner);
   }
 
+  /* Anything the user has said is not a competitor, with a way back — an
+     exclusion you can't see and can't undo is a trap. */
+  if (r.excludedBrands && r.excludedBrands.length) {
+    const box = el("div", { className: "excluded-row muted small" });
+    box.append(el("span", {}, "Not counted as competitors:"));
+    r.excludedBrands.forEach((n) => {
+      const chip = el("span", { className: "tag tag-removable is-excluded" }, n);
+      const undo = el("button", { className: "tag-x", title: `Count ${n} as a competitor again` }, "↺");
+      undo.onclick = async () => {
+        undo.disabled = true;
+        const res = await send({ type: "geo-brand-exclude", profileId: profile.id, name: n, restore: true });
+        if (!res.ok) { undo.disabled = false; showToast(res.error || "Couldn't restore that brand", "error"); return; }
+        refreshGeoMetrics(res.profile, prompts, since, until);
+        refreshPromptPerformance(res.profile, prompts, since, until);
+      };
+      chip.append(undo);
+      box.append(chip);
+    });
+    mc.append(box);
+  }
+
   /* competitor table — every row is clickable, own brand included, so a
      competitor's numbers can be broken down per-prompt exactly the same way
      the campaign's own brand can be in the full Prompt Performance table
@@ -3741,10 +3851,30 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
     el("th", { className: "num", "data-tip": "Responses that cited this brand's own domain as a source." }, "Citations"),
     el("th", { className: "num", "data-tip": "Responses where this brand's own domain surfaced as a source at all — cited or merely read." }, "Source vis.")));
   m.brands.forEach((b) => {
-    const tr = el("tr", { className: `clickable-row${b.isOwn ? " own-brand" : ""}`, title: `Click for ${b.name}'s per-prompt performance` });
+    const focused = own && b.name === own.name;
+    const tr = el("tr", {
+      className: `clickable-row${b.isOwn ? " own-brand" : ""}${focused ? " focused-brand" : ""}`,
+      title: `Click for ${b.name}'s per-prompt performance`,
+    });
     tr.onclick = () => openBrandDetailModal(profile, b, prompts, since, until);
     const nameCell = el("td", { className: "td-domain" }, b.isOwn ? `${b.name} (you)` : b.name);
     if (b.auto) nameCell.append(el("span", { className: "auto-tag", title: "Detected in your captures — not a competitor you configured" }, "auto"));
+    if (b.auto) {
+      // Only inferred rows can be excluded here. A competitor the user typed
+      // is removed by editing the campaign, where they put it.
+      const drop = el("button", { className: "row-x", title: `Don't treat ${b.name} as a competitor` }, "×");
+      drop.onclick = async (ev) => {
+        ev.stopPropagation();          // the row itself opens the drill-down
+        drop.disabled = true;
+        const res = await send({ type: "geo-brand-exclude", profileId: profile.id, name: b.name });
+        if (!res.ok) { drop.disabled = false; showToast(res.error || "Couldn't exclude that brand", "error"); return; }
+        showToast(`${b.name} is no longer counted as a competitor`);
+        if (geoFocusBrand === b.name) geoFocusBrand = null;
+        refreshGeoMetrics(res.profile, prompts, since, until);
+        refreshPromptPerformance(res.profile, prompts, since, until);
+      };
+      nameCell.append(drop);
+    }
     tr.append(nameCell);
     tr.append(el("td", { className: "num" }, fmtPct(b.visibility)));
     tr.append(el("td", { className: "num" }, fmtPct(b.shareOfVoice)));
@@ -3834,10 +3964,13 @@ function resultCell(run, whose = { subject: "Your brand", domain: "Your own doma
   return cell;
 }
 
-const promptPerfLegend = () => el("div", { className: "pp-legend muted small" },
-  "#n = your brand's rank among the brands tracked on this campaign · ",
+// `whose` follows the brand switcher: once the view is pointed at a
+// competitor, "your brand" and "your own site" are the wrong words for what
+// these badges mean.
+const promptPerfLegend = (whose = "your") => el("div", { className: "pp-legend muted small" },
+  `#n = ${whose} rank among the brands tracked on this campaign · `,
   el("span", { className: "pp-badge shown" }, "shown"), " = appeared without a rank (product card) · ",
-  el("span", { className: "pp-chip cited" }, "domain cited"), " = your own site was used as a source");
+  el("span", { className: "pp-chip cited" }, "domain cited"), ` = ${whose} own site was used as a source`);
 
 /* Popup layout for the same data.
  *
@@ -3929,6 +4062,9 @@ async function refreshPromptPerformance(profile, prompts, since, until) {
   const r = await send({
     type: "geo-prompt-performance",
     profileId: profile.id,
+    // Follows the brand switcher above, so mentioned/position/cited in this
+    // table are about whichever brand the campaign view is pointed at.
+    focusBrand: geoFocusBrand || undefined,
     tags: geoTagFilter,
     engines: geoEngineFilter,
     since, until,
@@ -3936,7 +4072,13 @@ async function refreshPromptPerformance(profile, prompts, since, until) {
   root.textContent = "";
   const rerender = () => refreshPromptPerformance(profile, prompts, since, until);
 
-  const head = el("div", { className: "card-header" }, el("h3", {}, "Prompt Performance"));
+  // Whose performance this table is about, once the brand switcher can point
+  // it at a competitor.
+  const focused = r.focusBrand && !r.focusIsOwn ? r.focusBrand : null;
+  const ppSubject = focused || "your brand";   // "mention your brand" / "mention OnePlus"
+  const ppPoss = focused ? `${focused}'s` : "your";
+  const head = el("div", { className: "card-header" },
+    el("h3", {}, r.focusBrand && !r.focusIsOwn ? `Prompt Performance — ${r.focusBrand}` : "Prompt Performance"));
   root.append(head);
 
   if (!r.ok) { root.append(el("div", { className: "empty" }, r.error || "Couldn't load prompt performance.")); return; }
@@ -3988,8 +4130,8 @@ async function refreshPromptPerformance(profile, prompts, since, until) {
     el("span", { className: "pp-sum-n" }, String(n)), el("span", { className: "pp-sum-l" }, l));
   summary.append(
     sChip(`${withRuns}/${filteredPrompts.length}`, "prompts with runs"),
-    sChip(anyMention, "mention your brand", anyMention ? "good" : ""),
-    sChip(anyCite, "cite your domain", anyCite ? "good" : ""),
+    sChip(anyMention, `mention ${ppSubject}`, anyMention ? "good" : ""),
+    sChip(anyCite, `cite ${ppPoss} domain`, anyCite ? "good" : ""),
     sChip(rankN ? `#${(rankSum / rankN).toFixed(1)}` : "—", "average rank"),
   );
   root.append(summary);
@@ -4003,7 +4145,7 @@ async function refreshPromptPerformance(profile, prompts, since, until) {
     // than one merged result that could be from either.
     if (document.body.classList.contains("popup")) {
       root.append(promptPerfCards(filteredPrompts, engineIds, engineLabel, runsOf, rerender));
-      root.append(promptPerfLegend());
+      root.append(promptPerfLegend(ppPoss));
     } else {
       const headerCells = [el("th", { className: "pp-col-idx" }, "#"), el("th", {}, "Prompt")];
       engineIds.forEach((id) => headerCells.push(el("th", {}, engineChip(id, engineLabel(id)))));
@@ -4063,58 +4205,18 @@ async function refreshPromptPerformance(profile, prompts, since, until) {
         }
       });
       root.append(el("div", { className: "drill-scroll" }, table));
-      root.append(promptPerfLegend());
+      root.append(promptPerfLegend(ppPoss));
     }
   }
 
   // --- source domains, aggregated from this same filtered response set ---
+  // Citation VOLUME and REACH are different numbers and must not be one
+  // column: a domain cited three times in a single answer scores three
+  // citations but one response of visibility. See src/lib/sources.js for the
+  // definitions and test/sources.test.mjs for the worked example.
   const promptTextById = new Map((prompts || []).map((p) => [p.id, p.text]));
-  // Two different denominators, deliberately: "prompts cited" counts DISTINCT
-  // prompts (a URL cited five times under one prompt is still one prompt's
-  // worth of reach), while "fetched" counts every occurrence (that's crawl
-  // volume, not reach). Collapsing them into one number is the easy mistake.
-  const domainAgg = new Map();
-  const urlAgg = new Map();
-  const touchDomain = (d) => {
-    let row = domainAgg.get(d);
-    if (!row) { row = { key: d, citations: 0, fetched: 0, urls: new Set(), promptIds: new Set(), citedPromptIds: new Set() }; domainAgg.set(d, row); }
-    return row;
-  };
-  const touchUrl = (u, d) => {
-    let row = urlAgg.get(u);
-    if (!row) { row = { key: u, domain: d, citations: 0, fetched: 0, promptIds: new Set(), citedPromptIds: new Set(), runs: new Map() }; urlAgg.set(u, row); }
-    return row;
-  };
-  Object.entries(r.prompts || {}).forEach(([promptId, runs]) => runs.forEach((run) => (run.sources || []).forEach((sc) => {
-    const cited = sc.outcome === "cited";
-    const fetched = sc.outcome === "fetched";
-    if (sc.domain) {
-      const d = touchDomain(sc.domain);
-      if (cited) d.citations++;
-      if (fetched) d.fetched++;
-      d.promptIds.add(promptId);
-      if (cited) d.citedPromptIds.add(promptId);
-      if (sc.url) d.urls.add(sc.url);
-    }
-    if (sc.url) {
-      const u = touchUrl(sc.url, sc.domain || "");
-      if (cited) u.citations++;
-      if (fetched) u.fetched++;
-      u.promptIds.add(promptId);
-      if (cited) u.citedPromptIds.add(promptId);
-      // Keyed by capture so one response listing the same URL twice is still
-      // one run in the drill-down list.
-      const prev = u.runs.get(run.captureId);
-      if (!prev) {
-        u.runs.set(run.captureId, {
-          captureId: run.captureId, capturedAt: run.capturedAt, platform: run.platform,
-          promptId, promptText: promptTextById.get(promptId) || "(prompt no longer tracked)",
-          cited, mentioned: run.mentioned,
-        });
-      } else if (cited) prev.cited = true;
-    }
-  })));
-  domainAgg.forEach((d) => { d.urlList = [...d.urls].map((u) => urlAgg.get(u)).filter(Boolean); });
+  const { domains: domainAgg, urls: urlAgg, totalResponses: srcResponses } =
+    aggregateSources(r.prompts || {}, promptTextById);
 
   root.append(el("div", { className: "wizard-divider" }));
   const srcHead = el("div", { className: "card-header", style: "margin-top:0" }, el("h3", {}, "Source Domains"));
@@ -4141,25 +4243,34 @@ async function refreshPromptPerformance(profile, prompts, since, until) {
   root.append(srcHead);
 
   const activeMap = sourceViewMode === "domain" ? domainAgg : urlAgg;
+  // Sorted by REACH first, volume second. A domain cited nine times inside a
+  // single answer used to outrank one cited once in every answer; the second
+  // is the more useful source to know about, and only the visibility ordering
+  // says so.
   const rows = [...activeMap.values()]
     .filter((row) => matchesSearch(row.key, sourceSearch))
-    .sort((a, b) => b.citations - a.citations || b.fetched - a.fetched || a.key.localeCompare(b.key));
+    .sort((a, b) => b.visibility - a.visibility || b.citations - a.citations
+      || b.fetched - a.fetched || a.key.localeCompare(b.key));
   const shown = rows.slice(0, 50);
 
   if (!shown.length) {
     root.append(el("div", { className: "empty" },
       sourceSearch ? `No sources match "${sourceSearch}".` : "No sources captured yet for these filters."));
   } else {
-    // A bar scaled to the top row turns a column of raw integers into a
-    // ranking you can read at a glance — the question this table answers is
-    // "who does the engine lean on", which a bare number column buries.
-    const maxCites = Math.max(1, ...shown.map((x) => x.citations || 0));
+    const unit = sourceViewMode === "domain" ? "domain" : "page";
     const srcTable = el("table", { className: "drill-table src-table" });
     const hdr = [el("th", { className: "src-col-idx" }, "#"), el("th", {}, sourceViewMode === "domain" ? "Domain" : "URL")];
     if (sourceViewMode === "domain") hdr.push(el("th", { className: "num" }, "URLs"));
     hdr.push(
-      el("th", { className: "num", "data-tip": "Distinct prompts whose answer cited this source." }, "Prompts"),
-      el("th", { "data-tip": "How many times this source was cited in an answer." }, "Citations"),
+      // The bar is on Visibility, not Citations: a percentage has a fixed 0-100
+      // scale a bar can honestly represent, where a bar over an unbounded count
+      // only ever shows the ratio to whatever the top row happens to be.
+      el("th", { "data-tip":
+        `Responses where this ${unit} was cited at least once, ÷ all ${srcResponses} responses in this view. `
+        + "Cited three times in one answer is still one response — that's reach, not volume." }, "Visibility"),
+      el("th", { className: "num", "data-tip":
+        `Every time this ${unit} was cited in an answer. Cited three times in one answer counts three — that's volume, not reach.` }, "Citations"),
+      el("th", { className: "num", "data-tip": `Distinct tracked prompts whose answer cited this ${unit}.` }, "Prompts"),
       el("th", {
         className: "num", "data-tip":
           "Pulled in as a source this many times, but never cited in the written answer. Not “never retrieved” — every count here was actually read; it just wasn't credited in the answer.",
@@ -4181,15 +4292,16 @@ async function refreshPromptPerformance(profile, prompts, since, until) {
         ? openDomainDetailModal(row, `Source breakdown · ${profile.name || "Untitled campaign"}`, "prompt")
         : openUrlDetailModal(row.key, profile, since, until));
 
-      const bar = el("div", { className: "src-bar" },
-        el("div", { className: "src-bar-fill", style: `width:${Math.round(((row.citations || 0) / maxCites) * 100)}%` }),
-        el("span", { className: "src-bar-n" }, String(row.citations || 0)));
+      const bar = el("div", { className: "src-bar", title: `Cited in ${row.citedResponses} of ${srcResponses} responses` },
+        el("div", { className: "src-bar-fill", style: `width:${Math.round(row.visibility)}%` }),
+        el("span", { className: "src-bar-n" }, fmtPct(row.visibility)));
 
       const cells = [el("td", { className: "src-col-idx muted" }, String(i + 1)), el("td", { className: "td-domain" }, keyCell)];
       if (sourceViewMode === "domain") cells.push(el("td", { className: "num" }, String(row.urls.size)));
       cells.push(
-        el("td", { className: "num" }, String(row.citedPromptIds.size)),
         el("td", { className: "src-bar-cell" }, bar),
+        el("td", { className: "num" }, String(row.citations || 0)),
+        el("td", { className: "num" }, String(row.citedPromptIds.size)),
         el("td", { className: "num muted" }, String(row.fetched || 0)));
       srcTable.append(el("tr", {}, ...cells));
     });
@@ -4265,39 +4377,21 @@ const modalStat = (n, l, tone, tip) => el(
   el("div", { className: "l" }, l),
 );
 
-/** Build the same drill-down "row" shape openDomainDetailModal expects, but
+/** Build the same drill-down row shape openDomainDetailModal expects, but
  *  from ad-hoc (non-campaign) capture data instead of a campaign's tracked
  *  runs — this is what lets the plain Dashboard's "Top Domains" list open
  *  the identical drill-down a campaign's Source Domains table does, instead
- *  of being permanently plain text. */
+ *  of being permanently plain text. Same aggregation, same definitions of
+ *  citations and visibility (src/lib/sources.js), so the two paths cannot
+ *  drift into reporting different numbers for the same data. */
 function adhocDomainRow(domain, recs) {
-  const row = { key: domain, citations: 0, fetched: 0, urls: new Set(), citedPromptIds: new Set(), urlList: [] };
-  const urlAgg = new Map();
-  (recs || []).forEach((rec) => {
-    (rec.sources || []).forEach((s) => {
-      if (s.domain !== domain) return;
-      const cited = s.outcome === "cited";
-      const fetched = s.outcome === "fetched";
-      if (cited) row.citations++;
-      if (fetched) row.fetched++;
-      if (!s.url) return;
-      row.urls.add(s.url);
-      if (cited) row.citedPromptIds.add(rec.captureId);
-      let u = urlAgg.get(s.url);
-      if (!u) { u = { key: s.url, citations: 0, fetched: 0, citedPromptIds: new Set(), runs: new Map() }; urlAgg.set(s.url, u); }
-      if (cited) { u.citations++; u.citedPromptIds.add(rec.captureId); }
-      if (fetched) u.fetched++;
-      const prev = u.runs.get(rec.captureId);
-      if (!prev) {
-        u.runs.set(rec.captureId, {
-          captureId: rec.captureId, capturedAt: rec.capturedAt, platform: rec.platform,
-          promptText: rec.userPrompt || "(no prompt text)", cited,
-        });
-      } else if (cited) prev.cited = true;
-    });
-  });
-  row.urlList = [...urlAgg.values()];
-  return row;
+  const { domains, totalResponses } = aggregateSourcesFromCaptures(recs);
+  const row = domains.get(domain);
+  if (!row) {
+    return { key: domain, citations: 0, fetched: 0, citedResponses: 0, visibility: 0,
+             totalResponses, urls: new Set(), citedPromptIds: new Set(), urlList: [] };
+  }
+  return { ...row, totalResponses };
 }
 
 function openAdhocDomainDetailModal(domain, recs) {
@@ -4321,7 +4415,15 @@ function openDomainDetailModal(row, subtitle, unit = "prompt") {
 
   const stats = el("div", { className: "statgrid modal-statgrid" });
   stats.append(
-    modalStat(row.citations, "Citations", "good", "Times this domain was cited as a source in a written answer."),
+    // Reach first, then volume. They answer different questions and the order
+    // says which one to read first: "how often do the engines reach for this
+    // publisher at all" before "how hard do they lean on it when they do".
+    modalStat(fmtPct(row.visibility), "Visibility", "accent",
+      row.totalResponses
+        ? `Cited in ${row.citedResponses} of ${row.totalResponses} responses. Cited three times in one answer is still one response.`
+        : "Responses citing this domain at least once, ÷ all responses in this view."),
+    modalStat(row.citations, "Citations", "good",
+      "Every time a page on this domain was cited in an answer — three citations in one answer counts three."),
     modalStat(row.fetched, "Read-only", "muted",
       "Pulled in as a source but never cited in the written answer. Not “never retrieved” — every count here was actually read; it just wasn't credited."),
     modalStat(row.urls.size, "URLs", "accent", `Distinct pages on ${row.key} that appeared as a source.`),
@@ -4351,7 +4453,8 @@ function openDomainDetailModal(row, subtitle, unit = "prompt") {
       caret,
       el("span", { className: "url-drill-url" }, u.key),
       el("span", { className: "url-drill-meta" },
-        el("span", { className: "pp-chip cited" }, `${u.citedPromptIds.size} ${plural(u.citedPromptIds.size)} cited`),
+        el("span", { className: "pp-chip cited", "data-tip": `Cited ${u.citations} time(s) across ${u.citedPromptIds.size} ${plural(u.citedPromptIds.size)}.` },
+          `${u.citations} cited · ${u.citedPromptIds.size} ${plural(u.citedPromptIds.size)}`),
         el("span", {
           className: "pp-chip notcited", "data-tip":
             "Pulled in as a source this many times, but never cited in the written answer. This is NOT “never retrieved” — every appearance here was read; it just wasn't credited.",
