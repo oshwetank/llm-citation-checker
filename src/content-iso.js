@@ -86,11 +86,18 @@
       streaming: ['[data-testid="stop-button"]', 'button[aria-label*="Stop" i]'],
       searchPill: ['[data-system-hint-type="search"]', 'button[aria-label*="Search" i]'],
       searchActive: ['[data-inline-selection-pill-selected="true"]', '.bg-black.text-white[data-system-hint-type="search"]'],
+      // Where a SENT prompt appears in the transcript. Used to confirm a turn
+      // actually went out — on a short answer the streaming indicator can come
+      // and go between poll ticks, so "is the prompt now in the conversation"
+      // is the more durable signal. Several selectors because this markup
+      // changes; querySelectorAll on an unsupported one just yields nothing.
+      userTurn: '[data-message-author-role="user"], [data-testid^="conversation-turn"] [data-message-author-role="user"]',
     },
     gemini: {
       composer: ['rich-textarea div[contenteditable="true"]', "rich-textarea", 'div[contenteditable="true"]', "textarea"],
       send: ['button[aria-label*="Send message" i]', 'button[aria-label*="Send" i]', ".send-button"],
       streaming: ['button[aria-label*="Stop" i]', 'button[mattooltip*="Stop" i]', ".stop-button"],
+      userTurn: "user-query, .user-query-bubble-with-background, [data-test-id='user-query']",
     },
   };
 
@@ -111,11 +118,42 @@
     const q = params.get("q") || "";
     const token = params.get("lcfctok") || "";
     const wantSearch = params.get("lcfcsearch") === "1";
-    // Strip markers so a manual reload can't re-fire the prompt.
-    try {
-      history.replaceState(null, "", location.pathname);
-    } catch (_) {}
     if (!q || !token) return;
+
+    /* Strip OUR markers immediately — a crafted ?lcfc=1&lcfctok=… link must
+     * not be replayable — but deliberately KEEP ?q= for now.
+     *
+     * This used to strip the whole query string at document_start, which was
+     * the single biggest cause of ChatGPT turns failing: chatgpt.com reads
+     * ?q= itself on boot and auto-submits it natively (their own deeplink
+     * path). This script runs at document_start, i.e. BEFORE their app JS,
+     * so wiping the query removed the prompt before ChatGPT ever saw it —
+     * every turn then depended entirely on the DOM-typing fallback below,
+     * which races a React composer and breaks whenever their markup shifts.
+     * That is why runs failed at six prompts, not just at forty.
+     *
+     * Native submit is the reliable path when it fires, so it gets first
+     * chance; ?q= is removed once it has clearly been consumed (or after a
+     * short grace period) so a manual reload can't re-fire the prompt.
+     * Whether it fires at all is not assumed: OpenAI gated auto-submit on
+     * the sec-fetch-site header after a 2025 prompt-injection disclosure, and
+     * Gemini has no native prefill at all (extensions do it), so the typing
+     * path below remains fully supported and is the only path on Gemini.
+     */
+    const keepQ = new URLSearchParams(location.search);
+    ["lcfc", "lcfctok", "lcfcsearch"].forEach((k) => keepQ.delete(k));
+    const qOnlyUrl = location.pathname + (keepQ.toString() ? `?${keepQ}` : "");
+    const bareUrl = location.pathname;
+    try { history.replaceState(null, "", qOnlyUrl); } catch (_) {}
+
+    // Per-tab, per-token guard. The re-fire protection used to come from
+    // stripping the URL; now that ?q= lingers briefly, this is what stops a
+    // double-run if this script somehow evaluates twice for one navigation.
+    try {
+      const fired = sessionStorage.getItem("lcfcFired");
+      if (fired === token) return;
+      sessionStorage.setItem("lcfcFired", token);
+    } catch (_) { /* sessionStorage unavailable — proceed, the token check still gates us */ }
 
     chrome.runtime.sendMessage({ type: "loader-verify", token }, (res) => {
       if (chrome.runtime.lastError) return;
@@ -146,9 +184,27 @@
         return /^(textarea|input)$/i.test(box.tagName) ? String(box.value || "") : String(box.innerText || "");
       };
 
-      // ChatGPT also reads ?q= itself and can pre-fill the composer from it.
-      // Inserting on top of that produced the prompt twice in one turn, which
-      // is one of the ways a run "ran but not properly". Always clear first.
+      const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
+      const want = norm(q);
+
+      // Did the turn actually go out? Either the page is streaming a reply,
+      // or the user's prompt is now rendered in the conversation. Checking
+      // both matters because streaming can finish faster than a poll tick on
+      // a short answer, which would otherwise read as "never submitted".
+      const submitted = () => {
+        if (pick(sel.streaming)) return true;
+        try {
+          const turns = document.querySelectorAll(sel.userTurn || "[data-message-author-role='user']");
+          for (const t of turns) if (norm(t.innerText).includes(want.slice(0, 40))) return true;
+        } catch (_) { /* selector unsupported — fall through */ }
+        return false;
+      };
+
+      const dropQ = () => { try { history.replaceState(null, "", bareUrl); } catch (_) {} };
+
+      // ChatGPT also pre-fills the composer from ?q= without submitting.
+      // Typing on top of that produced the prompt twice in one turn, so the
+      // composer is always cleared before this script inserts anything.
       const clearComposer = (box) => {
         try {
           box.focus();
@@ -194,17 +250,20 @@
       // background watchdog to burn its full 90s per prompt — with ten
       // prompts that was fifteen minutes of a run looking "stuck".
       const giveUp = (reason) => {
+        dropQ();
         try {
           chrome.runtime.sendMessage({ type: "loader-submit-failed", token, reason }, () => void chrome.runtime.lastError);
         } catch (_) { /* worker may be gone; the watchdog still covers us */ }
       };
 
-      // ChatGPT is a heavy SPA and can take well over the old 12s budget to
-      // mount its composer on a cold navigation; Gemini was usually quicker,
-      // which is part of why this only ever looked broken on ChatGPT.
       const TICK_MS = 400;
-      const MAX_WAIT_TICKS = 75;    // ~30s for the composer to appear
-      const MAX_SEND_TICKS = 20;    // ~8s of submit attempts once text is in
+      // Grace period for the page's OWN auto-submit before this script starts
+      // typing. Long enough for a cold SPA boot to consume ?q=, short enough
+      // that a page which will never auto-submit isn't stalled: on Gemini,
+      // which has no native prefill, this simply always elapses.
+      const NATIVE_GRACE_TICKS = 18;   // ~7s
+      const MAX_WAIT_TICKS = 75;       // ~30s for the composer to appear
+      const MAX_SEND_TICKS = 20;       // ~8s of submit attempts once text is in
       let ticks = 0;
       let sendTicks = 0;
       let searchDone = false;
@@ -212,15 +271,17 @@
       let submitTried = 0;
 
       const timer = setInterval(() => {
-        if (++ticks > MAX_WAIT_TICKS) {
+        ticks++;
+
+        // Native auto-submit landed (or the page was already answering) —
+        // nothing for this script to do but tidy the URL and stand down.
+        if (submitted()) { clearInterval(timer); dropQ(); return; }
+
+        if (ticks > MAX_WAIT_TICKS) {
           clearInterval(timer);
           giveUp(injected ? "prompt typed but never submitted" : "composer never appeared");
           return;
         }
-
-        // Already answering — either our submit landed, or the page was
-        // mid-stream when we arrived. Either way we're done here.
-        if (pick(sel.streaming)) { clearInterval(timer); return; }
 
         if (plat === "chatgpt" && wantSearch && !searchDone && !pick(sel.searchActive)) {
           const pill = pick(sel.searchPill);
@@ -230,33 +291,37 @@
         const box = pick(sel.composer);
         if (!box) return;
 
+        // Hold off typing while the page still might submit ?q= itself.
+        // Exception: if it has already pre-filled the composer with the right
+        // text, it clearly consumed ?q= and chose not to submit — no reason
+        // to keep waiting, so fall straight through to sending.
+        const prefilled = norm(composerText(box)) === want;
+        if (ticks <= NATIVE_GRACE_TICKS && !prefilled) return;
+
         if (!injected) {
-          clearComposer(box);
-          insertText(box, q);
+          if (!prefilled) { clearComposer(box); insertText(box, q); }
           injected = true;
-          return; // give the framework a tick to enable its send control
+          dropQ(); // whichever path filled it, ?q= has served its purpose
+          return;  // give the framework a tick to enable its send control
         }
 
         // Confirm the text actually landed. A contenteditable can accept focus
         // and still hold nothing if the editor rejected the write, and
         // submitting an empty composer is what produced "ran but nothing
-        // happened" turns. Re-insert rather than pressing on.
-        const text = composerText(box).replace(/\s+/g, " ").trim();
-        const want = q.replace(/\s+/g, " ").trim();
-        // Only re-type while we have not yet tried to send. Once a submit has
-        // been attempted, an empty composer means the send WORKED — re-filling
-        // it there would submit the same prompt a second time, which is its
-        // own bug (duplicate turns) and worse than the one being fixed.
+        // happened" turns. Re-insert rather than pressing on — but only while
+        // no submit has been attempted: after one, an empty composer means the
+        // send WORKED, and re-filling it would submit the prompt twice.
+        const text = norm(composerText(box));
         if (submitTried === 0) {
           if (!text) { injected = false; return; }
           if (text !== want && text.length < Math.min(12, want.length)) { injected = false; return; }
         } else if (!text) {
-          clearInterval(timer); // composer emptied after a submit: it went through
+          clearInterval(timer);
           return;
         }
 
-        // Submit. Try the button first, then Enter — ChatGPT accepts Enter in
-        // its composer just as Gemini does, and only Gemini had that fallback
+        // Submit. Button first, then Enter — ChatGPT accepts Enter in its
+        // composer just as Gemini does, and only Gemini had that fallback
         // before, which is the asymmetry that made ChatGPT runs fail outright
         // whenever its send button stayed inert.
         sendTicks++;
@@ -272,9 +337,6 @@
           return;
         }
 
-        // Neither took effect yet. Keep alternating for a few ticks — the
-        // composer clearing or the stop button appearing is the real proof.
-        if (!composerText(box).trim()) { clearInterval(timer); return; }
         if (sendTicks > MAX_SEND_TICKS) {
           clearInterval(timer);
           giveUp("send control never accepted the prompt");
