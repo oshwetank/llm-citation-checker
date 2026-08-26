@@ -88,13 +88,30 @@ html, body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Chrome Extension Popup Fixed Dimensions with Trimmed Outer Margin */
-html.popup, body.popup, html:not(.tab), body:not(.tab) {
+/* Chrome Extension Popup Fixed Dimensions with Trimmed Outer Margin
+ *
+ * The fixed size and the 8px inset belong to <html> ONLY. Applying both to
+ * <html> and <body> made body 540px wide inside html's 524px content box
+ * (540 minus html's own 8px padding either side) and doubled the inset, which
+ * pushed the document's scrollWidth to 548 — a real 8px horizontal scroll in
+ * the popup at its own declared minimum width. Body now fills html's content
+ * box instead of re-declaring the same fixed width.
+ */
+html.popup, html:not(.tab) {
   width: 540px !important;
   min-width: 540px !important;
   height: 600px !important;
   min-height: 600px !important;
   padding: 8px !important;
+  overflow: hidden !important;
+  box-sizing: border-box !important;
+}
+body.popup, body:not(.tab) {
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
   overflow: hidden !important;
   box-sizing: border-box !important;
 }
@@ -380,15 +397,25 @@ body.tab .app-content {
   animation: panelFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
+/* TRANSFORM ONLY — deliberately no opacity.
+ *
+ * The rule above declares `opacity: 1` and the comment says visibility must
+ * never depend on the animation running. That intent was defeated: a running
+ * animation's value always wins over the declared property, so while
+ * panelFadeIn animated opacity from 0 the panel's real opacity was entirely
+ * animation-driven. Any condition where the animation is declared but has not
+ * advanced past its first frame — a throttled or non-painting render — left
+ * the panel fully transparent, i.e. a blank tab, with `display: block` and
+ * content present. Four of the five panels reproduced exactly that.
+ *
+ * `animation: none` under prefers-reduced-motion only ever rescued users with
+ * that setting. Animating transform alone makes the declared opacity the only
+ * thing that governs visibility, so a stalled animation costs the 4px rise
+ * and nothing else. Same reasoning applies to swapIn further down.
+ */
 @keyframes panelFadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { transform: translateY(4px); }
+  to   { transform: translateY(0); }
 }
 
 /* Enterprise Cards (Glassmorphism) */
@@ -3384,9 +3411,13 @@ body.popup .pp-chip { font-size: 9.5px; }
    within one frame; this fades the new content in over that, so the card
    resizes from its real old height to its real new one. */
 .swap-in { animation: swapIn 180ms ease-out; }
+/* Transform only, for the reason spelled out at panelFadeIn: beginSwap() is
+   called on #dashboard — a .panel — and .swap-in sits later in this file, so
+   it overrode .panel.active's animation entirely. A swapIn that faded from
+   opacity 0 therefore controlled whether the whole Dashboard was visible. */
 @keyframes swapIn {
-  from { opacity: 0; transform: translateY(-2px); }
-  to   { opacity: 1; transform: none; }
+  from { transform: translateY(-2px); }
+  to   { transform: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   .swap-in { animation: none; }

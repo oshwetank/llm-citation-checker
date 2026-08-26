@@ -177,6 +177,11 @@ let GEO_PROMPTS = [];
 let geoActiveId = null;
 let geoTagFilter = [];
 let geoEngineFilter = [];
+/* Which run the campaign view is scoped to. "" = every run of this campaign
+   averaged together, which stays the default. Set by the run picker in the
+   campaign header and by clicking a row in Run history. */
+let geoRunFilter = "";
+let geoRunsCache = [];
 // Which brand the campaign view is pointed at. null = the campaign's own
 // brand. Everything brand-shaped on the Dashboard — the KPI row, the
 // per-engine split, the Prompt Performance columns — answers for THIS brand,
@@ -1069,6 +1074,26 @@ function renderAnalyze() {
       rec = light ? FULL.get(light.captureId) || light : null;
     }
     if (!rec) {
+      /* Two different empty states, because they need different answers.
+       *
+       * RECORDS deliberately excludes campaign captures (see the isolation
+       * note in load()), so a user who only ever runs campaigns has an empty
+       * RECORDS and used to be told "No captures yet — run a prompt", while
+       * a thousand captures sat in storage. Telling someone their data does
+       * not exist when it does is worse than showing nothing, and it is the
+       * reported "I ran a campaign, where did my results go".
+       */
+      if (TRACKED_COUNT > 0) {
+        const box = el("div", { className: "empty" },
+          el("div", {}, `Nothing selected to analyse — but ${TRACKED_COUNT} capture${TRACKED_COUNT === 1 ? "" : "s"} ${TRACKED_COUNT === 1 ? "is" : "are"} stored against your campaigns.`),
+          el("div", { className: "muted small", style: "margin-top:6px" },
+            "Campaign captures are kept separate from ad-hoc browsing so a tracking run can't skew your ad-hoc numbers. Open one from the Dashboard's campaign view — click any prompt in the performance table."));
+        const go = el("button", { className: "btn sm primary", style: "margin-top:10px" }, "Go to campaign results →");
+        go.onclick = () => { showTab("dashboard"); renderDashboard(); };
+        box.append(go);
+        root.append(box);
+        return;
+      }
       root.append(
         el("div", { className: "empty" },
           "No captures yet. Open ChatGPT or Gemini in a tab, run a prompt, then reopen this panel.")
@@ -3714,11 +3739,25 @@ function renderRunHistory(profile) {
     runs.forEach((run) => {
       const dur = run.finishedAt ? fmtDuration(run.finishedAt - run.startedAt) : null;
       const statusLabel = { running: "Running", done: "Done", stopped: "Stopped", failed: "Failed" }[run.status] || run.status;
-      table.append(el("div", { className: `loader-history-row status-${run.status}` },
+      // Clickable: this list used to be read-only text, so seeing that one run
+      // captured fewer than the others gave you no way to go and look at it.
+      const row = el("div", {
+        className: `loader-history-row status-${run.status} clickable`,
+        title: "Show only this run's results in the Dashboard",
+        style: "cursor:pointer",
+      },
         el("span", { className: "muted" }, new Date(run.startedAt).toLocaleString()),
         el("span", {}, statusLabel),
         el("span", {}, `${run.captured || 0}/${run.expected || 0} captured${run.failed ? `, ${run.failed} failed` : ""}`),
-        el("span", { className: "muted" }, dur ? `took ${dur}` : "")));
+        el("span", { className: "muted" }, dur ? `took ${dur}` : ""),
+        el("span", { className: "linkbtn" }, "View results →"));
+      row.onclick = () => {
+        geoRunFilter = run.id;
+        geoActiveId = profile.id;
+        showTab("dashboard");
+        renderDashboard();
+      };
+      table.append(row);
     });
     list.append(table);
   });
@@ -3731,11 +3770,22 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
   const mc = $("#geoMetrics");
   if (!mc || !profile) return;
 
+  // Run list feeds the run picker below. Fetched here rather than in the
+  // picker so switching runs doesn't refetch it on every change, and so a
+  // failure to load it degrades to "All runs" instead of an empty control.
+  if (!geoRunsCache.length || geoRunsCache[0]?.profileId !== profile.id) {
+    const rl = await send({ type: "geo-run-list", profileId: profile.id });
+    geoRunsCache = rl && rl.ok ? (rl.runs || []) : [];
+    // A run scope from a previous campaign must not survive into this one.
+    if (geoRunFilter && !geoRunsCache.some((r) => r.id === geoRunFilter)) geoRunFilter = "";
+  }
+
   const r = await send({
     type: "geo-metrics",
     profileId: profile.id,
     tags: geoTagFilter,
     engines: geoEngineFilter,
+    runId: geoRunFilter || undefined,
     since, until,
   });
   beginSwap(mc);
@@ -3757,6 +3807,43 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
   // there's only ever one time filter to reason about.
   const controls = el("div", { className: "campaign-controls" });
   head.append(controls);
+
+  /* Run scope.
+   *
+   * Reported: "if I run the same campaign multiple times and I want to open
+   * one, how would I do that in the dashboard — I don't always want the
+   * overall result." Every campaign number here used to be pooled across all
+   * runs with no way to separate them, which is the wrong default for the
+   * question "did last night's run go worse than the one before". The
+   * aggregate stays the default; this narrows it to a single run.
+   */
+  {
+    const runSel = el("select", { className: "filter", id: "geoRunPick",
+      title: "Show results from every run of this campaign, or just one" });
+    runSel.append(el("option", { value: "" }, "All runs (combined)"));
+    for (const run of geoRunsCache) {
+      const when = new Date(run.startedAt).toLocaleString();
+      const outcome = run.failed ? `${run.captured || 0} ok, ${run.failed} failed` : `${run.captured || 0} captured`;
+      runSel.append(el("option", { value: run.id }, `${when} — ${outcome}`));
+    }
+    runSel.value = geoRunFilter || "";
+    runSel.onchange = () => {
+      geoRunFilter = runSel.value;
+      refreshGeoMetrics(profile, prompts, since, until);
+      refreshPromptPerformance(profile, prompts, since, until);
+    };
+    controls.append(runSel);
+    if (geoRunFilter) {
+      const clear = el("button", { className: "linkbtn" }, "show all runs");
+      clear.onclick = () => {
+        geoRunFilter = "";
+        refreshGeoMetrics(profile, prompts, since, until);
+        refreshPromptPerformance(profile, prompts, since, until);
+      };
+      controls.append(clear);
+    }
+  }
+
   // The engine filter lives in the Dashboard's own filter row, above — one
   // control for the whole tab. A second one here read a different variable
   // and was the reported "changing the model changes nothing" bug.
@@ -4248,6 +4335,7 @@ async function refreshPromptPerformance(profile, prompts, since, until) {
     focusBrand: geoFocusBrand || undefined,
     tags: geoTagFilter,
     engines: geoEngineFilter,
+    runId: geoRunFilter || undefined,
     since, until,
   });
   beginSwap(root);

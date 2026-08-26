@@ -1299,6 +1299,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const all = await db.getAll("derived");
           const scoped = selectTracked(all, {
             profileId: msg.profileId,
+            // Scope to ONE run when asked. Reported: "if I run the same
+            // campaign multiple times and want to open one, how?" The
+            // all-runs aggregate is the right default, but it averages a run
+            // that went badly together with ones that went well, and there
+            // was no way to look at a single run at all. selectTracked has
+            // always filtered on runId — nothing ever passed one.
+            runId: msg.runId || undefined,
             engines: msg.engines,
             tags: msg.tags,
             since: msg.since,
@@ -1370,6 +1377,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const all = await db.getAll("derived");
           const scoped = selectTracked(all, {
             profileId: msg.profileId,
+            // Scope to ONE run when asked. Reported: "if I run the same
+            // campaign multiple times and want to open one, how?" The
+            // all-runs aggregate is the right default, but it averages a run
+            // that went badly together with ones that went well, and there
+            // was no way to look at a single run at all. selectTracked has
+            // always filtered on runId — nothing ever passed one.
+            runId: msg.runId || undefined,
             engines: msg.engines,
             tags: msg.tags,
             since: msg.since,
@@ -1432,6 +1446,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const all = await db.getAll("derived");
           const scoped = selectTracked(all, {
             profileId: msg.profileId,
+            // Scope to ONE run when asked. Reported: "if I run the same
+            // campaign multiple times and want to open one, how?" The
+            // all-runs aggregate is the right default, but it averages a run
+            // that went badly together with ones that went well, and there
+            // was no way to look at a single run at all. selectTracked has
+            // always filtered on runId — nothing ever passed one.
+            runId: msg.runId || undefined,
             engines: msg.engines,
             tags: msg.tags,
             since: msg.since,
@@ -1531,6 +1552,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const all = await db.getAll("derived");
           const campaign = selectTracked(all, {
             profileId: msg.profileId,
+            runId: msg.runId || undefined,
             engines: msg.engines,
             tags: msg.tags,
             since: msg.since,

@@ -503,10 +503,17 @@ try {
       kpis: [...document.querySelectorAll("#geoMetrics .geo-kpi .k-value")].map((k) => k.textContent),
       rows: document.querySelectorAll("#geoMetrics table tr").length,
       controls: document.querySelectorAll("#geoMetrics select").length,
+      // What actually matters: no select in the campaign card offers ENGINE
+      // choices. Counting selects was a proxy for that and became wrong the
+      // moment a legitimately different control (the run picker, which scopes
+      // results to one run of this campaign) was added to the same header.
+      engineSelects: [...document.querySelectorAll("#geoMetrics select")]
+        .filter((sel) => [...sel.options].some((o) => /all models|chatgpt|gemini/i.test(o.textContent)))
+        .length,
     }));
     // One engine control for the whole tab, not two with the same word on them.
     check("the campaign card no longer carries its own engine dropdown",
-      before.controls === 1, `${before.controls} selects`);
+      before.engineSelects === 0, `${before.engineSelects} engine select(s) of ${before.controls} total`);
 
     const engines = await page.evaluate(() => {
       const sel = [...document.querySelectorAll("select")]
