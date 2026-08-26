@@ -5495,8 +5495,14 @@ function renderCompare() {
   }
   const tl = el("div", { className: "chips", style: "margin-top:6px" });
   caps.forEach((r, i) => {
+    // engineIconEl() returns a DOM node, so the label is assembled from
+    // parts rather than one template string (the old ENGINE_ICONS emoji map
+    // interpolated as text; it no longer exists — see the note near
+    // engineIconEl).
     tl.append(el("span", { className: "chip" },
-      `${i + 1}. ${fmt(r.capturedAt)} · ${ENGINE_ICONS[r.platform] || "🔷"} ${engineName(r.platform)}${r.model ? " · " + r.model : ""}`));
+      `${i + 1}. ${fmt(r.capturedAt)} · `,
+      engineIconEl(r.platform),
+      ` ${engineName(r.platform)}${r.model ? " · " + r.model : ""}`));
   });
   head.append(tl);
   out.append(head);
@@ -5525,7 +5531,7 @@ function renderCompare() {
     const row = el("tr", {},
       el("td", { className: "src-col-idx muted" }, String(i + 1)),
       el("td", { className: "muted small", title: new Date(p.rec.capturedAt).toLocaleString() }, fmt(p.rec.capturedAt)),
-      el("td", {}, `${ENGINE_ICONS[p.rec.platform] || "🔷"} ${engineName(p.rec.platform)}`),
+      el("td", {}, engineChip(p.rec.platform, engineName(p.rec.platform))),
       el("td", { className: "num" }, String(p.queries.size)),
       el("td", { className: "num" }, String(p.domains.size)),
       el("td", { className: "num" }, String(p.cited)),
@@ -5557,7 +5563,7 @@ function renderCompare() {
       let cited = 0, fetched = 0, fan = 0;
       ps.forEach((p) => { p.domains.forEach((_, d) => doms.add(d)); cited += p.cited; fetched += p.fetched; fan += p.queries.size; });
       const box = el("div", { className: "geo-kpi" });
-      box.append(el("div", { className: "k-label" }, `${ENGINE_ICONS[id] || "🔷"} ${engineName(id)}`));
+      box.append(el("div", { className: "k-label" }, engineChip(id, engineName(id))));
       box.append(el("div", { className: "k-value" }, String(ps.length)));
       box.append(el("div", { className: "k-sub muted" }, `run${ps.length === 1 ? "" : "s"} · ${doms.size} domains · ${cited} cited · ${fetched} fetched · ${fan} fan-out`));
       grid.append(box);
@@ -5624,7 +5630,7 @@ function renderCompare() {
     caps.forEach((r, i) => hr.append(el("th", {
       className: "num cmp-col",
       title: `${fmt(r.capturedAt)} · ${engineName(r.platform)}`,
-    }, `${ENGINE_ICONS[r.platform] || ""}${i + 1}`)));
+    }, engineIconEl(r.platform), String(i + 1))));
     hr.append(el("th", { className: "num", title: "How many of the runs this appeared in" }, "Seen"));
     hr.append(el("th", { className: "num" }, "Trend"));
     t.append(hr);
