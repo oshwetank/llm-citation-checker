@@ -13,6 +13,7 @@
  */
 
 import { db } from "./lib/db.js";
+import { turnBudgetMs } from "./lib/pacing.js";
 import { gzipString, gunzipToString } from "./lib/gzip.js";
 import { adapt as adaptChatGpt, cleanPassage } from "./adapters/chatgpt.js";
 import { enrichBrandsWithAI } from "./lib/ai-brands.js";
@@ -277,7 +278,10 @@ async function reprocessAll() {
  *      from the real data, not from a counter that might be stale by
  *      exactly that one step.
  */
-const TURN_TIMEOUT_MS = 90000; // give a turn this long before declaring it failed
+/* Turn budget: adaptive, calibrated from each engine's own rolling turn
+ * durations. See src/lib/pacing.js for why a single fixed 90s was wrong in
+ * both directions (idle time on failures, fabricated failures on slow turns).
+ */
 const MIN_ADVANCE_GAP_MS = 2500; // ignore a second "done" arriving right after one
 const LOADER_STATE_KEY = "lcfcLoaderState";
 const HEARTBEAT_ALARM = "lcfcHeartbeat";
@@ -403,7 +407,7 @@ async function heartbeatTick() {
   for (const plat of Object.keys(loader.platforms)) {
     const p = loader.platforms[plat];
     if (p.idx >= p.prompts.length || !p.startedAt || p.watchdog) continue;
-    if (Date.now() - p.startedAt >= TURN_TIMEOUT_MS + 5000) failTurnAndAdvance(plat, "watchdog lost");
+    if (Date.now() - p.startedAt >= turnBudgetMs(p) + 5000) failTurnAndAdvance(plat, "watchdog lost");
   }
 }
 
@@ -527,12 +531,13 @@ async function resumeFromSnapshot(snap) {
     }
 
     const elapsed = Date.now() - (p.startedAt || 0);
-    if (elapsed >= TURN_TIMEOUT_MS) {
+    const budget = turnBudgetMs(p);
+    if (elapsed >= budget) {
       // The turn that was in flight when the worker died has now definitely
       // timed out.
       failTurnAndAdvance(plat, "timeout during restart");
     } else {
-      armWatchdog(plat, TURN_TIMEOUT_MS - elapsed);
+      armWatchdog(plat, budget - elapsed);
     }
   }
 
@@ -713,8 +718,8 @@ function loaderStatus() {
       total: p.prompts.length,
       failed: p.failed || 0,
       current: inFlight ? p.prompts[p.idx] : null,
-      elapsedMs: inFlight && p.startedAt ? Math.min(now - p.startedAt, TURN_TIMEOUT_MS) : null,
-      turnTimeoutMs: TURN_TIMEOUT_MS,
+      elapsedMs: inFlight && p.startedAt ? Math.min(now - p.startedAt, turnBudgetMs(p)) : null,
+      turnTimeoutMs: turnBudgetMs(p),
       avgTurnMs: eta ? Math.round(eta.avgMs) : null,
       etaMs: eta ? Math.round(eta.remainingMs) : null,
       prompts,
@@ -792,7 +797,7 @@ async function loaderRunPlatform(plat) {
 
   // Watchdog: if no signal-bearing capture arrives in time, record a failure and
   // continue. Without this a rate-limited or errored turn stalls the whole run.
-  armWatchdog(plat, TURN_TIMEOUT_MS);
+  armWatchdog(plat, turnBudgetMs(p));
 }
 
 async function loaderStart(prompts, options) {

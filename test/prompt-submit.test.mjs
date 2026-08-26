@@ -59,6 +59,8 @@ async function run(html, { gemini = false, waitMs = 9000 } = {}) {
   await page.route("**/*", (r) => r.fulfill({ status: 200, contentType: "text/html", body: `<body>${html}</body>` }));
   await page.goto(`${host}/mock?q=${encodeURIComponent(PROMPT)}&lcfc=1&lcfctok=T1`);
   const res = await page.evaluate(async ({ iso, waitMs }) => {
+    const t0 = Date.now();
+    window.__t0 = t0;
     const events = [];
     window.chrome = {
       runtime: {
@@ -73,6 +75,7 @@ async function run(html, { gemini = false, waitMs = 9000 } = {}) {
     return {
       events,
       submits: window.__submits || 0,
+      submitAt: window.__submitAt === undefined ? null : window.__submitAt,
       text: window.__lastText || null,
       url: location.pathname + location.search,
     };
@@ -90,11 +93,13 @@ async function run(html, { gemini = false, waitMs = 9000 } = {}) {
 const RECORD_CHATGPT = `
   window.__submits=0;
   window.__record=(t)=>{ window.__submits++; window.__lastText=t;
+    if(window.__submitAt===undefined) window.__submitAt=Date.now()-(window.__t0||Date.now());
     const d=document.createElement('div'); d.setAttribute('data-message-author-role','user');
     d.textContent=t; document.getElementById('convo').appendChild(d); };`;
 const RECORD_GEMINI = `
   window.__submits=0;
   window.__record=(t)=>{ window.__submits++; window.__lastText=t;
+    if(window.__submitAt===undefined) window.__submitAt=Date.now()-(window.__t0||Date.now());
     const d=document.createElement('user-query'); d.textContent=t;
     document.getElementById('convo').appendChild(d); };`;
 
@@ -173,6 +178,25 @@ console.log("\nGemini: no native prefill exists, so the typing path is the only 
     </script>`, { gemini: true });
   check("submitted exactly once", r.submits === 1, `submits=${r.submits}`);
   check("the prompt text is correct", r.text === PROMPT, JSON.stringify(r.text));
+
+  /* Run duration, measured rather than assumed.
+   *
+   * The auto-submit grace used to be a flat ~7.2s counted from
+   * document_start, applied on BOTH engines. Gemini has no native ?q=
+   * handling at all — which is why third-party "Gemini URL prompt" extensions
+   * exist — so on Gemini that wait could only ever elapse in full before the
+   * script typed. Across a 1000-prompt leg that is ~2 hours spent waiting for
+   * something that cannot happen. It is now a short settle measured from the
+   * composer actually appearing.
+   *
+   * This is dead time inside our own script, not request pacing: the
+   * inter-prompt human-paced gap and the engine's own answer time are
+   * untouched, so nothing here trades account safety for speed. Pinned as a
+   * number because the saving is the entire point — a future refactor that
+   * reintroduced a long unconditional wait would otherwise pass silently.
+   */
+  check("Gemini submits promptly rather than waiting out a grace that can never fire",
+    r.submitAt != null && r.submitAt < 3000, `submitted at ${r.submitAt}ms`);
   check("no failure reported", r.gaveUp.length === 0, r.gaveUp.join(","));
 }
 

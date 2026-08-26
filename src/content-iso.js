@@ -344,11 +344,29 @@
       };
 
       const TICK_MS = 400;
-      // Grace period for the page's OWN auto-submit before this script starts
-      // typing. Long enough for a cold SPA boot to consume ?q=, short enough
-      // that a page which will never auto-submit isn't stalled: on Gemini,
-      // which has no native prefill, this simply always elapses.
-      const NATIVE_GRACE_TICKS = 18;   // ~7s
+      /* Grace period for the page's OWN auto-submit before this script starts
+       * typing. Two things about it were costing hours on a long run.
+       *
+       * It was a flat ~7s counted from document_start, on BOTH engines. Gemini
+       * has no native ?q= handling whatsoever — that is why third-party
+       * "Gemini URL prompt" extensions exist at all — so on Gemini the wait
+       * could never do anything but elapse in full. At ~7s a prompt that is
+       * 2 hours of pure dead waiting across a 1000-prompt leg.
+       *
+       * Counting from document_start was also the wrong origin even on
+       * ChatGPT: it spent the budget on SPA boot rather than on watching for
+       * the native submit. A fast boot burned ~6s of needless wait, while a
+       * slow one left barely a second of actual observation — the worst of
+       * both. The clock now starts when the composer first appears, i.e. when
+       * the app is up and native submit becomes possible, so the budget is
+       * spent watching rather than waiting.
+       *
+       * Gemini still gets a couple of ticks: a freshly mounted composer may
+       * not be hydrated yet, and typing into it would be dropped. That is
+       * already survivable — the "did the text actually land" check below
+       * re-inserts — but a short settle avoids the thrash.
+       */
+      const GRACE_AFTER_COMPOSER = plat === "gemini" ? 2 : 8;  // ~0.8s / ~3.2s
       const MAX_WAIT_TICKS = 75;       // ~30s for the composer to appear
       const MAX_SEND_TICKS = 20;       // ~8s of submit attempts once text is in
       // After the prompt goes out, keep watching for a limit notice — on
@@ -366,6 +384,7 @@
       let submitTried = 0;
       let sentOk = false;
       let watchTicks = 0;
+      let composerSeenTick = 0;   // tick the composer first existed; 0 = not yet
 
       const reportLimit = (detail) => {
         clearInterval(timer);
@@ -413,13 +432,14 @@
 
         const box = pick(sel.composer);
         if (!box) return;
+        if (!composerSeenTick) composerSeenTick = ticks;
 
         // Hold off typing while the page still might submit ?q= itself.
         // Exception: if it has already pre-filled the composer with the right
         // text, it clearly consumed ?q= and chose not to submit — no reason
         // to keep waiting, so fall straight through to sending.
         const prefilled = norm(composerText(box)) === want;
-        if (ticks <= NATIVE_GRACE_TICKS && !prefilled) return;
+        if (ticks - composerSeenTick < GRACE_AFTER_COMPOSER && !prefilled) return;
 
         if (!injected) {
           if (!prefilled) { clearComposer(box); insertText(box, q); }
