@@ -508,6 +508,36 @@ export function runDue(profile, now = Date.now()) {
   return bucketKey(profile.lastRunAt) !== bucketKey(now);
 }
 
+/* ---------------- Retention policy ----------------
+ * Which captures the retention cap is allowed to delete.
+ *
+ * enforceRetention() used to prune purely by age, oldest first, with no idea
+ * what it was deleting. That is fine while browsing ad-hoc, but it silently
+ * destroys measurement data during a large campaign run: the default cap is
+ * 2000 captures, and a 1000-prompt run across two engines produces exactly
+ * 2000 — so once the store fills, every new capture deleted the oldest, which
+ * by then were that same run's own earlier results. The run cannibalised
+ * itself and the missing prompts looked like a capture failure.
+ *
+ * A campaign capture is the product of a deliberate, reproducible measurement
+ * the user set up and waited for; an ad-hoc browsing capture is a by-product
+ * of looking at something once. Only the latter is disposable. Tracked
+ * captures carry the `geo` provenance bag (profileId/runId/promptId) — that
+ * flag is the whole basis of the ad-hoc/campaign split described in the
+ * README, so it is exactly the right thing to key this on.
+ *
+ * Consequence, accepted deliberately: a store consisting only of campaign
+ * captures can exceed the cap and keep growing. That is the correct trade —
+ * "unlimitedStorage" is already granted, and losing measurement data is far
+ * worse than using more disk. Storage usage is shown in the About tab.
+ */
+export function isPrunableCapture(rec) {
+  if (!rec) return false;
+  // Legacy records predate the geo bag entirely and have no key at all; those
+  // are ad-hoc by definition (see the isTracked note elsewhere in this file).
+  return !rec.geo;
+}
+
 /** Submissions a run will make — surfaced in the UI before the user commits. */
 export function runVolume(prompts, engines) {
   const active = (prompts || []).filter((p) => p.active !== false).length;

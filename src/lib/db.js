@@ -108,6 +108,43 @@ export const db = {
   },
   // Oldest-first keys, up to `limit`. Walks the capturedAt index with a cursor so
   // retention pruning never loads whole records (or gzipped blobs) into memory.
+  /* Oldest-first keys the retention cap may actually delete.
+   *
+   * getAllKeysSortedByTime() below returns keys blindly, which meant pruning
+   * could delete campaign captures mid-run (see isPrunableCapture in
+   * lib/geo.js for why that is data loss, not housekeeping). This walks the
+   * same capturedAt index oldest-first but reads each VALUE so the caller's
+   * predicate can veto it, and keeps walking past a vetoed record rather than
+   * stopping — so a store whose oldest entries are all campaign captures
+   * still yields the ad-hoc ones behind them instead of pruning nothing.
+   */
+  getOldestPrunableKeys(store, limit, isPrunable) {
+    return tx(store, "readonly", (os) => {
+      return new Promise((resolve, reject) => {
+        const out = [];
+        if (limit <= 0) return resolve(out);
+        let idx;
+        try {
+          idx = os.index("capturedAt");
+        } catch (_) {
+          return resolve(out); // index missing — skip pruning rather than guess
+        }
+        const req = idx.openCursor(null, "next"); // ascending = oldest first
+        req.onsuccess = () => {
+          const cur = req.result;
+          if (!cur || out.length >= limit) return resolve(out);
+          try {
+            if (isPrunable(cur.value)) out.push(cur.primaryKey);
+          } catch (_) {
+            /* a predicate throwing must not abort the walk; just skip this one */
+          }
+          cur.continue();
+        };
+        req.onerror = () => reject(req.error);
+      });
+    });
+  },
+
   getAllKeysSortedByTime(store, limit) {
     return tx(store, "readonly", (os) => {
       return new Promise((resolve, reject) => {
