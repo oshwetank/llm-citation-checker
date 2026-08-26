@@ -2167,6 +2167,15 @@ body.popup .drill-table th:first-child { min-width: 180px; }
 }
 .loader-finished-banner.has-errors { background: var(--amber-bg); color: var(--amber-fg); border-color: var(--amber-border); }
 
+/* Amber, not red: an interrupted run is recoverable and nothing was lost, so
+   it must not read as the failure state (--red-*) that this replaced. */
+.loader-interrupted {
+  background: var(--amber-bg); color: var(--amber-fg); border: 1px solid var(--amber-border);
+  border-radius: 8px; padding: 9px 12px; font-size: 12px; margin: 8px 0;
+}
+.loader-interrupted .small { margin-top: 3px; overflow-wrap: anywhere; }
+.loader-interrupted .muted { opacity: 0.75; margin-top: 3px; }
+
 .loader-prompt-lists { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
 .loader-prompt-list {
   border: 1px solid var(--border); border-radius: 10px; background: var(--bg-subtle); overflow: hidden;

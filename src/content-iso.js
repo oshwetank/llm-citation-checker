@@ -92,12 +92,17 @@
       // is the more durable signal. Several selectors because this markup
       // changes; querySelectorAll on an unsupported one just yields nothing.
       userTurn: '[data-message-author-role="user"], [data-testid^="conversation-turn"] [data-message-author-role="user"]',
+      // Conversation content, EXCLUDED when scanning the page for upstream
+      // limit notices — see limitHit(). Any node carrying an author role is
+      // prompt or answer text; a cap notice never has one.
+      turns: "[data-message-author-role]",
     },
     gemini: {
       composer: ['rich-textarea div[contenteditable="true"]', "rich-textarea", 'div[contenteditable="true"]', "textarea"],
       send: ['button[aria-label*="Send message" i]', 'button[aria-label*="Send" i]', ".send-button"],
       streaming: ['button[aria-label*="Stop" i]', 'button[mattooltip*="Stop" i]', ".stop-button"],
       userTurn: "user-query, .user-query-bubble-with-background, [data-test-id='user-query']",
+      turns: "user-query, model-response, message-content",
     },
   };
 
@@ -256,6 +261,88 @@
         } catch (_) { /* worker may be gone; the watchdog still covers us */ }
       };
 
+      /* Upstream limits and hard errors.
+       *
+       * Previously a rate-limited turn just sat there until the background
+       * watchdog gave up 90s later and marked it FAILED — so hitting a limit
+       * burned through the rest of the queue at 90s each, converting a
+       * temporary block into permanent data loss across hundreds of prompts.
+       * Detecting it lets the run PAUSE and be resumed once the window
+       * clears, losing nothing.
+       *
+       * Matched on visible page text rather than network status codes: the
+       * capture path sees responses, but this script only has the DOM, and
+       * the wording below is what both engines actually render. Deliberately
+       * narrow — a false positive pauses a healthy run, so generic words like
+       * "error" alone are not enough.
+       *
+       * CRITICALLY, the scan excludes the conversation itself (sel.turns).
+       * Scanning document.body.innerText would read the model's own answer,
+       * so a perfectly healthy campaign asking "how do OpenAI rate limits
+       * work" would pause itself on its own output — the exact failure this
+       * feature exists to prevent, inverted. Only chrome around the
+       * transcript (banners, toasts, the composer area) is eligible.
+       */
+      const LIMIT_PATTERNS = [
+        /you'?ve (?:reached|hit) (?:your|the) .{0,40}limit/i,
+        /you'?ve (?:reached|hit) the .{0,30}(?:usage )?cap/i,
+        /(?:usage|message|request) (?:cap|limit|quota) (?:reached|exceeded)/i,
+        /exceeded your .{0,30}quota/i,
+        /rate.?limit(?:ed|s)?\b/i,
+        /too many requests/i,
+        /please (?:wait|try again) (?:a|in) .{0,20}(?:moment|minute|hour)/i,
+      ];
+
+      /* Visible text OUTSIDE the transcript, capped for cost.
+       *
+       * A TreeWalker rather than cloning the DOM: this runs on a poll tick,
+       * and it must not allocate a copy of a long conversation. Nodes inside
+       * a turn container are skipped wholesale (FILTER_REJECT prunes the
+       * subtree), as are <script>/<style>, whose textContent is never visible
+       * but would otherwise match happily.
+       */
+      const chromeText = (cap = 4000) => {
+        if (!document.body) return "";
+        let out = "";
+        try {
+          const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+            acceptNode(node) {
+              if (node.nodeType === 1) {
+                const tag = node.tagName;
+                if (tag === "SCRIPT" || tag === "STYLE" || tag === "NOSCRIPT") return NodeFilter.FILTER_REJECT;
+                if (sel.turns && node.matches && node.matches(sel.turns)) return NodeFilter.FILTER_REJECT;
+                return NodeFilter.FILTER_SKIP;
+              }
+              return NodeFilter.FILTER_ACCEPT;
+            },
+          });
+          let n;
+          while ((n = walker.nextNode())) {
+            const t = n.nodeValue;
+            if (!t || !t.trim()) continue;
+            out += t + " ";
+            if (out.length >= cap) break;
+          }
+        } catch (_) {
+          // TreeWalker or the selector failed. Returning "" (rather than
+          // falling back to body.innerText) keeps the false-positive
+          // guarantee: better to miss a limit banner, which the watchdog
+          // still catches, than to pause a healthy run on answer text.
+          return "";
+        }
+        return out.slice(0, cap);
+      };
+
+      const limitHit = () => {
+        const text = chromeText();
+        if (!text) return null;
+        for (const re of LIMIT_PATTERNS) {
+          const m = text.match(re);
+          if (m) return m[0].replace(/\s+/g, " ").slice(0, 120);
+        }
+        return null;
+      };
+
       const TICK_MS = 400;
       // Grace period for the page's OWN auto-submit before this script starts
       // typing. Long enough for a cold SPA boot to consume ?q=, short enough
@@ -264,18 +351,54 @@
       const NATIVE_GRACE_TICKS = 18;   // ~7s
       const MAX_WAIT_TICKS = 75;       // ~30s for the composer to appear
       const MAX_SEND_TICKS = 20;       // ~8s of submit attempts once text is in
+      // After the prompt goes out, keep watching for a limit notice — on
+      // ChatGPT the model cap typically appears INSTEAD of the answer, i.e.
+      // strictly after submission. Stopping at submit (what the code did)
+      // meant the most common rate-limit shape was never detected and the
+      // turn died 90s later as a generic FAILED. Bounded, and every navigation
+      // to the next prompt tears the interval down anyway.
+      const POST_SUBMIT_WATCH_TICKS = 150;  // ~60s
+      const POST_SUBMIT_EVERY = 5;          // scan every ~2s, not every tick
       let ticks = 0;
       let sendTicks = 0;
       let searchDone = false;
       let injected = false;
       let submitTried = 0;
+      let sentOk = false;
+      let watchTicks = 0;
+
+      const reportLimit = (detail) => {
+        clearInterval(timer);
+        dropQ();
+        try {
+          chrome.runtime.sendMessage({ type: "loader-rate-limited", token, detail },
+            () => void chrome.runtime.lastError);
+        } catch (_) { /* worker gone; the watchdog still covers us */ }
+      };
 
       const timer = setInterval(() => {
         ticks++;
 
+        // Prompt already sent: nothing left to do but watch for a cap notice
+        // landing in place of the answer.
+        if (sentOk) {
+          watchTicks++;
+          if (watchTicks > POST_SUBMIT_WATCH_TICKS) { clearInterval(timer); return; }
+          if (watchTicks % POST_SUBMIT_EVERY !== 0) return;
+          const late = limitHit();
+          if (late) reportLimit(late);
+          return;
+        }
+
+        // An upstream limit outranks everything else: stop, and tell the run
+        // to pause rather than letting this turn time out as a failure.
+        const limit = limitHit();
+        if (limit) { reportLimit(limit); return; }
+
         // Native auto-submit landed (or the page was already answering) —
-        // nothing for this script to do but tidy the URL and stand down.
-        if (submitted()) { clearInterval(timer); dropQ(); return; }
+        // nothing for this script to do but tidy the URL and keep the
+        // post-submit limit watch running.
+        if (submitted()) { sentOk = true; dropQ(); return; }
 
         if (ticks > MAX_WAIT_TICKS) {
           clearInterval(timer);
@@ -316,7 +439,9 @@
           if (!text) { injected = false; return; }
           if (text !== want && text.length < Math.min(12, want.length)) { injected = false; return; }
         } else if (!text) {
-          clearInterval(timer);
+          // Composer emptied after a submit attempt: the send landed. Hand
+          // over to the post-submit limit watch rather than stopping dead.
+          sentOk = true;
           return;
         }
 

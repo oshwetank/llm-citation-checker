@@ -3674,7 +3674,15 @@ function renderRunCard(profile) {
   const pauseBtn = el("button", { className: "btn ghost" }, "⏸ Pause");
   pauseBtn.onclick = async () => renderLoaderStatus(await send({ type: "loader-pause" }));
   const resumeBtn = el("button", { className: "btn ghost" }, "▶ Resume");
-  resumeBtn.onclick = async () => renderLoaderStatus(await send({ type: "loader-resume" }));
+  // Resume can genuinely fail now — a run interrupted by the browser closing
+  // has no tab left, so resuming has to open one, and Chrome can refuse.
+  // Rendering that {ok:false} reply as a status would blank the live panel and
+  // make a paused run look finished, so it's reported and the status left be.
+  resumeBtn.onclick = async () => {
+    const r = await send({ type: "loader-resume" });
+    if (!r || r.ok === false) { showToast(r?.error || "Couldn't resume the run.", "error"); return; }
+    renderLoaderStatus(r);
+  };
   const stopBtn = el("button", { className: "btn danger" }, "■ Stop");
   stopBtn.onclick = async () => renderLoaderStatus(await send({ type: "loader-stop" }));
   rc.append(el("div", { className: "ft-actions" }, runBtn, pauseBtn, resumeBtn, stopBtn));
@@ -5231,6 +5239,33 @@ function renderLoaderStatus(s) {
     s.errors ? el("span", { className: "loader-errcount" }, ` · ${s.errors} failed`) : "",
     s.etaMs != null ? el("span", { className: "muted" }, ` · ~${fmtDuration(s.etaMs)} remaining`) : (s.paused ? "" : el("span", { className: "muted" }, " · estimating time remaining…")));
   box.append(summary);
+
+  /* Why it's paused, when it wasn't the user who paused it.
+   *
+   * Two things now pause a run on their own: the engine reporting a usage
+   * limit, and the browser (or the automated tab) being closed mid-run. Both
+   * are recoveries rather than failures — nothing is lost and Resume picks up
+   * exactly where it stopped — but without saying so, the run just reads as
+   * "Paused" with no explanation, which looks identical to it having broken.
+   * The reassurance that no prompts were lost is the point: the alternative
+   * behaviour users had before was those prompts being marked failed.
+   */
+  if (s.interrupted) {
+    const it = s.interrupted;
+    const isLimit = it.reason === "rate limit";
+    const who = ENGINES.find((e) => e.id === it.platform)?.label || "The engine";
+    const remaining = Math.max(0, (s.total || 0) - (s.done || 0) - (s.errors || 0));
+    const note = el("div", { className: "loader-interrupted" },
+      el("b", {}, isLimit ? "⏸ Paused — usage limit reached" : "⏸ Paused — interrupted"),
+      el("div", { className: "small" },
+        isLimit
+          ? `${who} reported a limit${it.detail ? `: “${it.detail}”` : ""}. `
+          : `${it.reason || "The run was interrupted"}. `,
+        `No prompts were lost — ${remaining} still queued. Press Resume to continue`,
+        isLimit ? " once the limit clears." : "; the tab will be reopened for you."),
+      it.at ? el("div", { className: "muted small" }, `Paused at ${new Date(it.at).toLocaleString()}`) : "");
+    box.append(note);
+  }
 
   const kpis = el("div", { className: "geo-kpis loader-kpis" });
   for (const [plat, ps] of Object.entries(s.platStats || {})) {

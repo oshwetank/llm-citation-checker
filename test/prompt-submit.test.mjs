@@ -81,6 +81,7 @@ async function run(html, { gemini = false, waitMs = 9000 } = {}) {
   return {
     ...res,
     gaveUp: res.events.filter((e) => e.type === "loader-submit-failed").map((e) => e.reason),
+    limits: res.events.filter((e) => e.type === "loader-rate-limited").map((e) => e.detail),
   };
 }
 
@@ -173,6 +174,112 @@ console.log("\nGemini: no native prefill exists, so the typing path is the only 
   check("submitted exactly once", r.submits === 1, `submits=${r.submits}`);
   check("the prompt text is correct", r.text === PROMPT, JSON.stringify(r.text));
   check("no failure reported", r.gaveUp.length === 0, r.gaveUp.join(","));
+}
+
+/* ---------- Upstream rate limits ----------
+ *
+ * A limit used to be invisible to this script: the turn just sat there until
+ * the background watchdog gave up 90s later and marked it FAILED. With a
+ * queue of hundreds of prompts that converted a temporary block into
+ * permanent data loss — every remaining prompt burned at 90s each. Detecting
+ * it lets the run PAUSE and resume once the window clears.
+ *
+ * The dangerous half is the FALSE POSITIVE: pausing a healthy run. The
+ * detector originally scanned document.body.innerText, which includes the
+ * model's own answer — so a campaign asking about API rate limits would have
+ * paused itself on its own output. The scan now excludes the transcript, and
+ * the last two cases below are what pin that.
+ */
+console.log("\nRate limit: a cap banner BEFORE the prompt is sent pauses the run");
+{
+  const r = await run(`
+    <div role="alert">You've reached your limit for GPT-5. Try again after 3:00 PM.</div>
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <button id="composer-submit-button">send</button><div id="convo"></div>
+    <script>${RECORD_CHATGPT}
+      const box=document.getElementById('prompt-textarea');
+      document.getElementById('composer-submit-button').addEventListener('click',()=>{
+        if(!box.innerText.trim()) return;
+        const t=box.innerText; box.innerHTML=''; window.__record(t); });
+    </script>`, { waitMs: 4000 });
+  check("the limit was reported", r.limits.length === 1, JSON.stringify(r.limits));
+  check("the reported detail quotes the real banner text",
+    /reached your limit/i.test(r.limits[0] || ""), JSON.stringify(r.limits[0]));
+  check("nothing was submitted into a capped account", r.submits === 0, `submits=${r.submits}`);
+  check("it is NOT reported as a submit failure (a failure would burn the prompt)",
+    r.gaveUp.length === 0, r.gaveUp.join(","));
+}
+
+console.log("\nRate limit: a cap appearing AFTER submit, in place of the answer");
+{
+  // The shape ChatGPT actually produces most often: the prompt goes out
+  // fine, then the cap notice replaces the reply. The script used to stop
+  // watching the moment the turn was submitted, so this was never seen.
+  const r = await run(`
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <button id="composer-submit-button">send</button>
+    <div id="convo"></div><div id="banner"></div>
+    <script>${RECORD_CHATGPT}
+      setTimeout(()=>{ const q=new URLSearchParams(location.search).get('q');
+        if(q) window.__record(q); }, 1000);
+      setTimeout(()=>{ document.getElementById('banner').textContent =
+        'You have hit the usage cap for this model. Please try again in 2 hours.'; }, 3000);
+    </script>`, { waitMs: 9000 });
+  check("the prompt did go out first", r.submits === 1, `submits=${r.submits}`);
+  check("the late cap was still detected", r.limits.length === 1, JSON.stringify(r.limits));
+  check("no submit failure was reported for a turn that did submit",
+    r.gaveUp.length === 0, r.gaveUp.join(","));
+}
+
+console.log("\nRate limit: Gemini's quota wording");
+{
+  const r = await run(`
+    <div class="error-banner">You've exceeded your current quota. Please try again in a moment.</div>
+    <rich-textarea><div contenteditable="true" id="g"></div></rich-textarea>
+    <button aria-label="Send message">send</button><div id="convo"></div>
+    <script>${RECORD_GEMINI}</script>`, { gemini: true, waitMs: 4000 });
+  check("the limit was reported", r.limits.length === 1, JSON.stringify(r.limits));
+  check("nothing was submitted", r.submits === 0, `submits=${r.submits}`);
+}
+
+console.log("\nNO false positive: the ANSWER is about rate limits (the run must not pause)");
+{
+  // This is the case that makes a naive body-text scan unusable. Every
+  // trigger phrase appears — inside the assistant's own reply.
+  const r = await run(`
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <button id="composer-submit-button">send</button>
+    <div id="convo">
+      <div data-message-author-role="assistant">
+        The OpenAI API is rate limited per organisation. If you send too many
+        requests you'll see "You've reached your limit" and should please try
+        again in a minute. Your usage quota exceeded errors are also billed.
+      </div>
+    </div>
+    <script>${RECORD_CHATGPT}
+      setTimeout(()=>{ const q=new URLSearchParams(location.search).get('q');
+        if(q) window.__record(q); }, 1000);
+    </script>`, { waitMs: 8000 });
+  check("no limit was reported despite every trigger phrase being on the page",
+    r.limits.length === 0, JSON.stringify(r.limits));
+  check("the prompt ran normally, exactly once", r.submits === 1, `submits=${r.submits}`);
+  check("no submit failure either", r.gaveUp.length === 0, r.gaveUp.join(","));
+}
+
+console.log("\nNO false positive: the user's own PROMPT is about rate limits");
+{
+  const r = await run(`
+    <rich-textarea><div contenteditable="true" id="g"></div></rich-textarea>
+    <button aria-label="Send message">send</button>
+    <div id="convo"><user-query>why am I rate limited and told too many requests?</user-query></div>
+    <script>${RECORD_GEMINI}
+      const box=document.getElementById('g');
+      const fire=()=>{ if(!box.innerText.trim()) return; const t=box.innerText; box.innerHTML=''; window.__record(t); };
+      box.addEventListener('keydown',e=>{ if(e.key==='Enter') fire(); });
+      document.querySelector('button[aria-label="Send message"]').addEventListener('click',fire);
+    </script>`, { gemini: true, waitMs: 12000 });
+  check("no limit reported from prompt text sitting in the transcript",
+    r.limits.length === 0, JSON.stringify(r.limits));
 }
 
 console.log("\nNothing usable on the page: report the failure, never hang silently");

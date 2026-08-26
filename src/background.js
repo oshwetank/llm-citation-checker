@@ -262,7 +262,7 @@ async function reprocessAll() {
  * had actually been advancing it), then stop again for good. Three pieces
  * fix this:
  *   1. `persistLoaderState()` writes a serializable snapshot of `loader` to
- *      chrome.storage.session (survives worker restarts within a browser
+ *      chrome.storage.local (survives worker restarts AND a browser
  *      session — no new permission needed, it's part of the same "storage"
  *      permission already declared) after every state change.
  *   2. A `chrome.alarms` heartbeat (`HEARTBEAT_ALARM`, fires every minute —
@@ -285,7 +285,7 @@ const DURATION_WINDOW = 10; // per-platform rolling window of turn durations, fo
 
 let loader = newLoaderState();
 function newLoaderState() {
-  return { running: false, paused: false, options: {}, done: 0, errors: 0, total: 0, platforms: {}, runId: null };
+  return { running: false, paused: false, options: {}, done: 0, errors: 0, total: 0, platforms: {}, runId: null, interrupted: null };
 }
 
 // Best-effort: a persistence failure must never break a run already in
@@ -294,8 +294,15 @@ function newLoaderState() {
 async function persistLoaderState() {
   try {
     const snap = {
+      // Written on every state change, so this doubles as "when did this run
+      // last make a move" — which is what LOADER_STATE_MAX_AGE_MS below
+      // needs to tell a resumable run from an abandoned one.
+      savedAt: Date.now(),
       running: loader.running,
       paused: loader.paused,
+      // Must survive the restart too — it is the whole reason the run is
+      // paused, and without it a resumed run just looks inexplicably stopped.
+      interrupted: loader.interrupted || null,
       options: loader.options,
       done: loader.done,
       errors: loader.errors,
@@ -319,15 +326,42 @@ async function persistLoaderState() {
         ])
       ),
     };
-    await chrome.storage.session.set({ [LOADER_STATE_KEY]: snap });
+    // storage.LOCAL, not .session. chrome.storage.session is cleared when the
+    // browser closes, so any run longer than one browsing session — a
+    // thousand prompts is several hours per engine — lost its entire state on
+    // restart and could never be resumed. Local persists to disk.
+    await chrome.storage.local.set({ [LOADER_STATE_KEY]: snap });
   } catch (_) {
     /* best-effort */
   }
 }
+/* Moving to storage.local bought resumability across a browser restart, but
+ * it also means an abandoned run no longer disappears on its own the way a
+ * storage.session snapshot did. Without an expiry, a run the user closed the
+ * browser on and never came back to would still be sitting in the Campaigns
+ * tab as "paused — resume?" weeks later, and would block starting a fresh
+ * one. A week is far longer than any real run needs to survive a restart or a
+ * rate-limit window, and short enough that a forgotten run clears itself.
+ * Completed and stopped runs are already handled — they persist with
+ * running:false, which every caller checks — so this only ever catches a run
+ * that was genuinely mid-flight when it was abandoned.
+ */
+const LOADER_STATE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 async function loadPersistedLoaderState() {
   try {
-    const got = await chrome.storage.session.get(LOADER_STATE_KEY);
-    return got[LOADER_STATE_KEY] || null;
+    const got = await chrome.storage.local.get(LOADER_STATE_KEY);
+    const snap = got[LOADER_STATE_KEY] || null;
+    if (!snap) return null;
+    // No savedAt means a snapshot written by a build before this field
+    // existed. Treat it as current rather than dropping it — the worst case
+    // is one extra expiry cycle, whereas discarding it would throw away a
+    // real in-flight run on upgrade.
+    if (snap.savedAt && Date.now() - snap.savedAt > LOADER_STATE_MAX_AGE_MS) {
+      try { await chrome.storage.local.remove(LOADER_STATE_KEY); } catch (_) { /* best-effort */ }
+      return null;
+    }
+    return snap;
   } catch (_) {
     return null;
   }
@@ -421,6 +455,7 @@ async function resumeFromSnapshot(snap) {
   loader = {
     running: true,
     paused: !!snap.paused,
+    interrupted: snap.interrupted || null,
     options: snap.options || {},
     done: 0,
     errors: snap.errors || 0,
@@ -474,17 +509,20 @@ async function resumeFromSnapshot(snap) {
     }
 
     if (!tabAlive) {
-      // Deliberately conservative: don't auto-recreate a closed tab and start
-      // navigating it without the user around to notice — count the rest of
-      // this platform's leg as failed instead of risking a surprise tab.
-      const remaining = p.prompts.length - p.idx;
-      loader.errors += remaining;
-      p.failed = (p.failed || 0) + remaining;
-      for (let i = p.idx; i < p.prompts.length; i++) {
-        p.outcomes[i] = { status: "failed", reason: "tab closed during restart", at: Date.now() };
-      }
-      p.idx = p.prompts.length;
-      syncGeoRun(undefined, "tab closed during restart", remaining);
+      // The tab is gone. It still must not be silently recreated — a surprise
+      // tab navigating itself is exactly what the original code was right to
+      // avoid — but marking every remaining prompt FAILED is worse, and after
+      // a browser restart the tabs are ALWAYS gone, so a long run would lose
+      // its whole remainder the moment it was reloaded. That made runs longer
+      // than one browsing session impossible.
+      //
+      // Instead the run is parked: still running, paused, flagged resumable,
+      // nothing failed. The UI surfaces "interrupted — N left, Resume?" and
+      // the user's explicit Resume recreates the tab (see loader-resume).
+      // Deliberate, reversible, and no tab appears without a click.
+      p.tabId = null;
+      loader.paused = true;
+      loader.interrupted = { at: Date.now(), reason: "browser or tab closed mid-run" };
       continue;
     }
 
@@ -516,7 +554,7 @@ async function resumeFromSnapshot(snap) {
 // persistLoaderState — a failure here must never affect the run itself.
 // `reason`/`reasonCount`: tallies into the run's durable failure-reason
 // histogram (makeGeoRun's `reasons`, lib/geo.js) — the one place a failure
-// reason survives past this session's chrome.storage.session state, so a
+// reason survives past this run's chrome.storage.local state, so a
 // diagnostic report (see the "Copy diagnostic report" action in the About
 // tab) can say WHY things failed without shipping any prompt/answer/URL
 // content. `reasonCount` > 1 covers the bulk-fail path in
@@ -569,6 +607,29 @@ async function syncGeoRunOnce(statusOverride, reason, reasonCount) {
 // Both are best-effort: a user on a build that hasn't picked up the new
 // permission yet, or with notifications blocked at the OS level, still gets
 // a working extension, just without this signal.
+// A paused run is otherwise invisible until the user happens to look. A
+// rate limit can arrive hours into a long run, so this is exactly the moment
+// a notification earns its place — same best-effort contract as
+// notifyRunComplete below (blocked notifications must never break a run).
+async function notifyRateLimited(detail) {
+  try {
+    await chrome.action.setBadgeText({ text: "wait" });
+    await chrome.action.setBadgeBackgroundColor({ color: "#b45309" });
+  } catch (_) { /* action API unavailable in some test contexts */ }
+  try {
+    if (chrome.notifications) {
+      await chrome.notifications.create(`lcfc-limit-${loader.runId || Date.now()}`, {
+        type: "basic",
+        iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+        title: "Run paused — usage limit reached",
+        message: detail
+          ? `The engine reported: "${detail}". Nothing was lost. Resume from the Campaigns tab once the limit clears.`
+          : "The engine reported a usage limit. Nothing was lost. Resume from the Campaigns tab once it clears.",
+      });
+    }
+  } catch (_) { /* notifications permission not granted, or blocked at OS level */ }
+}
+
 async function notifyRunComplete() {
   const total = loader.total;
   const done = loader.done;
@@ -618,6 +679,9 @@ function loaderStatus() {
   // panel.js), which needs it to tell "this finished run has already been
   // acknowledged" from "a *different* run just finished since".
   if (!loader.running) return { running: false, total: loader.total, done: loader.done, errors: loader.errors, runId: loader.runId };
+  // Surfaced so the UI can say "interrupted — N left, Resume?" instead of a
+  // run that merely looks paused for no stated reason after a restart.
+  const interrupted = loader.interrupted || null;
   let totalTasks = 0;
   let totalIdx = 0;
   const platStats = {};
@@ -676,6 +740,7 @@ function loaderStatus() {
     errors: loader.errors,
     runId: loader.runId,
     etaMs: etaKnown ? etaMs : null,
+    interrupted,
     platStats,
   };
 }
@@ -952,6 +1017,39 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             }
           }
           sendResponse({ ok });
+          break;
+        }
+
+        // The content script saw an upstream limit ("you've reached your
+        // limit", "too many requests"…). PAUSE the whole run rather than
+        // failing this turn: a limit is temporary and applies to the account,
+        // so advancing would burn every remaining prompt against a wall at
+        // 90s each and lose them permanently. Token+tab checked exactly as
+        // loader-verify does, so an arbitrary page can't halt a run.
+        case "loader-rate-limited": {
+          const tabId = sender?.tab?.id;
+          let matched = null;
+          if (loader.running && tabId != null) {
+            for (const [name, p] of Object.entries(loader.platforms)) {
+              if (p.tabId === tabId && p.token && p.token === msg.token) { matched = name; break; }
+            }
+          }
+          if (matched && !loader.paused) {
+            for (const p of Object.values(loader.platforms)) clearWatchdog(p);
+            loader.paused = true;
+            loader.interrupted = {
+              at: Date.now(),
+              reason: "rate limit",
+              // Which engine hit it: with both running, "a limit was reached"
+              // doesn't tell the user which account needs to cool down.
+              platform: matched,
+              detail: typeof msg.detail === "string" ? msg.detail.slice(0, 160) : null,
+            };
+            await persistLoaderState();
+            syncGeoRun(undefined, "paused: rate limit");
+            notifyRateLimited(loader.interrupted.detail);
+          }
+          sendResponse({ ok: !!matched });
           break;
         }
 
@@ -1502,7 +1600,31 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         case "loader-resume":
           if (loader.running && loader.paused) {
+            // A run parked by rehydrate (browser closed mid-run) has no tabs
+            // left. Recreate one per platform HERE, on the user's explicit
+            // click, rather than anywhere automatic — that keeps the original
+            // "no surprise tab" guarantee while making a long run resumable.
+            for (const [plat, p] of Object.entries(loader.platforms)) {
+              if (p.idx >= p.prompts.length) continue; // leg already finished
+              let alive = false;
+              if (p.tabId != null) {
+                try { await chrome.tabs.get(p.tabId); alive = true; } catch (_) { alive = false; }
+              }
+              if (!alive) {
+                try {
+                  const base = plat === "gemini" ? "https://gemini.google.com/app" : "https://chatgpt.com/";
+                  const tab = await chrome.tabs.create({ url: base, active: false });
+                  p.tabId = tab.id;
+                } catch (_) {
+                  // Couldn't open a tab — leave the run paused rather than
+                  // spinning; the user can retry Resume.
+                  sendResponse({ ok: false, error: "Couldn't open a tab to resume in. Check Chrome isn't blocking new tabs, then try Resume again." });
+                  return;
+                }
+              }
+            }
             loader.paused = false;
+            loader.interrupted = null;
             await persistLoaderState();
             for (const plat of Object.keys(loader.platforms)) loaderRunPlatform(plat);
           }
