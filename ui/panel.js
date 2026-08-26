@@ -38,6 +38,44 @@ const send = (msg) =>
     }
   });
 
+/* Report UI errors to the durable log in the service worker.
+ *
+ * Every blank-tab bug this app has shipped threw a ReferenceError in a render
+ * path and left no trace anywhere the user could reach — the message went to
+ * the popup's devtools console, which closes with the popup. These two
+ * listeners mean a render that blows up is recorded with its message and
+ * stack, so "the Compare tab is blank" becomes "ENGINE_ICONS is not defined
+ * in renderCompare".
+ *
+ * Deliberately not a try/catch around each render: the point is to catch what
+ * was NOT anticipated. Failures here are swallowed — an error reporter that
+ * throws would replace the error being reported.
+ */
+function reportUiError(where, err, context) {
+  try {
+    send({
+      type: "error-report",
+      where,
+      name: err && err.name ? String(err.name) : "Error",
+      message: err && err.message ? String(err.message) : String(err),
+      stack: err && err.stack ? String(err.stack) : "",
+      context,
+    });
+  } catch (_) { /* never let reporting throw */ }
+}
+window.addEventListener("error", (ev) => {
+  reportUiError("window.onerror", ev.error || { message: ev.message }, {
+    line: ev.lineno, column: ev.colno,
+    tab: document.querySelector(".panel.active")?.id || "unknown",
+  });
+});
+window.addEventListener("unhandledrejection", (ev) => {
+  const r = ev.reason;
+  reportUiError("unhandledrejection", r && r.message ? r : { message: String(r) }, {
+    tab: document.querySelector(".panel.active")?.id || "unknown",
+  });
+});
+
 // Detect popup vs full-tab so the layout adapts (and survives browser zoom).
 function applyMode() {
   const isTab = window.innerWidth > 640 || window.location.href.includes("mode=tab");
@@ -5328,6 +5366,34 @@ function renderLoaderStatus(s) {
     s.etaMs != null ? el("span", { className: "muted" }, ` · ~${fmtDuration(s.etaMs)} remaining`) : (s.paused ? "" : el("span", { className: "muted" }, " · estimating time remaining…")));
   box.append(summary);
 
+  /* When to come back.
+   *
+   * Reported: "I don't get to know when all the prompts will finish running."
+   * A duration alone ("~2h 40m remaining") still leaves the user doing
+   * arithmetic against a wall clock to answer the question they actually
+   * have. This states the finishing time outright, and names the day when it
+   * is not today — a thousand-prompt run genuinely can land tomorrow, and
+   * "4:15" with no date would be read as four hours from now, not sixteen.
+   *
+   * Only shown while actually running: a paused run's finish time is a
+   * function of when the user resumes, so any figure here would be a lie.
+   */
+  if (!s.paused && s.etaAt) {
+    const finish = new Date(s.etaAt);
+    const now = new Date();
+    const sameDay = finish.toDateString() === now.toDateString();
+    const tomorrow = new Date(now.getTime() + 86400000).toDateString() === finish.toDateString();
+    const clock = finish.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const when = sameDay ? clock
+      : tomorrow ? `${clock} tomorrow`
+      : `${clock} on ${finish.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })}`;
+    box.append(el("div", { className: "loader-finish" },
+      el("span", { className: "loader-finish-icon" }, "🕒"),
+      el("span", {}, "Expected to finish around "), el("b", {}, when),
+      el("div", { className: "muted small" },
+        "Based on how long this run's prompts have actually been taking, including the pause between them. You can close this panel — the run keeps going, and you'll get a notification when it's done.")));
+  }
+
   /* Why it's paused, when it wasn't the user who paused it.
    *
    * Two things now pause a run on their own: the engine reporting a usage
@@ -5430,6 +5496,86 @@ async function renderDebug() {
 }
 $("#dbgRefresh").addEventListener("click", renderDebug);
 $("#dbgClear").addEventListener("click", async () => { await send({ type: "clear-debug" }); renderDebug(); });
+
+/* ---------- Error log ---------- */
+
+// Kept as plain text so "Copy log" produces something a person can paste into
+// a message without any of the surrounding UI coming with it.
+function errorLogText(grouped) {
+  if (!grouped.length) return "No errors recorded.";
+  return grouped.map((g) => {
+    const when = new Date(g.lastAt).toLocaleString();
+    const rep = g.count > 1 ? ` (x${g.count}, first ${new Date(g.firstAt).toLocaleString()})` : "";
+    const ctx = g.context && Object.keys(g.context).length
+      ? `\n    context: ${Object.entries(g.context).map(([k, v]) => `${k}=${v}`).join(", ")}` : "";
+    const stack = g.stack ? `\n    ${g.stack.slice(0, 300)}` : "";
+    return `${when}${rep}\n  [${g.where}] ${g.kind}: ${g.message}${ctx}${stack}`;
+  }).join("\n\n");
+}
+
+async function renderErrorLog() {
+  const box = $("#errLog");
+  if (!box) return;
+  box.textContent = "Loading…";
+  const r = await send({ type: "error-log" });
+  const grouped = (r && r.ok && r.grouped) || [];
+  const countEl = $("#errLogCount");
+  if (countEl) {
+    countEl.textContent = grouped.length
+      ? `— ${grouped.reduce((n, g) => n + g.count, 0)} recorded, ${grouped.length} distinct`
+      : "— nothing recorded";
+  }
+  // Open itself when there is something to see, so a user who has hit a
+  // problem doesn't have to know this disclosure exists to find it.
+  const details = $("#errLogBox");
+  if (details && grouped.length) details.open = true;
+
+  box.textContent = "";
+  if (!grouped.length) {
+    box.append(el("div", { className: "muted small" },
+      "Nothing has failed since the log was last cleared."));
+    return;
+  }
+  grouped.forEach((g) => {
+    const head = `${new Date(g.lastAt).toLocaleString()}  [${g.where}]  ${g.kind}: ${g.message}`;
+    const line = el("div", { className: g.count > 1 ? "dbgline big" : "dbgline" },
+      el("div", {}, head));
+    if (g.count > 1) {
+      line.append(el("div", { className: "muted small" },
+        `repeated ${g.count} times — first at ${new Date(g.firstAt).toLocaleString()}`));
+    }
+    if (g.context && Object.keys(g.context).length) {
+      line.append(el("div", { className: "muted small" },
+        Object.entries(g.context).map(([k, v]) => `${k}=${v}`).join("  ·  ")));
+    }
+    if (g.stack) {
+      const st = el("details", { className: "err-stack" },
+        el("summary", { className: "muted small" }, "stack"),
+        el("pre", { className: "muted small" }, g.stack));
+      line.append(st);
+    }
+    box.append(line);
+  });
+}
+
+$("#errLogRefresh")?.addEventListener("click", renderErrorLog);
+$("#errLogClear")?.addEventListener("click", async () => {
+  await send({ type: "error-log-clear" });
+  renderErrorLog();
+});
+$("#errLogCopy")?.addEventListener("click", async () => {
+  const r = await send({ type: "error-log" });
+  const text = errorLogText((r && r.ok && r.grouped) || []);
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast("Error log copied.");
+  } catch (_) {
+    showToast("Couldn't copy — select the log text and copy manually.", "error");
+  }
+});
+// Painted on load rather than only on demand, so the count in the summary is
+// accurate the first time the About tab is opened.
+renderErrorLog();
 
 /* ---------- Settings ---------- */
 async function loadSettings() {

@@ -125,7 +125,11 @@ try {
   // the per-run view and Compare both need.
   const seeded = await page.evaluate(async () => {
     const dbh = await new Promise((res, rej) => {
-      const r = indexedDB.open("lcfc", 4);
+      // No version argument on purpose. Hardcoding one (this said 4) breaks with
+      // a VersionError the moment db.js adds a store and bumps DB_VERSION —
+      // which it did, for the error log. Opening without a version attaches to
+      // whatever the extension has already created, which is what a seed wants.
+      const r = indexedDB.open("lcfc");
       r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
     });
     const all = (s) => new Promise((res) => { const r = dbh.transaction(s, "readonly").objectStore(s).getAll(); r.onsuccess = () => res(r.result); });
@@ -483,6 +487,55 @@ try {
       errs.length === 0 && res.length >= (MIN_CONTROLS[tab].buttons ? 1 : 0),
       `clicked=${JSON.stringify(res).slice(0, 200)} errors=${errs.join(" | ")}`);
   }
+
+  /* ---------- 6b. the error log actually catches things ---------- */
+  /* The error log only earns its place if it catches the failures that
+   * previously vanished. The two that mattered historically are an uncaught
+   * ReferenceError in a render path (which blanked the Compare tab and left
+   * its message only in the popup's devtools console, gone the moment the
+   * popup closed) and a handler throwing in the service worker. Both are
+   * injected here for real rather than asserted against the module.
+   */
+  console.log("\nThe error log records failures that used to vanish");
+  await page.goto(`chrome-extension://${extId}/ui/panel.html?mode=tab`);
+  await page.waitForTimeout(2000);
+  await ask({ type: "error-log-clear" });
+
+  await page.evaluate(() => {
+    setTimeout(() => { throw new ReferenceError("AUDIT_PROBE_SYMBOL is not defined"); }, 10);
+  });
+  await page.waitForTimeout(700);
+  await page.evaluate(() => { Promise.reject(new Error("audit probe rejection")); });
+  await page.waitForTimeout(700);
+  await ask({ type: "geo-metrics" });   // no profileId: the handler throws
+  await page.waitForTimeout(700);
+
+  const logged = await ask({ type: "error-log" });
+  const groups = (logged && logged.grouped) || [];
+  const blob = JSON.stringify(groups);
+  check("the log answers", logged && logged.ok === true, JSON.stringify(logged).slice(0, 120));
+  check("an uncaught render-path ReferenceError is captured — the blank-tab bug class",
+    /AUDIT_PROBE_SYMBOL is not defined/.test(blob), blob.slice(0, 240));
+  check("it records WHICH tab was showing, which is the 'and where' half",
+    groups.some((g) => /AUDIT_PROBE_SYMBOL/.test(g.message) && g.context && g.context.tab),
+    blob.slice(0, 240));
+  check("an unhandled promise rejection is captured",
+    /audit probe rejection/.test(blob), blob.slice(0, 240));
+  check("a service-worker handler throwing is captured, tagged with the message type",
+    groups.some((g) => /^message:geo-metrics$/.test(g.where)), blob.slice(0, 240));
+
+  // Privacy is the other half of the bargain: this log is meant to be copied
+  // and shared, so nothing the user typed or read may appear in it. The seeded
+  // prompts and a domain the captures cite are checked for by name.
+  check("no prompt text leaked into the log",
+    !/smartphone under 50000|55 inch tv|perfume for men|laptop for students/i.test(blob),
+    blob.slice(0, 240));
+  check("no URLs leaked into the log", !/https?:\/\//.test(blob), blob.slice(0, 240));
+
+  await ask({ type: "error-log-clear" });
+  const cleared = await ask({ type: "error-log" });
+  check("clearing empties the log", ((cleared && cleared.entries) || []).length === 0,
+    String(((cleared && cleared.entries) || []).length));
 
   /* ---------- 7. popup width, where layout bugs hide ---------- */
   /* 540px, not an arbitrary narrow width.

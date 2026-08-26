@@ -21,6 +21,12 @@
  * and answers loader-status with a synthetic state, passing every other
  * message through untouched. That exercises the real render path in the real
  * page with the real CSS, which is where the failure would be.
+ *
+ * The expected-finish-time block is checked here too, because it needs the
+ * same synthetic-status harness and is the same class of thing: a live-run
+ * read-out that only appears under state a test cannot produce by running the
+ * real thing. Reported alongside the pause work — "I don't get to know when
+ * all the prompts will finish running."
  */
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -102,7 +108,11 @@ try {
   // campaign-drilldown.test.mjs does, rather than driving the whole form.
   const seeded = await page.evaluate(async () => {
     const dbh = await new Promise((res, rej) => {
-      const r = indexedDB.open("lcfc", 4);
+      // No version argument on purpose. Hardcoding one (this said 4) breaks with
+      // a VersionError the moment db.js adds a store and bumps DB_VERSION —
+      // which it did, for the error log. Opening without a version attaches to
+      // whatever the extension has already created, which is what a seed wants.
+      const r = indexedDB.open("lcfc");
       r.onsuccess = () => res(r.result);
       r.onerror = () => rej(r.error);
     });
@@ -210,6 +220,60 @@ try {
       /tab will be reopened/i.test(b.text || ""), b.text);
     check("it still promises nothing was lost", /No prompts were lost/i.test(b.text || ""), b.text);
     check("no page error while rendering it", pageErrors.length === 0, pageErrors.join(" | "));
+  }
+
+  console.log("\nA running run says WHEN it will finish, not just how long is left");
+  pageErrors.length = 0;
+  {
+    // 2h40m out, so it lands later today rather than crossing midnight.
+    const finishAt = Date.now() + (2 * 3600 + 40 * 60) * 1000;
+    const running = { ...statusFor(null), paused: false, etaMs: finishAt - Date.now(), etaAt: finishAt };
+    await showCampaigns(running);
+    const b = await page.evaluate(() => {
+      const n = document.querySelector(".loader-finish");
+      if (!n) return { present: false };
+      const cs = getComputedStyle(n);
+      const r = n.getBoundingClientRect();
+      return {
+        present: true, text: n.innerText.replace(/\s+/g, " ").trim(),
+        visible: cs.display !== "none" && parseFloat(cs.opacity) > 0.01,
+        h: Math.round(r.height),
+      };
+    });
+    check("the finish-time block renders", b.present === true, JSON.stringify(b));
+    check("it is actually painted", b.present && b.visible && b.h > 10, `${b.h}px visible=${b.visible}`);
+    check("it states a clock time, which is what 'when do I come back' needs",
+      /finish around/i.test(b.text || "") && /\d{1,2}:\d{2}/.test(b.text || ""), b.text);
+    check("it says the run continues with the panel closed, so the user can walk away",
+      /keeps going/i.test(b.text || ""), b.text);
+    check("no page error", pageErrors.length === 0, pageErrors.join(" | "));
+  }
+
+  console.log("\nA finish time that lands tomorrow says so — 4:15 alone would read as today");
+  {
+    const finishAt = Date.now() + 20 * 3600 * 1000;   // a genuine 1000-prompt run
+    await showCampaigns({ ...statusFor(null), paused: false, etaMs: finishAt - Date.now(), etaAt: finishAt });
+    const t = await page.evaluate(() =>
+      (document.querySelector(".loader-finish")?.innerText || "").replace(/\s+/g, " ").trim());
+    check("the day is named when the finish is not today",
+      /tomorrow|on \w{3}/i.test(t), t);
+  }
+
+  console.log("\nA PAUSED run shows no finish time (it depends on when the user resumes)");
+  {
+    const finishAt = Date.now() + 3600 * 1000;
+    await showCampaigns({ ...statusFor(null), paused: true, etaMs: 3600000, etaAt: finishAt });
+    const present = await page.evaluate(() => !!document.querySelector(".loader-finish"));
+    check("no finish time is claimed while paused — any figure would be a guess", present === false);
+  }
+
+  console.log("\nA run with no ETA yet promises nothing rather than guessing");
+  {
+    await showCampaigns({ ...statusFor(null), paused: false, etaMs: null, etaAt: null });
+    const present = await page.evaluate(() => !!document.querySelector(".loader-finish"));
+    const txt = await page.evaluate(() => document.querySelector("#loaderStatus")?.innerText || "");
+    check("no finish-time block", present === false);
+    check("but it says it is still working the estimate out", /estimating/i.test(txt), txt.slice(0, 140));
   }
 
   console.log("\nA run the USER paused shows no such banner (it needs no explanation)");

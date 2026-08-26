@@ -1,0 +1,169 @@
+# Run the test suite on every push and pull request.
+#
+# Why this exists: this repository had no CI at all, so the only thing standing
+# between a regression and the Chrome Web Store was remembering to run the
+# tests locally. Two blank-tab bugs shipped that way — the Compare tab throwing
+# a ReferenceError on a deleted identifier, and a stray brace surviving a
+# merge. Both were caught by tests that existed; nothing ran them.
+#
+# The suite is split into two jobs on purpose. The unit tests finish in seconds
+# and catch most breakage, so they must not sit behind the browser tests, which
+# drive a real Chromium with the unpacked extension loaded and take minutes.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+# A new push makes an in-flight run for the same ref pointless.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  syntax:
+    name: syntax (ESM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # `node --check` alone is not enough here: it parses as CommonJS, so it
+      # passes on a file containing merge-conflict markers and on ESM-only
+      # syntax errors. --input-type=module is what actually validates these
+      # files, and this is a real lesson from a broken merge that shipped.
+      - name: Parse every source file as an ES module
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            if ! node --input-type=module --check < "$f" 2>/tmp/err; then
+              echo "::error file=$f::$(head -3 /tmp/err | tr '\n' ' ')"
+              fail=1
+            fi
+          done < <(find src ui test -name '*.js' -o -name '*.mjs' | sort)
+          exit $fail
+
+      # A manifest that Chrome or the Web Store rejects is a shipping failure
+      # the test suite never sees. The description limit is checked because a
+      # submission was rejected for exactly that (146 chars against a 132 cap).
+      - name: Validate manifest.json
+        run: |
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const m = JSON.parse(readFileSync("manifest.json", "utf8"));
+            const problems = [];
+            const cap = (field, value, limit) => {
+              if (typeof value === "string" && value.length > limit) {
+                problems.push(`${field} is ${value.length} chars, over the ${limit} limit`);
+              }
+            };
+            cap("description", m.description, 132);
+            cap("name", m.name, 45);
+            cap("action.default_title", m.action?.default_title, 75);
+            if (m.manifest_version !== 3) problems.push("manifest_version must be 3");
+            if (!m.version) problems.push("version is missing");
+            for (const f of [m.background?.service_worker, m.action?.default_popup]) {
+              if (f) {
+                try { readFileSync(f); } catch { problems.push(`${f} is referenced but missing`); }
+              }
+            }
+            for (const cs of m.content_scripts || []) {
+              for (const js of cs.js || []) {
+                try { readFileSync(js); } catch { problems.push(`${js} is referenced but missing`); }
+              }
+            }
+            if (problems.length) {
+              for (const p of problems) console.log(`::error::${p}`);
+              process.exit(1);
+            }
+            console.log("manifest.json looks shippable");
+          '
+
+  unit:
+    name: unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Tests that need no browser. Each file prints "ALL PASSED" and exits
+      # non-zero on failure, so the exit code is the gate.
+      - name: Run unit tests
+        run: |
+          fail=0
+          for f in test/adapter.test.mjs test/ai-brands.test.mjs test/auto-competitors.test.mjs \
+                   test/behaviour.test.mjs test/brands.test.mjs test/errorlog.test.mjs \
+                   test/fanout.test.mjs test/gemini-answer.test.mjs test/geo.test.mjs \
+                   test/glossary.test.mjs test/pacing.test.mjs test/retention.test.mjs \
+                   test/sources.test.mjs test/text-sanitize.test.mjs test/xlsxlite.test.mjs; do
+            echo "── $f"
+            if ! node "$f"; then
+              echo "::error file=$f::unit test failed"
+              fail=1
+            fi
+          done
+          exit $fail
+
+  browser:
+    name: browser tests
+    runs-on: ubuntu-latest
+    # Generous: full-audit alone drives every tab, filter, export and drilldown
+    # in a real Chromium, and the extension's own capture pipeline runs on
+    # multi-megabyte fixtures.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Chromium only — the extension is Chrome-targeted, so the other engines
+      # would be download time for no coverage.
+      - name: Install Playwright Chromium
+        run: |
+          npm install --no-save playwright@latest
+          npx playwright install --with-deps chromium
+
+      # An extension cannot be loaded in true headless mode, so these tests use
+      # --headless=new inside a persistent context. Xvfb is not needed for
+      # --headless=new, but the runner has no display, so keep the flag path the
+      # tests already use rather than changing how they launch.
+      - name: Run browser tests
+        run: |
+          fail=0
+          for f in test/analyze-layout.test.mjs test/brand-detail.test.mjs \
+                   test/campaign-drilldown.test.mjs test/capture-latency.test.mjs \
+                   test/compare-tab.test.mjs test/full-audit.test.mjs \
+                   test/funnel-omitted.test.mjs test/mention-list.test.mjs \
+                   test/prompt-submit.test.mjs test/run-interrupted.test.mjs \
+                   test/saved-conversations-engine.test.mjs test/ui-visibility.test.mjs; do
+            echo "── $f"
+            if ! node "$f"; then
+              echo "::error file=$f::browser test failed"
+              fail=1
+            fi
+          done
+          exit $fail
+
+  # Guards against a test file being added and silently never run: the lists
+  # above are hand-maintained, and a test nobody runs is the exact hole that
+  # let the Compare-tab regression ship.
+  coverage-of-suite:
+    name: every test file is wired into CI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check no test file is missing from the job lists
+        run: |
+          missing=0
+          for f in test/*.test.mjs; do
+            if ! grep -q "$(basename "$f")" .github/workflows/tests.yml; then
+              echo "::error file=$f::not listed in .github/workflows/tests.yml — add it to the unit or browser job"
+              missing=1
+            fi
+          done
+          exit $missing

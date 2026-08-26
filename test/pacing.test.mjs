@@ -23,8 +23,9 @@
  * saving is asserted directly rather than just asserting correctness.
  */
 import {
-  turnBudgetMs, medianOf,
+  turnBudgetMs, medianOf, legEta, runEta,
   TURN_TIMEOUT_MS, TURN_TIMEOUT_MIN_MS, TURN_TIMEOUT_MAX_MS,
+  INTER_PROMPT_MEAN_MS,
 } from "../src/lib/pacing.js";
 
 let failures = 0;
@@ -113,6 +114,52 @@ console.log("\nWhat this is worth across a 1000-prompt run");
   const newEffective = bootMs + 8 * TICK;          // boot, then watch
   check("ChatGPT's grace also shrinks on a normal boot",
     newEffective < oldEffective, `${newEffective}ms vs ${oldEffective}ms`);
+}
+
+console.log("\nETA: the estimate must include the pause between prompts");
+{
+  /* The bug this pins: durations are measured from just before navigation to
+   * the capture landing, so they STOP before the 3-6s human-paced gap that
+   * follows. An ETA built from them alone runs short by that gap on every
+   * remaining prompt — which is precisely the number whose job is telling the
+   * user when to come back. */
+  const leg = { durations: [30000, 30000, 30000], prompts: new Array(600).fill("q"), idx: 0 };
+  const e = legEta(leg);
+  check("the per-prompt figure adds the gap to the turn duration",
+    e.perPromptMs === 30000 + INTER_PROMPT_MEAN_MS, String(e.perPromptMs));
+
+  const naive = 30000 * 600;                 // what the old maths produced
+  const shortfallMin = (e.remainingMs - naive) / 60000;
+  check("ignoring the gap would have under-promised by roughly three quarters of an hour",
+    shortfallMin > 40 && shortfallMin < 50, `${shortfallMin.toFixed(0)} min`);
+
+  check("it counts only the prompts still to run",
+    legEta({ ...leg, idx: 590 }).remaining === 10, String(legEta({ ...leg, idx: 590 }).remaining));
+  check("a finished leg estimates zero",
+    legEta({ ...leg, idx: 600 }).remainingMs === 0);
+  check("no history means no estimate, rather than a confident guess",
+    legEta({ durations: [], prompts: ["a"], idx: 0 }) === null);
+}
+
+console.log("\nETA: two engines run concurrently, so the run ends with the SLOWEST leg");
+{
+  const platforms = {
+    chatgpt: { durations: [20000], prompts: new Array(100).fill("q"), idx: 0 },
+    gemini:  { durations: [40000], prompts: new Array(100).fill("q"), idx: 0 },
+  };
+  const r = runEta(platforms);
+  const slow = legEta(platforms.gemini).remainingMs;
+  const fast = legEta(platforms.chatgpt).remainingMs;
+  check("the estimate is the slower leg, not the sum",
+    r.remainingMs === slow, `${r.remainingMs} vs slow=${slow} sum=${slow + fast}`);
+  check("summing would have roughly doubled it — the error this avoids",
+    slow + fast > r.remainingMs * 1.4, `sum=${slow + fast} chosen=${r.remainingMs}`);
+  check("it reports an absolute finish time, not just a duration",
+    r.finishAt > Date.now() && Math.abs(r.finishAt - Date.now() - r.remainingMs) < 1000,
+    String(r.finishAt));
+  check("one leg with no history makes the whole estimate unknown",
+    runEta({ ...platforms, perplexity: { durations: [], prompts: ["a"], idx: 0 } }) === null);
+  check("no platforms at all is unknown rather than zero", runEta({}) === null);
 }
 
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");

@@ -3506,3 +3506,26 @@ body.popup .pp-chip { font-size: 9.5px; }
   vertical-align: -1px;
 }
 .engine-chip { display: inline-flex; align-items: center; gap: 5px; }
+
+/* Error log entries. Reuses .dbglog/.dbgline from the capture debugger so the
+   two logs read the same; .big marks a repeated failure rather than a large
+   payload here, which is the same "look at this one" signal. */
+.err-stack { margin-top: 4px; }
+.err-stack summary { cursor: pointer; }
+.err-stack pre {
+  margin: 4px 0 0; padding: 6px 8px; border-radius: 6px;
+  background: var(--bg-subtle); border: 1px solid var(--border);
+  white-space: pre-wrap; overflow-wrap: anywhere; font-size: 10px; line-height: 1.45;
+}
+
+/* Expected finish time. Given its own block rather than appended to the
+   status line: it is the answer to "when do I come back", which is a
+   different question from "how far along is it", and it gets read at a
+   glance from across a room. */
+.loader-finish {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px;
+  margin-top: 8px; padding: 9px 12px; border-radius: 8px; font-size: 13px;
+  background: var(--bg-subtle); border: 1px solid var(--border);
+}
+.loader-finish-icon { font-size: 14px; }
+.loader-finish .muted { flex-basis: 100%; margin-top: 2px; }

@@ -13,7 +13,8 @@
  */
 
 import { db } from "./lib/db.js";
-import { turnBudgetMs } from "./lib/pacing.js";
+import { turnBudgetMs, legEta, INTER_PROMPT_MIN_MS, INTER_PROMPT_MAX_MS } from "./lib/pacing.js";
+import { createErrorLog } from "./lib/errorlog.js";
 import { gzipString, gunzipToString } from "./lib/gzip.js";
 import { adapt as adaptChatGpt, cleanPassage } from "./adapters/chatgpt.js";
 import { enrichBrandsWithAI } from "./lib/ai-brands.js";
@@ -283,6 +284,14 @@ async function reprocessAll() {
  * both directions (idle time on failures, fabricated failures on slow turns).
  */
 const MIN_ADVANCE_GAP_MS = 2500; // ignore a second "done" arriving right after one
+/* Every failure gets recorded somewhere durable. See src/lib/errorlog.js for
+ * why (the old DEBUG buffer died with the service worker) and for the privacy
+ * rules it enforces on what may be written. `logErr` is fire-and-forget on
+ * purpose: no call site should ever await, or be able to fail because of,
+ * logging. */
+const errorLog = createErrorLog(db);
+const logErr = (where, err, ctx) => { try { errorLog.record(where, err, ctx); } catch (_) {} };
+
 const LOADER_STATE_KEY = "lcfcLoaderState";
 const HEARTBEAT_ALARM = "lcfcHeartbeat";
 const DURATION_WINDOW = 10; // per-platform rolling window of turn durations, for Phase 2's ETA
@@ -335,8 +344,11 @@ async function persistLoaderState() {
     // thousand prompts is several hours per engine — lost its entire state on
     // restart and could never be resumed. Local persists to disk.
     await chrome.storage.local.set({ [LOADER_STATE_KEY]: snap });
-  } catch (_) {
-    /* best-effort */
+  } catch (err) {
+    // Still best-effort — a persistence failure must not break a run in
+    // flight — but no longer silent: this is exactly the failure that makes a
+    // run unresumable later, and it used to leave no trace at all.
+    logErr("persistLoaderState", err, { running: loader.running, total: loader.total });
   }
 }
 /* Moving to storage.local bought resumability across a browser restart, but
@@ -366,7 +378,8 @@ async function loadPersistedLoaderState() {
       return null;
     }
     return snap;
-  } catch (_) {
+  } catch (err) {
+    logErr("loadPersistedLoaderState", err);
     return null;
   }
 }
@@ -380,8 +393,11 @@ async function loadPersistedLoaderState() {
   try {
     const existing = await chrome.alarms.get(HEARTBEAT_ALARM);
     if (!existing) await chrome.alarms.create(HEARTBEAT_ALARM, { periodInMinutes: 1 });
-  } catch (_) {
-    /* alarms API unavailable in some test/mock contexts — degrade silently */
+  } catch (err) {
+    // Degrades to setTimeout-only scheduling, which cannot survive the worker
+    // being terminated — so a run may stall with no other symptom. Worth a
+    // log line even though it only happens in unusual environments.
+    logErr("alarms.create(heartbeat)", err);
   }
 })();
 
@@ -440,6 +456,22 @@ function failTurnAndAdvance(plat, reason, retryDelayMs = 0) {
   p.idx++;
   p.lastAdvanceAt = Date.now();
   p.lastFailReason = reason;
+  /* A failed prompt is the breakage the user actually cares about — "prompts
+   * missing from the results" is how it gets reported. The reason already
+   * lands in the run's own histogram, but that is per-campaign and gets
+   * summarised; the error log keeps the individual occurrences with which
+   * engine and which position in the queue, which is what distinguishes "one
+   * bad prompt" from "everything after number 340 failed".
+   *
+   * No prompt text: the index is enough to find it, and the log is
+   * deliberately free of user content (see lib/errorlog.js).
+   */
+  logErr(`run:turn-failed:${plat}`, reason, {
+    platform: plat,
+    promptIndex: p.idx - 1,
+    totalPrompts: p.prompts.length,
+    failedSoFar: p.failed,
+  });
   persistLoaderState();
   syncGeoRun(undefined, reason);
   if (retryDelayMs > 0) setTimeout(() => loaderRunPlatform(plat), retryDelayMs);
@@ -620,7 +652,7 @@ async function notifyRateLimited(detail) {
   try {
     await chrome.action.setBadgeText({ text: "wait" });
     await chrome.action.setBadgeBackgroundColor({ color: "#b45309" });
-  } catch (_) { /* action API unavailable in some test contexts */ }
+  } catch (err) { logErr("action.setBadgeText", err); }
   try {
     if (chrome.notifications) {
       await chrome.notifications.create(`lcfc-limit-${loader.runId || Date.now()}`, {
@@ -632,7 +664,11 @@ async function notifyRateLimited(detail) {
           : "The engine reported a usage limit. Nothing was lost. Resume from the Campaigns tab once it clears.",
       });
     }
-  } catch (_) { /* notifications permission not granted, or blocked at OS level */ }
+  } catch (err) {
+    // Blocked notifications are a legitimate user choice, not a bug — but if
+    // someone reports "the alarm never fired", this is where the answer is.
+    logErr("notifications.create", err);
+  }
 }
 
 async function notifyRunComplete() {
@@ -664,11 +700,12 @@ async function notifyRunComplete() {
 // loaderOnCapture). null until at least one turn has completed — an ETA
 // guessed from zero data would be worse than admitting it isn't known yet.
 function turnEta(p) {
-  const durations = p.durations || [];
-  if (!durations.length) return null;
-  const avgMs = durations.reduce((a, b) => a + b, 0) / durations.length;
-  const remaining = Math.max(0, p.prompts.length - p.idx);
-  return { avgMs, remainingMs: avgMs * remaining };
+  // Delegates to lib/pacing.js, which adds the inter-prompt gap the recorded
+  // durations exclude. Without it the estimate ran ~4.5s short PER remaining
+  // prompt — three quarters of an hour of optimism across a 1000-prompt run,
+  // on the one number whose job is telling the user when to come back.
+  const e = legEta(p);
+  return e ? { avgMs: e.avgTurnMs, remainingMs: e.remainingMs } : null;
 }
 
 // Diagnostic ring buffer (in-memory) for the Debug view.
@@ -745,6 +782,12 @@ function loaderStatus() {
     errors: loader.errors,
     runId: loader.runId,
     etaMs: etaKnown ? etaMs : null,
+    // An absolute clock time, not just a duration. "~2h 40m remaining" still
+    // makes the user do arithmetic against a wall clock to answer the actual
+    // question, which is when to come back. Computed here so every consumer
+    // agrees on it, and null whenever the ETA is unknown rather than showing
+    // a confidently wrong time.
+    etaAt: etaKnown ? Date.now() + etaMs : null,
     interrupted,
     platStats,
   };
@@ -950,7 +993,9 @@ function loaderOnCapture(tabId, record) {
     // count that doesn't yet include it (which would resubmit this prompt).
     persistLoaderState();
     syncGeoRun();
-    const delay = 3000 + Math.random() * 3000; // human-paced gap
+    // Same constants the ETA is computed from (lib/pacing.js), so the pace the
+    // run actually keeps and the pace it predicts can never drift apart.
+    const delay = INTER_PROMPT_MIN_MS + Math.random() * (INTER_PROMPT_MAX_MS - INTER_PROMPT_MIN_MS);
     if (!loader.paused) setTimeout(() => loaderRunPlatform(plat), delay);
     return;
   }
@@ -1670,6 +1715,33 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "loader-status":
           sendResponse({ ok: true, ...loaderStatus() });
           break;
+
+        /* The error log. Read grouped by default — the same failure repeating
+         * 400 times in one run is one problem, and a flat list of identical
+         * lines is what makes a log unreadable exactly when it matters. */
+        case "error-log": {
+          const [entries, grouped] = await Promise.all([
+            errorLog.list(msg.limit || 200),
+            errorLog.summary(msg.groupLimit || 40),
+          ]);
+          sendResponse({ ok: true, entries, grouped, cap: errorLog.MAX_ENTRIES });
+          break;
+        }
+        case "error-log-clear":
+          sendResponse({ ok: await errorLog.clear() });
+          break;
+        /* The panel and content scripts report here. Errors thrown in the UI
+         * never reached the service worker before, so a render that blew up in
+         * the popup left no trace anywhere the user could find — which is
+         * precisely how the blank-tab bugs stayed invisible. */
+        case "error-report":
+          logErr(
+            `ui:${typeof msg.where === "string" ? msg.where : "unknown"}`,
+            { name: msg.name, message: msg.message, stack: msg.stack },
+            msg.context
+          );
+          sendResponse({ ok: true });
+          break;
         // The popup calls this once it has shown the user the completion
         // banner/badge, so the badge doesn't linger stale on the toolbar
         // icon indefinitely after they've already seen it.
@@ -1744,6 +1816,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: false, error: "unknown message type" });
       }
     } catch (e) {
+      // The single most valuable log line in the extension: every UI action
+      // funnels through this switch, so anything that throws here is a
+      // feature the user just watched fail. The reply already surfaced the
+      // message; this makes it survivable to diagnose afterwards, with the
+      // message type that caused it.
+      logErr(`message:${msg && msg.type ? msg.type : "unknown"}`, e);
       sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
     }
   })();

@@ -172,7 +172,11 @@ try {
     // only the clustering + badge-sync behaviour, not extraction.
     const seeded = await page.evaluate(async () => {
       const open = () => new Promise((res, rej) => {
-        const r = indexedDB.open("lcfc", 4);
+        // No version argument on purpose. Hardcoding one (this said 4) breaks with
+        // a VersionError the moment db.js adds a store and bumps DB_VERSION —
+        // which it did, for the error log. Opening without a version attaches to
+        // whatever the extension has already created, which is what a seed wants.
+        const r = indexedDB.open("lcfc");
         r.onsuccess = () => res(r.result);
         r.onerror = () => rej(r.error);
       });

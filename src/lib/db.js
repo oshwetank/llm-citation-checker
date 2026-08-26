@@ -9,7 +9,7 @@
  */
 
 const DB_NAME = "lcfc";
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 
 let dbPromise = null;
 
@@ -54,6 +54,19 @@ function openDb() {
         const gr = db.createObjectStore("geoRuns", { keyPath: "id" });
         gr.createIndex("profileId", "profileId", { unique: false });
         gr.createIndex("startedAt", "startedAt", { unique: false });
+      }
+      // v5: the error log. Errors used to go nowhere — 22 silent `catch (_)`
+      // blocks in the service worker plus an in-memory DEBUG ring buffer that
+      // MV3 wiped on every worker restart (~30s idle) and that only recorded
+      // capture events, never failures. So "something broke" could not be
+      // turned into "this broke, here, at this time". Durable because the
+      // failures that matter most happen hours into an unattended run, long
+      // before anyone looks. Same additive, `contains`-guarded upgrade as
+      // every block above: no existing record is touched.
+      if (!db.objectStoreNames.contains("errors")) {
+        const er = db.createObjectStore("errors", { keyPath: "id" });
+        er.createIndex("at", "at", { unique: false });
+        er.createIndex("where", "where", { unique: false });
       }
     };
     req.onsuccess = () => resolve(req.result);
