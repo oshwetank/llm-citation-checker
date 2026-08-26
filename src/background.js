@@ -21,7 +21,7 @@ import {
   MAX_PROFILES, TRASH_RETENTION_DAYS, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
   selectTracked, computeMetrics, computeSeries, brandPresence, normName,
   effectiveTrackedBrands, headToHead, brandSourceDomains,
-  hasSignal, countCompletedForRun,
+  hasSignal, countCompletedForRun, isPrunableCapture,
 } from "./lib/geo.js";
 export { hasSignal };
 
@@ -211,13 +211,17 @@ async function deriveAndStore(rawRow, rawText, settings) {
   return record;
 }
 
-// Keep the store bounded: prune oldest captures beyond the retention limit.
+// Keep the store bounded: prune the oldest AD-HOC captures beyond the
+// retention limit. Campaign captures are never pruned — see
+// isPrunableCapture() in lib/geo.js for why (short version: pruning by age
+// alone made a large campaign run delete its own earlier results once the
+// store filled, so prompts went missing and it looked like a capture bug).
 async function enforceRetention(settings) {
   const cfg = settings || (await getSettings());
   const limit = Math.max(50, cfg.retentionMax || DEFAULT_SETTINGS.retentionMax);
   const count = await db.count("derived");
   if (count <= limit) return;
-  const keys = await db.getAllKeysSortedByTime("derived", count - limit);
+  const keys = await db.getOldestPrunableKeys("derived", count - limit, isPrunableCapture);
   for (const id of keys) {
     await db.delete("raw", id);
     await db.delete("derived", id);
