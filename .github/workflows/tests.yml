@@ -107,7 +107,7 @@ jobs:
           fail=0
           for f in test/adapter.test.mjs test/ai-brands.test.mjs test/auto-competitors.test.mjs \
                    test/behaviour.test.mjs test/brands.test.mjs test/campaign-workbook.test.mjs \
-                   test/errorlog.test.mjs \
+                   test/concurrency.test.mjs test/errorlog.test.mjs \
                    test/fanout.test.mjs test/gemini-answer.test.mjs test/geo.test.mjs \
                    test/glossary.test.mjs test/pacing.test.mjs test/retention.test.mjs \
                    test/sources.test.mjs test/text-sanitize.test.mjs test/xlsxlite.test.mjs; do
@@ -148,7 +148,7 @@ jobs:
           fail=0
           for f in test/analyze-layout.test.mjs test/brand-detail.test.mjs \
                    test/campaign-drilldown.test.mjs test/capture-latency.test.mjs \
-                   test/compare-tab.test.mjs test/full-audit.test.mjs \
+                   test/compare-tab.test.mjs test/concurrency-live.test.mjs test/full-audit.test.mjs \
                    test/funnel-omitted.test.mjs test/mention-list.test.mjs \
                    test/prompt-submit.test.mjs test/run-interrupted.test.mjs \
                    test/saved-conversations-engine.test.mjs test/ui-visibility.test.mjs; do

@@ -13,7 +13,10 @@
  */
 
 import { db } from "./lib/db.js";
-import { turnBudgetMs, legEta, INTER_PROMPT_MIN_MS, INTER_PROMPT_MAX_MS } from "./lib/pacing.js";
+import {
+  turnBudgetMs, legEta, INTER_PROMPT_MIN_MS, INTER_PROMPT_MAX_MS,
+  CONCURRENT_TABS_PER_ENGINE, LEG_START_STAGGER_MS, shardPrompts,
+} from "./lib/pacing.js";
 import { createErrorLog } from "./lib/errorlog.js";
 import { buildCampaignWorkbook } from "./lib/campaignWorkbook.js";
 import { gzipString, gunzipToString } from "./lib/gzip.js";
@@ -24,7 +27,7 @@ import {
   MAX_PROFILES, TRASH_RETENTION_DAYS, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
   selectTracked, computeMetrics, computeSeries, brandPresence, normName,
   effectiveTrackedBrands, headToHead, brandSourceDomains,
-  hasSignal, countCompletedForRun, isPrunableCapture,
+  hasSignal, countCompletedForRun, countCompletedForLeg, isPrunableCapture,
 } from "./lib/geo.js";
 export { hasSignal };
 
@@ -284,6 +287,18 @@ async function reprocessAll() {
  * durations. See src/lib/pacing.js for why a single fixed 90s was wrong in
  * both directions (idle time on failures, fabricated failures on slow turns).
  */
+/* CONCURRENCY. `loader.platforms[plat]` used to BE one leg: one tab, one
+ * prompt list, one idx. It is now `{ legs: [leg, leg, …] }` — one entry per
+ * concurrent tab, CONCURRENT_TABS_PER_ENGINE of them (src/lib/pacing.js).
+ * Every function below that used to read a platform's tabId/idx/prompts
+ * directly now takes the specific LEG it's operating on; nothing here still
+ * assumes one tab per engine. A leg has the same shape the old flat object
+ * did — tabId, prompts (its own shard), idx (local to that shard),
+ * startOffset (this shard's position in the ORIGINAL prompt list, needed to
+ * look up the right tracked-prompt provenance for a GEO campaign capture),
+ * failed, lastAdvanceAt, startedAt, token, expectedPrompt, durations,
+ * outcomes, watchdog.
+ */
 const MIN_ADVANCE_GAP_MS = 2500; // ignore a second "done" arriving right after one
 /* Every failure gets recorded somewhere durable. See src/lib/errorlog.js for
  * why (the old DEBUG buffer died with the service worker) and for the privacy
@@ -323,19 +338,22 @@ async function persistLoaderState() {
       total: loader.total,
       runId: loader.runId,
       platforms: Object.fromEntries(
-        Object.entries(loader.platforms).map(([plat, p]) => [
+        Object.entries(loader.platforms).map(([plat, pd]) => [
           plat,
           {
-            tabId: p.tabId,
-            prompts: p.prompts,
-            idx: p.idx,
-            failed: p.failed || 0,
-            lastAdvanceAt: p.lastAdvanceAt || 0,
-            startedAt: p.startedAt || 0,
-            token: p.token || null,
-            expectedPrompt: p.expectedPrompt || null,
-            durations: p.durations || [],
-            outcomes: p.outcomes || [],
+            legs: (pd.legs || []).map((leg) => ({
+              tabId: leg.tabId,
+              startOffset: leg.startOffset || 0,
+              prompts: leg.prompts,
+              idx: leg.idx,
+              failed: leg.failed || 0,
+              lastAdvanceAt: leg.lastAdvanceAt || 0,
+              startedAt: leg.startedAt || 0,
+              token: leg.token || null,
+              expectedPrompt: leg.expectedPrompt || null,
+              durations: leg.durations || [],
+              outcomes: leg.outcomes || [],
+            })),
           },
         ])
       ),
@@ -421,42 +439,44 @@ async function heartbeatTick() {
   // net for the rarer case where a turn is well past its timeout with no
   // watchdog armed (the timer itself got lost some other way, not the whole
   // worker) — the same recovery the watchdog itself would have done.
-  for (const plat of Object.keys(loader.platforms)) {
-    const p = loader.platforms[plat];
-    if (p.idx >= p.prompts.length || !p.startedAt || p.watchdog) continue;
-    if (Date.now() - p.startedAt >= turnBudgetMs(p) + 5000) failTurnAndAdvance(plat, "watchdog lost");
+  for (const [plat, pd] of Object.entries(loader.platforms)) {
+    for (const leg of pd.legs || []) {
+      if (leg.idx >= leg.prompts.length || !leg.startedAt || leg.watchdog) continue;
+      if (Date.now() - leg.startedAt >= turnBudgetMs(leg) + 5000) failTurnAndAdvance(plat, leg, "watchdog lost");
+    }
   }
 }
 
-// Reusable so the freshly-armed path (loaderRunPlatform) and the recovered-
-// after-restart path (resumeFromSnapshot) can never drift apart.
-function armWatchdog(plat, ms) {
-  const p = loader.platforms[plat];
-  if (!p) return;
-  p.watchdog = setTimeout(() => {
+// Reusable so the freshly-armed path (loaderRunLeg) and the recovered-
+// after-restart path (resumeFromSnapshot) can never drift apart. Takes the
+// LEG directly (not looked up by plat) because a platform can now have more
+// than one concurrent leg.
+function armWatchdog(plat, leg, ms) {
+  if (!leg) return;
+  leg.watchdog = setTimeout(() => {
     if (!loader.running || loader.paused) return;
-    if (p.idx >= p.prompts.length) return;
-    failTurnAndAdvance(plat, "timeout");
+    if (leg.idx >= leg.prompts.length) return;
+    failTurnAndAdvance(plat, leg, "timeout");
   }, ms);
 }
 
 // The one place a turn is counted as failed and the run moves on — shared by
 // the watchdog, the tab-closed path, and both restart-recovery paths below,
 // so "what counts as a failure" can never quietly diverge between them.
+// Takes the LEG directly, same reason as armWatchdog above.
 // `retryDelayMs` defaults to immediate (matching the original watchdog
 // behaviour); the tab-closed path passes a short delay to avoid hammering
 // chrome.tabs.update in a tight loop if every remaining prompt in the list
 // would also fail against the same closed tab.
-function failTurnAndAdvance(plat, reason, retryDelayMs = 0, trace = "") {
-  const p = loader.platforms[plat];
-  if (!p) return;
+function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "") {
+  if (!leg) return;
   loader.errors++;
-  p.failed = (p.failed || 0) + 1;
-  p.outcomes = p.outcomes || [];
-  p.outcomes[p.idx] = { status: "failed", reason, at: Date.now() };
-  p.idx++;
-  p.lastAdvanceAt = Date.now();
-  p.lastFailReason = reason;
+  leg.failed = (leg.failed || 0) + 1;
+  leg.outcomes = leg.outcomes || [];
+  leg.outcomes[leg.idx] = { status: "failed", reason, at: Date.now() };
+  leg.idx++;
+  leg.lastAdvanceAt = Date.now();
+  leg.lastFailReason = reason;
   /* A failed prompt is the breakage the user actually cares about — "prompts
    * missing from the results" is how it gets reported. The reason already
    * lands in the run's own histogram, but that is per-campaign and gets
@@ -464,31 +484,51 @@ function failTurnAndAdvance(plat, reason, retryDelayMs = 0, trace = "") {
    * engine and which position in the queue, which is what distinguishes "one
    * bad prompt" from "everything after number 340 failed".
    *
-   * No prompt text: the index is enough to find it, and the log is
-   * deliberately free of user content (see lib/errorlog.js).
+   * No prompt text: the index (leg-local, plus its startOffset so it still
+   * locates the prompt in the original list even with concurrency splitting
+   * it across tabs) is enough to find it, and the log is deliberately free
+   * of user content (see lib/errorlog.js).
    */
   logErr(`run:turn-failed:${plat}`, reason, {
     platform: plat,
-    promptIndex: p.idx - 1,
-    totalPrompts: p.prompts.length,
-    failedSoFar: p.failed,
+    promptIndex: (leg.startOffset || 0) + leg.idx - 1,
+    totalPrompts: leg.prompts.length,
+    failedSoFar: leg.failed,
     // Whether the content script ever reported anything for this turn. A
     // timeout with reported=false means the page-side script went quiet,
     // which is a different bug from one that tried and failed.
     reported: !!trace,
-    elapsedMs: p.startedAt ? Date.now() - p.startedAt : 0,
+    elapsedMs: leg.startedAt ? Date.now() - leg.startedAt : 0,
   }, trace);
   persistLoaderState();
   syncGeoRun(undefined, reason);
-  if (retryDelayMs > 0) setTimeout(() => loaderRunPlatform(plat), retryDelayMs);
-  else loaderRunPlatform(plat);
+  if (retryDelayMs > 0) setTimeout(() => loaderRunLeg(plat, leg), retryDelayMs);
+  else loaderRunLeg(plat, leg);
+}
+
+// A snapshot written before concurrency shipped has the OLD flat shape —
+// {tabId, prompts, idx, ...} directly on the platform, no `legs` array.
+// LOADER_STATE_MAX_AGE_MS is 7 days, so a real in-flight run written by the
+// previous build can still be sitting in storage the moment this build
+// starts. Reading it as-is would find `pd.legs` undefined and silently lose
+// the whole run; wrapping it as a single leg instead makes the upgrade
+// transparent — the run resumes as one tab, exactly as it was running
+// before, and the NEXT run it starts gets the new concurrency.
+function legsOf(pd) {
+  if (!pd) return [];
+  if (Array.isArray(pd.legs)) return pd.legs;
+  if (pd.tabId !== undefined || pd.prompts) return [pd];
+  return [];
 }
 
 /**
  * Rebuild `loader` from a persisted snapshot after this worker instance
  * turns out to have no memory of an active run — i.e. a previous instance
- * died mid-run. Never trusts the snapshot's `idx` alone: reconciles against
- * what's actually in the derived store first (see the header comment above).
+ * died mid-run. Never trusts a leg's `idx` alone: reconciles against what's
+ * actually in the derived store first (see the header comment above),
+ * scoped to that leg's OWN shard of the prompt list (countCompletedForLeg,
+ * lib/geo.js) — the whole-platform count isn't enough once a platform can
+ * have more than one concurrent tab.
  */
 async function resumeFromSnapshot(snap) {
   const platEntries = Object.entries(snap.platforms || {});
@@ -507,79 +547,91 @@ async function resumeFromSnapshot(snap) {
   };
 
   for (const [plat, sp] of platEntries) {
-    const trueIdx = countCompletedForRun(all, snap.runId, plat);
-    const idx = Math.max(sp.idx || 0, Math.min(trueIdx, (sp.prompts || []).length));
-    // Reconciliation can move idx forward past what this snapshot's own
-    // outcomes array covers (the completion(s) happened in the instance
-    // that died, before it got a chance to persist them) — backfill those
-    // slots as "done" so the per-prompt status list stays accurate instead
-    // of silently having gaps for prompts that did in fact complete.
-    const outcomes = (sp.outcomes || []).slice();
-    for (let i = sp.idx || 0; i < idx; i++) {
-      if (!outcomes[i]) outcomes[i] = { status: "done", reason: null, at: Date.now() };
-    }
-    loader.platforms[plat] = {
-      tabId: sp.tabId,
-      prompts: sp.prompts || [],
-      idx,
-      failed: sp.failed || 0,
-      lastAdvanceAt: sp.lastAdvanceAt || 0,
-      startedAt: sp.startedAt || Date.now(),
-      token: sp.token || null,
-      expectedPrompt: sp.expectedPrompt || null,
-      durations: sp.durations || [],
-      outcomes,
-      watchdog: null,
-    };
+    const legs = legsOf(sp).map((sl) => {
+      const legPrompts = sl.prompts || [];
+      const trueIdx = countCompletedForLeg(all, snap.runId, plat, legPrompts);
+      const idx = Math.max(sl.idx || 0, Math.min(trueIdx, legPrompts.length));
+      // Reconciliation can move idx forward past what this snapshot's own
+      // outcomes array covers (the completion(s) happened in the instance
+      // that died, before it got a chance to persist them) — backfill those
+      // slots as "done" so the per-prompt status list stays accurate instead
+      // of silently having gaps for prompts that did in fact complete.
+      const outcomes = (sl.outcomes || []).slice();
+      for (let i = sl.idx || 0; i < idx; i++) {
+        if (!outcomes[i]) outcomes[i] = { status: "done", reason: null, at: Date.now() };
+      }
+      return {
+        tabId: sl.tabId,
+        startOffset: sl.startOffset || 0,
+        prompts: legPrompts,
+        idx,
+        failed: sl.failed || 0,
+        lastAdvanceAt: sl.lastAdvanceAt || 0,
+        startedAt: sl.startedAt || Date.now(),
+        token: sl.token || null,
+        expectedPrompt: sl.expectedPrompt || null,
+        durations: sl.durations || [],
+        outcomes,
+        watchdog: null,
+      };
+    });
+    loader.platforms[plat] = { legs };
   }
-  loader.done = Object.values(loader.platforms).reduce((n, p) => n + p.idx, 0);
+  loader.done = Object.values(loader.platforms)
+    .reduce((n, pd) => n + pd.legs.reduce((m, leg) => m + leg.idx, 0), 0);
 
   if (loader.paused) {
     await persistLoaderState();
     return;
   }
 
-  for (const plat of Object.keys(loader.platforms)) {
-    const p = loader.platforms[plat];
-    if (p.idx >= p.prompts.length) continue; // this platform's leg already finished
+  for (const [plat, pd] of Object.entries(loader.platforms)) {
+    for (const leg of pd.legs) {
+      if (leg.idx >= leg.prompts.length) continue; // this leg's shard already finished
 
-    let tabAlive = true;
-    try {
-      await chrome.tabs.get(p.tabId);
-    } catch (_) {
-      tabAlive = false;
-    }
+      let tabAlive = true;
+      try {
+        await chrome.tabs.get(leg.tabId);
+      } catch (_) {
+        tabAlive = false;
+      }
 
-    if (!tabAlive) {
-      // The tab is gone. It still must not be silently recreated — a surprise
-      // tab navigating itself is exactly what the original code was right to
-      // avoid — but marking every remaining prompt FAILED is worse, and after
-      // a browser restart the tabs are ALWAYS gone, so a long run would lose
-      // its whole remainder the moment it was reloaded. That made runs longer
-      // than one browsing session impossible.
-      //
-      // Instead the run is parked: still running, paused, flagged resumable,
-      // nothing failed. The UI surfaces "interrupted — N left, Resume?" and
-      // the user's explicit Resume recreates the tab (see loader-resume).
-      // Deliberate, reversible, and no tab appears without a click.
-      p.tabId = null;
-      loader.paused = true;
-      loader.interrupted = { at: Date.now(), reason: "browser or tab closed mid-run" };
-      continue;
-    }
+      if (!tabAlive) {
+        // The tab is gone. It still must not be silently recreated — a
+        // surprise tab navigating itself is exactly what the original code
+        // was right to avoid — but marking every remaining prompt FAILED is
+        // worse, and after a browser restart the tabs are ALWAYS gone, so a
+        // long run would lose its whole remainder the moment it was
+        // reloaded. That made runs longer than one browsing session
+        // impossible.
+        //
+        // Instead the run is parked: still running, paused, flagged
+        // resumable, nothing failed. The UI surfaces "interrupted — N left,
+        // Resume?" and the user's explicit Resume recreates the tab (see
+        // loader-resume). Deliberate, reversible, and no tab appears without
+        // a click. Any ONE leg being gone parks the WHOLE run, same as
+        // before concurrency — a partial resume (some tabs alive, some not)
+        // would need its own "which legs are still going" UI, and simply
+        // parking everything keeps one predictable recovery path.
+        leg.tabId = null;
+        loader.paused = true;
+        loader.interrupted = { at: Date.now(), reason: "browser or tab closed mid-run" };
+        continue;
+      }
 
-    const elapsed = Date.now() - (p.startedAt || 0);
-    const budget = turnBudgetMs(p);
-    if (elapsed >= budget) {
-      // The turn that was in flight when the worker died has now definitely
-      // timed out.
-      failTurnAndAdvance(plat, "timeout during restart");
-    } else {
-      armWatchdog(plat, budget - elapsed);
+      const elapsed = Date.now() - (leg.startedAt || 0);
+      const budget = turnBudgetMs(leg);
+      if (elapsed >= budget) {
+        // The turn that was in flight when the worker died has now definitely
+        // timed out.
+        failTurnAndAdvance(plat, leg, "timeout during restart");
+      } else {
+        armWatchdog(plat, leg, budget - elapsed);
+      }
     }
   }
 
-  if (Object.values(loader.platforms).every((p) => p.idx >= p.prompts.length)) {
+  if (Object.values(loader.platforms).every((pd) => pd.legs.every((leg) => leg.idx >= leg.prompts.length))) {
     loader.running = false;
     syncGeoRun("done");
     notifyRunComplete();
@@ -734,37 +786,73 @@ function loaderStatus() {
   let totalIdx = 0;
   const platStats = {};
   const now = Date.now();
-  for (const plat of Object.keys(loader.platforms)) {
-    const p = loader.platforms[plat];
-    totalTasks += p.prompts.length;
-    totalIdx += p.idx;
-    const inFlight = p.idx < p.prompts.length;
-    const eta = turnEta(p);
-    // Per-prompt status list — previously nothing tracked this at all, only
-    // an aggregate done/total count and one truncated "current" string that
-    // silently dropped every platform but the first with something in
-    // flight. `outcomes[i]` is set the moment prompt i finishes (success or
-    // failure, including during restart recovery — see resumeFromSnapshot);
-    // anything before idx with no recorded outcome falls back to "done" as
-    // a safe default rather than showing a hole in the list.
-    const prompts = p.prompts.map((text, i) => {
-      const outcome = (p.outcomes || [])[i];
-      let status;
-      if (outcome) status = outcome.status;
-      else if (i === p.idx && inFlight) status = "running";
-      else if (i < p.idx) status = "done";
-      else status = "pending";
-      return { text, status, reason: outcome ? outcome.reason : null, at: outcome ? outcome.at : null };
-    });
+  for (const [plat, pd] of Object.entries(loader.platforms)) {
+    const legs = pd.legs || [];
+    let done = 0, total = 0, failed = 0;
+    const legStats = [];
+    // Concatenated in original prompt order (legs are contiguous shards, so
+    // this is just the shards back to back) — the per-prompt status list
+    // needs to read the same regardless of how many tabs are working it.
+    const prompts = [];
+    let bestAvg = null, worstEta = null, etaKnownForPlat = true, anyRemaining = false;
+
+    for (let li = 0; li < legs.length; li++) {
+      const leg = legs[li];
+      total += leg.prompts.length;
+      done += leg.idx;
+      failed += leg.failed || 0;
+      const inFlight = leg.idx < leg.prompts.length;
+      if (inFlight) anyRemaining = true;
+      // CONCURRENCY: a leg with a non-empty shard is "inFlight" (has work
+      // left) from the moment it's created — idx starts at 0 — but with
+      // staggered starts (LEG_START_STAGGER_MS) it may not actually have
+      // been kicked off yet. `leg.startedAt` is only ever set inside
+      // loaderRunLeg, right before the tab is navigated, so it's the true
+      // "has this leg's current turn actually begun" signal. Without this
+      // distinction, status reporting showed tab 2's target prompt as
+      // already "running" during the stagger window it hadn't started yet —
+      // misleading, and it defeats the point of staggering being visible.
+      const started = inFlight && !!leg.startedAt;
+      const eta = turnEta(leg);
+      if (inFlight && eta == null) etaKnownForPlat = false;
+      if (eta) worstEta = Math.max(worstEta || 0, eta.remainingMs);
+      if (eta) bestAvg = bestAvg == null ? eta.avgMs : (bestAvg + eta.avgMs) / 2;
+
+      // Per-prompt status list — previously nothing tracked this at all, only
+      // an aggregate done/total count and one truncated "current" string
+      // that silently dropped every platform but the first with something
+      // in flight. `outcomes[i]` is set the moment prompt i finishes
+      // (success or failure, including during restart recovery — see
+      // resumeFromSnapshot); anything before idx with no recorded outcome
+      // falls back to "done" as a safe default rather than showing a hole.
+      leg.prompts.forEach((text, i) => {
+        const outcome = (leg.outcomes || [])[i];
+        let status;
+        if (outcome) status = outcome.status;
+        else if (i === leg.idx && started) status = "running";
+        else if (i < leg.idx) status = "done";
+        else status = "pending";
+        prompts.push({ text, status, reason: outcome ? outcome.reason : null, at: outcome ? outcome.at : null });
+      });
+
+      // One entry per tab, so with concurrency the UI can show "Tab 1:
+      // prompt X (12s/45s)" and "Tab 2: prompt Y" instead of a single
+      // "current" that only ever had room for one tab's work.
+      legStats.push({
+        tab: li + 1,
+        current: started ? leg.prompts[leg.idx] : null,
+        elapsedMs: started && leg.startedAt ? Math.min(now - leg.startedAt, turnBudgetMs(leg)) : null,
+        turnTimeoutMs: turnBudgetMs(leg),
+      });
+    }
+
+    totalTasks += total;
+    totalIdx += done;
     platStats[plat] = {
-      done: p.idx,
-      total: p.prompts.length,
-      failed: p.failed || 0,
-      current: inFlight ? p.prompts[p.idx] : null,
-      elapsedMs: inFlight && p.startedAt ? Math.min(now - p.startedAt, turnBudgetMs(p)) : null,
-      turnTimeoutMs: turnBudgetMs(p),
-      avgTurnMs: eta ? Math.round(eta.avgMs) : null,
-      etaMs: eta ? Math.round(eta.remainingMs) : null,
+      done, total, failed,
+      legs: legStats,
+      avgTurnMs: bestAvg != null ? Math.round(bestAvg) : null,
+      etaMs: anyRemaining && etaKnownForPlat && worstEta != null ? Math.round(worstEta) : null,
       prompts,
     };
   }
@@ -806,15 +894,20 @@ function clearWatchdog(p) {
   }
 }
 
-async function loaderRunPlatform(plat) {
+// Runs the next prompt in ONE leg (one tab). With concurrency this is called
+// once per tab, independently — each leg advances on its own schedule, only
+// sharing the platform's overall done/failed totals via loaderStatus's
+// aggregation, not any per-turn coordination with its sibling legs.
+async function loaderRunLeg(plat, leg) {
   if (!loader.running || loader.paused) return;
-  const p = loader.platforms[plat];
-  if (!p) return;
+  if (!leg) return;
 
-  clearWatchdog(p);
+  clearWatchdog(leg);
 
-  if (p.idx >= p.prompts.length) {
-    if (Object.values(loader.platforms).every((x) => x.idx >= x.prompts.length)) {
+  if (leg.idx >= leg.prompts.length) {
+    const allDone = Object.values(loader.platforms)
+      .every((pd) => pd.legs.every((l) => l.idx >= l.prompts.length));
+    if (allDone) {
       loader.running = false;
       syncGeoRun("done");
       notifyRunComplete();
@@ -823,30 +916,30 @@ async function loaderRunPlatform(plat) {
     return;
   }
 
-  const prompt = p.prompts[p.idx];
+  const prompt = leg.prompts[leg.idx];
   const q = encodeURIComponent(prompt);
   // A one-time token proves to the content script that THIS navigation came from
   // the Loader — so a crafted ?lcfc=1&q=… link can't make ChatGPT run a prompt.
-  p.token = crypto.randomUUID();
-  p.expectedPrompt = prompt;
-  p.startedAt = Date.now();
+  leg.token = crypto.randomUUID();
+  leg.expectedPrompt = prompt;
+  leg.startedAt = Date.now();
   await persistLoaderState();
 
   const search = plat === "chatgpt" && loader.options.forceSearch ? "&lcfcsearch=1" : "";
   const base = plat === "gemini" ? "https://gemini.google.com/app" : "https://chatgpt.com/";
-  const url = `${base}?q=${q}&lcfc=1&lcfctok=${p.token}${search}`;
+  const url = `${base}?q=${q}&lcfc=1&lcfctok=${leg.token}${search}`;
 
   try {
-    await chrome.tabs.update(p.tabId, { url });
+    await chrome.tabs.update(leg.tabId, { url });
   } catch (_) {
     // Tab was closed — fail this prompt and move on rather than hanging.
-    failTurnAndAdvance(plat, "tab closed", 500);
+    failTurnAndAdvance(plat, leg, "tab closed", 500);
     return;
   }
 
   // Watchdog: if no signal-bearing capture arrives in time, record a failure and
   // continue. Without this a rate-limited or errored turn stalls the whole run.
-  armWatchdog(plat, turnBudgetMs(p));
+  armWatchdog(plat, leg, turnBudgetMs(leg));
 }
 
 async function loaderStart(prompts, options) {
@@ -904,14 +997,40 @@ async function loaderStart(prompts, options) {
     promptCount: clean.length,
   });
 
+  // CONCURRENCY: split each platform's prompt list into
+  // CONCURRENT_TABS_PER_ENGINE contiguous shards (src/lib/pacing.js), one
+  // tab per shard, instead of one tab handling the whole list in sequence.
+  // A shard can come back empty (more concurrency than prompts — e.g. 2 tabs
+  // requested for 1 prompt), and an empty shard gets no tab at all: opening
+  // a second automated tab with nothing to do would be pure extra footprint
+  // on the account for zero benefit.
   for (const plat of supported) {
-    const created = windowId
-      ? await chrome.tabs.create({ windowId, url: "about:blank" })
-      : await chrome.tabs.create({ url: "about:blank", active: false });
-    loader.platforms[plat] = { tabId: created.id, prompts: clean, idx: 0, failed: 0, lastAdvanceAt: 0, durations: [], outcomes: [] };
+    const shards = shardPrompts(clean, CONCURRENT_TABS_PER_ENGINE).filter((s) => s.prompts.length > 0);
+    const legs = [];
+    for (const shard of shards) {
+      const created = windowId
+        ? await chrome.tabs.create({ windowId, url: "about:blank" })
+        : await chrome.tabs.create({ url: "about:blank", active: false });
+      legs.push({
+        tabId: created.id, startOffset: shard.startOffset, prompts: shard.prompts,
+        idx: 0, failed: 0, lastAdvanceAt: 0, durations: [], outcomes: [],
+      });
+    }
+    loader.platforms[plat] = { legs };
   }
   await persistLoaderState();
-  for (const plat of supported) loaderRunPlatform(plat);
+  // Staggered rather than all at once: the first submission across tabs
+  // landing in the exact same instant is a much stronger automation signal
+  // than the same volume spread a couple of seconds apart (see pacing.js).
+  // Every turn after this first one is already paced by the normal
+  // inter-prompt gap, so the stagger only ever matters once, here.
+  for (const [plat, pd] of Object.entries(loader.platforms)) {
+    pd.legs.forEach((leg, i) => {
+      const delay = i * LEG_START_STAGGER_MS + Math.random() * 1000;
+      if (delay > 0) setTimeout(() => loaderRunLeg(plat, leg), delay);
+      else loaderRunLeg(plat, leg);
+    });
+  }
 
   return { ok: true, total: loader.total, runId: loader.runId };
 }
@@ -973,76 +1092,91 @@ async function geoRunStart(profileId) {
   return { ok: true, geoRunId, ...vol, loaderRunId: res.runId };
 }
 
+// Finds the (platform, leg) that owns a given tab, across every platform and
+// every concurrent leg within it. The single seam every tabId-keyed message
+// handler goes through, so "which leg is this" is answered the same way
+// everywhere rather than each handler re-implementing the nested search.
+function legForTab(tabId) {
+  if (tabId == null) return null;
+  for (const [plat, pd] of Object.entries(loader.platforms)) {
+    for (const leg of pd.legs || []) {
+      if (leg.tabId === tabId) return { plat, leg };
+    }
+  }
+  return null;
+}
+
 // Called after each capture; advances the loader only for a real, completed turn.
 function loaderOnCapture(tabId, record) {
   if (!loader.running) return;
-  for (const plat of Object.keys(loader.platforms)) {
-    const p = loader.platforms[plat];
-    if (p.tabId !== tabId) continue;
+  const found = legForTab(tabId);
+  if (!found) return;
+  const { plat, leg } = found;
 
-    // Ignore empty race-loser captures — advancing on those silently SKIPS prompts.
-    if (!hasSignal(record)) return;
-    // Ignore a second completion arriving immediately after one we already counted.
-    if (p.lastAdvanceAt && Date.now() - p.lastAdvanceAt < MIN_ADVANCE_GAP_MS) return;
+  // Ignore empty race-loser captures — advancing on those silently SKIPS prompts.
+  if (!hasSignal(record)) return;
+  // Ignore a second completion arriving immediately after one we already counted.
+  if (leg.lastAdvanceAt && Date.now() - leg.lastAdvanceAt < MIN_ADVANCE_GAP_MS) return;
 
-    /* The capture must be for the prompt this leg is actually waiting on.
-     *
-     * Without this, a capture that arrives LATE — after its own turn already
-     * timed out and the run moved on — is counted against whatever prompt is
-     * now in flight. That does two bad things at once: it inflates the run's
-     * captured count (the diagnostic report showed "14/12 captured" and
-     * "11/12 captured, 7 failed", both arithmetically impossible for a
-     * 12-task run), and it advances `idx` past a prompt that was never
-     * actually asked. The second is the serious one — it is a silently
-     * SKIPPED prompt, which is precisely the "prompts missing from the
-     * results" complaint, and it is invisible because the run reports it as a
-     * success.
-     *
-     * ChatGPT is where this bites: a turn that times out at 90s often does
-     * finish streaming afterwards, so the late capture lands while the next
-     * prompt is mid-flight.
-     *
-     * Loose comparison, and only when both sides are known: adapters
-     * normalise whitespace differently from the string we navigated with, and
-     * an older persisted snapshot may carry no expectedPrompt at all. When
-     * either side is missing the old behaviour stands, so this can only ever
-     * reject a capture it is certain does not belong.
-     */
-    const norm = (t) => String(t || "").replace(/\s+/g, " ").trim().toLowerCase();
-    const wantPrompt = norm(p.expectedPrompt);
-    const gotPrompt = norm(record && record.userPrompt);
-    if (wantPrompt && gotPrompt) {
-      const head = wantPrompt.slice(0, 60);
-      if (!gotPrompt.includes(head) && !wantPrompt.includes(gotPrompt.slice(0, 60))) {
-        logErr(`run:late-capture:${plat}`, "capture did not match the prompt in flight", {
-          platform: plat,
-          promptIndex: p.idx,
-          totalPrompts: p.prompts.length,
-        });
-        return;
-      }
+  /* The capture must be for the prompt this leg is actually waiting on.
+   *
+   * Without this, a capture that arrives LATE — after its own turn already
+   * timed out and the run moved on — is counted against whatever prompt is
+   * now in flight. That does two bad things at once: it inflates the run's
+   * captured count (the diagnostic report showed "14/12 captured" and
+   * "11/12 captured, 7 failed", both arithmetically impossible for a
+   * 12-task run), and it advances `idx` past a prompt that was never
+   * actually asked. The second is the serious one — it is a silently
+   * SKIPPED prompt, which is precisely the "prompts missing from the
+   * results" complaint, and it is invisible because the run reports it as a
+   * success.
+   *
+   * ChatGPT is where this bites: a turn that times out at 90s often does
+   * finish streaming afterwards, so the late capture lands while the next
+   * prompt is mid-flight.
+   *
+   * Loose comparison, and only when both sides are known: adapters
+   * normalise whitespace differently from the string we navigated with, and
+   * an older persisted snapshot may carry no expectedPrompt at all. When
+   * either side is missing the old behaviour stands, so this can only ever
+   * reject a capture it is certain does not belong.
+   */
+  const norm = (t) => String(t || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const wantPrompt = norm(leg.expectedPrompt);
+  const gotPrompt = norm(record && record.userPrompt);
+  if (wantPrompt && gotPrompt) {
+    const head = wantPrompt.slice(0, 60);
+    if (!gotPrompt.includes(head) && !wantPrompt.includes(gotPrompt.slice(0, 60))) {
+      logErr(`run:late-capture:${plat}`, "capture did not match the prompt in flight", {
+        platform: plat,
+        promptIndex: (leg.startOffset || 0) + leg.idx,
+        totalPrompts: leg.prompts.length,
+      });
+      return;
     }
-
-    clearWatchdog(p);
-    if (p.startedAt) p.durations = [...(p.durations || []), Date.now() - p.startedAt].slice(-DURATION_WINDOW);
-    p.outcomes = p.outcomes || [];
-    p.outcomes[p.idx] = { status: "done", reason: null, at: Date.now() };
-    p.lastAdvanceAt = Date.now();
-    loader.done++;
-    p.idx++;
-    // Persisted synchronously, before scheduling the next turn — this is the
-    // step that closes the restart-duplicate window: if the worker dies
-    // between here and the next capture, a resume will see this completion
-    // already reflected in storage rather than reconciling against a
-    // count that doesn't yet include it (which would resubmit this prompt).
-    persistLoaderState();
-    syncGeoRun();
-    // Same constants the ETA is computed from (lib/pacing.js), so the pace the
-    // run actually keeps and the pace it predicts can never drift apart.
-    const delay = INTER_PROMPT_MIN_MS + Math.random() * (INTER_PROMPT_MAX_MS - INTER_PROMPT_MIN_MS);
-    if (!loader.paused) setTimeout(() => loaderRunPlatform(plat), delay);
-    return;
   }
+
+  clearWatchdog(leg);
+  if (leg.startedAt) leg.durations = [...(leg.durations || []), Date.now() - leg.startedAt].slice(-DURATION_WINDOW);
+  leg.outcomes = leg.outcomes || [];
+  leg.outcomes[leg.idx] = { status: "done", reason: null, at: Date.now() };
+  leg.lastAdvanceAt = Date.now();
+  loader.done++;
+  leg.idx++;
+  // Persisted synchronously, before scheduling the next turn — this is the
+  // step that closes the restart-duplicate window: if the worker dies
+  // between here and the next capture, a resume will see this completion
+  // already reflected in storage rather than reconciling against a
+  // count that doesn't yet include it (which would resubmit this prompt).
+  persistLoaderState();
+  syncGeoRun();
+  // Same constants the ETA is computed from (lib/pacing.js), so the pace the
+  // run actually keeps and the pace it predicts can never drift apart. Each
+  // leg paces itself independently — concurrency divides wall-clock time by
+  // running more of these gaps in parallel, not by making any one of them
+  // shorter (see pacing.js's header comment).
+  const delay = INTER_PROMPT_MIN_MS + Math.random() * (INTER_PROMPT_MAX_MS - INTER_PROMPT_MIN_MS);
+  if (!loader.paused) setTimeout(() => loaderRunLeg(plat, leg), delay);
 }
 
 // Strip heavy fields for list/aggregate views. The full record (with answerText)
@@ -1062,23 +1196,29 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const tabId = sender?.tab?.id;
           let meta = null;
           if (loader.running) {
-            for (const p of Object.values(loader.platforms)) {
-              if (p.tabId === tabId) {
-                meta = { projectId: loader.options.projectId || null, runId: loader.runId };
-                // A GEO tracking run stamps per-prompt provenance so the metrics
-                // engine can attribute each response to the right tracked prompt
-                // and its tags. p.idx is the prompt this tab is currently on.
-                const g = loader.options.geo;
-                if (g) {
-                  const tp = (loader.options.geoPrompts || [])[p.idx] || {};
-                  meta.geo = {
-                    profileId: g.profileId,
-                    runId: g.runId,
-                    promptId: tp.id || null,
-                    tags: tp.tags || [],
-                  };
-                }
-                break;
+            const found = legForTab(tabId);
+            if (found) {
+              const { leg } = found;
+              meta = { projectId: loader.options.projectId || null, runId: loader.runId };
+              // A GEO tracking run stamps per-prompt provenance so the metrics
+              // engine can attribute each response to the right tracked prompt
+              // and its tags. loader.options.geoPrompts is index-aligned with
+              // the ORIGINAL, pre-sharding prompt list — leg.idx is local to
+              // this leg's own shard, so it has to be added to the shard's
+              // startOffset to land on the right entry. Getting this wrong
+              // doesn't fail loudly: it silently attributes the capture to
+              // the WRONG tracked prompt, corrupting that prompt's mention
+              // rate and this one's alike.
+              const g = loader.options.geo;
+              if (g) {
+                const originalIdx = (leg.startOffset || 0) + leg.idx;
+                const tp = (loader.options.geoPrompts || [])[originalIdx] || {};
+                meta.geo = {
+                  profileId: g.profileId,
+                  runId: g.runId,
+                  promptId: tp.id || null,
+                  tags: tp.tags || [],
+                };
               }
             }
           }
@@ -1103,12 +1243,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           let ok = false;
           const tabId = sender?.tab?.id;
           if (loader.running && tabId != null) {
-            for (const p of Object.values(loader.platforms)) {
-              if (p.tabId === tabId && p.token && p.token === msg.token) {
-                ok = true;
-                break;
-              }
-            }
+            const found = legForTab(tabId);
+            ok = !!(found && found.leg.token && found.leg.token === msg.token);
           }
           sendResponse({ ok });
           break;
@@ -1124,12 +1260,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const tabId = sender?.tab?.id;
           let matched = null;
           if (loader.running && tabId != null) {
-            for (const [name, p] of Object.entries(loader.platforms)) {
-              if (p.tabId === tabId && p.token && p.token === msg.token) { matched = name; break; }
-            }
+            const found = legForTab(tabId);
+            if (found && found.leg.token && found.leg.token === msg.token) matched = found.plat;
           }
           if (matched && !loader.paused) {
-            for (const p of Object.values(loader.platforms)) clearWatchdog(p);
+            // A limit on ANY one leg pauses the WHOLE run, concurrency or
+            // not — it applies to the account, not to one tab, so leaving
+            // sibling legs running would just walk them into the same wall.
+            for (const pd of Object.values(loader.platforms)) {
+              for (const leg of pd.legs) clearWatchdog(leg);
+            }
             loader.paused = true;
             loader.interrupted = {
               at: Date.now(),
@@ -1156,18 +1296,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // loader-verify does, so an arbitrary page can't derail a run.
         case "loader-submit-failed": {
           const tabId = sender?.tab?.id;
-          let plat = null;
+          let found = null;
           if (loader.running && tabId != null) {
-            for (const [name, p] of Object.entries(loader.platforms)) {
-              if (p.tabId === tabId && p.token && p.token === msg.token) { plat = name; break; }
-            }
+            const f = legForTab(tabId);
+            if (f && f.leg.token && f.leg.token === msg.token) found = f;
           }
-          if (plat) {
+          if (found) {
             const why = typeof msg.reason === "string" && msg.reason ? msg.reason : "submit failed";
             const trace = typeof msg.trace === "string" ? msg.trace : "";
-            failTurnAndAdvance(plat, `submit: ${why}`.slice(0, 120), 800, trace);
+            failTurnAndAdvance(found.plat, found.leg, `submit: ${why}`.slice(0, 120), 800, trace);
           }
-          sendResponse({ ok: !!plat });
+          sendResponse({ ok: !!found });
           break;
         }
 
@@ -1322,13 +1461,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const seen = new Set(existingPrompts.map((p) => normPromptText(p.text)));
           const added = [];
           const duplicates = [];
+          // A bulk import (CSV/XLSX, or a multi-line paste) puts() every row
+          // in one tight loop — fast enough on a real IndexedDB that many
+          // rows land in the SAME millisecond. Every place that orders
+          // prompts (this list, geo-prompt-list, and geoRunStart's campaign
+          // run order) sorts by createdAt, and db.getAll()'s underlying
+          // order is the primary key (a random UUID), not insertion order —
+          // so a tied createdAt silently falls back to that random order
+          // instead of the order the user pasted/imported. A campaign then
+          // runs its prompts in a different order than entered, and
+          // "prompt 3" in a report doesn't match the user's own third
+          // prompt. Stamping a strictly increasing createdAt within this
+          // batch (real time plus the row's position) costs nothing and
+          // guarantees the batch always sorts back into paste/import order.
+          const batchAt = Date.now();
+          let seq = 0;
           for (const row of rows) {
             const text = String(row?.text || "").trim();
             if (!text) continue;
             const key = normPromptText(text);
             if (seen.has(key)) { duplicates.push(text); continue; }
             seen.add(key);
-            const p = makeTrackedPrompt({ profileId: msg.profileId, text, tags: row.tags || [] });
+            const p = makeTrackedPrompt({ profileId: msg.profileId, text, tags: row.tags || [], createdAt: batchAt + seq++ });
             await db.put("trackedPrompts", p);
             added.push(p);
           }
@@ -1750,44 +1904,53 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         case "loader-pause":
           loader.paused = true;
-          for (const p of Object.values(loader.platforms)) clearWatchdog(p);
+          for (const pd of Object.values(loader.platforms)) {
+            for (const leg of pd.legs) clearWatchdog(leg);
+          }
           await persistLoaderState();
           sendResponse({ ok: true, ...loaderStatus() });
           break;
         case "loader-resume":
           if (loader.running && loader.paused) {
             // A run parked by rehydrate (browser closed mid-run) has no tabs
-            // left. Recreate one per platform HERE, on the user's explicit
-            // click, rather than anywhere automatic — that keeps the original
-            // "no surprise tab" guarantee while making a long run resumable.
-            for (const [plat, p] of Object.entries(loader.platforms)) {
-              if (p.idx >= p.prompts.length) continue; // leg already finished
-              let alive = false;
-              if (p.tabId != null) {
-                try { await chrome.tabs.get(p.tabId); alive = true; } catch (_) { alive = false; }
-              }
-              if (!alive) {
-                try {
-                  const base = plat === "gemini" ? "https://gemini.google.com/app" : "https://chatgpt.com/";
-                  const tab = await chrome.tabs.create({ url: base, active: false });
-                  p.tabId = tab.id;
-                } catch (_) {
-                  // Couldn't open a tab — leave the run paused rather than
-                  // spinning; the user can retry Resume.
-                  sendResponse({ ok: false, error: "Couldn't open a tab to resume in. Check Chrome isn't blocking new tabs, then try Resume again." });
-                  return;
+            // left. Recreate one per LEG here, on the user's explicit click,
+            // rather than anywhere automatic — that keeps the original "no
+            // surprise tab" guarantee while making a long run resumable, now
+            // for however many concurrent tabs this run actually has.
+            for (const [plat, pd] of Object.entries(loader.platforms)) {
+              for (const leg of pd.legs) {
+                if (leg.idx >= leg.prompts.length) continue; // this leg already finished
+                let alive = false;
+                if (leg.tabId != null) {
+                  try { await chrome.tabs.get(leg.tabId); alive = true; } catch (_) { alive = false; }
+                }
+                if (!alive) {
+                  try {
+                    const base = plat === "gemini" ? "https://gemini.google.com/app" : "https://chatgpt.com/";
+                    const tab = await chrome.tabs.create({ url: base, active: false });
+                    leg.tabId = tab.id;
+                  } catch (_) {
+                    // Couldn't open a tab — leave the run paused rather than
+                    // spinning; the user can retry Resume.
+                    sendResponse({ ok: false, error: "Couldn't open a tab to resume in. Check Chrome isn't blocking new tabs, then try Resume again." });
+                    return;
+                  }
                 }
               }
             }
             loader.paused = false;
             loader.interrupted = null;
             await persistLoaderState();
-            for (const plat of Object.keys(loader.platforms)) loaderRunPlatform(plat);
+            for (const [plat, pd] of Object.entries(loader.platforms)) {
+              for (const leg of pd.legs) loaderRunLeg(plat, leg);
+            }
           }
           sendResponse({ ok: true, ...loaderStatus() });
           break;
         case "loader-stop":
-          for (const p of Object.values(loader.platforms)) clearWatchdog(p);
+          for (const pd of Object.values(loader.platforms)) {
+            for (const leg of pd.legs) clearWatchdog(leg);
+          }
           loader.running = false;
           loader.paused = false;
           // "stopped" here, not "done" — deliberately no badge/notification:

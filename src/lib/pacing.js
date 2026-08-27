@@ -110,3 +110,62 @@ export function runEta(platforms) {
   }
   return { remainingMs: worst, finishAt: Date.now() + worst };
 }
+
+/* ---------------- Concurrency: multiple tabs per engine ----------------
+ *
+ * One tab per engine was the whole reason a 1000-prompt campaign took ~11
+ * hours per engine — every prompt waited for the previous one to fully
+ * finish before the next could even navigate. Running more than one tab
+ * divides that wall-clock time, but it also directly multiplies simultaneous
+ * automated activity on one logged-in account, which is the actual thing
+ * that gets an account flagged. That trade was put to the user rather than
+ * decided here: 2 tabs per engine, chosen over 3 (faster but more
+ * conspicuous) and over a configurable-default-off setting (safer to ship,
+ * slower to benefit from). Nothing else about pacing changes — the
+ * per-prompt human-paced gap (INTER_PROMPT_MIN/MAX_MS above) still applies
+ * to each tab independently, so concurrency divides time without making any
+ * single tab's request rate look less human.
+ */
+export const CONCURRENT_TABS_PER_ENGINE = 2;
+
+// Tabs are started this far apart rather than all at once, so the very first
+// submissions across tabs don't land in the same instant — a burst is a much
+// stronger automation signal than the same volume spread out even slightly.
+// Applies once, at the start of a leg's very first turn; every turn after
+// that is already paced by the normal inter-prompt gap.
+export const LEG_START_STAGGER_MS = 2500;
+
+/* Split a prompt list into `concurrency` contiguous shards, one per tab.
+ *
+ * Contiguous rather than round-robin (leg 0 gets prompts[0..k), leg 1 gets
+ * prompts[k..n)) on purpose: it keeps "prompt 340 of 1000" meaning the same
+ * thing regardless of which tab is handling it, and makes reconciliation
+ * after a restart a matter of "how many of THIS shard completed" rather than
+ * untangling an interleaved order.
+ *
+ * The front legs get the extra prompt(s) when the count doesn't divide
+ * evenly (7 prompts / 2 legs -> 4, 3), so no leg is ever silently starved.
+ * `startOffset` is carried on each shard because campaign runs need to map a
+ * leg-local index back to the ORIGINAL prompt list — that is what lines a
+ * capture up with the right tracked prompt's provenance (profile/tags), and
+ * getting it wrong silently mis-attributes brand-mention data rather than
+ * failing loudly.
+ *
+ * A shard can be empty (more legs requested than prompts exist); callers are
+ * expected to skip creating a tab for an empty shard rather than opening one
+ * with nothing to do.
+ */
+export function shardPrompts(prompts, concurrency = CONCURRENT_TABS_PER_ENGINE) {
+  const list = prompts || [];
+  const n = Math.max(1, Math.floor(concurrency) || 1);
+  const base = Math.floor(list.length / n);
+  const extra = list.length % n;
+  const legs = [];
+  let offset = 0;
+  for (let i = 0; i < n; i++) {
+    const size = base + (i < extra ? 1 : 0);
+    legs.push({ startOffset: offset, prompts: list.slice(offset, offset + size) });
+    offset += size;
+  }
+  return legs;
+}

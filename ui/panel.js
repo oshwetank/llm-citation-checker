@@ -5449,9 +5449,20 @@ function renderLoaderStatus(s) {
     const label = ENGINES.find((e) => e.id === plat)?.label || plat;
     const sub = [];
     if (ps.failed) sub.push(`${ps.failed} failed`);
-    if (ps.current) {
-      const elapsed = ps.elapsedMs != null ? `${fmtDuration(ps.elapsedMs)}/${fmtDuration(ps.turnTimeoutMs)}` : "";
-      sub.push(`now: "${ps.current.slice(0, 32)}${ps.current.length > 32 ? "…" : ""}"${elapsed ? ` (${elapsed})` : ""}`);
+    // One "now:" line per concurrent tab. With CONCURRENT_TABS_PER_ENGINE
+    // running (src/lib/pacing.js) a platform can have more than one prompt
+    // in flight at once, and showing only the first would make a run that is
+    // genuinely working two prompts at a time read as stuck on one — the
+    // legs array is what makes the second tab's progress visible at all.
+    // `ps.legs` is guarded rather than assumed: a status object built by
+    // hand (older persisted shape, or a test fixture) may not carry it.
+    const activeLegs = (ps.legs || []).filter((l) => l.current);
+    if (activeLegs.length) {
+      for (const l of activeLegs) {
+        const elapsed = l.elapsedMs != null ? `${fmtDuration(l.elapsedMs)}/${fmtDuration(l.turnTimeoutMs)}` : "";
+        const tag = activeLegs.length > 1 ? `tab ${l.tab}: ` : "";
+        sub.push(`${tag}"${l.current.slice(0, 28)}${l.current.length > 28 ? "…" : ""}"${elapsed ? ` (${elapsed})` : ""}`);
+      }
     } else if (ps.done >= ps.total) {
       sub.push("done");
     }

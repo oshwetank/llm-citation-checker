@@ -597,6 +597,44 @@ export function countCompletedForRun(records, runId, platform) {
   return n;
 }
 
+/**
+ * The same reconciliation as countCompletedForRun, but scoped to ONE
+ * concurrent tab's own shard of the prompt list rather than the whole
+ * platform.
+ *
+ * With multiple tabs per engine (src/lib/pacing.js's shardPrompts),
+ * `countCompletedForRun` alone isn't enough to recover after a restart: it
+ * returns one number for the whole platform, but each tab's own `idx` needs
+ * reconciling against only ITS OWN prompts, not the platform's total —
+ * otherwise a tab that has done 3 of its own 4 prompts could be "corrected"
+ * using a count that includes the OTHER tab's completions too, resubmitting
+ * or skipping prompts that were never actually assigned to it.
+ *
+ * Matched by normalized prompt text rather than an explicit shard id,
+ * because captures don't carry one (they carry `userPrompt`, the plain
+ * string that was actually submitted) — the same normalize-and-compare
+ * approach the live late-capture guard in background.js already uses, so
+ * "which shard does this capture belong to" is answered the same way
+ * whether the run is live or being reconciled after a restart. Deduped by
+ * distinct prompt text on purpose: a shard's own list is what the tab was
+ * ASKED, and asking the same question twice in one shard (a duplicate
+ * prompt) should only ever count once here — the live per-turn advance
+ * logic is what actually paces repeats, not this recovery path.
+ */
+export function countCompletedForLeg(records, runId, platform, legPrompts) {
+  if (!runId) return 0;
+  const norm = (t) => String(t || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const want = new Set((legPrompts || []).map(norm));
+  if (!want.size) return 0;
+  const seen = new Set();
+  for (const r of records || []) {
+    if (r.runId !== runId || r.platform !== platform || !hasSignal(r)) continue;
+    const key = norm(r.userPrompt);
+    if (want.has(key)) seen.add(key);
+  }
+  return seen.size;
+}
+
 /* ---------------- competitive analysis for one brand ---------------- */
 
 /**
