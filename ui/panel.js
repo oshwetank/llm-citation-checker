@@ -215,6 +215,12 @@ let GEO_PROMPTS = [];
 let geoActiveId = null;
 let geoTagFilter = [];
 let geoEngineFilter = [];
+// Reported: a campaign with many auto-generated tags (a 747-prompt import
+// produced 20+) rendered every one of them, unconditionally, above the KPI
+// tiles — three lines of pills before any actual number was visible. This
+// caps the row until the user asks for more; resets each panel load (not
+// persisted) since it's a display convenience, not a filter setting.
+let geoTagsExpanded = false;
 /* Which run the campaign view is scoped to. "" = every run of this campaign
    averaged together, which stays the default. Set by the run picker in the
    campaign header and by clicking a row in Run history. */
@@ -318,7 +324,7 @@ function beginSwap(node) {
  * render's full DOM teardown) rather than per-node handlers that would need
  * re-wiring on every re-render.
  */
-const TOOLTIP_DELAY = 2000;
+const TOOLTIP_DELAY = 1500;
 let tipTimer = null;
 let tipEl = null;
 function ensureTipEl() {
@@ -3297,15 +3303,30 @@ function trashCampaign(profile) {
 function renderCampaignSetup(profile, dis) {
   const card = el("div", { className: "card" });
   const head = el("div", { className: "card-header" }, el("h3", {}, dis ? "Manage campaign" : "Set up your campaign"));
+  // Everything typed into this form (name/brand/url/competitors/engines)
+  // lives only in these DOM inputs until "Save details" is clicked — reading
+  // collectFormValues() (defined below, once the inputs exist) is how every
+  // OTHER action in this card that touches the profile gets the values the
+  // user can actually see, instead of the `profile` argument, which is a
+  // snapshot from whenever this card was last rendered and goes stale the
+  // moment someone types. Locking against the stale snapshot silently
+  // dropped just-typed details (and could reject a just-picked engine pill
+  // as "none selected" because it was reading the old profile.engines);
+  // adding a prompt triggered loadGeo() -> a full re-render from the DB,
+  // which wiped anything typed here that had never been saved. Both are
+  // fixed by routing through collectFormValues() instead of `profile`.
+  let collectFormValues = () => profile; // reassigned below once inputs exist
+  const persistDetails = async () => send({ type: "geo-profile-save", profile: { ...profile, ...collectFormValues() } });
   if (!dis) {
     const delBtn = el("button", { className: "btn sm ghost danger" }, "🗑 Delete campaign");
     delBtn.onclick = trashCampaign(profile);
     const lockBtn = el("button", { className: "btn sm primary" }, "🔒 Lock & start tracking");
     lockBtn.onclick = async () => {
+      const current = collectFormValues();
       if (!GEO_PROMPTS.length) return showToast("Add at least one prompt before locking.", "error");
-      if (!(profile.engines || []).length) return showToast("Choose at least one LLM to track before locking.", "error");
+      if (!current.engines.length) return showToast("Choose at least one LLM to track before locking.", "error");
       if (!confirm("Lock this campaign?\n\nLocking freezes the brand set, competitors, prompts and LLMs so your trend data stays comparable day to day. You can unlock any time.")) return;
-      const r = await send({ type: "geo-profile-save", profile: { ...profile, locked: true }, unlockOverride: true });
+      const r = await send({ type: "geo-profile-save", profile: { ...profile, ...current, locked: true }, unlockOverride: true });
       if (r.ok) loadGeo(); else showToast(r.error, "error");
     };
     head.append(delBtn, lockBtn);
@@ -3387,24 +3408,30 @@ function renderCampaignSetup(profile, dis) {
   engCount.textContent = `${(profile.engines || []).length} of ${ENGINES.length} selected`;
   card.append(engGrid, engCount);
 
+  // Now that every input exists, collectFormValues can read what's actually
+  // on screen — this is what lockBtn (above) and persistDetails (used by
+  // both Save and, below, adding a prompt) both call instead of trusting
+  // the possibly-stale `profile` argument.
+  collectFormValues = () => ({
+    name: nameIn.value.trim() || profile.name,
+    brand: { name: brandIn.value.trim(), url: urlIn.value.trim() },
+    competitors: [...compWrap.querySelectorAll(".competitor-row")]
+      .map((row) => ({ name: row.querySelector(".comp-name").value.trim(), url: row.querySelector(".comp-url").value.trim() }))
+      .filter((c) => c.name),
+    engines: [...engGrid.querySelectorAll(".llm-pill.selected")].map((p) => p.dataset.value),
+  });
+
   if (!dis) {
     const save = el("button", { className: "btn sm" }, "💾 Save details");
     save.onclick = async () => {
-      const competitors = [...compWrap.querySelectorAll(".competitor-row")]
-        .map((row) => ({ name: row.querySelector(".comp-name").value.trim(), url: row.querySelector(".comp-url").value.trim() }))
-        .filter((c) => c.name);
-      const engines = [...engGrid.querySelectorAll(".llm-pill.selected")].map((p) => p.dataset.value);
-      const r = await send({
-        type: "geo-profile-save",
-        profile: { ...profile, name: nameIn.value.trim() || profile.name, brand: { name: brandIn.value.trim(), url: urlIn.value.trim() }, competitors, engines },
-      });
+      const r = await persistDetails();
       if (r.ok) loadGeo(); else showToast(r.error, "error");
     };
     card.append(el("div", { className: "ft-actions", style: "margin-top:10px" }, save));
   }
 
   card.append(el("div", { className: "wizard-divider" }));
-  card.append(renderPromptManager(profile, dis));
+  card.append(renderPromptManager(profile, dis, persistDetails));
   return card;
 }
 
@@ -3483,7 +3510,7 @@ function reportAddResult(r) {
 /** The prompts table: CSV/Excel upload (primary), manual entry (fallback),
  *  search, tag-filter sidebar (with per-tag rename/delete), "only unassigned"
  *  toggle, inline tag editing, and bulk select for pause/remove. */
-function renderPromptManager(profile, dis) {
+function renderPromptManager(profile, dis, persistDetails) {
   const wrap = el("div", { className: "prompt-manager" });
   wrap.append(el("div", { className: "card-header", style: "margin-top:0" },
     el("h3", {}, "Prompts"),
@@ -3500,6 +3527,13 @@ function renderPromptManager(profile, dis) {
         const rows = /\.xlsx$/i.test(file.name) ? await parseXlsx(await file.arrayBuffer()) : parseCsv(await file.text());
         const prompts = rowsToPrompts(rows);
         if (!prompts.length) { showToast("No prompts found in that file — make sure column A has your prompts.", "error"); return; }
+        // Adding prompts triggers loadGeo() below, a full re-fetch-and-render
+        // — which used to silently wipe any campaign name/brand/url/
+        // competitor/engine edits still sitting unsaved in this same card's
+        // inputs. Persist them first so nothing typed but not yet saved is
+        // lost just because the user uploaded a prompt list next.
+        const detailsSave = await persistDetails();
+        if (!detailsSave.ok) { showToast(`Couldn't save campaign details: ${detailsSave.error}`, "error"); return; }
         const r = await send({ type: "geo-prompt-bulk-add-rows", profileId: profile.id, rows: prompts });
         fileInput.value = "";
         if (r.ok) { reportAddResult(r); loadGeo(); } else showToast(r.error, "error");
@@ -3527,6 +3561,11 @@ function renderPromptManager(profile, dis) {
         return { text, tags };
       }).filter((r) => r.text);
       if (!rows.length) return;
+      // Same reasoning as the upload path above: save whatever's currently
+      // in the campaign-details fields before the loadGeo() a successful
+      // add triggers, so it isn't wiped out unsaved.
+      const detailsSave = await persistDetails();
+      if (!detailsSave.ok) { showToast(`Couldn't save campaign details: ${detailsSave.error}`, "error"); return; }
       const r = await send({ type: "geo-prompt-bulk-add-rows", profileId: profile.id, rows });
       if (r.ok) { ta.value = ""; reportAddResult(r); loadGeo(); } else showToast(r.error, "error");
     };
@@ -3735,7 +3774,10 @@ function renderRunCard(profile) {
     loadGeo();
   });
   const pauseBtn = el("button", { className: "btn ghost" }, "⏸ Pause");
-  pauseBtn.onclick = async () => renderLoaderStatus(await send({ type: "loader-pause" }));
+  pauseBtn.onclick = async () => {
+    const r = await send({ type: "loader-pause" });
+    withScrollPreserved(() => renderLoaderStatus(r));
+  };
   const resumeBtn = el("button", { className: "btn ghost" }, "▶ Resume");
   // Resume can genuinely fail now — a run interrupted by the browser closing
   // has no tab left, so resuming has to open one, and Chrome can refuse.
@@ -3744,10 +3786,13 @@ function renderRunCard(profile) {
   resumeBtn.onclick = async () => {
     const r = await send({ type: "loader-resume" });
     if (!r || r.ok === false) { showToast(r?.error || "Couldn't resume the run.", "error"); return; }
-    renderLoaderStatus(r);
+    withScrollPreserved(() => renderLoaderStatus(r));
   };
   const stopBtn = el("button", { className: "btn danger" }, "■ Stop");
-  stopBtn.onclick = async () => renderLoaderStatus(await send({ type: "loader-stop" }));
+  stopBtn.onclick = async () => {
+    const r = await send({ type: "loader-stop" });
+    withScrollPreserved(() => renderLoaderStatus(r));
+  };
   rc.append(el("div", { className: "ft-actions" }, runBtn, pauseBtn, resumeBtn, stopBtn));
   rc.append(el("div", { id: "loaderStatus", className: "status-msg" }));
   // Paint status immediately rather than waiting for the next 1.5s poll tick
@@ -3918,7 +3963,14 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
   if (tags.length) {
     const tw = el("div", { className: "tagline", style: "margin-top:8px" });
     tw.append(el("span", { className: "muted small" }, "Tags: "));
-    tags.forEach((t) => {
+    // Cap the row so a campaign with many tags doesn't push the actual KPI
+    // numbers off screen. A tag the user has ACTIVELY filtered on always
+    // shows regardless of the cap — collapsing it out of view would hide the
+    // very thing "clear" needs to be visible to undo.
+    const CAP = 10;
+    const shown = geoTagsExpanded ? tags : tags.filter((t, i) => i < CAP || geoTagFilter.includes(t));
+    const hiddenCount = tags.length - shown.length;
+    shown.forEach((t) => {
       const on = geoTagFilter.includes(t);
       const chip = el("button", { className: `tag clickable${on ? " on" : ""}` }, t);
       chip.onclick = () => {
@@ -3928,6 +3980,15 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
       };
       tw.append(chip);
     });
+    if (hiddenCount > 0) {
+      const more = el("button", { className: "linkbtn" }, `+${hiddenCount} more`);
+      more.onclick = () => { geoTagsExpanded = true; refreshGeoMetrics(profile, prompts, since, until); refreshPromptPerformance(profile, prompts, since, until); };
+      tw.append(more);
+    } else if (geoTagsExpanded && tags.length > CAP) {
+      const less = el("button", { className: "linkbtn" }, "show fewer");
+      less.onclick = () => { geoTagsExpanded = false; refreshGeoMetrics(profile, prompts, since, until); refreshPromptPerformance(profile, prompts, since, until); };
+      tw.append(less);
+    }
     if (geoTagFilter.length) {
       const clr = el("button", { className: "linkbtn" }, "clear");
       clr.onclick = () => {
@@ -4674,9 +4735,19 @@ function openDetailModal(title, subtitle, opts = {}) {
   if (opts.avatarText) {
     titles.append(el("div", { className: "modal-avatar", style: `background:${avatarGradient(opts.avatarKey || title)}` }, opts.avatarText));
   }
+  // A subtitle that IS a URL (openUrlDetailModal passes the page URL itself)
+  // used to render as plain unclickable text — no way to actually open the
+  // page it names, only to drill into the captures that cited it below.
+  // Both are useful; this adds the one that was missing.
+  const isUrlSubtitle = typeof subtitle === "string" && /^https?:\/\//i.test(subtitle);
+  const subEl = !subtitle ? el("span", {})
+    : isUrlSubtitle
+      ? el("div", { className: "muted small modal-sub" },
+          el("a", { href: subtitle, target: "_blank", rel: "noreferrer", title: "Open this page" }, subtitle))
+      : el("div", { className: "muted small modal-sub" }, subtitle);
   titles.append(el("div", { style: "min-width:0" },
     el("h3", { className: "modal-title" }, title),
-    subtitle ? el("div", { className: "muted small modal-sub" }, subtitle) : el("span", {})));
+    subEl));
   header.append(titles);
   const closeBtn = el("button", { className: "modal-close-btn", title: "Close" }, "×");
   header.append(closeBtn);
@@ -4787,6 +4858,16 @@ function openDomainDetailModal(row, subtitle, unit = "prompt") {
             "Pulled in as a source this many times, but never cited in the written answer. This is NOT “never retrieved” — every appearance here was read; it just wasn't credited.",
         }, `${u.fetched} read-only`)),
     );
+    // Clicking a row always routed into Analyze (correct — that's where the
+    // captures live) with no way to just open the actual page. A sibling of
+    // `head` rather than nested inside it: an <a> inside a <button> is
+    // invalid HTML and click events would fight over which handler wins.
+    const openExt = el("a", {
+      className: "url-drill-openext", href: u.key, target: "_blank", rel: "noreferrer",
+      title: "Open this page", "aria-label": `Open ${u.key} in a new tab`,
+    }, "↗");
+    openExt.onclick = (ev) => ev.stopPropagation();
+    const headRow = el("div", { className: "url-drill-headrow" }, head, openExt);
     const runsWrap = el("div", { className: "url-drill-runs", style: "display:none" });
     [...u.runs.values()].sort((a, b) => b.capturedAt - a.capturedAt).forEach((run) => {
       const line = el("button", { className: "url-drill-run", title: "Open this capture in Analyze" });
@@ -4812,7 +4893,7 @@ function openDomainDetailModal(row, subtitle, unit = "prompt") {
         caret.textContent = open ? "▸" : "▾";
       };
     }
-    item.append(head, runsWrap);
+    item.append(headRow, runsWrap);
     list.append(item);
   });
   body.append(list);
@@ -5432,14 +5513,24 @@ function renderLoaderStatus(s) {
     const isLimit = it.reason === "rate limit";
     const who = ENGINES.find((e) => e.id === it.platform)?.label || "The engine";
     const remaining = Math.max(0, (s.total || 0) - (s.done || 0) - (s.errors || 0));
+    // A rate limit only pauses the engine that hit it (background.js scopes
+    // it to that platform's legs) — a sibling engine with its own account
+    // keeps going. Say so, otherwise this reads as the whole run having
+    // stopped when it might only be one of two engines.
+    const others = isLimit
+      ? Object.entries(s.platStats || {}).filter(([p, ps]) => p !== it.platform && !ps.paused && ps.done < ps.total)
+      : [];
+    const othersNote = others.length
+      ? ` ${others.map(([p]) => ENGINES.find((e) => e.id === p)?.label || p).join(" and ")} ${others.length > 1 ? "are" : "is"} still running.`
+      : "";
     const note = el("div", { className: "loader-interrupted" },
-      el("b", {}, isLimit ? "⏸ Paused — usage limit reached" : "⏸ Paused — interrupted"),
+      el("b", {}, isLimit ? `⏸ ${who} paused — usage limit reached` : "⏸ Paused — interrupted"),
       el("div", { className: "small" },
         isLimit
           ? `${who} reported a limit${it.detail ? `: “${it.detail}”` : ""}. `
           : `${it.reason || "The run was interrupted"}. `,
         `No prompts were lost — ${remaining} still queued. Press Resume to continue`,
-        isLimit ? " once the limit clears." : "; the tab will be reopened for you."),
+        isLimit ? ` once the limit clears.${othersNote}` : "; the tab will be reopened for you."),
       it.at ? el("div", { className: "muted small" }, `Paused at ${new Date(it.at).toLocaleString()}`) : "");
     box.append(note);
   }
@@ -5466,7 +5557,12 @@ function renderLoaderStatus(s) {
     } else if (ps.done >= ps.total) {
       sub.push("done");
     }
-    kpis.append(el("div", { className: "geo-kpi" },
+    // A rate limit now pauses only the engine that hit it (see
+    // loader-rate-limited in background.js) — this tile is where that
+    // becomes visible per engine, since the KPI row is the only place
+    // showing each platform on its own rather than the run as a whole.
+    if (ps.paused) sub.unshift("⏸ paused");
+    kpis.append(el("div", { className: `geo-kpi${ps.paused ? " geo-kpi-paused" : ""}` },
       el("div", { className: "k-label" }, label),
       el("div", { className: "k-value" }, `${ps.done}/${ps.total}`),
       el("div", { className: "k-sub muted" }, sub.join(" · "))));
@@ -5497,10 +5593,19 @@ function renderLoaderStatus(s) {
 }
 
 // poll loader status while the Campaigns tab is open
+//
+// Reported: during a run, the page kept jumping to the top and fought any
+// attempt to scroll down to watch the currently-running prompts. This is
+// exactly the case withScrollPreserved's own header comment names ("a poll
+// tick") but this call was bypassing it — renderLoaderStatus does a full
+// box.textContent = "" + rebuild, which collapses the scroll container's
+// height for an instant and lets the browser clamp scrollTop to fit (down to
+// 0 if the box was most of the page). At a 1.5s poll interval, any manual
+// scroll got undone within 1.5s of every attempt.
 setInterval(async () => {
   if (!$("#loader")?.classList.contains("active")) return;
   const s = await send({ type: "loader-status" });
-  if (s.ok) renderLoaderStatus(s);
+  if (s.ok) withScrollPreserved(() => renderLoaderStatus(s));
 }, 1500);
 
 /* ---------- Capture debug ---------- */

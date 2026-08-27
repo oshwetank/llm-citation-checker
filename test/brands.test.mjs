@@ -309,5 +309,37 @@ console.log("\na brand introduced by a heading survives, because the prose uses 
     !found.some((n) => /Storage Water Heaters/i.test(n)), found.join(", "));
 }
 
+console.log("\na spec-sheet's bolded row labels are not brands, even when the prose refers back to them");
+{
+  // Reported live: a Motorola campaign's competitor list picked up Battery,
+  // USB, Charging, Display and Common as "brands" — every one of them a
+  // spec-sheet row label. The corroboration check that protects a real
+  // heading-introduced brand (used again outside the heading line) doesn't
+  // help here: a spec answer near-always refers back to its own spec label
+  // in prose ("This large battery..."), which reads as exactly the same
+  // corroboration a real brand would earn.
+  const answer = [
+    "**Battery**: 5000mAh with 68W fast charging. This large battery lasts all day.",
+    "",
+    "**Display**: 6.7\" pOLED, 144Hz. The display is bright and vivid outdoors.",
+    "",
+    "**Charging**: 68W wired. Charging from empty takes about 40 minutes.",
+    "",
+    "**USB**: USB-C 3.2. The USB port also supports video output.",
+    "",
+    "**Common** issues include occasional overheating during charging.",
+  ].join("\n");
+  const found = names(answer, {});
+  for (const generic of ["Battery", "Display", "Charging", "USB", "Common"]) {
+    check(`"${generic}" (a spec label, referred back to in prose like a real brand would be) is not reported as a brand`,
+      !found.some((n) => n.toLowerCase() === generic.toLowerCase()), found.join(", "));
+  }
+  // A real one-word brand must stay eligible — this isn't "reject every
+  // single bold word", only the curated generic-spec-noun set.
+  const realBrand = "**Nothing**: the Nothing Phone 3a leans hard into its transparent design.";
+  check("a real one-word brand (Nothing) is still detected",
+    names(realBrand, {}).some((n) => /nothing/i.test(n)), names(realBrand, {}).join(", "));
+}
+
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
 process.exit(failures ? 1 : 0);

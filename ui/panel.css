@@ -2181,6 +2181,12 @@ body.popup .drill-table th:first-child { min-width: 180px; }
 }
 .geo-kpi .k-value { font-size: 24px; font-weight: 700; line-height: 1.2; margin-top: 4px; color: var(--fg-primary); }
 .geo-kpi .k-sub { font-size: 11px; margin-top: 2px; }
+/* One engine sitting out a rate-limit cooldown while a sibling engine keeps
+   running (see loaderStatus's per-platform `paused` in background.js) — the
+   same amber used for the interrupted banner, scoped to just this tile so
+   it doesn't read as the whole run having stopped. */
+.geo-kpi-paused { background: var(--amber-bg); border-color: var(--amber-border); }
+.geo-kpi-paused .k-sub { color: var(--amber-fg); font-weight: 600; }
 
 /* ---------- Loader run status (live progress, per-prompt breakdown, run history) ---------- */
 .loader-summary { font-size: 13px; color: var(--fg-secondary); margin-top: 4px; }
@@ -3048,6 +3054,21 @@ body.popup .src-table th:first-child { min-width: 30px; }
   overflow-wrap: anywhere;
 }
 .url-drill-meta { display: flex; gap: 4px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+/* headrow holds the expand/open-in-Analyze button plus a separate
+   open-the-real-URL icon — a sibling, not nested inside the button (an <a>
+   inside a <button> is invalid HTML). */
+.url-drill-headrow { display: flex; align-items: stretch; }
+.url-drill-headrow .url-drill-head { flex: 1 1 auto; min-width: 0; }
+.url-drill-openext {
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  width: 34px;
+  color: var(--fg-muted);
+  text-decoration: none;
+  font-size: 13px;
+  border-left: 1px solid var(--border);
+}
+.url-drill-openext:hover { background: var(--accent-subtle); color: var(--accent); }
 .url-drill-runs { border-top: 1px solid var(--border); background: var(--bg-subtle); }
 .url-drill-run {
   display: flex;

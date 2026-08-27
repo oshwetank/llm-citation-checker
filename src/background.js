@@ -353,6 +353,12 @@ async function persistLoaderState() {
               expectedPrompt: leg.expectedPrompt || null,
               durations: leg.durations || [],
               outcomes: leg.outcomes || [],
+              // Set only on a rate-limit hit — see loader-rate-limited — so
+              // this one engine's legs sit out while a sibling platform's
+              // legs (different account, different limit) keep running.
+              // Must survive a restart or a resumed run would silently
+              // un-pause a leg that was deliberately cooling down.
+              paused: leg.paused || false,
             })),
           },
         ])
@@ -441,7 +447,7 @@ async function heartbeatTick() {
   // worker) — the same recovery the watchdog itself would have done.
   for (const [plat, pd] of Object.entries(loader.platforms)) {
     for (const leg of pd.legs || []) {
-      if (leg.idx >= leg.prompts.length || !leg.startedAt || leg.watchdog) continue;
+      if (leg.idx >= leg.prompts.length || !leg.startedAt || leg.watchdog || leg.paused) continue;
       if (Date.now() - leg.startedAt >= turnBudgetMs(leg) + 5000) failTurnAndAdvance(plat, leg, "watchdog lost");
     }
   }
@@ -454,7 +460,7 @@ async function heartbeatTick() {
 function armWatchdog(plat, leg, ms) {
   if (!leg) return;
   leg.watchdog = setTimeout(() => {
-    if (!loader.running || loader.paused) return;
+    if (!loader.running || loader.paused || leg.paused) return;
     if (leg.idx >= leg.prompts.length) return;
     failTurnAndAdvance(plat, leg, "timeout");
   }, ms);
@@ -492,7 +498,7 @@ function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "") {
   logErr(`run:turn-failed:${plat}`, reason, {
     platform: plat,
     promptIndex: (leg.startOffset || 0) + leg.idx - 1,
-    totalPrompts: leg.prompts.length,
+    totalPrompts: platformTotal(plat),
     failedSoFar: leg.failed,
     // Whether the content script ever reported anything for this turn. A
     // timeout with reported=false means the page-side script went quiet,
@@ -573,6 +579,7 @@ async function resumeFromSnapshot(snap) {
         durations: sl.durations || [],
         outcomes,
         watchdog: null,
+        paused: !!sl.paused,
       };
     });
     loader.platforms[plat] = { legs };
@@ -588,6 +595,9 @@ async function resumeFromSnapshot(snap) {
   for (const [plat, pd] of Object.entries(loader.platforms)) {
     for (const leg of pd.legs) {
       if (leg.idx >= leg.prompts.length) continue; // this leg's shard already finished
+      // Deliberately cooling down from a rate limit — don't touch its tab or
+      // treat its silence as a crash; loader-resume clears this explicitly.
+      if (leg.paused) continue;
 
       let tabAlive = true;
       try {
@@ -854,8 +864,20 @@ function loaderStatus() {
       avgTurnMs: bestAvg != null ? Math.round(bestAvg) : null,
       etaMs: anyRemaining && etaKnownForPlat && worstEta != null ? Math.round(worstEta) : null,
       prompts,
+      // True once this platform's legs were paused by loader-rate-limited —
+      // scoped per platform (different engine, different account) rather
+      // than reading the global loader.paused, which now only reflects a
+      // user-initiated pause. Lets the UI show which engine is actually
+      // sitting out a cooldown instead of implying the whole run stopped.
+      paused: legs.length > 0 && legs.every((l) => l.paused),
     };
   }
+  // Aggregate: true if the user paused the run OR any platform is sitting
+  // out a rate limit — either way there's something for Resume to clear, so
+  // this is what gates the Resume button and the "Paused" header, same as
+  // before concurrency existed. Per-platform detail (which engine, whether
+  // a sibling is still going) lives in platStats[plat].paused above.
+  const anyPlatformPaused = Object.values(platStats).some((s) => s.paused);
   // Overall ETA: the run isn't done until the SLOWEST platform finishes (they
   // run in parallel), so it's the max across platforms that still have work
   // left — and honestly null, not a guess, if any of those hasn't completed
@@ -869,7 +891,7 @@ function loaderStatus() {
   }
   return {
     running: loader.running,
-    paused: loader.paused,
+    paused: loader.paused || anyPlatformPaused,
     total: totalTasks,
     done: loader.done,
     idx: totalIdx,
@@ -901,6 +923,10 @@ function clearWatchdog(p) {
 async function loaderRunLeg(plat, leg) {
   if (!loader.running || loader.paused) return;
   if (!leg) return;
+  // Rate-limited: this leg's engine is deliberately sitting out a cooldown
+  // while its sibling platform's legs (a different account) keep going.
+  // loader-resume clears this and calls loaderRunLeg again explicitly.
+  if (leg.paused) return;
 
   clearWatchdog(leg);
 
@@ -1106,6 +1132,17 @@ function legForTab(tabId) {
   return null;
 }
 
+// The whole platform's prompt count — every leg's shard summed — as opposed
+// to leg.prompts.length, which is just ONE tab's shard. Reported alongside
+// promptIndex (leg.startOffset + leg.idx, already campaign-wide via
+// startOffset) in the error log: pairing a campaign-wide index with a
+// per-shard total read as nonsensical ("promptIndex=23, totalPrompts=374"
+// when the platform's real total across both legs was 747) once concurrency
+// could split one platform across more than one leg.
+function platformTotal(plat) {
+  return (loader.platforms[plat]?.legs || []).reduce((n, l) => n + l.prompts.length, 0);
+}
+
 // Called after each capture; advances the loader only for a real, completed turn.
 function loaderOnCapture(tabId, record) {
   if (!loader.running) return;
@@ -1150,7 +1187,7 @@ function loaderOnCapture(tabId, record) {
       logErr(`run:late-capture:${plat}`, "capture did not match the prompt in flight", {
         platform: plat,
         promptIndex: (leg.startOffset || 0) + leg.idx,
-        totalPrompts: leg.prompts.length,
+        totalPrompts: platformTotal(plat),
       });
       return;
     }
@@ -1176,7 +1213,7 @@ function loaderOnCapture(tabId, record) {
   // running more of these gaps in parallel, not by making any one of them
   // shorter (see pacing.js's header comment).
   const delay = INTER_PROMPT_MIN_MS + Math.random() * (INTER_PROMPT_MAX_MS - INTER_PROMPT_MIN_MS);
-  if (!loader.paused) setTimeout(() => loaderRunLeg(plat, leg), delay);
+  if (!loader.paused && !leg.paused) setTimeout(() => loaderRunLeg(plat, leg), delay);
 }
 
 // Strip heavy fields for list/aggregate views. The full record (with answerText)
@@ -1251,11 +1288,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
 
         // The content script saw an upstream limit ("you've reached your
-        // limit", "too many requests"…). PAUSE the whole run rather than
-        // failing this turn: a limit is temporary and applies to the account,
-        // so advancing would burn every remaining prompt against a wall at
-        // 90s each and lose them permanently. Token+tab checked exactly as
-        // loader-verify does, so an arbitrary page can't halt a run.
+        // limit", "too many requests"…). PAUSE that engine's legs rather
+        // than failing the turn: a limit is temporary and applies to the
+        // ACCOUNT — but that means the account logged into THIS platform,
+        // not the whole run. Gemini and ChatGPT are different accounts in
+        // different tabs; a limit on one says nothing about the other, so
+        // only the legs sharing this platform (and therefore this account
+        // and this limit) pause. Advancing a rate-limited leg would burn
+        // every remaining prompt against the same wall at 90s each and lose
+        // them permanently. Token+tab checked exactly as loader-verify
+        // does, so an arbitrary page can't halt a run.
         case "loader-rate-limited": {
           const tabId = sender?.tab?.id;
           let matched = null;
@@ -1263,14 +1305,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             const found = legForTab(tabId);
             if (found && found.leg.token && found.leg.token === msg.token) matched = found.plat;
           }
-          if (matched && !loader.paused) {
-            // A limit on ANY one leg pauses the WHOLE run, concurrency or
-            // not — it applies to the account, not to one tab, so leaving
-            // sibling legs running would just walk them into the same wall.
-            for (const pd of Object.values(loader.platforms)) {
-              for (const leg of pd.legs) clearWatchdog(leg);
+          // Guard on THIS platform's legs, not the global pause flag — two
+          // concurrent legs on the same rate-limited platform can both
+          // report the limit within moments of each other, and the second
+          // report shouldn't re-notify or re-stamp `interrupted`.
+          const alreadyPaused = matched && (loader.platforms[matched]?.legs || []).some((l) => l.paused);
+          if (matched && !alreadyPaused) {
+            for (const leg of loader.platforms[matched].legs) {
+              clearWatchdog(leg);
+              leg.paused = true;
             }
-            loader.paused = true;
             loader.interrupted = {
               at: Date.now(),
               reason: "rate limit",
@@ -1910,8 +1954,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           await persistLoaderState();
           sendResponse({ ok: true, ...loaderStatus() });
           break;
-        case "loader-resume":
-          if (loader.running && loader.paused) {
+        case "loader-resume": {
+          // Resume clears BOTH kinds of pause with one click: a manual pause
+          // (loader.paused) and any platform sitting out a rate-limit
+          // cooldown (leg.paused) — there's only one Resume button, and the
+          // user reaching for it means "let everything that can run, run."
+          const anyLegPaused = Object.values(loader.platforms).some((pd) => pd.legs.some((l) => l.paused));
+          if (loader.running && (loader.paused || anyLegPaused)) {
             // A run parked by rehydrate (browser closed mid-run) has no tabs
             // left. Recreate one per LEG here, on the user's explicit click,
             // rather than anywhere automatic — that keeps the original "no
@@ -1919,6 +1968,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             // for however many concurrent tabs this run actually has.
             for (const [plat, pd] of Object.entries(loader.platforms)) {
               for (const leg of pd.legs) {
+                leg.paused = false;
                 if (leg.idx >= leg.prompts.length) continue; // this leg already finished
                 let alive = false;
                 if (leg.tabId != null) {
@@ -1947,6 +1997,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }
           sendResponse({ ok: true, ...loaderStatus() });
           break;
+        }
         case "loader-stop":
           for (const pd of Object.values(loader.platforms)) {
             for (const leg of pd.legs) clearWatchdog(leg);

@@ -447,6 +447,26 @@ const CATEGORY_PLURAL_NOUNS = new Set([
   "brands", "perfumes", "fragrances", "colognes", "necklaces", "sarees", "kurtas",
   "jewellers", "jewelers", "shops", "restaurants", "cafes", "hotels",
 ]);
+// A single bold word at the start of a line reads exactly like a one-word
+// brand ("**Nothing**", "**OnePlus**") — but a spec-sheet-style answer bolds
+// its ROW LABELS the same way ("**Battery**: 5000mAh...", "**Charging**:
+// 68W..."), and the corroboration check below (a weak candidate needs a
+// second, non-heading mention) doesn't catch these: the answer almost always
+// refers back to its own spec ("...this large battery lasts all day"),
+// which reads as exactly the corroboration a real brand would earn. Reported
+// live: Battery, USB, Charging, Display and Common all reached a real
+// campaign's competitor list this way. Curated, not "any dictionary word" —
+// a real one-word brand ("Sony", "Nothing", "Oppo") must stay eligible.
+const GENERIC_SPEC_NOUNS = new Set([
+  "battery", "charging", "display", "screen", "camera", "cameras", "storage",
+  "memory", "performance", "design", "software", "security", "connectivity",
+  "audio", "sound", "speaker", "processor", "chipset", "network", "durability",
+  "build", "price", "pricing", "value", "warranty", "specifications", "specs",
+  "features", "highlights", "overview", "summary", "verdict", "conclusion",
+  "pros", "cons", "comparison", "availability", "usb", "wifi", "bluetooth",
+  "gps", "sim", "esim", "resolution", "refresh", "biometrics", "durability",
+  "common", "faq", "faqs", "troubleshooting", "notes", "disclaimer", "sources",
+]);
 export function looksLikeProperName(phrase) {
   const words = String(phrase || "").trim().split(/\s+/);
   if (!words.length || words.length > 3) return false;
@@ -455,6 +475,8 @@ export function looksLikeProperName(phrase) {
   if (words.length > 1) {
     const last = words[words.length - 1].replace(/[^\w]/g, "").toLowerCase();
     if (CATEGORY_PLURAL_NOUNS.has(last)) return false;
+  } else if (GENERIC_SPEC_NOUNS.has(words[0].replace(/[^\w]/g, "").toLowerCase())) {
+    return false;
   }
   const CONNECTORS = new Set(["of", "and", "&", "for", "de", "la", "by"]);
   return words.every((w, i) => {
