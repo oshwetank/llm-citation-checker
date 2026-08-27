@@ -1,4 +1,4 @@
-# Run the test suite on every push and pull request.
+# Run the test suite on every pull request, and on pushes to master.
 #
 # Why this exists: this repository had no CI at all, so the only thing standing
 # between a regression and the Chrome Web Store was remembering to run the
