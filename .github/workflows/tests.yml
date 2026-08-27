@@ -106,7 +106,8 @@ jobs:
         run: |
           fail=0
           for f in test/adapter.test.mjs test/ai-brands.test.mjs test/auto-competitors.test.mjs \
-                   test/behaviour.test.mjs test/brands.test.mjs test/errorlog.test.mjs \
+                   test/behaviour.test.mjs test/brands.test.mjs test/campaign-workbook.test.mjs \
+                   test/errorlog.test.mjs \
                    test/fanout.test.mjs test/gemini-answer.test.mjs test/geo.test.mjs \
                    test/glossary.test.mjs test/pacing.test.mjs test/retention.test.mjs \
                    test/sources.test.mjs test/text-sanitize.test.mjs test/xlsxlite.test.mjs; do

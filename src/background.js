@@ -15,6 +15,7 @@
 import { db } from "./lib/db.js";
 import { turnBudgetMs, legEta, INTER_PROMPT_MIN_MS, INTER_PROMPT_MAX_MS } from "./lib/pacing.js";
 import { createErrorLog } from "./lib/errorlog.js";
+import { buildCampaignWorkbook } from "./lib/campaignWorkbook.js";
 import { gzipString, gunzipToString } from "./lib/gzip.js";
 import { adapt as adaptChatGpt, cleanPassage } from "./adapters/chatgpt.js";
 import { enrichBrandsWithAI } from "./lib/ai-brands.js";
@@ -1363,6 +1364,45 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             changed++;
           }
           sendResponse({ ok: true, changed });
+          break;
+        }
+
+        /* The whole campaign as one workbook.
+         *
+         * Assembled and rendered HERE rather than in the panel: the raw
+         * material is every derived record for the campaign, which for a
+         * thousand-prompt run is tens of megabytes of sources and mentions.
+         * Shipping that across the message boundary so the UI could format it
+         * would be slow and pointless — the worker already has the database
+         * open. One XML string goes back instead.
+         */
+        case "geo-export-workbook": {
+          const profile = await db.get("profiles", msg.profileId);
+          if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
+          const all = await db.getAll("derived");
+          const records = selectTracked(all, {
+            profileId: msg.profileId,
+            runId: msg.runId || undefined,
+            engines: msg.engines,
+            tags: msg.tags,
+            since: msg.since,
+            until: msg.until,
+          });
+          const prompts = (await db.getAll("trackedPrompts")).filter((t) => t.profileId === msg.profileId);
+          const runs = (await db.getAll("geoRuns")).filter((r) => r.profileId === msg.profileId);
+          const brands = effectiveTrackedBrands(profile, records);
+          const metrics = computeMetrics(records, profile, brands);
+          // answerText is the single biggest field on a record and no sheet
+          // uses it, so it is dropped before aggregation rather than carried
+          // through and ignored.
+          const lite = records.map(({ answerText, platformSpecific, _extraction, ...rest }) => rest);
+          const xml = buildCampaignWorkbook({
+            profile, prompts, runs, records: lite, brands, metrics,
+            errors: await errorLog.summary(60),
+            generatedAt: Date.now(),
+          });
+          const slug = String(profile.name || "campaign").replace(/[^\w]+/g, "-").replace(/^-|-$/g, "").toLowerCase();
+          sendResponse({ ok: true, xml, filename: `citoskeleton-${slug || "campaign"}-${Date.now()}.xls` });
           break;
         }
 

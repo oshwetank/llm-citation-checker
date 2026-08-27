@@ -3871,6 +3871,29 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
       refreshPromptPerformance(profile, prompts, since, until);
     };
     controls.append(runSel);
+
+    /* The whole campaign, as a workbook.
+     *
+     * Sits beside the run picker so it exports exactly what is on screen: no
+     * run selected means every run, a run selected means that run. An export
+     * button whose scope differs from the view above it is a reliable way to
+     * hand someone the wrong numbers. */
+    const wbBtn = el("button", { className: "btn sm ghost",
+      title: "Download every sheet of this campaign's data as an Excel workbook" }, "⬇ Full workbook");
+    wbBtn.onclick = withBusy(wbBtn, "Building…", async () => {
+      const r = await send({
+        type: "geo-export-workbook",
+        profileId: profile.id,
+        runId: geoRunFilter || undefined,
+        tags: geoTagFilter,
+        engines: geoEngineFilter,
+        since, until,
+      });
+      if (!r || !r.ok) { showToast((r && r.error) || "Couldn't build the workbook.", "error"); return; }
+      download(r.filename || `citoskeleton-campaign-${Date.now()}.xls`, r.xml, "application/vnd.ms-excel");
+      showToast("Workbook downloaded — 11 sheets.");
+    });
+    controls.append(wbBtn);
     if (geoRunFilter) {
       const clear = el("button", { className: "linkbtn" }, "show all runs");
       clear.onclick = () => {
