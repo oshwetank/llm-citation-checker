@@ -3529,3 +3529,12 @@ body.popup .pp-chip { font-size: 9.5px; }
 }
 .loader-finish-icon { font-size: 14px; }
 .loader-finish .muted { flex-basis: 100%; margin-top: 2px; }
+
+/* The per-turn submission timeline. Monospace and wrapping, because it is a
+   sequence of tick:event pairs that gets read left to right and can be long. */
+.err-trace { margin-top: 4px; }
+.err-trace code {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px; line-height: 1.5;
+  overflow-wrap: anywhere; word-break: break-word; color: var(--fg-secondary);
+}

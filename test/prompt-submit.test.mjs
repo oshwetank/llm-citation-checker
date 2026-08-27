@@ -84,6 +84,7 @@ async function run(html, { gemini = false, waitMs = 9000 } = {}) {
   return {
     ...res,
     gaveUp: res.events.filter((e) => e.type === "loader-submit-failed").map((e) => e.reason),
+    traces: res.events.filter((e) => e.type === "loader-submit-failed").map((e) => e.trace || ""),
     limits: res.events.filter((e) => e.type === "loader-rate-limited").map((e) => e.detail),
   };
 }
@@ -304,6 +305,87 @@ console.log("\nNO false positive: the user's own PROMPT is about rate limits");
     </script>`, { gemini: true, waitMs: 12000 });
   check("no limit reported from prompt text sitting in the transcript",
     r.limits.length === 0, JSON.stringify(r.limits));
+}
+
+/* ---------- The silent-failure bug ----------
+ *
+ * Reported: six prompts, ChatGPT failed EVERY one, and every failure was a
+ * bare "timeout" — never a submit failure. Gemini, on the same run, reported
+ * a real "send control never accepted the prompt". That asymmetry was the
+ * clue: Gemini's script tried and told the truth; ChatGPT's script believed
+ * it had succeeded and went quiet, leaving the 90s watchdog to record a
+ * generic timeout with nothing to act on.
+ *
+ * The cause was treating an EMPTIED COMPOSER as proof of submission. React
+ * clearing or re-rendering its own composer is byte-for-byte identical to a
+ * successful send, so a send that did nothing set sentOk, stopped all further
+ * attempts, and guaranteed the turn died silently.
+ *
+ * Proof is now positive only: the conversation URL, a streaming indicator, or
+ * the prompt in the transcript.
+ */
+console.log("\nA send that clears the composer but does NOTHING is reported, not silently accepted");
+{
+  // The exact shape: clicking send empties the composer, and nothing else
+  // ever happens — no navigation, no stop button, no transcript entry.
+  const r = await run(`
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <button id="composer-submit-button">send</button><div id="convo"></div>
+    <script>${RECORD_CHATGPT}
+      const box=document.getElementById('prompt-textarea');
+      document.getElementById('composer-submit-button').addEventListener('click',()=>{
+        box.innerHTML='';        // looks exactly like a successful send
+      });
+    </script>`, { waitMs: 22000 });
+  check("nothing was actually submitted", r.submits === 0, `submits=${r.submits}`);
+  check("the failure IS reported rather than left to time out silently",
+    r.gaveUp.length === 1, JSON.stringify(r.gaveUp));
+  check("and it names the real problem",
+    /never reached the conversation/i.test(r.gaveUp[0] || ""), r.gaveUp[0]);
+  check("a turn timeline comes with it", (r.traces[0] || "").length > 0, JSON.stringify(r.traces[0]));
+  check("the timeline shows the send was attempted and the composer cleared",
+    /click|enter/.test(r.traces[0] || "") && /cleared/.test(r.traces[0] || ""), r.traces[0]);
+}
+
+console.log("\nProof of submission survives stale DOM selectors (the URL changes)");
+{
+  /* Both engines move the tab to a per-conversation path once a turn really
+   * goes out. That signal does not depend on any markup, so it keeps working
+   * when a data-testid or aria-label is renamed — which is exactly how a turn
+   * came to look "sent" while nothing had happened. */
+  const r = await run(`
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <button id="composer-submit-button">send</button><div id="convo"></div>
+    <script>${RECORD_CHATGPT}
+      const box=document.getElementById('prompt-textarea');
+      document.getElementById('composer-submit-button').addEventListener('click',()=>{
+        const t=box.innerText; box.innerHTML='';
+        window.__submits++; window.__lastText=t;
+        history.pushState(null,'','/c/abc-123');   // the real signal, no markup involved
+      });
+    </script>`, { waitMs: 14000 });
+  check("submitted exactly once", r.submits === 1, `submits=${r.submits}`);
+  check("no failure reported — the URL alone proved it went out",
+    r.gaveUp.length === 0, JSON.stringify(r.gaveUp));
+}
+
+console.log("\nA tab bounced to a login page says SO, instead of 'composer never appeared'");
+{
+  const page = await browser.newPage();
+  await page.route("**/*", (rt) => rt.fulfill({ status: 200, contentType: "text/html", body: "<body><h1>Sign in</h1></body>" }));
+  await page.goto(`https://chatgpt.com/auth/login?q=${encodeURIComponent(PROMPT)}&lcfc=1&lcfctok=T1`);
+  const res = await page.evaluate(async ({ iso }) => {
+    const events = [];
+    window.chrome = {
+      runtime: { lastError: null, sendMessage: (m, cb) => { events.push(JSON.parse(JSON.stringify(m))); if (cb) cb({ ok: true }); }, onMessage: { addListener() {} } },
+      storage: { local: { get: (_k, cb) => cb && cb({}) } },
+    };
+    eval(iso); // eslint-disable-line no-eval
+    await new Promise((r) => setTimeout(r, 4000));
+    return events.filter((e) => e.type === "loader-submit-failed").map((e) => e.reason);
+  }, { iso: ISO });
+  await page.close();
+  check("the sign-in problem is named outright", res.length === 1 && /not signed in/i.test(res[0]), JSON.stringify(res));
 }
 
 console.log("\nNothing usable on the page: report the failure, never hang silently");

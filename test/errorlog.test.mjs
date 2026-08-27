@@ -109,6 +109,31 @@ console.log("\nPRIVACY: a URL inside the error MESSAGE is scrubbed too");
   check("stacks are scrubbed as well", !/secret/.test(withStack.stack), withStack.stack);
 }
 
+console.log("\nA turn timeline rides along, without becoming a privacy hole");
+{
+  /* The trace is what turns "timeout" into something actionable — it records
+   * how far the submit sequence got. It needs far more room than a context
+   * value (whose tight cap exists to keep free text, and therefore prompt
+   * content, out), so it is a separate field with its own cap. That extra
+   * room is exactly why it still has to be scrubbed. */
+  const TRACE = "1:run:chatgpt 3:composer 11:typed 12:send-ready 12:click 13:cleared 38:giveup";
+  const e = makeErrorEntry("run:turn-failed:chatgpt", "timeout", { platform: "chatgpt" }, TRACE);
+  check("the timeline is stored whole, not truncated like a context value",
+    e.trace === TRACE, JSON.stringify(e.trace));
+  check("an entry with no timeline gets an empty string, never undefined",
+    makeErrorEntry("x", "y").trace === "", JSON.stringify(makeErrorEntry("x", "y").trace));
+
+  // A trace should never carry a URL, but the field is wide enough that a
+  // careless future call site could put one there — so it is scrubbed too.
+  const dirty = makeErrorEntry("net", "boom", null, "1:run 2:nav:https://chatgpt.com/c/x?q=secret%20prompt");
+  check("a URL that sneaks into a timeline is scrubbed", !/secret/.test(dirty.trace), dirty.trace);
+  check("…and the rest of the timeline survives", /1:run/.test(dirty.trace), dirty.trace);
+
+  // Very long traces are capped rather than allowed to grow the store.
+  const huge = makeErrorEntry("x", "y", null, "9:tick ".repeat(600));
+  check("a runaway timeline is capped", huge.trace.length <= 1500, String(huge.trace.length));
+}
+
 console.log("\nThe log is bounded, grouped, and readable");
 {
   const db = fakeDb();
@@ -127,6 +152,14 @@ console.log("\nThe log is bounded, grouped, and readable");
 
   const grouped = await log.summary();
   check("121 occurrences collapse to 2 distinct problems", grouped.length === 2, String(grouped.length));
+  check("a grouped failure keeps its timeline, or the viewer shows nothing",
+    (await (async () => {
+      const d2 = fakeDb(); const l2 = createErrorLog(d2);
+      await l2.record("run:turn-failed:chatgpt", "timeout", { platform: "chatgpt" }, "1:run 5:composer 20:giveup");
+      const g2 = await l2.summary();
+      return g2[0] && g2[0].trace;
+    })()) === "1:run 5:composer 20:giveup");
+
   const repeated = grouped.find((g) => /composer never appeared/.test(g.message));
   check("the repeated one carries its count, so it reads as one problem not 120 lines",
     repeated && repeated.count === 120, JSON.stringify(repeated && repeated.count));

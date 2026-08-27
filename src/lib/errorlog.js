@@ -29,6 +29,7 @@ const MAX_ENTRIES = 500;   // enough to cover a long run; small enough to read
 const MAX_MSG = 400;
 const MAX_STACK = 1200;
 const MAX_CTX_VALUE = 120;
+const MAX_TRACE = 1500;   // a full turn timeline; see makeErrorEntry
 
 /* Only scalars, and only short ones.
  *
@@ -66,7 +67,19 @@ function scrubText(s, cap) {
     .slice(0, cap);
 }
 
-export function makeErrorEntry(where, err, ctx) {
+/* `trace` is a first-class field rather than another context key.
+ *
+ * A submission trace is a sequence of event codes and tick numbers — far
+ * longer than redact()'s per-value cap, which exists to stop free text (and
+ * therefore prompt/answer content) getting in. Squeezing a trace through that
+ * filter would either truncate it uselessly or force the cap up and let real
+ * free text through with it. So it gets its own field, its own cap, and one
+ * hard rule enforced by the producer: it may contain only event codes,
+ * numbers and fixed keywords, never anything the user typed or read. It is
+ * still scrubbed for URLs, because a rule that is only a convention is not
+ * one worth relying on.
+ */
+export function makeErrorEntry(where, err, ctx, trace) {
   const isErr = err && typeof err === "object" && ("message" in err || "stack" in err);
   return {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -76,6 +89,7 @@ export function makeErrorEntry(where, err, ctx) {
     message: scrubText(isErr ? err.message : err, MAX_MSG) || "(no message)",
     stack: isErr && err.stack ? scrubText(err.stack, MAX_STACK) : "",
     context: redact(ctx),
+    trace: trace ? scrubText(trace, MAX_TRACE) : "",
   };
 }
 
@@ -86,8 +100,8 @@ export function makeErrorEntry(where, err, ctx) {
 export function createErrorLog(db) {
   let trimCounter = 0;
 
-  async function record(where, err, ctx) {
-    const entry = makeErrorEntry(where, err, ctx);
+  async function record(where, err, ctx, trace) {
+    const entry = makeErrorEntry(where, err, ctx, trace);
     try {
       await db.put("errors", entry);
       // Trim occasionally rather than on every write: the cap exists to stop
@@ -133,13 +147,16 @@ export function createErrorLog(db) {
       const g = groups.get(key);
       if (g) {
         g.count++;
-        if (e.at > g.lastAt) g.lastAt = e.at;
+        // Keep the newest trace and context: when the same failure repeats,
+        // the latest occurrence is the one worth reading, and list() is
+        // already newest-first so the first seen is the newest.
+        if (e.at > g.lastAt) { g.lastAt = e.at; }
         if (e.at < g.firstAt) g.firstAt = e.at;
       } else {
         groups.set(key, {
           where: e.where, message: e.message, kind: e.kind,
           count: 1, firstAt: e.at, lastAt: e.at,
-          stack: e.stack, context: e.context,
+          stack: e.stack, context: e.context, trace: e.trace,
         });
       }
     }

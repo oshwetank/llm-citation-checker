@@ -196,14 +196,60 @@
       // or the user's prompt is now rendered in the conversation. Checking
       // both matters because streaming can finish faster than a poll tick on
       // a short answer, which would otherwise read as "never submitted".
-      const submitted = () => {
-        if (pick(sel.streaming)) return true;
+      /* A compact, privacy-safe timeline of what this turn actually did.
+       *
+       * Reported: ChatGPT failed all six prompts with a bare "timeout", which
+       * says only that no capture arrived — not whether the composer was
+       * found, whether the text landed, whether the send control was usable,
+       * or whether the prompt ever reached the conversation. Six identical
+       * opaque failures gave nothing to act on, and reasoning about the cause
+       * without data had already produced two fixes that did not hold.
+       *
+       * Entries are "<tick>:<event>" or "<tick>:<event>:<detail>", where the
+       * detail is always a number or a fixed keyword. Prompt text, answer
+       * text and URLs are never recorded — the whole log is meant to be
+       * copied and shared, so it has to stay free of user content by
+       * construction rather than by care.
+       */
+      const trace = [];
+      const T = (ev, detail) => {
+        if (trace.length >= 60) return;               // bounded; a stuck loop can't grow it
+        trace.push(detail === undefined ? `${ticks}:${ev}` : `${ticks}:${ev}:${detail}`);
+      };
+
+      /* The path this tab started on, for the submit detector below. */
+      const startPath = location.pathname;
+
+      /* Which signal proves the prompt actually went out — or null.
+       *
+       * The URL check is first because it is the one signal that does not
+       * depend on markup. Both engines move the tab to a per-conversation
+       * path the moment a turn is really sent (chatgpt.com/ -> /c/<id>,
+       * gemini.google.com/app -> /app/<id>), and that behaviour is part of
+       * how the products work rather than an implementation detail of their
+       * DOM. The two selector-based signals below are kept as corroboration,
+       * but they are exactly the kind of thing that goes stale silently —
+       * which is how a turn could look "sent" while nothing had happened.
+       *
+       * The length guard matters: a redirect to a SHORTER path (a sign-out
+       * bouncing the tab to a login page) must not read as success.
+       */
+      const submittedWhy = () => {
+        const path = location.pathname;
+        if (path !== startPath && path.length > startPath.length) return "url";
+        if (pick(sel.streaming)) return "stream";
         try {
           const turns = document.querySelectorAll(sel.userTurn || "[data-message-author-role='user']");
-          for (const t of turns) if (norm(t.innerText).includes(want.slice(0, 40))) return true;
+          for (const t of turns) if (norm(t.innerText).includes(want.slice(0, 40))) return "turn";
         } catch (_) { /* selector unsupported — fall through */ }
-        return false;
+        return null;
       };
+      const submitted = () => submittedWhy() !== null;
+
+      /* Signed out is a distinct, common, and completely silent failure: the
+       * tab lands on a login page, no composer ever appears, and the turn
+       * dies as a generic timeout 90 seconds later. Worth naming outright. */
+      const signedOut = () => /\/auth\/|\/login|accounts\.google\.com/i.test(location.pathname + location.host);
 
       const dropQ = () => { try { history.replaceState(null, "", bareUrl); } catch (_) {} };
 
@@ -256,8 +302,14 @@
       // prompts that was fifteen minutes of a run looking "stuck".
       const giveUp = (reason) => {
         dropQ();
+        T("giveup");
         try {
-          chrome.runtime.sendMessage({ type: "loader-submit-failed", token, reason }, () => void chrome.runtime.lastError);
+          // The trace is the point of this message now: a reason alone says
+          // WHAT failed, the trace says WHERE in the sequence it stopped.
+          chrome.runtime.sendMessage(
+            { type: "loader-submit-failed", token, reason, trace: trace.join(" ") },
+            () => void chrome.runtime.lastError
+          );
         } catch (_) { /* worker may be gone; the watchdog still covers us */ }
       };
 
@@ -385,6 +437,12 @@
       let sentOk = false;
       let watchTicks = 0;
       let composerSeenTick = 0;   // tick the composer first existed; 0 = not yet
+      let clearedTick = 0;        // tick the composer emptied after a send attempt
+      // How long to wait for POSITIVE proof after the composer empties. A send
+      // that worked shows the conversation URL, a stop button, or the prompt in
+      // the transcript well inside this; one that silently did nothing shows
+      // none of them, and is reported rather than left to the 90s watchdog.
+      const CONFIRM_TICKS = 25;   // ~10s
 
       const reportLimit = (detail) => {
         clearInterval(timer);
@@ -409,15 +467,26 @@
           return;
         }
 
+        if (ticks === 1) T("run", plat);
+
         // An upstream limit outranks everything else: stop, and tell the run
         // to pause rather than letting this turn time out as a failure.
         const limit = limitHit();
-        if (limit) { reportLimit(limit); return; }
+        if (limit) { T("limit"); reportLimit(limit); return; }
 
-        // Native auto-submit landed (or the page was already answering) —
-        // nothing for this script to do but tidy the URL and keep the
-        // post-submit limit watch running.
-        if (submitted()) { sentOk = true; dropQ(); return; }
+        // A tab bounced to a login page never grows a composer, so it would
+        // otherwise sit out the full timeout and report "composer never
+        // appeared" — true, but it hides the actual cause.
+        if (signedOut()) {
+          clearInterval(timer);
+          giveUp("not signed in to this engine — the tab was redirected to a login page");
+          return;
+        }
+
+        // Positive proof the turn went out — native auto-submit landed, or our
+        // own send did. Nothing left for this script but the limit watch.
+        const why = submittedWhy();
+        if (why) { T("sent", why); sentOk = true; dropQ(); return; }
 
         if (ticks > MAX_WAIT_TICKS) {
           clearInterval(timer);
@@ -432,7 +501,7 @@
 
         const box = pick(sel.composer);
         if (!box) return;
-        if (!composerSeenTick) composerSeenTick = ticks;
+        if (!composerSeenTick) { composerSeenTick = ticks; T("composer"); }
 
         // Hold off typing while the page still might submit ?q= itself.
         // Exception: if it has already pre-filled the composer with the right
@@ -442,7 +511,8 @@
         if (ticks - composerSeenTick < GRACE_AFTER_COMPOSER && !prefilled) return;
 
         if (!injected) {
-          if (!prefilled) { clearComposer(box); insertText(box, q); }
+          if (prefilled) T("prefilled");
+          else { clearComposer(box); insertText(box, q); T("typed"); }
           injected = true;
           dropQ(); // whichever path filled it, ?q= has served its purpose
           return;  // give the framework a tick to enable its send control
@@ -456,12 +526,27 @@
         // send WORKED, and re-filling it would submit the prompt twice.
         const text = norm(composerText(box));
         if (submitTried === 0) {
-          if (!text) { injected = false; return; }
-          if (text !== want && text.length < Math.min(12, want.length)) { injected = false; return; }
+          if (!text) { T("text-empty"); injected = false; return; }
+          if (text !== want && text.length < Math.min(12, want.length)) { T("text-short", text.length); injected = false; return; }
         } else if (!text) {
-          // Composer emptied after a submit attempt: the send landed. Hand
-          // over to the post-submit limit watch rather than stopping dead.
-          sentOk = true;
+          /* The composer emptied after we pressed send. That is NOT proof the
+           * prompt went anywhere, and treating it as proof is what made every
+           * ChatGPT turn fail as a silent 90s "timeout" with no submit failure
+           * ever reported: React clearing or re-rendering its own composer
+           * looks byte-for-byte identical to a successful send, so the script
+           * declared victory and went quiet for the rest of the turn.
+           *
+           * Proof has to be positive — the conversation URL, a stop button, or
+           * the prompt in the transcript, all checked at the top of this loop.
+           * So: note when it cleared, keep polling, and if none of those ever
+           * appear, say exactly that instead of leaving the watchdog to report
+           * a generic timeout a minute and a half later.
+           */
+          if (!clearedTick) { clearedTick = ticks; T("cleared"); }
+          if (ticks - clearedTick > CONFIRM_TICKS) {
+            clearInterval(timer);
+            giveUp("send emptied the composer but the prompt never reached the conversation");
+          }
           return;
         }
 
@@ -471,14 +556,20 @@
         // whenever its send button stayed inert.
         sendTicks++;
         const send = pick(sel.send);
+        // Traced separately: "the send button is missing" and "the send button
+        // is present but inert" are different bugs with different fixes, and a
+        // generic failure conflates them.
+        if (sendTicks === 1) T(send ? (isUsable(send) ? "send-ready" : "send-inert") : "send-missing");
         if (isUsable(send) && submitTried === 0) {
           (send.closest ? send.closest("button") || send : send).click();
           submitTried = 1;
+          T("click");
           return; // verify on the next tick instead of assuming it worked
         }
         if (submitTried <= 1) {
           pressEnter(box);
           submitTried = 2;
+          T("enter");
           return;
         }
 
@@ -489,9 +580,10 @@
         }
         if (sendTicks % 2 === 0) {
           const s3 = pick(sel.send);
-          if (isUsable(s3)) (s3.closest ? s3.closest("button") || s3 : s3).click();
+          if (isUsable(s3)) { (s3.closest ? s3.closest("button") || s3 : s3).click(); T("reclick"); }
         } else {
           pressEnter(box);
+          T("reenter");
         }
       }, TICK_MS);
     }

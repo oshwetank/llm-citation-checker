@@ -5508,8 +5508,9 @@ function errorLogText(grouped) {
     const rep = g.count > 1 ? ` (x${g.count}, first ${new Date(g.firstAt).toLocaleString()})` : "";
     const ctx = g.context && Object.keys(g.context).length
       ? `\n    context: ${Object.entries(g.context).map(([k, v]) => `${k}=${v}`).join(", ")}` : "";
+    const trace = g.trace ? `\n    trace: ${g.trace}` : "";
     const stack = g.stack ? `\n    ${g.stack.slice(0, 300)}` : "";
-    return `${when}${rep}\n  [${g.where}] ${g.kind}: ${g.message}${ctx}${stack}`;
+    return `${when}${rep}\n  [${g.where}] ${g.kind}: ${g.message}${ctx}${trace}${stack}`;
   }).join("\n\n");
 }
 
@@ -5547,6 +5548,17 @@ async function renderErrorLog() {
     if (g.context && Object.keys(g.context).length) {
       line.append(el("div", { className: "muted small" },
         Object.entries(g.context).map(([k, v]) => `${k}=${v}`).join("  ·  ")));
+    }
+    /* The turn timeline, spelled out.
+     *
+     * "timeout" alone says a capture never arrived; the trace says whether
+     * the composer was ever found, whether the text landed, whether the send
+     * control was usable, and how far the sequence got before it stopped —
+     * which is the difference between a fixable report and a shrug. */
+    if (g.trace) {
+      line.append(el("div", { className: "err-trace" },
+        el("span", { className: "muted small" }, "turn timeline: "),
+        el("code", {}, g.trace)));
     }
     if (g.stack) {
       const st = el("details", { className: "err-stack" },

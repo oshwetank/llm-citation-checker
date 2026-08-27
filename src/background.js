@@ -290,7 +290,7 @@ const MIN_ADVANCE_GAP_MS = 2500; // ignore a second "done" arriving right after 
  * purpose: no call site should ever await, or be able to fail because of,
  * logging. */
 const errorLog = createErrorLog(db);
-const logErr = (where, err, ctx) => { try { errorLog.record(where, err, ctx); } catch (_) {} };
+const logErr = (where, err, ctx, trace) => { try { errorLog.record(where, err, ctx, trace); } catch (_) {} };
 
 const LOADER_STATE_KEY = "lcfcLoaderState";
 const HEARTBEAT_ALARM = "lcfcHeartbeat";
@@ -446,7 +446,7 @@ function armWatchdog(plat, ms) {
 // behaviour); the tab-closed path passes a short delay to avoid hammering
 // chrome.tabs.update in a tight loop if every remaining prompt in the list
 // would also fail against the same closed tab.
-function failTurnAndAdvance(plat, reason, retryDelayMs = 0) {
+function failTurnAndAdvance(plat, reason, retryDelayMs = 0, trace = "") {
   const p = loader.platforms[plat];
   if (!p) return;
   loader.errors++;
@@ -471,7 +471,12 @@ function failTurnAndAdvance(plat, reason, retryDelayMs = 0) {
     promptIndex: p.idx - 1,
     totalPrompts: p.prompts.length,
     failedSoFar: p.failed,
-  });
+    // Whether the content script ever reported anything for this turn. A
+    // timeout with reported=false means the page-side script went quiet,
+    // which is a different bug from one that tried and failed.
+    reported: !!trace,
+    elapsedMs: p.startedAt ? Date.now() - p.startedAt : 0,
+  }, trace);
   persistLoaderState();
   syncGeoRun(undefined, reason);
   if (retryDelayMs > 0) setTimeout(() => loaderRunPlatform(plat), retryDelayMs);
@@ -979,6 +984,44 @@ function loaderOnCapture(tabId, record) {
     // Ignore a second completion arriving immediately after one we already counted.
     if (p.lastAdvanceAt && Date.now() - p.lastAdvanceAt < MIN_ADVANCE_GAP_MS) return;
 
+    /* The capture must be for the prompt this leg is actually waiting on.
+     *
+     * Without this, a capture that arrives LATE — after its own turn already
+     * timed out and the run moved on — is counted against whatever prompt is
+     * now in flight. That does two bad things at once: it inflates the run's
+     * captured count (the diagnostic report showed "14/12 captured" and
+     * "11/12 captured, 7 failed", both arithmetically impossible for a
+     * 12-task run), and it advances `idx` past a prompt that was never
+     * actually asked. The second is the serious one — it is a silently
+     * SKIPPED prompt, which is precisely the "prompts missing from the
+     * results" complaint, and it is invisible because the run reports it as a
+     * success.
+     *
+     * ChatGPT is where this bites: a turn that times out at 90s often does
+     * finish streaming afterwards, so the late capture lands while the next
+     * prompt is mid-flight.
+     *
+     * Loose comparison, and only when both sides are known: adapters
+     * normalise whitespace differently from the string we navigated with, and
+     * an older persisted snapshot may carry no expectedPrompt at all. When
+     * either side is missing the old behaviour stands, so this can only ever
+     * reject a capture it is certain does not belong.
+     */
+    const norm = (t) => String(t || "").replace(/\s+/g, " ").trim().toLowerCase();
+    const wantPrompt = norm(p.expectedPrompt);
+    const gotPrompt = norm(record && record.userPrompt);
+    if (wantPrompt && gotPrompt) {
+      const head = wantPrompt.slice(0, 60);
+      if (!gotPrompt.includes(head) && !wantPrompt.includes(gotPrompt.slice(0, 60))) {
+        logErr(`run:late-capture:${plat}`, "capture did not match the prompt in flight", {
+          platform: plat,
+          promptIndex: p.idx,
+          totalPrompts: p.prompts.length,
+        });
+        return;
+      }
+    }
+
     clearWatchdog(p);
     if (p.startedAt) p.durations = [...(p.durations || []), Date.now() - p.startedAt].slice(-DURATION_WINDOW);
     p.outcomes = p.outcomes || [];
@@ -1120,7 +1163,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }
           if (plat) {
             const why = typeof msg.reason === "string" && msg.reason ? msg.reason : "submit failed";
-            failTurnAndAdvance(plat, `submit: ${why}`.slice(0, 120), 800);
+            const trace = typeof msg.trace === "string" ? msg.trace : "";
+            failTurnAndAdvance(plat, `submit: ${why}`.slice(0, 120), 800, trace);
           }
           sendResponse({ ok: !!plat });
           break;
