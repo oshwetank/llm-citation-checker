@@ -180,7 +180,11 @@ export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, op
     answerText,
     answerChars: answerText.length,
     sources,
-    fanout: { search, internal: [] },
+    fanout: {
+      search: search.map((q) => (typeof q === "string" ? { query: q, search_type: "search" } : q)),
+      shopping: [],
+      image: [],
+    },
     brandMentions,
     entities,
     platformSpecific: {

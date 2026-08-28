@@ -135,7 +135,11 @@ export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, op
     answerText: answer,
     answerChars: answer.length,
     sources,
-    fanout: { search: searches, internal: [] },
+    fanout: {
+      search: searches.map((q) => (typeof q === "string" ? { query: q, search_type: "search" } : q)),
+      shopping: [],
+      image: [],
+    },
     brandMentions,
     entities,
     platformSpecific: {

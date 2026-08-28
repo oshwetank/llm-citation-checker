@@ -275,8 +275,9 @@ chrome.storage.local.get(ONBOARD_KEY, (r) => { campaignOnboardDismissed = !!r[ON
 // captures (raw data is kept, nothing is discarded), just not useful to browse,
 // so the list hides them by default with a toggle to reveal.
 function hasSignal(r) {
-  const fan = (r.fanout.search.length || 0) + (r.fanout.shopping.length || 0) + (r.fanout.image.length || 0);
-  return !!(r.userPrompt || fan || r.sources.length || r.products.length || (r.places && r.places.length) || r.answerChars);
+  if (!r) return false;
+  const fan = ((r.fanout?.search?.length || 0) + (r.fanout?.shopping?.length || 0) + (r.fanout?.image?.length || 0));
+  return !!(r.userPrompt || fan || (r.sources && r.sources.length) || (r.products && r.products.length) || (r.places && r.places.length) || r.answerChars);
 }
 
 // Which capture Analyze opens by default: the newest one that actually HAS
@@ -1219,7 +1220,7 @@ function renderAnalyze() {
   }
 
   const fanCount =
-    rec.fanout.search.length + rec.fanout.shopping.length + rec.fanout.image.length;
+    ((rec.fanout?.search?.length || 0) + (rec.fanout?.shopping?.length || 0) + (rec.fanout?.image?.length || 0));
   const newsCount = rec.sources.filter((s) => s.type === "news").length;
   const citedN = rec.sources.filter((s) => s.outcome === "cited").length;
   const fetchedN = rec.sources.filter((s) => s.outcome === "fetched").length;
@@ -1861,12 +1862,13 @@ function renderAnalyze() {
     }
 
     let qIdx = 1;
-    for (const [bucket, arr] of Object.entries(rec.fanout)) {
-      if (!arr.length) continue;
+    for (const [bucket, arr] of Object.entries(rec.fanout || {})) {
+      if (!arr || !arr.length) continue;
       fc.append(el("div", { className: "muted", style: "margin-top:6px;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;" }, bucket));
       const chips = el("div", { className: "chips" });
       arr.forEach((q) => {
-        chips.append(el("span", { className: "chip" }, `${qIdx++}. ${q.query}`));
+        const qStr = typeof q === "string" ? q : q?.query || "";
+        if (qStr) chips.append(el("span", { className: "chip" }, `${qIdx++}. ${qStr}`));
       });
       fc.append(chips);
     }
@@ -2306,9 +2308,9 @@ function renderDrilldown(recs) {
       r.platform || "",
       r.model || "",
       when(r.capturedAt),
-      (r.fanout.search.length + r.fanout.shopping.length + r.fanout.image.length),
-      r.sources.length,
-      r.sources.filter((s) => s.outcome === "cited").length,
+      ((r.fanout?.search?.length || 0) + (r.fanout?.shopping?.length || 0) + (r.fanout?.image?.length || 0)),
+      (r.sources || []).length,
+      (r.sources || []).filter((s) => s.outcome === "cited").length,
       (r.brandMentions || []).length,
     ]);
     tableWrap(rows, ["Prompt", "Platform", "Model", "Captured", "Fan-out", "Sources", "Cited", "Brands"], "captures");
@@ -2318,7 +2320,10 @@ function renderDrilldown(recs) {
     const rows = [];
     recs.forEach((r) => {
       ["search", "shopping", "image"].forEach((bucket) => {
-        (r.fanout[bucket] || []).forEach((q) => rows.push([q.query, bucket, r.userPrompt || "", r.platform || "", when(r.capturedAt)]));
+        (r.fanout?.[bucket] || []).forEach((q) => {
+          const qStr = typeof q === "string" ? q : q?.query || "";
+          rows.push([qStr, bucket, r.userPrompt || "", r.platform || "", when(r.capturedAt)]);
+        });
       });
     });
     tableWrap(rows, ["Fan-out query", "Type", "Original prompt", "Platform", "Captured"], "fanout-queries");
@@ -2718,7 +2723,7 @@ function renderDashboardImpl() {
     const renderClusterContent = () => {
       card.textContent = "";
       const activeRecord = cluster[activeIdx];
-      const fan = activeRecord.fanout.search.length + activeRecord.fanout.shopping.length + activeRecord.fanout.image.length;
+      const fan = ((activeRecord.fanout?.search?.length || 0) + (activeRecord.fanout?.shopping?.length || 0) + (activeRecord.fanout?.image?.length || 0));
       
       const rawB = el("button", { title: "Download raw payload" }, "Raw");
       rawB.onclick = (e) => { e.stopPropagation(); downloadRaw(activeRecord.captureId, (activeRecord.userPrompt || "capture").slice(0, 24).replace(/\W+/g, "_")); };
@@ -2926,7 +2931,7 @@ function downloadDetailedFormat(records, format) {
       const timeStr = d.toLocaleTimeString("en-GB");
       const cited = r.sources.filter(s => s.outcome === "cited").map(s => s.domain).join("; ");
       const fetched = r.sources.filter(s => s.outcome === "fetched" || s.outcome === "news").map(s => s.domain).join("; ");
-      const fan = [...(r.fanout.search||[]), ...(r.fanout.shopping||[]), ...(r.fanout.image||[])].map(f => f.query).join(" | ");
+      const fan = [...(r.fanout?.search||[]), ...(r.fanout?.shopping||[]), ...(r.fanout?.image||[])].map(f => typeof f === "string" ? f : f?.query || "").filter(Boolean).join(" | ");
       const row = [i + 1, dateStr, timeStr, r.platform || "chatgpt", `"${(r.userPrompt || "").replace(/"/g, '""')}"`, r.searched ? "Yes" : "No", `"${cited}"`, r.sources.filter(s => s.outcome === "cited").length, `"${fetched}"`, r.sources.filter(s => s.outcome === "fetched" || s.outcome === "news").length, r.sources.length, `"${fan.replace(/"/g, '""')}"`];
       output += row.join(",") + "\n";
     });
@@ -3116,7 +3121,7 @@ function downloadDetailedFormat(records, format) {
     const timeStr = d.toLocaleTimeString("en-GB");
     const cited = r.sources.filter(s => s.outcome === "cited").map(s => s.domain).join("; ");
     const fetched = r.sources.filter(s => s.outcome === "fetched" || s.outcome === "news").map(s => s.domain).join("; ");
-    const fan = [...(r.fanout.search||[]), ...(r.fanout.shopping||[]), ...(r.fanout.image||[])].map(f => f.query).join(" | ");
+    const fan = [...(r.fanout?.search||[]), ...(r.fanout?.shopping||[]), ...(r.fanout?.image||[])].map(f => typeof f === "string" ? f : f?.query || "").filter(Boolean).join(" | ");
     
     xml += `   <Row>
     <Cell><Data ss:Type="Number">${i + 1}</Data></Cell>
@@ -3336,7 +3341,7 @@ async function downloadRaw(captureId, label) {
 function toCsv(records) {
   const rows = [["capturedAt", "platform", "model", "prompt", "searched", "fanoutCount", "sourceCount"]];
   records.forEach((r) => {
-    const fan = r.fanout.search.length + r.fanout.shopping.length + r.fanout.image.length;
+    const fan = ((r.fanout?.search?.length || 0) + (r.fanout?.shopping?.length || 0) + (r.fanout?.image?.length || 0));
     rows.push([
       new Date(r.capturedAt).toISOString(), r.platform, r.model || "",
       r.userPrompt || "", r.searched, fan, r.sources.length,
@@ -5492,8 +5497,8 @@ $("#exportExcel")?.addEventListener("click", () => {
   currentFilteredRecs.forEach(r => {
     const bg = platformColors[r.platform] || "#ffffff";
     const srcText = r.sources.map(s => `[${s.outcome}] ${s.domain}`).join(", ");
-    const fan = [...r.fanout.search, ...r.fanout.shopping, ...r.fanout.image];
-    const fanText = fan.map(f => f.query).join(" | ");
+    const fan = [...(r.fanout?.search || []), ...(r.fanout?.shopping || []), ...(r.fanout?.image || [])];
+    const fanText = fan.map((f) => (typeof f === "string" ? f : f?.query || "")).filter(Boolean).join(" | ");
     
     html += `
       <tr style="background-color: ${bg};">

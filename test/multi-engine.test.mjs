@@ -158,7 +158,7 @@ console.log("\n--- Anthropic Claude Adapter ---");
   check("userPrompt extracted", rec.userPrompt.includes("enterprise cloud market"));
   check("answerText normalized from text_delta", rec.answerText.includes("Amazon AWS"));
   check("thinking trace extracted from thinking_delta", Boolean(rec.platformSpecific?.thinkingTrace && rec.platformSpecific.thinkingTrace.includes("cloud providers")));
-  check("tool_use search query extracted into fanout", rec.fanout.search.includes("cloud market share Q1 2026"));
+  check("tool_use search query extracted into fanout", rec.fanout.search.some((s) => (s.query || s) === "cloud market share Q1 2026"));
   check("tool_result sources extracted", rec.sources.some((s) => s.domain === "synergyrg.com"));
   check("brands detected in Claude answer", rec.brandMentions.some((b) => b.brand.toLowerCase() === "amazon" || b.brand.toLowerCase() === "microsoft"));
 }

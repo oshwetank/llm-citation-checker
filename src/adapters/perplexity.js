@@ -122,7 +122,7 @@ function extractFanout(nodes) {
   const pushQ = (q) => {
     if (typeof q === "string" && q.trim().length > 2 && !seen.has(q.trim())) {
       seen.add(q.trim());
-      search.push(q.trim());
+      search.push({ query: q.trim(), search_type: "search" });
     }
   };
   for (const n of nodes) {
@@ -135,7 +135,7 @@ function extractFanout(nodes) {
       });
     }
   }
-  return { search, internal: [] };
+  return { search, shopping: [], image: [] };
 }
 
 export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, options = {}) {
