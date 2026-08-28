@@ -137,29 +137,43 @@ export const LEG_START_STAGGER_MS = 2500;
 
 /* Split a prompt list into `concurrency` contiguous shards, one per tab.
  *
- * Contiguous shards keep related prompts (e.g. from an import batch that
- * had all the Brand A questions together) in the same tab's history rather
- * than round-robining them, so an engine with cross-turn context sees a
- * slightly more natural progression.
+ * Contiguous rather than round-robin (leg 0 gets prompts[0..k), leg 1 gets
+ * prompts[k..n)) on purpose: it keeps "prompt 340 of 1000" meaning the same
+ * thing regardless of which tab is handling it, and makes reconciliation
+ * after a restart a matter of "how many of THIS shard completed" rather than
+ * untangling an interleaved order.
+ *
+ * The front legs get the extra prompt(s) when the count doesn't divide
+ * evenly (7 prompts / 2 legs -> 4, 3), so no leg is ever silently starved.
+ * `startOffset` is carried on each shard because campaign runs need to map a
+ * leg-local index back to the ORIGINAL prompt list — that is what lines a
+ * capture up with the right tracked prompt's provenance (profile/tags), and
+ * getting it wrong silently mis-attributes brand-mention data rather than
+ * failing loudly.
+ *
+ * A shard can be empty (more legs requested than prompts exist); callers are
+ * expected to skip creating a tab for an empty shard rather than opening one
+ * with nothing to do.
  */
 export function shardPrompts(prompts, concurrency = CONCURRENT_TABS_PER_ENGINE) {
-  const n = Math.max(1, Math.min(concurrency, (prompts || []).length || 1));
   const list = prompts || [];
-  const legs = [];
+  const n = Math.max(1, Math.floor(concurrency) || 1);
   const base = Math.floor(list.length / n);
-  const rem = list.length % n;
-  let cursor = 0;
+  const extra = list.length % n;
+  const legs = [];
+  let offset = 0;
   for (let i = 0; i < n; i++) {
-    const take = base + (i < rem ? 1 : 0);
+    const size = base + (i < extra ? 1 : 0);
     legs.push({
+      startOffset: offset,
       legIndex: i,
-      prompts: list.slice(cursor, cursor + take),
+      prompts: list.slice(offset, offset + size),
       idx: 0,
       tabId: null,
       token: null,
       turnCount: 0,
     });
-    cursor += take;
+    offset += size;
   }
   return legs;
 }

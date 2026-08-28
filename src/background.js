@@ -1357,12 +1357,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: !!matched });
           break;
         }
-            syncGeoRun(undefined, `cooldown: ${matched} (${formatCooldown(cooldownMs)})`);
-            notifyRateLimited(`${matched}: ${p.cooldownReason} (Auto-resuming in ${formatCooldown(cooldownMs)})`);
-          }
-          sendResponse({ ok: !!matched });
-          break;
-        }
 
         // The content script tried to type and submit this turn's prompt and
         // couldn't (composer never mounted, or the send control never accepted
