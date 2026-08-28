@@ -62,6 +62,104 @@
   --red-border: #fca5a5;
 }
 
+[data-theme="dark"] {
+  --bg: #090d16;
+  --bg-subtle: rgba(15, 23, 42, 0.75);
+  --card-bg: linear-gradient(160deg, rgba(30, 41, 59, 0.72) 0%, rgba(15, 23, 42, 0.65) 100%);
+  --card-hover: linear-gradient(160deg, rgba(51, 65, 85, 0.85) 0%, rgba(30, 41, 59, 0.78) 100%);
+  --border: rgba(148, 163, 184, 0.18);
+  --border-hover: rgba(56, 189, 248, 0.45);
+  --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  --glass-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.35), 0 2px 6px -1px rgba(0, 0, 0, 0.2), var(--glass-highlight);
+  --glass-shadow-hover: 0 12px 32px -6px rgba(0, 0, 0, 0.5), 0 4px 12px -2px rgba(56, 189, 248, 0.2), var(--glass-highlight);
+
+  --fg-primary: #f1f5f9;
+  --fg-secondary: #cbd5e1;
+  --fg-muted: #94a3b8;
+
+  --accent: #38bdf8;
+  --accent-hover: #0ea5e9;
+  --accent-fg: #0f172a;
+  --accent-subtle: rgba(56, 189, 248, 0.14);
+  --accent-gradient: linear-gradient(135deg, #38bdf8 0%, #0284c7 100%);
+
+  --green-bg: rgba(6, 78, 59, 0.4);
+  --green-fg: #34d399;
+  --green-border: #059669;
+
+  --amber-bg: rgba(120, 53, 15, 0.4);
+  --amber-fg: #fbbf24;
+  --amber-border: #d97706;
+
+  --indigo-bg: rgba(49, 46, 129, 0.4);
+  --indigo-fg: #a5b4fc;
+  --indigo-border: #6366f1;
+
+  --blue-bg: rgba(30, 58, 138, 0.4);
+  --blue-fg: #60a5fa;
+  --blue-border: #3b82f6;
+
+  --red-bg: rgba(127, 29, 29, 0.4);
+  --red-fg: #f87171;
+  --red-border: #dc2626;
+}
+
+[data-theme="dark"] html,
+[data-theme="dark"] body {
+  background: radial-gradient(at 8% 0%, rgba(30, 58, 138, 0.45) 0px, transparent 45%),
+              radial-gradient(at 100% 4%, rgba(6, 78, 59, 0.35) 0px, transparent 42%),
+              radial-gradient(at 92% 92%, rgba(120, 53, 15, 0.35) 0px, transparent 45%),
+              radial-gradient(at 0% 100%, rgba(76, 29, 149, 0.4) 0px, transparent 45%),
+              #080c14;
+}
+
+/* Claim / Citation Interactive Highlighting */
+.claim-span {
+  cursor: pointer;
+  border-bottom: 1.5px dashed var(--accent);
+  padding: 1px 2px;
+  border-radius: 3px;
+  transition: all 0.2s ease;
+}
+.claim-span:hover, .claim-span.active {
+  background: var(--accent-subtle);
+  border-bottom-style: solid;
+}
+.source-card-highlight {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px var(--accent-subtle), var(--glass-shadow-hover) !important;
+  animation: pulseCard 1s ease-in-out;
+}
+@keyframes pulseCard {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.015); }
+}
+
+/* Rate-Limit Cooldown Banner */
+.cooldown-banner {
+  background: var(--amber-bg);
+  border: 1px solid var(--amber-border);
+  color: var(--amber-fg);
+  border-radius: 12px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-weight: 500;
+  animation: panelFadeIn 0.25s ease;
+}
+.cooldown-badge {
+  font-family: monospace;
+  font-size: 13px;
+  font-weight: 700;
+  background: rgba(0, 0, 0, 0.15);
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+
 * {
   box-sizing: border-box;
 }
@@ -88,16 +186,8 @@ html, body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Chrome Extension Popup Fixed Dimensions with Trimmed Outer Margin
- *
- * The fixed size and the 8px inset belong to <html> ONLY. Applying both to
- * <html> and <body> made body 540px wide inside html's 524px content box
- * (540 minus html's own 8px padding either side) and doubled the inset, which
- * pushed the document's scrollWidth to 548 — a real 8px horizontal scroll in
- * the popup at its own declared minimum width. Body now fills html's content
- * box instead of re-declaring the same fixed width.
- */
-html.popup, html:not(.tab) {
+/* Chrome Extension Popup Fixed Dimensions vs Fluid Full-Tab Layout */
+html.popup {
   width: 540px !important;
   min-width: 540px !important;
   height: 600px !important;
@@ -106,13 +196,34 @@ html.popup, html:not(.tab) {
   overflow: hidden !important;
   box-sizing: border-box !important;
 }
-body.popup, body:not(.tab) {
+body.popup {
   width: 100% !important;
   height: 100% !important;
   min-width: 0 !important;
   padding: 0 !important;
   margin: 0 !important;
   overflow: hidden !important;
+  box-sizing: border-box !important;
+}
+
+html.tab, html:not(.popup) {
+  width: 100% !important;
+  min-width: 100% !important;
+  height: auto !important;
+  min-height: 100vh !important;
+  padding: 0 !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  box-sizing: border-box !important;
+}
+body.tab, body:not(.popup) {
+  width: 100% !important;
+  min-width: 100% !important;
+  min-height: 100vh !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
   box-sizing: border-box !important;
 }
 
@@ -148,7 +259,7 @@ body.popup, body:not(.tab) {
   font-size: 12px;
   background: var(--bg-subtle);
   border: 1px dashed var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
 }
 .ft-actions {
   display: flex;
@@ -166,30 +277,24 @@ body.popup, body:not(.tab) {
   flex-direction: column;
 }
 
-body.popup .app-wrapper, html:not(.tab) .app-wrapper {
+body.popup .app-wrapper {
   width: 100% !important;
   max-width: 524px !important;
   height: 584px !important;
   min-height: 584px !important;
   border-radius: 14px !important;
-  border: 1px solid #94a3b8 !important;
-  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12) !important;
-  overflow: hidden !important;
-  /* Was rgba(255,255,255,0.85) + its own backdrop-filter. That painted a nearly
-     opaque white sheet over the whole popup, so the colourful page backdrop was
-     gone before any card could refract it, and every nested backdrop-filter
-     inside was just blurring flat white. Now it's a light tint only — the cards
-     do the glass work against real colour. */
-  background: linear-gradient(165deg, rgba(255, 255, 255, 0.42) 0%, rgba(255, 255, 255, 0.24) 100%);
   border: 1px solid rgba(255, 255, 255, 0.6) !important;
   box-shadow: 0 10px 34px rgba(15, 23, 42, 0.14), var(--glass-highlight) !important;
+  overflow: hidden !important;
+  background: linear-gradient(165deg, rgba(255, 255, 255, 0.42) 0%, rgba(255, 255, 255, 0.24) 100%);
 }
 
-body.tab .app-wrapper {
+body.tab .app-wrapper, body:not(.popup) .app-wrapper {
   width: 100% !important;
-  max-width: 1280px !important;
+  max-width: min(1720px, 96vw) !important;
   min-height: 100vh !important;
-  padding: 0 24px;
+  margin: 0 auto !important;
+  padding: 0 clamp(16px, 3vw, 40px) 60px clamp(16px, 3vw, 40px) !important;
 }
 
 /* Header Navbar */
@@ -204,12 +309,19 @@ body.tab .app-wrapper {
   box-shadow: 0 4px 12px rgba(15, 23, 42, 0.03);
 }
 
-body.tab .app-header {
-  padding: 16px 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
+body.tab .app-header, body:not(.popup) .app-header {
+  padding: 12px 24px !important;
+  margin: 12px 0 24px 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 16px !important;
+  background: rgba(255, 255, 255, 0.78) !important;
+  backdrop-filter: var(--glass-blur) !important;
+  -webkit-backdrop-filter: var(--glass-blur) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 16px !important;
+  box-shadow: var(--glass-shadow) !important;
 }
 
 body.popup .app-header {
@@ -492,8 +604,8 @@ body.tab .app-content {
 @media (min-width: 900px) {
   body.tab .dashboard-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 340px;
-    gap: 20px;
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
+    gap: 24px;
     align-items: start;
   }
 }
@@ -536,9 +648,9 @@ body.tab .app-content {
     /* Two explicit rows: brand mentions occupies the top of the wide right
        column, the rest of the main column sits beneath it, and the sidebar
        spans both rows down the left. */
-    grid-template-columns: 360px minmax(0, 1fr);
+    grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
     grid-template-rows: auto auto;
-    gap: 20px;
+    gap: 24px;
     align-items: start;
   }
 
@@ -568,9 +680,10 @@ body.tab .app-content {
 /* Stat Grid & KPI Cards */
 .statgrid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
   gap: 10px;
 }
+
 
 @media (min-width: 640px) {
   body.tab .statgrid {
@@ -3465,6 +3578,20 @@ body.popup .pp-chip { font-size: 9.5px; }
   font-size: 10.5px;
   line-height: 1.4;
   color: #cbd5e1;
+}
+.app-tooltip .tip-how-to-use {
+  margin-top: 6px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(16, 185, 129, 0.14);
+  border-left: 3px solid #10b981;
+  color: #a7f3d0;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.app-tooltip .tip-how-to-use-badge {
+  font-weight: 700;
+  color: #34d399;
 }
 .app-tooltip .tip-note {
   margin-top: 6px;

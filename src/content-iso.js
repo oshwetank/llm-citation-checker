@@ -104,6 +104,27 @@
       userTurn: "user-query, .user-query-bubble-with-background, [data-test-id='user-query']",
       turns: "user-query, model-response, message-content",
     },
+    perplexity: {
+      composer: ['textarea[placeholder*="Ask" i]', 'textarea[placeholder*="anything" i]', "textarea", 'div[contenteditable="true"]'],
+      send: ['button[aria-label*="Submit" i]', 'button[aria-label*="Send" i]', 'button[type="submit"]', "button.bg-super"],
+      streaming: ['button[aria-label*="Stop" i]', ".animate-pulse"],
+      userTurn: '[data-testid="user-query"], .font-display, h1',
+      turns: ".prose, [data-testid='thread-message']",
+    },
+    grok: {
+      composer: ['textarea[placeholder*="Ask" i]', 'div[contenteditable="true"]', "textarea"],
+      send: ['button[aria-label*="Send" i]', 'button[aria-label*="Grok" i]', 'button[type="submit"]'],
+      streaming: ['button[aria-label*="Stop" i]'],
+      userTurn: '.user-message, [data-message-author="user"]',
+      turns: ".message-row, [data-message-author]",
+    },
+    claude: {
+      composer: ['div[contenteditable="true"]', "div.ProseMirror", "textarea"],
+      send: ['button[aria-label*="Send" i]', 'button[aria-label*="Send Message" i]'],
+      streaming: ['button[aria-label*="Stop" i]'],
+      userTurn: '[data-testid="user-message"], .font-user-message',
+      turns: '[data-testid="chat-message"], .font-claude-message',
+    },
   };
 
   const pick = (list) => {
@@ -115,7 +136,14 @@
     return null;
   };
 
-  const getPlatform = () => (location.hostname.includes("gemini") ? "gemini" : "chatgpt");
+  const getPlatform = () => {
+    const h = location.hostname;
+    if (h.includes("gemini")) return "gemini";
+    if (h.includes("perplexity")) return "perplexity";
+    if (h.includes("grok") || (h.includes("x.com") && location.pathname.startsWith("/i/grok"))) return "grok";
+    if (h.includes("claude")) return "claude";
+    return "chatgpt";
+  };
 
   (function loaderAutoSubmit() {
     const params = new URLSearchParams(location.search);
@@ -444,8 +472,25 @@
       // none of them, and is reported rather than left to the 90s watchdog.
       const CONFIRM_TICKS = 25;   // ~10s
 
+      const dismissLimitModals = () => {
+        try {
+          const modals = document.querySelectorAll('[role="dialog"], [data-testid="error-modal"], .modal, [data-testid="modal-container"]');
+          for (const m of modals) {
+            const btns = m.querySelectorAll("button");
+            for (const b of btns) {
+              const txt = (b.innerText || b.textContent || "").toLowerCase().trim();
+              if (/^(ok|dismiss|got it|close|stay on free|continue|understand)$/i.test(txt) || b.getAttribute("aria-label") === "Close") {
+                b.click();
+                break;
+              }
+            }
+          }
+        } catch (_) { /* ignore */ }
+      };
+
       const reportLimit = (detail) => {
         clearInterval(timer);
+        dismissLimitModals();
         dropQ();
         try {
           chrome.runtime.sendMessage({ type: "loader-rate-limited", token, detail },

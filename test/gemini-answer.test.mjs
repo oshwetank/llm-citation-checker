@@ -105,5 +105,37 @@ console.log("\nthe prompt is stored as typed, not as wire-escaped text");
     JSON.stringify(rec.userPrompt));
 }
 
+console.log("\nmodern Gemini grounding claims & Chrome text-fragment decoding");
+{
+  import("node:fs").then(async ({ readFileSync }) => {
+    try {
+      const raw = readFileSync("test/fixtures/gemini-streamgenerate.txt", "utf8");
+      const rec = await adapt({
+        captureId: "t5",
+        raw,
+        capturedAt: Date.now(),
+        pageUrl: "https://gemini.google.com/app"
+      });
+
+      check("sources extracted from StreamGenerate fixture", rec.sources.length > 0);
+      const textFragSource = rec.sources.find(s => s.platformSpecific && s.platformSpecific.exactPassage);
+      check("exactPassage decoded from #:~:text= anchor", Boolean(textFragSource && textFragSource.platformSpecific.exactPassage.length > 5));
+
+      const claims = rec.platformSpecific && rec.platformSpecific.groundingClaims;
+      check("sentence grounding claims extracted into platformSpecific", Boolean(claims && claims.length > 0));
+      if (claims && claims.length) {
+        check("claim carries character offset tuple", Array.isArray(claims[0].offsets) && claims[0].offsets.length === 2);
+        check("claim links to citation url", Boolean(claims[0].url && claims[0].url.startsWith("http")));
+      }
+    } catch (e) {
+      check("failed to load fixture", false, e.message);
+    }
+  });
+}
+
+// Wait for any async fs promise
+await new Promise(r => setTimeout(r, 100));
+
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
 process.exit(failures ? 1 : 0);
+

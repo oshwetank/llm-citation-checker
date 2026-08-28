@@ -108,6 +108,46 @@ function parseStreamGenerate(raw) {
   return payloads;
 }
 
+// Extract Chrome Scroll-to-Text fragment anchors (#:~:text=...) embedded by Gemini
+function decodeTextFragment(url) {
+  if (!url || typeof url !== "string") return null;
+  const idx = url.indexOf("#:~:text=");
+  if (idx === -1) return null;
+  try {
+    const raw = url.slice(idx + 9).split("&")[0];
+    return decodeURIComponent(raw.replace(/\+/g, " "));
+  } catch (_) {
+    return null;
+  }
+}
+
+// Collect sentence-level and claim-level grounding spans (spp_ mapping) from StreamGenerate frames
+function collectGroundingClaims(payload) {
+  const claims = [];
+  walk({ payload }, (value) => {
+    if (!Array.isArray(value) || value.length < 3) return;
+    const first = value[0];
+    if (Array.isArray(first) && typeof first[0] === "string" && Array.isArray(first[3])) {
+      const claimText = first[0];
+      const offsets = first[3];
+      let url = null;
+      if (Array.isArray(value[2])) {
+        walk({ urls: value[2] }, (v) => {
+          if (!url && typeof v === "string" && isHttpUrl(v)) url = v;
+        });
+      }
+      if (claimText && Array.isArray(offsets) && offsets.length > 0) {
+        claims.push({
+          claim: claimText,
+          offsets: offsets[0],
+          url,
+        });
+      }
+    }
+  });
+  return claims;
+}
+
 // Collect citation-shaped inner arrays: [url, title, favicon?, snippet?, …, attribution?].
 function collectCitations(payload) {
   const byUrl = new Map();
@@ -116,13 +156,14 @@ function collectCitations(payload) {
     const url = value[0];
     const title = value[1];
     if (!isHttpUrl(url) || FAVICON_RE.test(url) || typeof title !== "string") return;
-    const snippet = typeof value[3] === "string" ? value[3].trim() : null;
+    const exact = decodeTextFragment(url);
+    const snippet = (typeof value[3] === "string" ? value[3].trim() : null) || exact || null;
     // attribution is a short source label somewhere after the snippet (e.g. "Cashkr")
     const attribution =
       (typeof value[6] === "string" && value[6]) ||
       value.find((v, i) => i > 3 && typeof v === "string" && v.length > 0 && v.length < 40 && !isHttpUrl(v)) ||
       null;
-    if (!byUrl.has(url)) byUrl.set(url, { url, title, snippet, attribution });
+    if (!byUrl.has(url)) byUrl.set(url, { url, title, snippet, attribution, exactPassage: exact });
   });
   return [...byUrl.values()];
 }
@@ -246,37 +287,30 @@ function collectPlaces(payload) {
   return records;
 }
 
-// Best-effort fan-out.
-//
-// This used to match on `typeof key === "string" && /quer/i.test(key)`, which
-// could never fire: a StreamGenerate frame is nested ARRAYS, so walk() hands it
-// ~31,700 numeric indices and about a dozen string keys, none of them named
-// anything. So the search list was always empty, which is the bulk of the
-// "searched but zero fan-out queries" finding in a 231-capture audit — a dead
-// code path, not drift.
-//
-// Inspecting real payloads (web, shopping and local responses) shows Gemini
-// genuinely does not publish the sub-queries it ran, the way ChatGPT's
-// metadata.search_model_queries does. The only q= values anywhere are image
-// thumbnail tokens and per-product Shopping links.
-//
-// A shape-based scan for "arrays of short query-like strings" was tried and
-// rejected: on a local/places response it confidently returned seventeen
-// "queries" that were actually opening hours ("Monday: Open 24 hours") and
-// Gemini's own suggestion chips ("Generate itinerary", "Plan a route"). There
-// is no shape that separates those from a real query, and inventing fan-out
-// data in a measurement tool is worse than reporting the gap — the same call
-// this project already makes for sentiment (see SENTIMENT_NOTE in lib/geo.js).
-//
-// So this reports none, and says so, until Google exposes the field.
-function extractFanout(_payload, diag) {
-  diag.notes.push(FANOUT_UNSUPPORTED_NOTE);
-  return { search: [], shopping: [], image: [] };
+// Best-effort fan-out extraction. In standard chat Gemini masks search sub-queries,
+// but in Flash Thinking / Deep Research mode reasoning blocks explicitly formulate search intents.
+function extractFanout(_payload, diag, reasoning) {
+  const search = [];
+  if (reasoning) {
+    const qMatches = reasoning.match(/(?:searching for|search(?:\s+query)?(?:\s+is)?:\s*|formulating search:\s*)["']([^"'\n]+)["']/gi);
+    if (qMatches) {
+      qMatches.forEach((m) => {
+        const cleaned = m.replace(/^(?:searching for|search(?:\s+query)?(?:\s+is)?:\s*|formulating search:\s*)["']|["']$/gi, "").trim();
+        if (cleaned.length > 3 && !search.some((s) => s.query.toLowerCase() === cleaned.toLowerCase())) {
+          search.push({ query: cleaned, round: 1 });
+        }
+      });
+    }
+  }
+
+  if (!search.length) {
+    diag.notes.push(FANOUT_UNSUPPORTED_NOTE);
+  }
+  return { search, shopping: [], image: [] };
 }
 
 export const FANOUT_UNSUPPORTED_NOTE =
-  "fanout: Gemini does not expose the search sub-queries it ran, so none are " +
-  "reported. This is a platform limitation, not a failed extraction.";
+  "fanout: Gemini masks search sub-queries in standard chat; recovered when Thinking mode exposes formulation.";
 
 export async function adapt(rawCapture, opts = {}) {
   const diag = { adapterVersion: ADAPTER_VERSION, usedFallback: false, notes: [] };
@@ -298,6 +332,7 @@ export async function adapt(rawCapture, opts = {}) {
   const cites = bestPayload ? collectCitations(bestPayload) : [];
   const products = bestPayload ? collectProducts(bestPayload) : [];
   const places = bestPayload ? collectPlaces(bestPayload) : [];
+  const groundingClaims = bestPayload ? collectGroundingClaims(bestPayload) : [];
 
   const sources = cites.map((c) =>
     makeSource({
@@ -307,11 +342,18 @@ export async function adapt(rawCapture, opts = {}) {
       snippet: c.snippet,
       outcome: "cited", // Gemini surfaces these in its Sources panel
       type: "citation",
-      platformSpecific: c.attribution ? { attribution: c.attribution } : {},
+      platformSpecific: {
+        ...(c.attribution ? { attribution: c.attribution } : {}),
+        ...(c.exactPassage ? { exactPassage: c.exactPassage } : {}),
+      },
     })
   );
 
-  const fanout = bestPayload ? extractFanout(bestPayload, diag) : { search: [], shopping: [], image: [] };
+  const { answer: heuristicAnswer, reasoning } = bestPayload
+    ? extractAnswerAndReasoning(bestPayload)
+    : { answer: "", reasoning: null };
+
+  const fanout = bestPayload ? extractFanout(bestPayload, diag, reasoning) : { search: [], shopping: [], image: [] };
   if (!sources.length && !products.length && !places.length) {
     diag.usedFallback = true;
     diag.notes.push("no citations, products, or places found — StreamGenerate shape may have drifted");
@@ -329,9 +371,6 @@ export async function adapt(rawCapture, opts = {}) {
   }
   model = model ? `Gemini ${model}` : "gemini";
 
-  const { answer: heuristicAnswer, reasoning } = bestPayload
-    ? extractAnswerAndReasoning(bestPayload)
-    : { answer: "", reasoning: null };
   // Prefer the structural slot; keep the shape scan as a fallback so a future
   // payload reshuffle degrades to the old behaviour instead of to nothing.
   const pathAnswer = extractAnswerFromFrames(payloads);
@@ -375,7 +414,11 @@ export async function adapt(rawCapture, opts = {}) {
     brandMentions,
     answerChars: answer.length,
     answerText: answer, // capped by makeRecord; the UI needs this for rank/aspect analysis
-    platformSpecific: reasoning ? { reasoning: reasoning.slice(0, 4000) } : {},
+    platformSpecific: {
+      ...(reasoning ? { reasoning: reasoning.slice(0, 4000) } : {}),
+      ...(groundingClaims.length ? { groundingClaims: groundingClaims.slice(0, 50) } : {}),
+    },
     _extraction: diag,
   });
 }
+

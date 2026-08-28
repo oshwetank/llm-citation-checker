@@ -49,6 +49,9 @@ console.log("\nevery entry has the same shape");
   const badNote = entries.filter((g) => g.note !== undefined
     && (typeof g.note !== "string" || !g.note.trim()));
   check("a note, where present, is real text", !badNote.length, badNote.map((g) => g.key).join(", "));
+
+  const badHowToUse = entries.filter((g) => !g.howToUse || typeof g.howToUse !== "string" || !g.howToUse.trim());
+  check("every term carries actionable howToUse guidance", !badHowToUse.length, badHowToUse.map((g) => g.key).join(", "));
 }
 
 console.log("\nthe reference list is grouped, because names legitimately repeat");

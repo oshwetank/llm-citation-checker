@@ -53,9 +53,9 @@ export const SENTIMENT_NOTE =
 export const ENGINES = [
   { id: "chatgpt", label: "ChatGPT", host: "chatgpt.com", available: true },
   { id: "gemini", label: "Gemini", host: "gemini.google.com", available: true },
-  { id: "perplexity", label: "Perplexity", host: "perplexity.ai", available: false, note: "adapter not built yet" },
-  { id: "claude", label: "Claude", host: "claude.ai", available: false, note: "adapter not built yet" },
-  { id: "grok", label: "Grok", host: "grok.com", available: false, note: "adapter not built yet" },
+  { id: "perplexity", label: "Perplexity", host: "perplexity.ai", available: true },
+  { id: "claude", label: "Claude", host: "claude.ai", available: true },
+  { id: "grok", label: "Grok", host: "grok.com", available: true },
 ];
 
 export const availableEngines = () => ENGINES.filter((e) => e.available);

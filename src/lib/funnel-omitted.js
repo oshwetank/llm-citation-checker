@@ -309,3 +309,115 @@ export function computeSearchFunnel(rec, { maxModelsPerBrand = 5 } = {}) {
   omittedBrands.sort((a, b) => b.sourceIdxs.length - a.sourceIdxs.length);
   return { omittedBrands, omittedModels };
 }
+
+/**
+ * Computes a full bidirectional Brand-to-URL and Brand-to-Domain presence/absence matrix.
+ * Tracks presence & omission for BOTH mentioned and unmentioned brands across sources and domains.
+ *
+ * @param {Object} rec - The capture record.
+ * @returns {{
+ *   brands: Array<{ brand: string, mentioned: boolean, supportedSourceIdxs: number[], missingSourceIdxs: number[], attributionRate: number }>,
+ *   sources: Array<{ sourceIdx: number, url: string, domain: string, title: string, presentBrands: string[], missingBrands: string[] }>,
+ *   domains: Array<{ domain: string, urlCount: number, sourceIdxs: number[], coveredBrands: string[], missingBrands: string[], coverageRate: number }>
+ * }}
+ */
+export function computeBrandMatrix(rec) {
+  const empty = { brands: [], sources: [], domains: [] };
+  if (!rec || !rec.sources || !rec.sources.length) return empty;
+
+  const vocab = buildBrandVocabulary(rec);
+  if (!vocab || !vocab.size) return empty;
+
+  const candidateBrands = [...vocab.values()].map((b) => canonicalBrand(b));
+  const uniqueCandidateBrands = [...new Set(candidateBrands)];
+
+  const mentionedNames = (rec.brandMentions || [])
+    .filter((b) => b.count > 0)
+    .map((b) => canonicalBrand(b.brand));
+  const isMentioned = (name) => mentionedNames.some((m) => sameBrand(m, name));
+
+  // 1. URL-Level Matrix
+  const sourceMatrix = rec.sources.map((s, idx) => {
+    const srcText = `${s.title || ""} ${s.snippet || ""}`;
+    const found = extractBrandsFromText(srcText, vocab).map((b) => canonicalBrand(b.brand));
+    const presentSet = new Set(found.map((f) => f.toLowerCase()));
+    const presentBrands = uniqueCandidateBrands.filter((b) => presentSet.has(b.toLowerCase()));
+    const missingBrands = uniqueCandidateBrands.filter((b) => !presentSet.has(b.toLowerCase()));
+
+    return {
+      sourceIdx: idx,
+      url: s.url || "",
+      domain: s.domain || (s.url ? (new URL(s.url).hostname.replace(/^www\./, "")) : "unknown"),
+      title: s.title || "",
+      presentBrands,
+      missingBrands,
+    };
+  });
+
+  // 2. Domain-Level Rollup
+  const domainMap = new Map();
+  sourceMatrix.forEach((sm) => {
+    const dKey = (sm.domain || "unknown").toLowerCase();
+    if (!domainMap.has(dKey)) {
+      domainMap.set(dKey, {
+        domain: sm.domain || "unknown",
+        urlCount: 0,
+        sourceIdxs: [],
+        presentBrandSet: new Set(),
+      });
+    }
+    const d = domainMap.get(dKey);
+    d.urlCount++;
+    d.sourceIdxs.push(sm.sourceIdx);
+    sm.presentBrands.forEach((b) => d.presentBrandSet.add(b));
+  });
+
+  const domainRollup = [...domainMap.values()].map((d) => {
+    const covered = uniqueCandidateBrands.filter((b) => d.presentBrandSet.has(b));
+    const missing = uniqueCandidateBrands.filter((b) => !d.presentBrandSet.has(b));
+    return {
+      domain: d.domain,
+      urlCount: d.urlCount,
+      sourceIdxs: d.sourceIdxs,
+      coveredBrands: covered,
+      missingBrands: missing,
+      coverageRate: uniqueCandidateBrands.length ? covered.length / uniqueCandidateBrands.length : 0,
+    };
+  });
+  domainRollup.sort((a, b) => b.urlCount - a.urlCount || b.coverageRate - a.coverageRate);
+
+  // 3. Brand-Centric Attribution Matrix (For BOTH Mentioned & Omitted)
+  const brandAttribution = uniqueCandidateBrands.map((brand) => {
+    const bLower = brand.toLowerCase();
+    const mentioned = isMentioned(brand);
+    const supportedSourceIdxs = [];
+    const missingSourceIdxs = [];
+
+    sourceMatrix.forEach((sm) => {
+      if (sm.presentBrands.some((pb) => pb.toLowerCase() === bLower)) {
+        supportedSourceIdxs.push(sm.sourceIdx);
+      } else {
+        missingSourceIdxs.push(sm.sourceIdx);
+      }
+    });
+
+    return {
+      brand,
+      mentioned,
+      supportedSourceIdxs,
+      missingSourceIdxs,
+      attributionRate: sourceMatrix.length ? supportedSourceIdxs.length / sourceMatrix.length : 0,
+    };
+  });
+  brandAttribution.sort((a, b) => {
+    if (a.mentioned !== b.mentioned) return a.mentioned ? -1 : 1;
+    return b.supportedSourceIdxs.length - a.supportedSourceIdxs.length;
+  });
+
+  return {
+    brands: brandAttribution,
+    sources: sourceMatrix,
+    domains: domainRollup,
+  };
+}
+

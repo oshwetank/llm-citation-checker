@@ -26,6 +26,7 @@ import {
   turnBudgetMs, medianOf, legEta, runEta,
   TURN_TIMEOUT_MS, TURN_TIMEOUT_MIN_MS, TURN_TIMEOUT_MAX_MS,
   INTER_PROMPT_MEAN_MS,
+  parseCooldownFromNotice, formatCooldown,
 } from "../src/lib/pacing.js";
 
 let failures = 0;
@@ -162,5 +163,18 @@ console.log("\nETA: two engines run concurrently, so the run ends with the SLOWE
   check("no platforms at all is unknown rather than zero", runEta({}) === null);
 }
 
+console.log("\nRate-limit cooldown parsing and formatting");
+{
+  check("parses minutes correctly", parseCooldownFromNotice("You have reached your limit. Please try again in 45 minutes.") === 45 * 60 * 1000);
+  check("parses hours correctly", parseCooldownFromNotice("Rate limit exceeded. Wait 2 hours.") === 2 * 3600 * 1000);
+  check("falls back to default 30 mins when time unspecified", parseCooldownFromNotice("Too many requests. Please try again later.") === 30 * 60 * 1000);
+  check("handles empty or null string gracefully", parseCooldownFromNotice(null) === 30 * 60 * 1000);
+
+  check("formats seconds", formatCooldown(45000) === "45s");
+  check("formats minutes and seconds", formatCooldown(150000) === "2m 30s");
+  check("formats hours and minutes", formatCooldown(5400000) === "1h 30m");
+}
+
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
 process.exit(failures ? 1 : 0);
+

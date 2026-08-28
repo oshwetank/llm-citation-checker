@@ -137,35 +137,88 @@ export const LEG_START_STAGGER_MS = 2500;
 
 /* Split a prompt list into `concurrency` contiguous shards, one per tab.
  *
- * Contiguous rather than round-robin (leg 0 gets prompts[0..k), leg 1 gets
- * prompts[k..n)) on purpose: it keeps "prompt 340 of 1000" meaning the same
- * thing regardless of which tab is handling it, and makes reconciliation
- * after a restart a matter of "how many of THIS shard completed" rather than
- * untangling an interleaved order.
- *
- * The front legs get the extra prompt(s) when the count doesn't divide
- * evenly (7 prompts / 2 legs -> 4, 3), so no leg is ever silently starved.
- * `startOffset` is carried on each shard because campaign runs need to map a
- * leg-local index back to the ORIGINAL prompt list — that is what lines a
- * capture up with the right tracked prompt's provenance (profile/tags), and
- * getting it wrong silently mis-attributes brand-mention data rather than
- * failing loudly.
- *
- * A shard can be empty (more legs requested than prompts exist); callers are
- * expected to skip creating a tab for an empty shard rather than opening one
- * with nothing to do.
+ * Contiguous shards keep related prompts (e.g. from an import batch that
+ * had all the Brand A questions together) in the same tab's history rather
+ * than round-robining them, so an engine with cross-turn context sees a
+ * slightly more natural progression.
  */
 export function shardPrompts(prompts, concurrency = CONCURRENT_TABS_PER_ENGINE) {
+  const n = Math.max(1, Math.min(concurrency, (prompts || []).length || 1));
   const list = prompts || [];
-  const n = Math.max(1, Math.floor(concurrency) || 1);
-  const base = Math.floor(list.length / n);
-  const extra = list.length % n;
   const legs = [];
-  let offset = 0;
+  const base = Math.floor(list.length / n);
+  const rem = list.length % n;
+  let cursor = 0;
   for (let i = 0; i < n; i++) {
-    const size = base + (i < extra ? 1 : 0);
-    legs.push({ startOffset: offset, prompts: list.slice(offset, offset + size) });
-    offset += size;
+    const take = base + (i < rem ? 1 : 0);
+    legs.push({
+      legIndex: i,
+      prompts: list.slice(cursor, cursor + take),
+      idx: 0,
+      tabId: null,
+      token: null,
+      turnCount: 0,
+    });
+    cursor += take;
   }
   return legs;
+}
+
+export const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 1800000; // 30 minutes default
+
+/**
+ * Extracts cooldown duration in milliseconds from a rate-limit notice string.
+ * Supports patterns: "try again in 45 minutes", "in 1 hour", "after 4:30 PM", etc.
+ */
+export function parseCooldownFromNotice(text, now = new Date()) {
+  if (!text || typeof text !== "string") return DEFAULT_RATE_LIMIT_COOLDOWN_MS;
+  const str = text.toLowerCase();
+
+  // Pattern: "in X minute(s)"
+  const minMatch = str.match(/(?:in|wait|after)\s+(\d+)\s*(?:m|min|minute)/i);
+  if (minMatch) {
+    const mins = parseInt(minMatch[1], 10);
+    if (mins > 0 && mins <= 360) return mins * 60 * 1000;
+  }
+
+  // Pattern: "in X hour(s)"
+  const hrMatch = str.match(/(?:in|wait|after)\s+(\d+(?:\.\d+)?)\s*(?:h|hr|hour)/i);
+  if (hrMatch) {
+    const hrs = parseFloat(hrMatch[1]);
+    if (hrs > 0 && hrs <= 12) return Math.round(hrs * 3600 * 1000);
+  }
+
+  // Pattern: "after 4:30 PM" / "after 16:30"
+  const timeMatch = str.match(/after\s+(\d{1,2}):(\d{2})(?:\s*(am|pm))?/i);
+  if (timeMatch) {
+    let hrs = parseInt(timeMatch[1], 10);
+    const mins = parseInt(timeMatch[2], 10);
+    const meridiem = timeMatch[3] ? timeMatch[3].toLowerCase() : null;
+    if (meridiem === "pm" && hrs < 12) hrs += 12;
+    if (meridiem === "am" && hrs === 12) hrs = 0;
+
+    const target = new Date(now);
+    target.setHours(hrs, mins, 0, 0);
+    if (target.getTime() <= now.getTime()) {
+      target.setDate(target.getDate() + 1); // next day
+    }
+    const diff = target.getTime() - now.getTime();
+    if (diff > 0 && diff < 86400000) return diff;
+  }
+
+  return DEFAULT_RATE_LIMIT_COOLDOWN_MS;
+}
+
+/**
+ * Format milliseconds into a human-readable countdown string e.g. "42m 15s" or "1h 12m"
+ */
+export function formatCooldown(ms) {
+  if (!ms || ms <= 0) return "0s";
+  const totalSec = Math.ceil(ms / 1000);
+  const hours = Math.floor(totalSec / 3600);
+  const minutes = Math.floor((totalSec % 3600) / 60);
+  const seconds = totalSec % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
 }

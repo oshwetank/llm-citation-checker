@@ -14,7 +14,13 @@
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",
-    "https://gemini.google.com/*"
+    "https://gemini.google.com/*",
+    "https://www.perplexity.ai/*",
+    "https://perplexity.ai/*",
+    "https://grok.com/*",
+    "https://x.com/i/grok/*",
+    "https://x.com/i/grok",
+    "https://claude.ai/*"
   ],
   "background": {
     "service_worker": "src/background.js",
@@ -25,7 +31,13 @@
       "matches": [
         "https://chatgpt.com/*",
         "https://chat.openai.com/*",
-        "https://gemini.google.com/*"
+        "https://gemini.google.com/*",
+        "https://www.perplexity.ai/*",
+        "https://perplexity.ai/*",
+        "https://grok.com/*",
+        "https://x.com/i/grok/*",
+        "https://x.com/i/grok",
+        "https://claude.ai/*"
       ],
       "js": [
         "src/content-main.js"
@@ -37,7 +49,13 @@
       "matches": [
         "https://chatgpt.com/*",
         "https://chat.openai.com/*",
-        "https://gemini.google.com/*"
+        "https://gemini.google.com/*",
+        "https://www.perplexity.ai/*",
+        "https://perplexity.ai/*",
+        "https://grok.com/*",
+        "https://x.com/i/grok/*",
+        "https://x.com/i/grok",
+        "https://claude.ai/*"
       ],
       "js": [
         "src/content-iso.js"

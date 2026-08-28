@@ -10,12 +10,19 @@ import {
   partitionRecords, allTags, runDue, runVolume, makeProfile,
 } from "../src/lib/geo.js";
 import { parseCsv, parseXlsx, rowsToPrompts } from "../src/lib/xlsxLite.js";
-import { computeSearchFunnel } from "../src/lib/funnel-omitted.js";
+import { computeSearchFunnel, computeBrandMatrix } from "../src/lib/funnel-omitted.js";
 import { GLOSSARY, glossaryGroups } from "../src/lib/glossary.js";
 import { normalizeMentions } from "../src/lib/mention-list.js";
 import { aggregateSources, aggregateSourcesFromCaptures } from "../src/lib/sources.js";
 import { analyzeFanout, FANOUT_BENCHMARK } from "../src/lib/fanout.js";
 import { sanitizeText, trimLabel } from "../src/lib/text-sanitize.js";
+import { formatCooldown } from "../src/lib/pacing.js";
+import {
+  computeVerbatimGrounding,
+  computeAuthoritySplit,
+  computeDomainExclusivity,
+  computeSearchIntentGraph,
+} from "../src/lib/grounding-score.js";
 
 // chrome.runtime.sendMessage throws SYNCHRONOUSLY — not via the callback —
 // when this page's connection to the extension is dead ("Extension context
@@ -37,6 +44,22 @@ const send = (msg) =>
       resolve({ ok: false, error: String(err && err.message ? err.message : err) });
     }
   });
+
+// Synchronize full-tab vs popup mode in DOM for responsive layout and zoom stability
+function syncViewportMode() {
+  const isFullTab = window.innerWidth >= 620 || (typeof window !== "undefined" && window.location && window.location.search.includes("tab"));
+  if (document.documentElement) {
+    document.documentElement.classList.toggle("tab", isFullTab);
+    document.documentElement.classList.toggle("popup", !isFullTab);
+  }
+  if (document.body) {
+    document.body.classList.toggle("tab", isFullTab);
+    document.body.classList.toggle("popup", !isFullTab);
+  }
+}
+syncViewportMode();
+window.addEventListener("resize", syncViewportMode);
+
 
 /* Report UI errors to the durable log in the service worker.
  *
@@ -341,11 +364,13 @@ function showTooltip(target) {
   const tip = ensureTipEl();
   tip.textContent = "";
   if (g) {
-    // Always the same four slots, in the same order. A definition that is
-    // sometimes a formula and sometimes a sentence teaches nothing.
+    // Always the same structured slots: term, what it measures, formula, howToUse guidance, and caveat note.
     tip.append(el("div", { className: "tip-term" }, g.term));
     tip.append(el("div", { className: "tip-what" }, g.what));
     if (g.formula) tip.append(el("div", { className: "tip-formula" }, g.formula));
+    if (g.howToUse) {
+      tip.append(el("div", { className: "tip-how-to-use" }, el("span", { className: "tip-how-to-use-badge" }, "💡 How to Use: "), g.howToUse));
+    }
     if (g.note) tip.append(el("div", { className: "tip-note" }, g.note));
   } else {
     tip.append(el("div", { className: "tip-what" }, text));
@@ -1430,27 +1455,28 @@ function renderAnalyze() {
   // only. It was moved out because every bug this section has had was a logic
   // bug unreachable by tests while it sat inside a DOM-building function.
   let funnelCard = null;
+  const brandMatrixData = computeBrandMatrix(rec);
   if (rec.sources && rec.sources.length) {
     const { omittedBrands: omittedBrandsList, omittedModels: omittedModelsList } =
       computeSearchFunnel(rec);
+    const mentionedMatrixBrands = (brandMatrixData.brands || []).filter((b) => b.mentioned);
+    const domainMatrixList = brandMatrixData.domains || [];
 
-    if (omittedBrandsList.length || omittedModelsList.length) {
+    if (omittedBrandsList.length || omittedModelsList.length || mentionedMatrixBrands.length || domainMatrixList.length) {
       const fc = el("div", { className: "card", id: "card-omitted-analysis" });
       fc.append(
         el("div", { className: "card-header" },
-          el("h3", {}, "Search Funnel"),
+          el("h3", {}, "Brand & Domain Citation Matrix"),
           el("span", { className: "tag fetched", style: "font-size:10px" },
-            `${omittedBrandsList.length} dropped`)
+            `${omittedBrandsList.length} dropped · ${mentionedMatrixBrands.length} mentioned · ${domainMatrixList.length} domains`)
         ),
         el("div", { className: "muted", style: "font-size:11px; margin-bottom:10px; line-height:1.45" },
-          "Names the engine retrieved in its search snippets but never wrote into the answer. " +
-          "Click a row to see the sources it came from.")
+          "Cross-references which cited sources and domains contain each brand vs where blind spots occur. " +
+          "Click any row to expand details.")
       );
 
-      // One expandable row per finding. Sources are revealed on click so the
-      // card stays scannable — this section was previously the single biggest
-      // source of vertical clutter on the page.
-      const rowFor = (label, badge, badgeClass, sourceIdxs, models, accent) => {
+      // Reusable expandable row builder
+      const rowFor = (label, badge, badgeClass, sourceIdxs, models, accent, subLabel, missingIdxs) => {
         const row = el("div", { className: "funnel-row" });
         const head = el("button", { className: "funnel-head", type: "button" });
         head.append(
@@ -1459,19 +1485,37 @@ function renderAnalyze() {
           el("span", { className: `tag ${badgeClass} funnel-badge` }, badge)
         );
         const body = el("div", { className: "funnel-body", style: "display:none" });
+        if (subLabel) {
+          body.append(el("div", { className: "muted small", style: "margin-bottom:4px" }, subLabel));
+        }
         if (models && models.length) {
           const mr = el("div", { className: "funnel-models" });
           mr.append(el("span", { className: "brand-label" }, "In snippets:"));
-          models.forEach((m) => mr.append(el("span", { className: "tag model-tag" }, m.model)));
+          models.forEach((m) => mr.append(el("span", { className: "tag model-tag" }, m.model || m)));
           body.append(mr);
         }
-        (sourceIdxs || []).forEach((idx) => {
-          const s = rec.sources[idx];
-          if (!s) return;
-          body.append(el("a", {
-            href: s.url, target: "_blank", rel: "noreferrer", className: "omit-source-link",
-          }, s.title || s.domain || s.url));
-        });
+        if (sourceIdxs && sourceIdxs.length) {
+          const secTitle = el("div", { className: "brand-label", style: "font-size:10.5px; margin-top:3px" }, "Supporting citations:");
+          body.append(secTitle);
+          sourceIdxs.forEach((idx) => {
+            const s = rec.sources[idx];
+            if (!s) return;
+            body.append(el("a", {
+              href: s.url, target: "_blank", rel: "noreferrer", className: "omit-source-link",
+            }, s.title || s.domain || s.url));
+          });
+        }
+        if (missingIdxs && missingIdxs.length) {
+          const secTitle = el("div", { className: "brand-label", style: "font-size:10.5px; margin-top:5px; color:var(--fg-muted)" }, "Citations omitting this brand:");
+          body.append(secTitle);
+          missingIdxs.slice(0, 5).forEach((idx) => {
+            const s = rec.sources[idx];
+            if (!s) return;
+            body.append(el("a", {
+              href: s.url, target: "_blank", rel: "noreferrer", className: "omit-source-link", style: "opacity:0.75"
+            }, `(Omitted) ${s.title || s.domain || s.url}`));
+          });
+        }
         head.onclick = () => {
           const open = body.style.display !== "none";
           body.style.display = open ? "none" : "flex";
@@ -1482,21 +1526,61 @@ function renderAnalyze() {
       };
 
       const list = el("div", { className: "funnel-list" });
-      omittedBrandsList.forEach((ob) => {
-        list.append(rowFor(
-          ob.brand,
-          `${ob.sourceIdxs.length} source${ob.sourceIdxs.length === 1 ? "" : "s"}`,
-          "danger", ob.sourceIdxs, ob.models, "#ef4444"
-        ));
-      });
-      omittedModelsList.forEach((om) => {
-        const idxs = [...new Set(om.omittedModels.flatMap((m) => [...m.sourceIdxs]))];
-        list.append(rowFor(
-          om.brand,
-          `${om.omittedModels.length} model${om.omittedModels.length === 1 ? "" : "s"} skipped`,
-          "fetched", idxs, om.omittedModels, "#f59e0b"
-        ));
-      });
+
+      // 1. Mentioned Brands Citation Support
+      if (mentionedMatrixBrands.length) {
+        list.append(el("div", { className: "card-subtitle", style: "font-size:11px; font-weight:700; margin:6px 0 2px 4px; color:var(--fg-secondary)" }, "MENTIONED BRANDS ATTRIBUTION"));
+        mentionedMatrixBrands.forEach((mb) => {
+          const pct = Math.round(mb.attributionRate * 100);
+          list.append(rowFor(
+            mb.brand,
+            `${mb.supportedSourceIdxs.length}/${rec.sources.length} sources (${pct}%)`,
+            "cited", mb.supportedSourceIdxs, null, "#10b981",
+            `Appears in ${mb.supportedSourceIdxs.length} of ${rec.sources.length} cited sources.`,
+            mb.missingSourceIdxs
+          ));
+        });
+      }
+
+      // 2. Omitted Brands & Skipped Models
+      if (omittedBrandsList.length || omittedModelsList.length) {
+        list.append(el("div", { className: "card-subtitle", style: "font-size:11px; font-weight:700; margin:10px 0 2px 4px; color:var(--fg-secondary)" }, "SEARCH FUNNEL DROPOUTS (RETRIEVED BUT NOT WRITTEN)"));
+        omittedBrandsList.forEach((ob) => {
+          list.append(rowFor(
+            ob.brand,
+            `${ob.sourceIdxs.length} source${ob.sourceIdxs.length === 1 ? "" : "s"}`,
+            "danger", ob.sourceIdxs, ob.models, "#ef4444",
+            "Found in search snippets but never written into the final response."
+          ));
+        });
+        omittedModelsList.forEach((om) => {
+          const idxs = [...new Set(om.omittedModels.flatMap((m) => [...m.sourceIdxs]))];
+          list.append(rowFor(
+            om.brand,
+            `${om.omittedModels.length} model${om.omittedModels.length === 1 ? "" : "s"} skipped`,
+            "fetched", idxs, om.omittedModels, "#f59e0b",
+            "Parent brand was mentioned, but these specific models from snippets were omitted."
+          ));
+        });
+      }
+
+      // 3. Domain Coverage & Blind Spots
+      if (domainMatrixList.length) {
+        list.append(el("div", { className: "card-subtitle", style: "font-size:11px; font-weight:700; margin:10px 0 2px 4px; color:var(--fg-secondary)" }, "DOMAIN-LEVEL BRAND COVERAGE & BLIND SPOTS"));
+        domainMatrixList.forEach((dm) => {
+          const pct = Math.round(dm.coverageRate * 100);
+          const subText = `Domain covers ${dm.coveredBrands.length} brands: ${dm.coveredBrands.join(", ") || "None"}. ` +
+            (dm.missingBrands.length ? `Blind spots: ${dm.missingBrands.join(", ")}.` : "Full brand coverage.");
+          list.append(rowFor(
+            dm.domain,
+            `${pct}% coverage (${dm.urlCount} URL${dm.urlCount === 1 ? "" : "s"})`,
+            dm.coverageRate >= 0.6 ? "cited" : "fetched", dm.sourceIdxs, null,
+            dm.coverageRate >= 0.6 ? "#3b82f6" : "#8b5cf6",
+            subText
+          ));
+        });
+      }
+
       fc.append(list);
       funnelCard = fc;
     }
@@ -1538,6 +1622,120 @@ function renderAnalyze() {
 
   // Column 2: Main Area (Fan-outs, Top Domains, Top URLs, Places, Products)
   const mainCol = el("div", { className: "analyze-main" });
+
+  // Extended Thinking & Reasoning Trace (Claude 3.7 / Gemini / Grok)
+  if (ps.thinkingTrace || (ps.thoughts && ps.thoughts.length)) {
+    const traceText = ps.thinkingTrace || (Array.isArray(ps.thoughts) ? ps.thoughts.join("\n\n") : String(ps.thoughts));
+    const thinkCard = el("div", { className: "card", id: "card-thinking" },
+      el("div", { className: "card-header" },
+        el("h3", {}, "Extended Thinking & Reasoning Trace"),
+        el("span", { className: "tag" }, "🧠 Model Internal Logic")
+      ),
+      el("div", { className: "muted small", style: "margin-bottom:8px" },
+        "Verbatim reasoning trace captured during response generation, showing synthesis steps and retrieval evaluation."),
+      el("pre", {
+        style: "white-space:pre-wrap; font-family:var(--font-mono, monospace); font-size:11.5px; line-height:1.4; max-height:220px; overflow-y:auto; background:var(--bg-subtle); padding:10px 12px; border-radius:8px; border:1px solid var(--border);"
+      }, traceText)
+    );
+    mainCol.append(thinkCard);
+  }
+
+  // Real-Time Social Citations (Grok X/Twitter Posts)
+  if (ps.socialCitations && ps.socialCitations.length) {
+    const socCard = el("div", { className: "card", id: "card-social-citations" },
+      el("div", { className: "card-header" },
+        el("h3", {}, "Social Media & X Citations"),
+        el("span", { className: "tag cited" }, `🐦 ${ps.socialCitations.length} Posts Cited`)
+      )
+    );
+    const socList = el("ul", { className: "src-list" });
+    ps.socialCitations.forEach((sc) => {
+      const li = el("li", { className: "src-item" });
+      const row = el("div", { className: "src-row", style: "display:flex; justify-content:space-between; align-items:center;" },
+        el("a", { href: sc.url, target: "_blank", rel: "noreferrer", className: "src-title" },
+          sc.author ? `@${sc.author}` : sc.url
+        ),
+        el("div", { style: "display:flex; gap:6px;" },
+          sc.likes != null ? el("span", { className: "tag" }, `❤️ ${sc.likes.toLocaleString()} likes`) : "",
+          sc.reposts != null ? el("span", { className: "tag" }, `🔁 ${sc.reposts.toLocaleString()} reposts`) : ""
+        )
+      );
+      li.append(row);
+      if (sc.snippet) li.append(el("div", { className: "src-snip muted small", style: "margin-top:4px" }, sc.snippet));
+      socList.append(li);
+    });
+    socCard.append(socList);
+    mainCol.append(socCard);
+  }
+
+  // Verbatim Grounding & Claim Integrity (2026 Grounding Innovation)
+  if (rec.sources && rec.sources.length && rec.answerText) {
+    const vg = computeVerbatimGrounding(rec.answerText, rec.sources);
+    const scoreColor = vg.score >= 70 ? "var(--accent-emerald, #10b981)" : vg.score >= 40 ? "#f59e0b" : "#ef4444";
+    const grdCard = el("div", { className: "card", id: "card-grounding-integrity" },
+      el("div", { className: "card-header" },
+        el("h3", { "data-term": "verbatimGrounding" }, "Verbatim Grounding & Claim Integrity"),
+        el("span", {
+          className: "tag cited",
+          style: `background:${scoreColor}18; color:${scoreColor}; border:1px solid ${scoreColor}40; font-weight:700;`,
+          "data-term": "verbatimGrounding",
+        }, `${vg.score}% Grounded`),
+        el("span", { className: "tag", "data-term": "hallucinationGap" }, `${vg.groundedClaims}/${vg.totalClaims} Claims Substantiated`)
+      ),
+      el("div", { className: "muted small", style: "margin-bottom:10px" },
+        `Verdict: `, el("strong", { style: `color:${scoreColor};` }, vg.verdict),
+        ` — Cross-referenced against ${rec.sources.length} cited source passages and scroll-to-text anchors.`)
+    );
+
+    if (vg.claimMatches && vg.claimMatches.length) {
+      const claimList = el("div", { style: "display:flex; flex-direction:column; gap:6px;" });
+      vg.claimMatches.slice(0, 4).forEach((cm) => {
+        const item = el("div", {
+          style: "background:var(--bg-subtle, rgba(255,255,255,0.03)); border:1px solid var(--border); border-radius:6px; padding:7px 10px; font-size:12px;",
+        },
+          el("div", { style: "display:flex; justify-content:space-between; margin-bottom:3px; gap:8px;" },
+            el("span", {
+              className: "tag",
+              style: `font-size:10px; padding:1px 5px; font-weight:600; background:${cm.isGrounded ? "rgba(16,185,129,0.12)" : "rgba(239,68,68,0.12)"}; color:${cm.isGrounded ? "#10b981" : "#ef4444"};`,
+            }, cm.isGrounded ? `✓ Grounded (${cm.confidence}%)` : `⚠ Unsubstantiated`),
+            cm.sourceDomain ? el("span", { className: "muted small" }, `via ${cm.sourceDomain}`) : ""
+          ),
+          el("div", { style: "line-height:1.4;" }, `“${cm.sentence}…”`)
+        );
+        claimList.append(item);
+      });
+      grdCard.append(claimList);
+    }
+    mainCol.append(grdCard);
+  }
+
+  // Social vs. Editorial Authority Split
+  if (rec.sources && rec.sources.length) {
+    const auth = computeAuthoritySplit(rec.sources, ps.socialCitations);
+    if (auth.socialCount > 0) {
+      const authCard = el("div", { className: "card", id: "card-authority-split" },
+        el("div", { className: "card-header" },
+          el("h3", { "data-term": "socialAuthoritySplit" }, "Social vs. Web Authority Split"),
+          el("span", { className: "tag" }, `${auth.socialCount} Social · ${auth.webCount} Editorial Web`)
+        ),
+        el("div", { className: "muted small", style: "margin-bottom:8px" },
+          "Measures what fraction of the model's grounding came from live peer social posts (e.g. X/Twitter) versus traditional web editorial articles."),
+        el("div", {
+          style: "display:flex; height:20px; border-radius:6px; overflow:hidden; border:1px solid var(--border); margin-bottom:8px;",
+        },
+          el("div", {
+            style: `width:${auth.socialPct}%; background:#1d9bf0; color:#fff; font-size:10px; font-weight:700; display:flex; align-items:center; justify-content:center;`,
+            title: `Social Authority (X/Twitter): ${auth.socialPct}%`,
+          }, auth.socialPct > 15 ? `🐦 ${auth.socialPct}% Social` : ""),
+          el("div", {
+            style: `width:${auth.webPct}%; background:#10b981; color:#fff; font-size:10px; font-weight:700; display:flex; align-items:center; justify-content:center;`,
+            title: `Editorial Web Authority: ${auth.webPct}%`,
+          }, auth.webPct > 15 ? `🌐 ${auth.webPct}% Web` : "")
+        )
+      );
+      mainCol.append(authCard);
+    }
+  }
 
   // Search Funnel goes first in the main column so it reads immediately after
   // Brand Mentions in BOTH layouts — the popup stacks brand slot then main,
@@ -1815,6 +2013,27 @@ function renderAnalyze() {
           meta.append(el("span", { className: "src-dot" }, "·"), el("span", {}, `src: ${rs}`));
         }
         li.append(meta);
+
+        const sm = brandMatrixData && brandMatrixData.sources && brandMatrixData.sources.find((src) => src.url === s.url || src.sourceIdx === rec.sources.indexOf(s));
+        if (sm && ((sm.presentBrands && sm.presentBrands.length) || (showSnippets && sm.missingBrands && sm.missingBrands.length))) {
+          const brandsRow = el("div", { className: "src-brand-row", style: "display:flex; flex-wrap:wrap; gap:3px; margin-top:4px" });
+          (sm.presentBrands || []).forEach((pb) => {
+            brandsRow.append(el("span", {
+              className: "tag",
+              style: "font-size:9.5px; padding:1px 5px; background:rgba(16, 185, 129, 0.12); color:#059669; border:1px solid rgba(16, 185, 129, 0.3); border-radius:4px"
+            }, `+ ${pb}`));
+          });
+          if (showSnippets && sm.missingBrands && sm.missingBrands.length) {
+            sm.missingBrands.slice(0, 4).forEach((mb) => {
+              brandsRow.append(el("span", {
+                className: "tag",
+                style: "font-size:9.5px; padding:1px 5px; background:rgba(100, 116, 139, 0.08); color:var(--fg-muted); border:1px solid rgba(100, 116, 139, 0.2); border-radius:4px"
+              }, `- ${mb}`));
+            });
+          }
+          li.append(brandsRow);
+        }
+
         
         ul.append(li);
       });
@@ -5212,6 +5431,31 @@ document.querySelectorAll("[data-tab]").forEach((btn) =>
 $("#openTab").addEventListener("click", () =>
   chrome.tabs.create({ url: chrome.runtime.getURL("ui/panel.html") })
 );
+
+function updateThemeIcon(theme) {
+  const btn = $("#themeToggle");
+  if (!btn) return;
+  const label = btn.querySelector(".theme-label");
+  if (label) label.textContent = theme === "dark" ? "Dark" : "Light";
+}
+
+function initTheme() {
+  try {
+    const current = localStorage.getItem("cito-theme") || "light";
+    document.documentElement.setAttribute("data-theme", current);
+    updateThemeIcon(current);
+  } catch (_) {}
+}
+
+$("#themeToggle")?.addEventListener("click", () => {
+  const current = document.documentElement.getAttribute("data-theme") || "light";
+  const next = current === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+  try { localStorage.setItem("cito-theme", next); } catch (_) {}
+  updateThemeIcon(next);
+});
+initTheme();
+
 $("#exportJson")?.addEventListener("click", () =>
   download(`citoskeleton-export-${Date.now()}.json`, JSON.stringify(currentFilteredRecs, null, 2), "application/json")
 );
@@ -5523,16 +5767,32 @@ function renderLoaderStatus(s) {
     const othersNote = others.length
       ? ` ${others.map(([p]) => ENGINES.find((e) => e.id === p)?.label || p).join(" and ")} ${others.length > 1 ? "are" : "is"} still running.`
       : "";
-    const note = el("div", { className: "loader-interrupted" },
-      el("b", {}, isLimit ? `⏸ ${who} paused — usage limit reached` : "⏸ Paused — interrupted"),
-      el("div", { className: "small" },
-        isLimit
-          ? `${who} reported a limit${it.detail ? `: “${it.detail}”` : ""}. `
-          : `${it.reason || "The run was interrupted"}. `,
-        `No prompts were lost — ${remaining} still queued. Press Resume to continue`,
-        isLimit ? ` once the limit clears.${othersNote}` : "; the tab will be reopened for you."),
-      it.at ? el("div", { className: "muted small" }, `Paused at ${new Date(it.at).toLocaleString()}`) : "");
-    box.append(note);
+
+    if (isLimit && it.autoResumeAt && it.autoResumeAt > Date.now()) {
+      const diff = it.autoResumeAt - Date.now();
+      const banner = el("div", { className: "cooldown-banner" },
+        el("div", {},
+          el("b", {}, `⏳ Auto-Cooldown: ${who} limit reached — `),
+          `Resuming in `,
+          el("span", { className: "cooldown-badge" }, formatCooldown(diff)),
+          el("div", { className: "small muted" }, `The runner will wake up and resume automatically.${othersNote}`)
+        ),
+        el("button", { className: "btn primary small", style: "flex-shrink:0" }, "Resume Now")
+      );
+      banner.querySelector("button").onclick = () => send({ type: "loader-resume" }).then(refresh);
+      box.append(banner);
+    } else {
+      const note = el("div", { className: "loader-interrupted" },
+        el("b", {}, isLimit ? `⏸ ${who} paused — usage limit reached` : "⏸ Paused — interrupted"),
+        el("div", { className: "small" },
+          isLimit
+            ? `${who} reported a limit${it.detail ? `: “${it.detail}”` : ""}. `
+            : `${it.reason || "The run was interrupted"}. `,
+          `No prompts were lost — ${remaining} still queued. Press Resume to continue`,
+          isLimit ? ` once the limit clears.${othersNote}` : "; the tab will be reopened for you."),
+        it.at ? el("div", { className: "muted small" }, `Paused at ${new Date(it.at).toLocaleString()}`) : "");
+      box.append(note);
+    }
   }
 
   const kpis = el("div", { className: "geo-kpis loader-kpis" });
@@ -5990,6 +6250,81 @@ function renderCompare() {
     });
     engCard.append(grid);
     out.append(engCard);
+  }
+
+  // --- Cross-LLM Search Fan-Out Intent Graph (2026 Innovation) ---
+  const intentBuckets = computeSearchIntentGraph(caps);
+  const activeIntents = Object.entries(intentBuckets).filter(([, b]) => b.count > 0);
+  if (activeIntents.length > 0) {
+    const intentCard = el("div", { className: "card", id: "card-cmp-intent-graph" },
+      el("div", { className: "card-header" },
+        el("h3", { "data-term": "fanoutIntent" }, "Cross-LLM Search Fan-Out Intent Graph"),
+        el("span", { className: "tag cited" }, `${activeIntents.length} Intent Angles Detected`)
+      ),
+      el("div", { className: "muted small", style: "margin-bottom:10px" },
+        "Visual breakdown of how different AI engines decompose this prompt into distinct commercial and technical search intents.")
+    );
+
+    const intentGrid = el("div", {
+      style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:10px;",
+    });
+
+    activeIntents.forEach(([key, b]) => {
+      const bCard = el("div", {
+        style: "background:var(--bg-subtle, rgba(255,255,255,0.03)); border:1px solid var(--border); border-radius:8px; padding:10px;",
+      },
+        el("div", { style: "display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;" },
+          el("strong", { style: "font-size:12px;" }, b.label),
+          el("span", { className: "tag", style: "font-size:10.5px;" }, `${b.count} queries`)
+        )
+      );
+      const qList = el("ul", { style: "list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:4px;" });
+      b.queries.slice(0, 4).forEach((q) => {
+        const item = el("li", {
+          style: "display:flex; align-items:center; gap:6px; font-size:11px; line-height:1.35; background:rgba(0,0,0,0.1); padding:4px 6px; border-radius:4px;",
+        },
+          engineIconEl(q.engine),
+          el("span", { style: "flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" }, q.query)
+        );
+        qList.append(item);
+      });
+      bCard.append(qList);
+      intentGrid.append(bCard);
+    });
+    intentCard.append(intentGrid);
+    out.append(intentCard);
+  }
+
+  // --- Cross-Engine Domain Exclusivity Heatmap ---
+  if (byEngine.size > 1) {
+    const exclData = computeDomainExclusivity(caps);
+    if (exclData.exclusiveDomains.length > 0) {
+      const exclCard = el("div", { className: "card", id: "card-cmp-domain-exclusivity" },
+        el("div", { className: "card-header" },
+          el("h3", { "data-term": "domainExclusivity" }, "Cross-Engine Domain Exclusivity"),
+          el("span", { className: "tag" }, `${exclData.exclusiveDomains.length} Engine-Exclusive Domains`)
+        ),
+        el("div", { className: "muted small", style: "margin-bottom:10px" },
+          "Domains that are cited exclusively by one model and ignored by others for this prompt.")
+      );
+
+      const exclTable = el("table", { className: "drill-table" });
+      exclTable.append(el("tr", {},
+        el("th", {}, "Domain"),
+        el("th", {}, "Exclusive Engine"),
+        el("th", { className: "num" }, "Status")
+      ));
+
+      exclData.exclusiveDomains.slice(0, 10).forEach((ed) => {
+        exclTable.append(el("tr", {},
+          el("td", { style: "font-weight:600;" }, ed.domain),
+          el("td", {}, engineChip(ed.exclusiveEngine, engineName(ed.exclusiveEngine))),
+          el("td", { className: "num" }, el("span", { className: "tag cited", style: "font-size:10px;" }, "Exclusive"))
+        ));
+      });
+      exclCard.append(el("div", { className: "drill-scroll" }, exclTable));
+      out.append(exclCard);
+    }
   }
 
   if (caps.length < 2) return;

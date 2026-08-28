@@ -61,13 +61,14 @@ console.log("normalisation helpers");
 console.log("\nengine registry reflects what can actually run");
 {
   const avail = availableEngines().map((e) => e.id);
-  check("chatgpt + gemini are available", avail.includes("chatgpt") && avail.includes("gemini"), avail.join(","));
-  check("engines without an adapter are marked unavailable, not omitted",
-    ENGINES.some((e) => e.id === "perplexity" && !e.available));
-  check("every unavailable engine explains itself",
-    ENGINES.filter((e) => !e.available).every((e) => !!e.note));
-  check("a profile can never select an engine that cannot run",
-    makeProfile({ engines: ["chatgpt", "perplexity"] }).engines.every((id) => avail.includes(id)));
+  check("all 5 engines (chatgpt, gemini, perplexity, claude, grok) are available",
+    ["chatgpt", "gemini", "perplexity", "claude", "grok"].every((id) => avail.includes(id)),
+    avail.join(",")
+  );
+  check("every registered engine is available and active",
+    ENGINES.every((e) => e.available));
+  check("a profile selects active available engines",
+    makeProfile({ engines: ["chatgpt", "perplexity", "claude", "grok"] }).engines.every((id) => avail.includes(id)));
 }
 
 /* ---------------- isolation ---------------- */

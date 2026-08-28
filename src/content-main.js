@@ -21,14 +21,30 @@
   //            batchexecute RPCs are state/history/telemetry — several are also
   //            large, so matching those would fill the store with junk.
   const IS_GEMINI = /(^|\.)gemini\.google\.com$/.test(location.hostname);
+  const IS_CHATGPT = /(^|\.)chatgpt\.com$|(^|\.)chat\.openai\.com$/.test(location.hostname);
+  const IS_PERPLEXITY = /(^|\.)perplexity\.ai$/.test(location.hostname);
+  const IS_GROK = /(^|\.)grok\.com$|(^|\.)x\.com$/.test(location.hostname) && (location.pathname.startsWith("/i/grok") || location.hostname.includes("grok"));
+  const IS_CLAUDE = /(^|\.)claude\.ai$/.test(location.hostname);
+
   const CHATGPT_RE = /\/backend-api\/(?:f\/)?conversation(?:\?|$)/;
   const GEMINI_RE = /assistant\.lamda\.BardFrontendService\/StreamGenerate|\/StreamGenerate\b/i;
+  const PERPLEXITY_RE = /\/api\/(?:sse\/)?query|\/rest\/threads\/messages|\/socket\.io\//;
+  const GROK_RE = /\/api\/rpc\/grok\/conversation|\/rest\/app-chat\/conversations/i;
+  const CLAUDE_RE = /\/api\/organizations\/[^\/]+\/chat_conversations\/[^\/]+\/completion|\/api\/append_message/i;
+
   const CONV_RE = {
-    test: (url) => (IS_GEMINI ? GEMINI_RE.test(url || "") : CHATGPT_RE.test(url || "")),
+    test: (url) => {
+      const u = url || "";
+      if (IS_GEMINI) return GEMINI_RE.test(u);
+      if (IS_CHATGPT) return CHATGPT_RE.test(u);
+      if (IS_PERPLEXITY) return PERPLEXITY_RE.test(u);
+      if (IS_GROK) return GROK_RE.test(u);
+      if (IS_CLAUDE) return CLAUDE_RE.test(u);
+      return false;
+    },
   };
 
-  const IS_TARGET =
-    IS_GEMINI || /(^|\.)chatgpt\.com$|(^|\.)chat\.openai\.com$/.test(location.hostname);
+  const IS_TARGET = IS_GEMINI || IS_CHATGPT || IS_PERPLEXITY || IS_GROK || IS_CLAUDE;
 
   // Per-load marker shared with our ISOLATED-world listener. Captured conversation
   // text must cross worlds via window.postMessage (MAIN world has no chrome.* APIs),

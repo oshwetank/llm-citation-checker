@@ -6,7 +6,7 @@
  * ("best camera phone under 55000"), and neither was reachable by a test
  * while this logic lived inside renderAnalyze()'s DOM-building code.
  */
-import { computeSearchFunnel, sameBrand, modelAfterBrand } from "../src/lib/funnel-omitted.js";
+import { computeSearchFunnel, computeBrandMatrix, sameBrand, modelAfterBrand } from "../src/lib/funnel-omitted.js";
 
 let failures = 0;
 const check = (label, cond, detail) => {
@@ -176,5 +176,71 @@ console.log("\ndegenerate input never throws");
   check("missing fields", computeSearchFunnel({ sources: [{}] }).omittedBrands.length === 0);
 }
 
+console.log("\ncomputeBrandMatrix: bidirectional brand-to-URL and domain-level presence/absence matrix");
+{
+  const rec = {
+    answerText: "Apple iPhone 16 Pro and Samsung Galaxy S25 are the top picks.",
+    brandMentions: [
+      { brand: "Apple", count: 3 },
+      { brand: "Samsung", count: 2 },
+    ],
+    products: [], places: [], entities: [],
+    fanout: {
+      search: [{ query: "best flagship phones 2026 Apple Samsung Xiaomi OnePlus" }],
+      shopping: [], image: []
+    },
+    sources: [
+      {
+        url: "https://www.gadgets360.com/phones/iphone-16-pro-review",
+        domain: "gadgets360.com",
+        title: "Apple iPhone 16 Pro Review",
+        snippet: "Apple iPhone 16 Pro tested against Samsung Galaxy S25."
+      },
+      {
+        url: "https://www.gadgets360.com/phones/xiaomi-15-ultra",
+        domain: "gadgets360.com",
+        title: "Xiaomi 15 Ultra vs Samsung",
+        snippet: "Xiaomi 15 Ultra brings incredible cameras to challenge Samsung."
+      },
+      {
+        url: "https://www.beebom.com/best-smartphones-2026",
+        domain: "beebom.com",
+        title: "Best Smartphones 2026",
+        snippet: "OnePlus 13s and Xiaomi 15 are great alternatives to Apple."
+      }
+    ]
+  };
+
+  const matrix = computeBrandMatrix(rec);
+  check("matrix returns brands, sources, and domains", Boolean(matrix.brands && matrix.sources && matrix.domains));
+
+  // Check URL Level
+  const src0 = matrix.sources[0];
+  check("URL 0 contains Apple and Samsung", src0.presentBrands.includes("Apple") && src0.presentBrands.includes("Samsung"));
+  check("URL 0 is missing Xiaomi and OnePlus", src0.missingBrands.includes("Xiaomi") && src0.missingBrands.includes("OnePlus"));
+
+  const src1 = matrix.sources[1];
+  check("URL 1 contains Xiaomi and Samsung", src1.presentBrands.includes("Xiaomi") && src1.presentBrands.includes("Samsung"));
+  check("URL 1 is missing Apple", src1.missingBrands.includes("Apple"));
+
+  // Check Domain Level
+  const g360 = matrix.domains.find(d => d.domain === "gadgets360.com");
+  check("gadgets360 has 2 URLs", g360 && g360.urlCount === 2);
+  check("gadgets360 covers Apple, Samsung, Xiaomi", g360 && g360.coveredBrands.includes("Apple") && g360.coveredBrands.includes("Samsung") && g360.coveredBrands.includes("Xiaomi"));
+  check("gadgets360 blind spot is OnePlus", g360 && g360.missingBrands.includes("OnePlus"));
+  check("gadgets360 coverage rate is 75%", g360 && Math.abs(g360.coverageRate - 0.75) < 0.01);
+
+  // Check Brand Level (Mentioned vs Omitted)
+  const apple = matrix.brands.find(b => b.brand === "Apple");
+  check("Apple is flagged as mentioned", apple && apple.mentioned === true);
+  check("Apple supported by source 0 and source 2", apple && apple.supportedSourceIdxs.includes(0) && apple.supportedSourceIdxs.includes(2));
+  check("Apple missing in source 1", apple && apple.missingSourceIdxs.includes(1));
+
+  const oneplus = matrix.brands.find(b => b.brand === "OnePlus");
+  check("OnePlus is flagged as unmentioned/omitted", oneplus && oneplus.mentioned === false);
+  check("OnePlus present in source 2", oneplus && oneplus.supportedSourceIdxs.includes(2));
+}
+
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
 process.exit(failures ? 1 : 0);
+

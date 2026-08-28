@@ -16,6 +16,7 @@ import { db } from "./lib/db.js";
 import {
   turnBudgetMs, legEta, INTER_PROMPT_MIN_MS, INTER_PROMPT_MAX_MS,
   CONCURRENT_TABS_PER_ENGINE, LEG_START_STAGGER_MS, shardPrompts,
+  parseCooldownFromNotice, formatCooldown,
 } from "./lib/pacing.js";
 import { createErrorLog } from "./lib/errorlog.js";
 import { buildCampaignWorkbook } from "./lib/campaignWorkbook.js";
@@ -23,6 +24,9 @@ import { gzipString, gunzipToString } from "./lib/gzip.js";
 import { adapt as adaptChatGpt, cleanPassage } from "./adapters/chatgpt.js";
 import { enrichBrandsWithAI } from "./lib/ai-brands.js";
 import { adapt as adaptGemini } from "./adapters/gemini.js";
+import { adapt as adaptPerplexity } from "./adapters/perplexity.js";
+import { adapt as adaptGrok } from "./adapters/grok.js";
+import { adapt as adaptClaude } from "./adapters/claude.js";
 import {
   MAX_PROFILES, TRASH_RETENTION_DAYS, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
   selectTracked, computeMetrics, computeSeries, brandPresence, normName,
@@ -39,12 +43,24 @@ function normPromptText(s) {
   return String(s || "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-const ADAPTERS = { chatgpt: adaptChatGpt, gemini: adaptGemini };
+const ADAPTERS = {
+  chatgpt: adaptChatGpt,
+  gemini: adaptGemini,
+  perplexity: adaptPerplexity,
+  grok: adaptGrok,
+  claude: adaptClaude,
+};
 
 const AI_TAB_MATCHES = [
   "https://chatgpt.com/*",
   "https://chat.openai.com/*",
   "https://gemini.google.com/*",
+  "https://www.perplexity.ai/*",
+  "https://perplexity.ai/*",
+  "https://grok.com/*",
+  "https://x.com/i/grok/*",
+  "https://x.com/i/grok",
+  "https://claude.ai/*",
 ];
 
 /* ---------- Settings ---------- */
@@ -1288,16 +1304,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
 
         // The content script saw an upstream limit ("you've reached your
-        // limit", "too many requests"…). PAUSE that engine's legs rather
-        // than failing the turn: a limit is temporary and applies to the
-        // ACCOUNT — but that means the account logged into THIS platform,
-        // not the whole run. Gemini and ChatGPT are different accounts in
-        // different tabs; a limit on one says nothing about the other, so
-        // only the legs sharing this platform (and therefore this account
-        // and this limit) pause. Advancing a rate-limited leg would burn
-        // every remaining prompt against the same wall at 90s each and lose
-        // them permanently. Token+tab checked exactly as loader-verify
-        // does, so an arbitrary page can't halt a run.
+        // limit", "too many requests"…). Independent platform cooldown: pause
+        // the rate-limited engine legs and arm an auto-resume timer, while
+        // allowing any other active engine to continue running uninterrupted.
         case "loader-rate-limited": {
           const tabId = sender?.tab?.id;
           let matched = null;
@@ -1305,27 +1314,51 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             const found = legForTab(tabId);
             if (found && found.leg.token && found.leg.token === msg.token) matched = found.plat;
           }
-          // Guard on THIS platform's legs, not the global pause flag — two
-          // concurrent legs on the same rate-limited platform can both
-          // report the limit within moments of each other, and the second
-          // report shouldn't re-notify or re-stamp `interrupted`.
-          const alreadyPaused = matched && (loader.platforms[matched]?.legs || []).some((l) => l.paused);
-          if (matched && !alreadyPaused) {
-            for (const leg of loader.platforms[matched].legs) {
+          if (matched) {
+            const p = loader.platforms[matched];
+            const cooldownMs = parseCooldownFromNotice(msg.detail);
+            const resumeAt = Date.now() + cooldownMs;
+            p.rateLimitedUntil = resumeAt;
+            p.cooldownReason = typeof msg.detail === "string" ? msg.detail.slice(0, 160) : "rate limit";
+
+            for (const leg of p.legs || []) {
               clearWatchdog(leg);
               leg.paused = true;
             }
+
+            // Arm an auto-resume timer for this specific platform
+            if (p.cooldownTimer) clearTimeout(p.cooldownTimer);
+            p.cooldownTimer = setTimeout(() => {
+              p.rateLimitedUntil = null;
+              p.cooldownTimer = null;
+              if (loader.running) {
+                for (const leg of p.legs || []) {
+                  leg.paused = false;
+                }
+                logErr(`run:auto-resume:${matched}`, "Cooldown expired, auto-resuming platform queue", { platform: matched });
+                (p.legs || []).forEach((l) => loaderAdvanceLeg(p, l));
+                persistLoaderState();
+                syncGeoRun();
+              }
+            }, cooldownMs);
+
             loader.interrupted = {
               at: Date.now(),
               reason: "rate limit",
-              // Which engine hit it: with both running, "a limit was reached"
-              // doesn't tell the user which account needs to cool down.
               platform: matched,
-              detail: typeof msg.detail === "string" ? msg.detail.slice(0, 160) : null,
+              detail: p.cooldownReason,
+              autoResumeAt: resumeAt,
             };
+
             await persistLoaderState();
-            syncGeoRun(undefined, "paused: rate limit");
-            notifyRateLimited(loader.interrupted.detail);
+            syncGeoRun(undefined, `cooldown: ${matched} (${formatCooldown(cooldownMs)})`);
+            notifyRateLimited(`${matched}: ${p.cooldownReason} (Auto-resuming in ${formatCooldown(cooldownMs)})`);
+          }
+          sendResponse({ ok: !!matched });
+          break;
+        }
+            syncGeoRun(undefined, `cooldown: ${matched} (${formatCooldown(cooldownMs)})`);
+            notifyRateLimited(`${matched}: ${p.cooldownReason} (Auto-resuming in ${formatCooldown(cooldownMs)})`);
           }
           sendResponse({ ok: !!matched });
           break;
