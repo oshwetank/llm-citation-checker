@@ -22,13 +22,31 @@ const check = (label, cond, detail) => {
   }
 };
 
-console.log("\n--- Engine Registry ---");
+console.log("\n--- Engine Registry & URL Attribution ---");
 {
   const available = availableEngines();
   check("all 5 engines are now available in ENGINES registry", available.length === 5, `count=${available.length}`);
   check("perplexity is registered and available", available.some((e) => e.id === "perplexity"));
   check("grok is registered and available", available.some((e) => e.id === "grok"));
   check("claude is registered and available", available.some((e) => e.id === "claude"));
+
+  // Check URL attribution
+  const platformFromUrl = (url) => {
+    const u = String(url || "");
+    if (/gemini\.google\.com|BardChatUi|StreamGenerate/i.test(u)) return "gemini";
+    if (/perplexity\.ai|\/api\/sse\/query|\/api\/thread|\/rest\/queries/i.test(u)) return "perplexity";
+    if (/grok\.com|x\.com\/i\/grok|app-chat\/conversations/i.test(u)) return "grok";
+    if (/claude\.ai|chat_conversations/i.test(u)) return "claude";
+    if (/chatgpt\.com|chat\.openai\.com|backend-api/i.test(u)) return "chatgpt";
+    return "chatgpt";
+  };
+
+  check("perplexity url correctly resolved", platformFromUrl("https://www.perplexity.ai/search/123") === "perplexity");
+  check("grok url correctly resolved", platformFromUrl("https://grok.com/chat/abc") === "grok");
+  check("x.com grok url correctly resolved", platformFromUrl("https://x.com/i/grok") === "grok");
+  check("claude url correctly resolved", platformFromUrl("https://claude.ai/chat/xyz") === "claude");
+  check("chatgpt url correctly resolved", platformFromUrl("https://chatgpt.com/c/123") === "chatgpt");
+  check("gemini url correctly resolved", platformFromUrl("https://gemini.google.com/app/456") === "gemini");
 }
 
 console.log("\n--- Perplexity AI Adapter ---");

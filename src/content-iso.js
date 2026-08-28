@@ -140,7 +140,7 @@
     const h = location.hostname;
     if (h.includes("gemini")) return "gemini";
     if (h.includes("perplexity")) return "perplexity";
-    if (h.includes("grok") || (h.includes("x.com") && location.pathname.startsWith("/i/grok"))) return "grok";
+    if (h.includes("grok") || h.includes("x.com")) return "grok";
     if (h.includes("claude")) return "claude";
     return "chatgpt";
   };

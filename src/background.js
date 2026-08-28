@@ -123,8 +123,12 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 function platformFromUrl(url) {
-  if (/gemini\.google\.com|BardChatUi|StreamGenerate/.test(url || "")) return "gemini";
-  if (/chatgpt\.com|chat\.openai\.com/.test(url || "")) return "chatgpt";
+  const u = String(url || "");
+  if (/gemini\.google\.com|BardChatUi|StreamGenerate/i.test(u)) return "gemini";
+  if (/perplexity\.ai|\/api\/sse\/query|\/api\/thread|\/rest\/queries/i.test(u)) return "perplexity";
+  if (/grok\.com|x\.com\/i\/grok|app-chat\/conversations/i.test(u)) return "grok";
+  if (/claude\.ai|chat_conversations/i.test(u)) return "claude";
+  if (/chatgpt\.com|chat\.openai\.com|backend-api/i.test(u)) return "chatgpt";
   return "chatgpt";
 }
 
@@ -968,7 +972,11 @@ async function loaderRunLeg(plat, leg) {
   await persistLoaderState();
 
   const search = plat === "chatgpt" && loader.options.forceSearch ? "&lcfcsearch=1" : "";
-  const base = plat === "gemini" ? "https://gemini.google.com/app" : "https://chatgpt.com/";
+  let base = "https://chatgpt.com/";
+  if (plat === "gemini") base = "https://gemini.google.com/app";
+  else if (plat === "perplexity") base = "https://www.perplexity.ai/";
+  else if (plat === "grok") base = "https://grok.com/";
+  else if (plat === "claude") base = "https://claude.ai/new";
   const url = `${base}?q=${q}&lcfc=1&lcfctok=${leg.token}${search}`;
 
   try {
@@ -1000,8 +1008,8 @@ async function loaderStart(prompts, options) {
   if (!clean.length) return { ok: false, error: "No prompts provided." };
 
   const platforms = (options && options.platforms) || ["chatgpt"];
-  const supported = platforms.filter((p) => p === "chatgpt" || p === "gemini");
-  if (!supported.length) return { ok: false, error: "Select ChatGPT and/or Gemini." };
+  const supported = platforms.filter((p) => ["chatgpt", "gemini", "perplexity", "grok", "claude"].includes(p));
+  if (!supported.length) return { ok: false, error: "Select at least one supported AI engine." };
 
   loader = newLoaderState();
   loader.running = true;
@@ -1103,8 +1111,8 @@ async function geoRunStart(profileId) {
     .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
   if (!prompts.length) return { ok: false, error: "Add at least one tracked prompt first." };
 
-  const engines = (profile.engines || []).filter((e) => e === "chatgpt" || e === "gemini");
-  if (!engines.length) return { ok: false, error: "Select at least one engine that has an adapter." };
+  const engines = (profile.engines || []).filter((e) => ["chatgpt", "gemini", "perplexity", "grok", "claude"].includes(e));
+  if (!engines.length) return { ok: false, error: "Select at least one engine with an active adapter." };
 
   const vol = runVolume(prompts, engines);
   const geoRunId = crypto.randomUUID();

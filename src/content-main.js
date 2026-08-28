@@ -20,17 +20,17 @@
   //   Gemini:  the answer is a single large StreamGenerate XHR. Its many
   //            batchexecute RPCs are state/history/telemetry — several are also
   //            large, so matching those would fill the store with junk.
-  const IS_GEMINI = /(^|\.)gemini\.google\.com$/.test(location.hostname);
-  const IS_CHATGPT = /(^|\.)chatgpt\.com$|(^|\.)chat\.openai\.com$/.test(location.hostname);
-  const IS_PERPLEXITY = /(^|\.)perplexity\.ai$/.test(location.hostname);
-  const IS_GROK = /(^|\.)grok\.com$|(^|\.)x\.com$/.test(location.hostname) && (location.pathname.startsWith("/i/grok") || location.hostname.includes("grok"));
-  const IS_CLAUDE = /(^|\.)claude\.ai$/.test(location.hostname);
+  const IS_GEMINI = /(^|\.)gemini\.google\.com$/i.test(location.hostname);
+  const IS_CHATGPT = /(^|\.)chatgpt\.com$|(^|\.)chat\.openai\.com$/i.test(location.hostname);
+  const IS_PERPLEXITY = /(^|\.)perplexity\.ai$/i.test(location.hostname);
+  const IS_GROK = /(^|\.)grok\.com$|(^|\.)x\.com$/i.test(location.hostname);
+  const IS_CLAUDE = /(^|\.)claude\.ai$/i.test(location.hostname);
 
-  const CHATGPT_RE = /\/backend-api\/(?:f\/)?conversation(?:\?|$)/;
+  const CHATGPT_RE = /\/backend-api\/(?:f\/)?conversation(?:\?|$)/i;
   const GEMINI_RE = /assistant\.lamda\.BardFrontendService\/StreamGenerate|\/StreamGenerate\b/i;
-  const PERPLEXITY_RE = /\/api\/(?:sse\/)?query|\/rest\/threads\/messages|\/socket\.io\//;
-  const GROK_RE = /\/api\/rpc\/grok\/conversation|\/rest\/app-chat\/conversations/i;
-  const CLAUDE_RE = /\/api\/organizations\/[^\/]+\/chat_conversations\/[^\/]+\/completion|\/api\/append_message/i;
+  const PERPLEXITY_RE = /\/api\/(?:sse\/)?(?:query|ask)|\/rest\/(?:threads\/messages|queries|answers)|\/api\/thread|\/socket\.io\/|\/p\/api\/|\/api\/predict/i;
+  const GROK_RE = /\/api\/rpc|\/rest\/app-chat\/conversations|\/i\/api\/(?:graphql\/[^\/]+\/)?(?:Create)?Grok|\/2\/grok/i;
+  const CLAUDE_RE = /\/api\/organizations\/[^\/]+\/chat_conversations|\/api\/append_message|\/api\/organizations\/[^\/]+\/retry/i;
 
   const CONV_RE = {
     test: (url) => {
