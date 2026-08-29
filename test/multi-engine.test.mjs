@@ -94,6 +94,22 @@ console.log("\n--- Perplexity AI Adapter ---");
   check("perplexity websocket answer extracted", wsRec.answerText.includes("conversational answer engine"));
   check("perplexity websocket sources extracted", wsRec.sources.length === 1);
   check("perplexity websocket domain extracted", wsRec.sources[0].domain === "techcrunch.com");
+
+  // Test Socket.IO 430 ACK response frames
+  const ackRaw = [
+    '430[{"text": "The latest results for smartphone rankings show top devices in 2026.", "sources": [{"url": "https://gsmarena.com/phones", "title": "GSMArena"}]}]',
+  ].join("\n");
+
+  const ackRec = await adaptPerplexity({
+    captureId: "perp-ack-1",
+    raw: ackRaw,
+    reqBody: '420["perplexity_query", {"query": "smartphone rankings 2026"}]',
+    pageUrl: "https://www.perplexity.ai",
+  });
+
+  check("perplexity ACK prompt extracted", ackRec.userPrompt === "smartphone rankings 2026");
+  check("perplexity ACK answer extracted", ackRec.answerText.includes("latest results for smartphone rankings"));
+  check("perplexity ACK sources extracted", ackRec.sources.length === 1);
 }
 
 console.log("\n--- xAI Grok Adapter ---");

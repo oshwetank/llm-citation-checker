@@ -16,6 +16,15 @@ import { detectBrands } from "../lib/brands.js";
 
 export const ADAPTER_VERSION = "perplexity@0.2.0";
 
+function extractJsonPayload(line) {
+  const t = line.trim();
+  if (t.startsWith("data:")) return t.slice(5).trim();
+  const m = t.match(/^4[0-9]+(?:[\/\w-]+,)?(\[.*\]|\{.*\})$/);
+  if (m) return m[1];
+  if ((t.startsWith("{") && t.endsWith("}")) || (t.startsWith("[") && t.endsWith("]"))) return t;
+  return null;
+}
+
 function parsePayloads(raw) {
   if (!raw || typeof raw !== "string") return [];
   const nodes = [];
@@ -46,11 +55,7 @@ function parsePayloads(raw) {
     } catch (_) {}
   }
   for (const line of raw.split(/\r?\n/)) {
-    const t = line.trim();
-    if (!t.startsWith("data:") && !t.startsWith("42[") && !t.startsWith("{")) continue;
-    let payload = t;
-    if (t.startsWith("data:")) payload = t.slice(5).trim();
-    else if (t.startsWith("42[")) payload = t.slice(2).trim();
+    const payload = extractJsonPayload(line);
     if (!payload || payload === "[DONE]") continue;
     try {
       addParsed(JSON.parse(payload));
@@ -63,7 +68,9 @@ function extractPrompt(reqBody, nodes) {
   if (reqBody && typeof reqBody === "string") {
     try {
       let raw = reqBody.trim();
-      if (raw.startsWith("42[")) raw = raw.slice(2);
+      const m = raw.match(/^4[0-9]+(?:[\/\w-]+,)?(\[.*\]|\{.*\})$/);
+      if (m) raw = m[1];
+      else if (raw.startsWith("42[")) raw = raw.slice(2);
       const parsed = JSON.parse(raw);
       if (parsed.query && typeof parsed.query === "string") return parsed.query;
       if (parsed.message && typeof parsed.message === "string") return parsed.message;
