@@ -62,11 +62,22 @@ function parsePayloads(raw) {
 function extractPrompt(reqBody, nodes) {
   if (reqBody && typeof reqBody === "string") {
     try {
-      const parsed = JSON.parse(reqBody);
+      let raw = reqBody.trim();
+      if (raw.startsWith("42[")) raw = raw.slice(2);
+      const parsed = JSON.parse(raw);
       if (parsed.query && typeof parsed.query === "string") return parsed.query;
       if (parsed.message && typeof parsed.message === "string") return parsed.message;
       if (parsed.text && typeof parsed.text === "string") return parsed.text;
       if (parsed.params && parsed.params.query && typeof parsed.params.query === "string") return parsed.params.query;
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          if (item && typeof item === "object") {
+            if (item.query) return item.query;
+            if (item.text) return item.text;
+            if (item.message) return item.message;
+          }
+        }
+      }
       if (Array.isArray(parsed.messages)) {
         const lastUser = parsed.messages.filter((m) => m.role === "user" || m.sender === "user" || m.sender === "human").pop();
         if (lastUser && lastUser.content) {

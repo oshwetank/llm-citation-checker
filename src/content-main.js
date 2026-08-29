@@ -14,27 +14,37 @@
   if (window.__LCFC_INSTALLED__) return;
   window.__LCFC_INSTALLED__ = true;
 
-  // Per-engine turn-submission endpoints, kept tight so history/title/telemetry
-  // calls don't flood the store with empty rows.
-  //   ChatGPT: POST /backend-api/conversation (or /f/conversation)
-  //   Gemini:  the answer is a single large StreamGenerate XHR. Its many
-  //            batchexecute RPCs are state/history/telemetry — several are also
-  //            large, so matching those would fill the store with junk.
   const IS_GEMINI = /(^|\.)gemini\.google\.com$/i.test(location.hostname);
   const IS_CHATGPT = /(^|\.)chatgpt\.com$|(^|\.)chat\.openai\.com$/i.test(location.hostname);
   const IS_PERPLEXITY = /(^|\.)perplexity\.ai$/i.test(location.hostname);
   const IS_GROK = /(^|\.)grok\.com$|(^|\.)x\.com$/i.test(location.hostname);
   const IS_CLAUDE = /(^|\.)claude\.ai$/i.test(location.hostname);
 
+  const isThirdParty = (url) => {
+    try {
+      const u = new URL(url, location.href);
+      return !u.hostname.includes("perplexity.ai") &&
+             !u.hostname.includes("chatgpt.com") &&
+             !u.hostname.includes("openai.com") &&
+             !u.hostname.includes("google.com") &&
+             !u.hostname.includes("grok.com") &&
+             !u.hostname.includes("x.com") &&
+             !u.hostname.includes("claude.ai");
+    } catch (_) {
+      return false;
+    }
+  };
+
   const CHATGPT_RE = /\/backend-api\/(?:f\/)?conversation(?:\?|$)/i;
   const GEMINI_RE = /assistant\.lamda\.BardFrontendService\/StreamGenerate|\/StreamGenerate\b/i;
-  const PERPLEXITY_RE = /\/api\/(?:sse\/)?|\/rest\/(?:threads|queries|answers|conversations|search)|\/api\/thread|\/socket\.io\/|\/p\/api\/|\/api\/predict|\/api\/search/i;
+  const PERPLEXITY_RE = /\/api\/(?:sse\/)?(?:query|ask)|\/rest\/(?:threads|queries|answers|conversations|search)|\/api\/thread|\/socket\.io\/|\/p\/api\/|\/api\/predict|\/api\/search/i;
   const GROK_RE = /\/api\/rpc|\/rest\/app-chat\/conversations|\/i\/api\/(?:graphql\/[^\/]+\/)?(?:Create)?Grok|\/2\/grok/i;
   const CLAUDE_RE = /\/api\/organizations\/[^\/]+\/(?:chat_conversations|messages|retry|completion)|\/api\/append_message/i;
 
   const CONV_RE = {
     test: (url) => {
       const u = url || "";
+      if (isThirdParty(u)) return false;
       if (IS_GEMINI) return GEMINI_RE.test(u);
       if (IS_CHATGPT) return CHATGPT_RE.test(u);
       if (IS_PERPLEXITY) return PERPLEXITY_RE.test(u);
@@ -46,15 +56,6 @@
 
   const IS_TARGET = IS_GEMINI || IS_CHATGPT || IS_PERPLEXITY || IS_GROK || IS_CLAUDE;
 
-  // Per-load marker shared with our ISOLATED-world listener. Captured conversation
-  // text must cross worlds via window.postMessage (MAIN world has no chrome.* APIs),
-  // and every script on the page can observe that — including third-party analytics,
-  // which do run on these hosts. We reduce exposure by:
-  //   1. targeting location.origin rather than "*", so cross-origin frames can't read it;
-  //   2. tagging messages with this marker, so a broad `message` listener that isn't
-  //      specifically targeting us ignores them, and casual forgery is rejected.
-  // This is defence in depth, not a guarantee: the marker is passed via a DOM
-  // attribute (the only channel the two worlds share) which the page can also read.
   const CHANNEL = (crypto.randomUUID && crypto.randomUUID()) || String(Math.random()).slice(2);
   try {
     document.documentElement.setAttribute("data-lcfc-ch", CHANNEL);
@@ -70,10 +71,6 @@
     }
   }
 
-  // Diagnostic channel — OFF unless the user enables it in Settings. The ISOLATED
-  // world sets this attribute when the setting is on. Left always-on it posts a
-  // message for every POST on the page (50-70 per Gemini prompt), which wakes the
-  // service worker constantly for no user benefit.
   function debugOn() {
     try {
       return document.documentElement.getAttribute("data-lcfc-dbg") === "1";
@@ -111,7 +108,7 @@
     if (raw) emit({ ...meta, raw, capturedAt: Date.now() });
   }
 
-  // --- fetch patch (ChatGPT streams the conversation via fetch) ---
+  // --- fetch patch (ChatGPT, Claude, Perplexity REST stream via fetch) ---
   const origFetch = window.fetch;
   window.fetch = async function (...args) {
     const input = args[0];
@@ -127,8 +124,7 @@
       url = "";
     }
 
-    // Only the POST that submits a turn — never history GETs.
-    const isConv = method === "POST" && CONV_RE.test(url || "");
+    const isConv = (method === "POST" || (IS_PERPLEXITY && method === "GET" && /socket\.io/i.test(url))) && CONV_RE.test(url || "");
     let reqBody = null;
     if (isConv) {
       try {
@@ -194,5 +190,71 @@
       }
       return send.call(this, body);
     };
+  }
+
+  // --- WebSocket patch (Perplexity & Grok stream queries and search results over WebSocket/Socket.IO) ---
+  const OrigWebSocket = window.WebSocket;
+  if (OrigWebSocket) {
+    const PatchedWebSocket = function (url, protocols) {
+      const ws = protocols ? new OrigWebSocket(url, protocols) : new OrigWebSocket(url);
+      const wsUrl = String(url || "");
+      const isTargetWs = (IS_PERPLEXITY && /socket\.io|perplexity\.ai/i.test(wsUrl)) ||
+                         (IS_GROK && /rpc|grok/i.test(wsUrl));
+
+      if (isTargetWs) {
+        let lastReqBody = null;
+        let frames = [];
+        let emitTimer = null;
+
+        const scheduleEmit = () => {
+          if (emitTimer) clearTimeout(emitTimer);
+          emitTimer = setTimeout(() => {
+            if (frames.length && lastReqBody) {
+              const raw = frames.join("\n");
+              emit({ url: wsUrl, reqBody: lastReqBody, transport: "websocket", raw, capturedAt: Date.now() });
+            }
+          }, 1500);
+        };
+
+        const origSend = ws.send;
+        ws.send = function (data) {
+          try {
+            if (typeof data === "string") {
+              if (data.startsWith("42[") || (data.startsWith("{") && data.includes("query"))) {
+                lastReqBody = data;
+                frames = [];
+              }
+            }
+          } catch (_) {}
+          return origSend.call(this, data);
+        };
+
+        ws.addEventListener("message", (event) => {
+          try {
+            const d = typeof event.data === "string" ? event.data : "";
+            if (d && (d.startsWith("42[") || d.startsWith("{"))) {
+              frames.push(d);
+              if (d.includes('"status":"COMPLETED"') || d.includes('"final":true') || d.includes('"text":')) {
+                scheduleEmit();
+              }
+            }
+          } catch (_) {}
+        });
+
+        ws.addEventListener("close", () => {
+          if (emitTimer) clearTimeout(emitTimer);
+          if (frames.length && lastReqBody) {
+            emit({ url: wsUrl, reqBody: lastReqBody, transport: "websocket", raw: frames.join("\n"), capturedAt: Date.now() });
+          }
+        });
+      }
+      return ws;
+    };
+    PatchedWebSocket.prototype = OrigWebSocket.prototype;
+    PatchedWebSocket.CONNECTING = OrigWebSocket.CONNECTING;
+    PatchedWebSocket.OPEN = OrigWebSocket.OPEN;
+    PatchedWebSocket.CLOSING = OrigWebSocket.CLOSING;
+    PatchedWebSocket.CLOSED = OrigWebSocket.CLOSED;
+    window.WebSocket = PatchedWebSocket;
   }
 })();

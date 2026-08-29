@@ -75,6 +75,25 @@ console.log("\n--- Perplexity AI Adapter ---");
   check("source domain normalized", rec.sources.some((s) => s.domain === "theverge.com"));
   check("fanout search queries populated from query_plan and related_queries", rec.fanout.search.length >= 2);
   check("brands detected in Perplexity answer", rec.brandMentions.some((b) => b.brand.toLowerCase() === "apple" || b.brand.toLowerCase() === "samsung"));
+
+  // Test Socket.IO Perplexity frames
+  const wsRaw = [
+    '42["query_progress", {"text": "Perplexity is a conversational answer engine using **Google** and **Bing** search indices.", "display_model": "sonar-pro"}]',
+    '42["query_progress", {"web_results": [{"name": "Perplexity AI Features", "url": "https://techcrunch.com/perplexity-review", "snippet": "Live citations and multi-query search."}]}]',
+  ].join("\n");
+
+  const wsRec = await adaptPerplexity({
+    captureId: "perp-ws-1",
+    raw: wsRaw,
+    reqBody: '42["perplexity_query", {"query": "how does perplexity work"}]',
+    pageUrl: "https://www.perplexity.ai",
+  });
+
+  check("perplexity websocket prompt extracted", wsRec.userPrompt === "how does perplexity work");
+  check("perplexity websocket model extracted", wsRec.model === "sonar-pro");
+  check("perplexity websocket answer extracted", wsRec.answerText.includes("conversational answer engine"));
+  check("perplexity websocket sources extracted", wsRec.sources.length === 1);
+  check("perplexity websocket domain extracted", wsRec.sources[0].domain === "techcrunch.com");
 }
 
 console.log("\n--- xAI Grok Adapter ---");
