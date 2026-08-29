@@ -733,21 +733,55 @@
           addSource(u, title, "");
         });
 
-        // 3. Mark sources as cited if their domain/name appears in inline citation pills in the prose
+        // 3. Mark sources as cited if their domain/name appears in inline citation pills in the prose.
+        //
+        // The `[class*="citation"]`-family selectors below are a guess at
+        // Perplexity's markup, not something confirmed against real DOM —
+        // keeping them (rather than deleting) costs nothing since this is a
+        // Set union, but do not assume they match anything today. A REAL
+        // captured badge (2026-08-29) looked like this and matched NONE of
+        // them:
+        //   <span class="inline-block relative !mt-0 ![vertical-align:unset]
+        //     max-w-[25ch] overflow-hidden"
+        //     style="mask-image: linear-gradient(to right, black 70%,
+        //     transparent 100%);">gadgets.beebom</span>
+        // — no "citation" anywhere in its class list. The `max-w-[Nch] +
+        // overflow-hidden` + fade-mask combination is what actually
+        // identifies this shape: it is a deliberate compact-label
+        // truncation affordance, unlikely to appear on ordinary prose,
+        // so it is added as its own selector below.
         const citeBadges = new Set();
-        const badgeNodes = document.querySelectorAll('[data-testid*="citation"], [class*="citation"], .citation, a[class*="citation"]');
+        const badgeNodes = document.querySelectorAll(
+          '[data-testid*="citation"], [class*="citation"], .citation, a[class*="citation"], ' +
+          '[class*="max-w-"][class*="overflow-hidden"][style*="mask-image"]'
+        );
         badgeNodes.forEach((b) => {
           const bText = (b.innerText || b.textContent || "").toLowerCase().replace(/[^a-z0-9]/g, "");
           if (bText && bText.length >= 3) citeBadges.add(bText);
         });
 
+        // Badge text is compared against the FULL host (dots stripped), not
+        // just its first label, and as a prefix rather than requiring exact
+        // equality. Two real, separately-confirmed reasons:
+        //   1. host.split(".")[0] alone is wrong for any multi-label domain:
+        //      "gadgets.beebom.com" -> hostName "gadgets", but the badge
+        //      above strips to "gadgetsbeebom" — those can never be equal,
+        //      so the old code silently failed to mark ANY two-part-plus
+        //      domain as cited, regardless of the selector problem above.
+        //   2. The badge's own `max-w-[25ch]` + mask-image fade is a visual
+        //      truncation cue — the real label may be shorter than the true
+        //      domain even where the DOM text itself isn't cut (as seen
+        //      above: "gadgets.beebom" with the ".com" already dropped by
+        //      Perplexity's own label formatting, not by this code).
         sources.forEach((s) => {
           const d = (s.url || "").toLowerCase();
           const host = (d.split("/")[2] || "").replace(/^www\./, "");
-          const hostName = host.split(".")[0];
-          if (citeBadges.has(hostName) || (s.title && citeBadges.has(s.title.toLowerCase().replace(/[^a-z0-9]/g, "")))) {
-            s.outcome = "cited";
-          }
+          const hostNoDots = host.replace(/\./g, "");
+          const titleStripped = s.title ? s.title.toLowerCase().replace(/[^a-z0-9]/g, "") : "";
+          const cited = [...citeBadges].some((b) =>
+            b === hostNoDots || (hostNoDots && hostNoDots.startsWith(b)) || (b && b.startsWith(hostNoDots))
+          ) || (titleStripped && citeBadges.has(titleStripped));
+          if (cited) s.outcome = "cited";
         });
       } else if (plat === "grok") {
         const userEl = document.querySelector('.user-message, [data-message-author="user"]');
