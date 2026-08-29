@@ -257,9 +257,20 @@ function extractFanout(nodes) {
   return { search, shopping: [], image: [] };
 }
 
+function extractGeneratedTitle(nodes, userPrompt) {
+  for (const n of nodes) {
+    if (!n || typeof n !== "object") continue;
+    if (typeof n.generatedTitle === "string" && n.generatedTitle && n.generatedTitle !== userPrompt) {
+      return n.generatedTitle;
+    }
+  }
+  return null;
+}
+
 export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, options = {}) {
   const nodes = parsePayloads(raw);
   const userPrompt = extractPrompt(reqBody, nodes);
+  const generatedTitle = extractGeneratedTitle(nodes, userPrompt);
   const model = extractModel(nodes);
   const answerText = extractAnswer(nodes);
   const sources = extractSources(nodes);
@@ -275,6 +286,7 @@ export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, op
     capturedAt: capturedAt || Date.now(),
     pageUrl: pageUrl || "https://www.perplexity.ai",
     userPrompt,
+    generatedTitle,
     answerText,
     answerChars: answerText.length,
     searched: sources.length > 0 || fanout.search.length > 0,

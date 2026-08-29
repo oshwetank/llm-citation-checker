@@ -648,10 +648,19 @@
       const sources = [];
 
       if (plat === "perplexity") {
-        const queryEl = document.querySelector('[data-testid="user-query"], h1, .font-display, h2, .query-text');
-        if (queryEl) promptText = (queryEl.textContent || "").trim();
-        if (!promptText && document.title) {
-          promptText = document.title.replace(/\s*-\s*Perplexity.*$/i, "").replace(/^Perplexity\s*-\s*/i, "").trim();
+        // User's typed query bubble
+        const userBubble = document.querySelector('[data-testid="user-query"], .user-query, [data-message-author="user"], div[class*="userMessage"], div[class*="UserMessage"], div[class*="queryBubble"]');
+        if (userBubble) promptText = (userBubble.textContent || "").trim();
+
+        const headingEl = document.querySelector('h1, h2, .font-display');
+        let generatedTitle = "";
+        if (headingEl) generatedTitle = (headingEl.textContent || "").trim();
+
+        if (!promptText) {
+          if (generatedTitle) promptText = generatedTitle;
+          else if (document.title) {
+            promptText = document.title.replace(/\s*-\s*Perplexity.*$/i, "").replace(/^Perplexity\s*-\s*/i, "").trim();
+          }
         }
 
         const proseEls = document.querySelectorAll('.prose, [data-testid="thread-message"], [data-testid="answer-content"], div[dir="auto"].select-text, div.select-text, .answer-content');
@@ -694,6 +703,7 @@
 
         const syntheticRaw = JSON.stringify({
           query: promptText,
+          generatedTitle: (generatedTitle && generatedTitle !== promptText) ? generatedTitle : undefined,
           text: answerText,
           web_results: sources,
           status: "COMPLETED",

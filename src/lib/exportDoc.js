@@ -120,14 +120,37 @@ function markdownToHtml(raw, placeholders) {
       if (dataRows.length) {
         const cellsOf = (r) => r.slice(1, -1).split("|").map((c) => c.trim());
         const [head, ...body] = dataRows;
-        let table = "<table><thead><tr>";
+        let table = '<div class="table-wrap"><table><thead><tr>';
         table += cellsOf(head).map((c) => `<th>${c}</th>`).join("");
         table += "</tr></thead><tbody>";
         for (const r of body) table += "<tr>" + cellsOf(r).map((c) => `<td>${c}</td>`).join("") + "</tr>";
-        table += "</tbody></table>";
+        table += "</tbody></table></div>";
         blocks.push(table);
       }
       continue;
+    }
+
+    if (trimmed.includes("\t")) {
+      flushPara();
+      const rows = [];
+      while (i < lines.length && lines[i].includes("\t")) {
+        rows.push(lines[i]);
+        i++;
+      }
+      if (rows.length >= 2) {
+        const [head, ...body] = rows;
+        const headCells = head.split("\t").map((c) => c.trim()).filter(Boolean);
+        let table = '<div class="table-wrap"><table><thead><tr>';
+        table += headCells.map((c) => `<th>${c}</th>`).join("");
+        table += "</tr></thead><tbody>";
+        for (const r of body) {
+          const cells = r.split("\t").map((c) => c.trim());
+          table += "<tr>" + cells.map((c) => `<td>${c}</td>`).join("") + "</tr>";
+        }
+        table += "</tbody></table></div>";
+        blocks.push(table);
+        continue;
+      }
     }
 
     if (/^[-*]\s+/.test(trimmed)) {
@@ -149,6 +172,12 @@ function markdownToHtml(raw, placeholders) {
         i++;
       }
       blocks.push(`<ol>${items.join("")}</ol>`);
+      continue;
+    }
+
+    // Ignore standalone "+1", "+2" lines from scraped citation badges
+    if (/^\+\d+$/.test(trimmed)) {
+      i++;
       continue;
     }
 

@@ -184,20 +184,36 @@ export function parseMarkdownTables(text) {
   if (!text) return out;
   const lines = String(text).split("\n");
   for (let i = 0; i < lines.length - 1; i++) {
-    if (!lines[i].includes("|")) continue;
-    const headerCells = splitTableRow(lines[i]);
-    if (headerCells.length < 2) continue; // a real comparison table has ≥2 columns
-    const sepCells = splitTableRow(lines[i + 1]);
-    if (sepCells.length !== headerCells.length) continue;
-    if (!sepCells.every((c) => SEPARATOR_CELL.test(c))) continue;
-    // Found a real table. Data rows run until one stops looking like a row.
-    let j = i + 2;
-    while (j < lines.length && lines[j].trim() && lines[j].includes("|")) {
-      const cells = splitTableRow(lines[j]);
-      if (cells[0]) out.push(cells[0]);
-      j++;
+    if (lines[i].includes("|")) {
+      const headerCells = splitTableRow(lines[i]);
+      if (headerCells.length >= 2) {
+        const sepCells = splitTableRow(lines[i + 1]);
+        if (sepCells.length === headerCells.length && sepCells.every((c) => SEPARATOR_CELL.test(c))) {
+          let j = i + 2;
+          while (j < lines.length && lines[j].trim() && lines[j].includes("|")) {
+            const cells = splitTableRow(lines[j]);
+            const isRank = /^[\u{1F947}\u{1F948}\u{1F949}\d#\s.-]+$/u.test(cells[0]);
+            const target = isRank && cells[1] ? cells[1] : cells[0];
+            if (target) out.push(target);
+            j++;
+          }
+          i = j - 1;
+          continue;
+        }
+      }
     }
-    i = j - 1; // resume scanning after this table, not inside it
+
+    // Tab-delimited (TSV) tables
+    if (lines[i].includes("\t")) {
+      const parts = lines[i].split("\t").map((p) => p.trim()).filter(Boolean);
+      if (parts.length >= 2) {
+        const isRank = /^[\u{1F947}\u{1F948}\u{1F949}\d#\s.-]+$/u.test(parts[0]);
+        const target = isRank && parts[1] ? parts[1] : parts[0];
+        if (target && !/^(rank|phone|product|item|model|name|brand|device|header)$/i.test(target)) {
+          out.push(target);
+        }
+      }
+    }
   }
   return out;
 }
@@ -217,10 +233,7 @@ function cleanCandidateText(raw) {
   // leads there. An arrow or a colon runs the other way — "condition →
   // recommendation" ("For Valorant/CS2/BGMI → Kreo Harpy") and "label: name"
   // ("Best Overall: iQOO Neo 10") both put the actual name AFTER — keep the
-  // part after the LAST arrow/colon. Getting this backwards on the arrow
-  // case is exactly how a "which game → which mouse" heading used to leak
-  // "CS2"/"BGMI" as fake brand names: the game list in front of the arrow
-  // was kept and split on "/", instead of the real answer that follows it.
+  // part after the LAST arrow/colon.
   if (/\s+[—–|]\s+/.test(s)) s = s.split(/\s+[—–|]\s+/)[0].trim();
   else if (/\s*→\s*/.test(s)) s = s.split(/\s*→\s*/).pop().trim();
   else if (s.includes(":")) s = s.split(":").pop().trim();
@@ -230,14 +243,6 @@ function cleanCandidateText(raw) {
   return s;
 }
 
-// Returns {text, source}[] — `source` is "table" for the first column of a
-// real markdown table (parseMarkdownTables, above), "heading" for bold
-// line-leads and plain ### headings. The two get different trust levels in
-// detectBrands(): a table's first column IS the product/brand name by
-// construction — that's what a table row IS — so it doesn't need to pass the
-// same "does this read like a proper name" heuristic that a heading (which
-// can legitimately be a category like "Contemporary Gold Necklaces", not a
-// brand) has to pass.
 export function structuralCandidates(answerText) {
   const out = [];
   if (!answerText) return out;
@@ -248,19 +253,11 @@ export function structuralCandidates(answerText) {
   });
 
   // Bold text at the START of a line, tolerating any combination of heading
-  // hashes, list bullets and numbering. Covers every layout the models use:
-  //   "1. **Zerodha** — ...", "- **Acme Corp**", "### 1. **Vivo V70** — ...",
-  //   "## **Groww**"
+  // hashes, list bullets and numbering.
   const lineLeadBold = /(?:^|\n)[ \t]*#{0,6}[ \t]*(?:\d+[.)][ \t]*)?[-*•]?[ \t]*\*\*([^*\n]{2,40})\*\*/g;
   // Plain (unbolded) headings: "### Zerodha"
   const heading = /(?:^|\n)#{2,6}[ \t]*([^\n#*]{2,60})/g;
 
-  // A bold line-lead names a thing ("**Havells 25 L Storage Water Geyser**");
-  // a plain ### heading usually labels a SECTION ("Selection Guidelines",
-  // "Next Steps", "For Family Baths: Storage Water Heaters"). They were both
-  // tagged "heading" and trusted equally, which is how section labels ended up
-  // in Brand Mentions on real captures. Separated so detectBrands can require
-  // corroboration from the weaker one.
   for (const { re, source } of [
     { re: lineLeadBold, source: "heading" },
     { re: heading, source: "section" },
@@ -271,19 +268,19 @@ export function structuralCandidates(answerText) {
       if (s) out.push({ text: s, source });
     }
   }
+
+  // Paragraph leads (e.g. "POCO F7 delivers...", "Realme P4 Power 5G packs...")
+  const paraLead = /(?:^|\n\n)(?:The\s+)?([A-Z][A-Za-z0-9&.\-]+(?:\s+[A-Za-z0-9&.\-]+){1,3})\s+(?:is|delivers|packs|offers|features|combines|stands out|provides|brings|runs|comes)\b/g;
+  let pm;
+  while ((pm = paraLead.exec(answerText))) {
+    const s = cleanCandidateText(pm[1]);
+    if (s && !isNoise(s)) out.push({ text: s, source: "heading" });
+  }
+
   return out;
 }
 
 /* ---------- 4. cited domains ---------- */
-// Pure horizontal marketplaces and B2B listing directories: platforms that
-// host OTHER companies' products/listings across every vertical, rather than
-// making anything themselves. A source citing amazon.in or dir.indiamart.com
-// is telling you where the answer's information came from, not naming a
-// brand being evaluated — so these never become brand candidates no matter
-// how their name is written in the prose. Deliberately narrow and global:
-// each entry is unambiguous in EVERY industry, unlike a vertical-specific
-// retailer (Croma, Reliance Digital, Nykaa) which this project keeps out of
-// the core detector on purpose.
 const MARKETPLACE_DOMAINS = new Set([
   "amazon.com", "amazon.in", "amazon.co.uk", "amazon.ae", "amazon.de", "amazon.ca",
   "flipkart.com", "myntra.com", "meesho.com", "snapdeal.com", "shopclues.com",
@@ -293,10 +290,25 @@ const MARKETPLACE_DOMAINS = new Set([
   "dhgate.com", "made-in-china.com", "wish.com", "rakuten.com",
 ]);
 
+// Publishers, news outlets, tech portals, aggregators, and social platforms that
+// produce citations or host discussions, NOT product brands being reviewed.
+const EDITORIAL_DOMAINS = new Set([
+  "digit.in", "gadgets01.com", "91mobiles.com", "gsmarena.com", "techradar.com",
+  "theverge.com", "tomsguide.com", "cnet.com", "androidauthority.com", "androidcentral.com",
+  "smartprix.com", "mysmartprice.com", "bgr.in", "gadgets360.com", "gizmochina.com",
+  "beebom.com", "youtube.com", "etnownews.com", "hindustantimes.com", "indiatoday.in",
+  "timesofindia.com", "indianexpress.com", "livemint.com", "moneycontrol.com",
+  "reddit.com", "quora.com", "medium.com", "wikipedia.org", "x.com", "twitter.com",
+  "facebook.com", "instagram.com", "linkedin.com", "pinterest.com", "tiktok.com"
+]);
+
 function isMarketplaceDomain(domain) {
   const host = String(domain || "").trim().toLowerCase().replace(/^www\./, "");
   if (!host) return false;
   for (const d of MARKETPLACE_DOMAINS) {
+    if (host === d || host.endsWith("." + d)) return true;
+  }
+  for (const d of EDITORIAL_DOMAINS) {
     if (host === d || host.endsWith("." + d)) return true;
   }
   return false;
