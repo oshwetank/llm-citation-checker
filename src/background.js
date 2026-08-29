@@ -141,6 +141,11 @@ async function storeCapture(payload, meta) {
   // Gemini emits many small RPCs; only the assistant generation is substantial.
   if (platform === "gemini" && rawText.length < 2000) return null;
 
+  // Reject autocomplete, suggest, and navigation prediction requests (they are not answers)
+  if (/suggest\.perplexity\.ai|\/search\/v2\/|\/api\/predict/i.test(payload.url || "")) {
+    return null;
+  }
+
   // Perplexity background sidebar subscriptions shouldn't create dummy captures.
   if (rawText.includes("SidebarRecentThreadsUpdatesRelaySubscription") && !rawText.includes('"web_results"') && !rawText.includes('"sources"') && !rawText.includes('"chunks"')) {
     return null;
@@ -238,6 +243,12 @@ async function deriveAndStore(rawRow, rawText, settings) {
   record.projectId = rawRow.projectId || null;
   record.runId = rawRow.runId || null;
   record.geo = rawRow.geo || null;
+
+  // Don't store 0-signal captures (empty autocomplete, failed navigation, etc.)
+  if (!record.userPrompt && !record.answerChars && (!record.sources || !record.sources.length)) {
+    return null;
+  }
+
   await db.put("derived", record);
   return record;
 }

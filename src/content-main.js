@@ -49,7 +49,7 @@
 
   const CHATGPT_RE = /\/backend-api\/(?:f\/)?conversation(?:\?|$)/i;
   const GEMINI_RE = /assistant\.lamda\.BardFrontendService\/StreamGenerate|\/StreamGenerate\b/i;
-  const PERPLEXITY_RE = /\/p\/api\/|\/api\/(?:sse\/)?|\/rest\/(?:threads|queries|answers|conversations|search|perplexity_ask)|\/api\/thread|\/socket\.io\/|\/api\/predict|\/api\/search|\/search/i;
+  const PERPLEXITY_RE = /\/p\/api\/|\/api\/sse\/|\/rest\/(?:threads|queries|answers|conversations)|\/api\/thread|\/socket\.io\//i;
   const GROK_RE = /\/api\/rpc|\/rest\/app-chat\/conversations|\/i\/api\/(?:graphql\/[^\/]+\/)?(?:Create)?Grok|\/2\/grok/i;
   const CLAUDE_RE = /\/api\/organizations\/[^\/]+\/(?:chat_conversations|messages|retry|completion)|\/api\/append_message/i;
 
@@ -57,6 +57,7 @@
     test: (url) => {
       const u = url || "";
       if (isThirdParty(u)) return false;
+      if (/suggest\.perplexity\.ai|\/search\/v2\/|\/api\/predict/i.test(u)) return false;
       if (IS_GEMINI) return GEMINI_RE.test(u);
       if (IS_CHATGPT) return CHATGPT_RE.test(u);
       if (IS_PERPLEXITY) return PERPLEXITY_RE.test(u);

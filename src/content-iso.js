@@ -648,21 +648,24 @@
       const sources = [];
 
       if (plat === "perplexity") {
-        const queryEl = document.querySelector('[data-testid="user-query"], h1, .font-display');
+        const queryEl = document.querySelector('[data-testid="user-query"], h1, .font-display, h2, .query-text');
         if (queryEl) promptText = (queryEl.textContent || "").trim();
+        if (!promptText && document.title) {
+          promptText = document.title.replace(/\s*-\s*Perplexity.*$/i, "").replace(/^Perplexity\s*-\s*/i, "").trim();
+        }
 
-        const proseEls = document.querySelectorAll('.prose, [data-testid="thread-message"], [data-testid="answer-content"]');
+        const proseEls = document.querySelectorAll('.prose, [data-testid="thread-message"], [data-testid="answer-content"], div[dir="auto"].select-text, div.select-text, .answer-content');
         if (proseEls.length) {
           answerText = Array.from(proseEls).map((p) => p.innerText || p.textContent || "").join("\n\n").trim();
         }
 
-        const links = document.querySelectorAll('a[href^="http"]:not([href*="perplexity.ai"])');
+        const links = document.querySelectorAll('a[href^="http"]:not([href*="perplexity.ai"]), a[target="_blank"]');
         const seen = new Set();
         links.forEach((a) => {
           const u = a.href;
-          if (u && !seen.has(u) && !u.includes("google.com/search") && !u.includes("twitter.com/intent")) {
+          if (u && !seen.has(u) && !u.includes("perplexity.ai") && !u.includes("google.com/search") && !u.includes("twitter.com/intent")) {
             seen.add(u);
-            const title = (a.getAttribute("title") || a.innerText || a.textContent || "").trim();
+            const title = (a.getAttribute("title") || a.getAttribute("aria-label") || a.innerText || a.textContent || "").trim();
             sources.push({ url: u, title, name: title, snippet: "" });
           }
         });
@@ -718,15 +721,21 @@
 
     const observer = new MutationObserver(() => {
       if (harvestTimer) clearTimeout(harvestTimer);
-      harvestTimer = setTimeout(tryHarvest, 1500);
+      harvestTimer = setTimeout(tryHarvest, 1200);
     });
 
     try {
       if (document.body) {
         observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+        setTimeout(tryHarvest, 1500);
+        setTimeout(tryHarvest, 3000);
       } else {
         document.addEventListener("DOMContentLoaded", () => {
-          if (document.body) observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+          if (document.body) {
+            observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+            setTimeout(tryHarvest, 1500);
+            setTimeout(tryHarvest, 3000);
+          }
         });
       }
     } catch (_) {}
