@@ -141,7 +141,15 @@ async function storeCapture(payload, meta) {
   // Gemini emits many small RPCs; only the assistant generation is substantial.
   if (platform === "gemini" && rawText.length < 2000) return null;
 
-  // Reject autocomplete, suggest, and navigation prediction requests (they are not answers)
+  // Reject autocomplete, suggest, and navigation prediction requests (they are not answers).
+  //
+  // KEEP THIS IDENTICAL to NOISE_RE in content-main.js. Both files reject the
+  // same shape of noise, but this file is a service-worker ES module and
+  // content-main.js is a non-module IIFE injected into the page's MAIN world
+  // at document_start — they cannot share a real import across that boundary,
+  // so this is a second, independent copy rather than a shared constant.
+  // test/interception-endpoints.test.mjs asserts the two copies are
+  // byte-for-byte identical; a change to one without the other fails CI.
   if (/suggest\.perplexity\.ai|\/navigate\b|\/autocomplete\b|\/api\/auth/i.test(payload.url || "")) {
     return null;
   }

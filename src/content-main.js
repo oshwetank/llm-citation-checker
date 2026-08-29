@@ -58,17 +58,32 @@
   //
   // Widening here is safe for the other engines: CONV_RE dispatches on
   // hostname first, so this pattern is only ever tested against
-  // perplexity.ai URLs. The noise filter just below (suggest./search/v2/
-  // /api/predict) still applies.
+  // perplexity.ai URLs. The NOISE_RE filter just below still applies first.
   const PERPLEXITY_RE = /\/p\/api\/|\/api\/sse\/|\/rest\/(?:sse|threads|queries|answers|conversations)|perplexity_ask|\/api\/thread|\/socket\.io\//i;
   const GROK_RE = /\/api\/rpc|\/rest\/app-chat\/conversations|\/i\/api\/(?:graphql\/[^\/]+\/)?(?:Create)?Grok|\/2\/grok/i;
   const CLAUDE_RE = /\/api\/organizations\/[^\/]+\/(?:chat_conversations|messages|retry|completion)|\/api\/append_message/i;
+
+  // Endpoints that are never an answer, regardless of which engine matches
+  // above — autocomplete/typeahead, navigation prediction, and auth pings.
+  //
+  // NAMED as a const (not inlined in CONV_RE.test, where it used to live)
+  // because background.js's storeCapture() carries its OWN copy of this
+  // exact pattern as a second safety net over the already-filtered stream —
+  // this file's execution context (MAIN world, non-module IIFE, injected at
+  // document_start) can't `import` a shared module the way two ordinary ES
+  // modules could, so the two copies can't be unified into one file. What
+  // CAN be enforced is that they stay identical: naming it here (rather than
+  // leaving it anonymous inline) is what lets
+  // test/interception-endpoints.test.mjs pull the literal source text of
+  // both copies and assert byte-for-byte parity. If you change this line,
+  // change background.js's copy to match, or that test fails on purpose.
+  const NOISE_RE = /suggest\.perplexity\.ai|\/navigate\b|\/autocomplete\b|\/api\/auth/i;
 
   const CONV_RE = {
     test: (url) => {
       const u = url || "";
       if (isThirdParty(u)) return false;
-      if (/suggest\.perplexity\.ai|\/navigate\b|\/autocomplete\b|\/api\/auth/i.test(u)) return false;
+      if (NOISE_RE.test(u)) return false;
       if (IS_GEMINI) return GEMINI_RE.test(u);
       if (IS_CHATGPT) return CHATGPT_RE.test(u);
       if (IS_PERPLEXITY) return PERPLEXITY_RE.test(u);
