@@ -28,9 +28,9 @@
 
   const CHATGPT_RE = /\/backend-api\/(?:f\/)?conversation(?:\?|$)/i;
   const GEMINI_RE = /assistant\.lamda\.BardFrontendService\/StreamGenerate|\/StreamGenerate\b/i;
-  const PERPLEXITY_RE = /\/api\/(?:sse\/)?(?:query|ask)|\/rest\/(?:threads\/messages|queries|answers)|\/api\/thread|\/socket\.io\/|\/p\/api\/|\/api\/predict/i;
+  const PERPLEXITY_RE = /\/api\/(?:sse\/)?|\/rest\/(?:threads|queries|answers|conversations|search)|\/api\/thread|\/socket\.io\/|\/p\/api\/|\/api\/predict|\/api\/search/i;
   const GROK_RE = /\/api\/rpc|\/rest\/app-chat\/conversations|\/i\/api\/(?:graphql\/[^\/]+\/)?(?:Create)?Grok|\/2\/grok/i;
-  const CLAUDE_RE = /\/api\/organizations\/[^\/]+\/chat_conversations|\/api\/append_message|\/api\/organizations\/[^\/]+\/retry/i;
+  const CLAUDE_RE = /\/api\/organizations\/[^\/]+\/(?:chat_conversations|messages|retry|completion)|\/api\/append_message/i;
 
   const CONV_RE = {
     test: (url) => {
@@ -143,10 +143,16 @@
     if (method === "POST") {
       dbg("fetch", { url: (url || "").slice(0, 140), status: resp && resp.status, matched: isConv });
     }
-    if (isConv && resp && resp.body) {
+    if (isConv && resp) {
       try {
-        // clone() leaves the original untouched for the page; we read the copy.
-        drain(resp.clone().body, { url, reqBody, transport: "fetch" });
+        const cloned = resp.clone();
+        if (cloned.body) {
+          drain(cloned.body, { url, reqBody, transport: "fetch" });
+        } else if (typeof cloned.text === "function") {
+          cloned.text().then((raw) => {
+            if (raw) emit({ url, reqBody, transport: "fetch", raw, capturedAt: Date.now() });
+          }).catch(() => {});
+        }
       } catch (_) {
         /* ignore */
       }
