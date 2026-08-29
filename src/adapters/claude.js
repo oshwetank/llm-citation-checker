@@ -104,7 +104,8 @@ function extractContentAndThinking(nodes) {
                   title: item.title || "",
                   domain: domainOf(url),
                   snippet: item.snippet || item.text || "",
-                  type: "cited",
+                  outcome: "cited",
+                  type: "citation",
                 })
               );
             }

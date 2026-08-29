@@ -2,10 +2,12 @@
  * adapters/grok.js — derive a normalized record from raw xAI Grok captures.
  *
  * Normalizes Grok (grok.com & x.com/i/grok) responses:
- *   - Answer text & model identity
+ *   - Answer text & model identity (grok-2, grok-3, etc.)
  *   - Web & X/Twitter post citations
+ *   - Inline citations from cardAttachmentsJson & render_inline_citation
+ *   - Web search results from webSearchResults & toolUsageResults
  *   - Real-time social engagement signals (author, likes, post metrics)
- *   - DeepSearch thinking traces & search sub-queries
+ *   - DeepSearch thinking traces & search sub-queries from toolUsageCards
  *   - Brand & entity mentions
  */
 
@@ -13,7 +15,7 @@ import { makeRecord, makeSource } from "../schema.js";
 import { isHttpUrl, domainOf } from "../lib/deep.js";
 import { detectBrands } from "../lib/brands.js";
 
-export const ADAPTER_VERSION = "grok@0.1.0";
+export const ADAPTER_VERSION = "grok@0.2.0";
 
 function parseFrames(raw) {
   if (!raw || typeof raw !== "string") return [];
@@ -21,7 +23,12 @@ function parseFrames(raw) {
   const trimmed = raw.trim();
   if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
     try {
-      nodes.push(JSON.parse(trimmed));
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) nodes.push(...parsed);
+      else nodes.push(parsed);
+      if (parsed && Array.isArray(parsed.responses)) {
+        nodes.push(...parsed.responses);
+      }
       return nodes;
     } catch (_) {}
   }
@@ -32,7 +39,12 @@ function parseFrames(raw) {
     const payload = t.startsWith("data:") ? t.slice(5).trim() : t;
     if (!payload || payload === "[DONE]") continue;
     try {
-      nodes.push(JSON.parse(payload));
+      const p = JSON.parse(payload);
+      if (Array.isArray(p)) nodes.push(...p);
+      else nodes.push(p);
+      if (p && Array.isArray(p.responses)) {
+        nodes.push(...p.responses);
+      }
     } catch (_) {}
   }
   return nodes;
@@ -45,16 +57,17 @@ function extractPrompt(reqBody, nodes) {
       if (parsed.message) return parsed.message;
       if (parsed.query) return parsed.query;
       if (Array.isArray(parsed.messages)) {
-        const u = parsed.messages.filter((m) => m.role === "user" || m.sender === "user").pop();
-        if (u && (u.content || u.text)) return u.content || u.text;
+        const u = parsed.messages.filter((m) => m.role === "user" || m.sender === "human" || m.sender === "user").pop();
+        if (u && (u.content || u.text || u.message)) return u.content || u.text || u.message;
       }
     } catch (_) {}
   }
   for (const n of nodes) {
-    if (n && typeof n === "object") {
-      if (n.userMessage && typeof n.userMessage === "string") return n.userMessage;
-      if (n.prompt && typeof n.prompt === "string") return n.prompt;
-    }
+    if (!n || typeof n !== "object") continue;
+    if (n.sender === "human" && n.message) return n.message;
+    if (n.userMessage && typeof n.userMessage === "string") return n.userMessage;
+    if (n.prompt && typeof n.prompt === "string") return n.prompt;
+    if (n.query && typeof n.query === "string" && n.query) return n.query;
   }
   return "";
 }
@@ -63,16 +76,25 @@ function extractAnswer(nodes) {
   let text = "";
   for (const n of nodes) {
     if (!n || typeof n !== "object") continue;
+    // Skip human prompts when looking for answer text
+    if (n.sender === "human") continue;
     if (typeof n.message === "string" && n.message.length > text.length) text = n.message;
     if (typeof n.response === "string" && n.response.length > text.length) text = n.response;
     if (typeof n.text === "string" && n.text.length > text.length) text = n.text;
     if (n.result && typeof n.result.response === "string" && n.result.response.length > text.length) {
       text = n.result.response;
     }
-    // Incremental token appending if stream format
     if (typeof n.token === "string") text += n.token;
   }
   return text;
+}
+
+function extractModel(nodes) {
+  for (const n of nodes) {
+    if (n && typeof n.model === "string" && n.model) return n.model;
+    if (n && n.metadata && typeof n.metadata.model === "string") return n.metadata.model;
+  }
+  return null;
 }
 
 function extractSources(nodes) {
@@ -80,17 +102,17 @@ function extractSources(nodes) {
   const socialCitations = [];
   const seenUrls = new Set();
 
-  function addSource(item, isCited = true) {
+  function addSource(item, isCited = false) {
     if (!item || typeof item !== "object") return;
-    const url = item.url || item.link || item.web_url;
+    const url = item.url || item.link || item.web_url || item.uri;
     if (!url || !isHttpUrl(url) || seenUrls.has(url)) return;
     seenUrls.add(url);
 
-    const title = item.title || item.name || item.snippet_title || "";
-    const snippet = item.snippet || item.text || item.summary || "";
+    const title = item.title || item.name || item.snippet_title || item.headline || "";
+    const snippet = item.snippet || item.preview || item.text || item.summary || "";
     const domain = domainOf(url);
 
-    const isXPost = domain === "x.com" || domain === "twitter.com" || item.is_x_post || item.type === "x_post";
+    const isXPost = domain === "x.com" || domain === "twitter.com" || item.is_x_post || item.type === "x_post" || item.xpostId;
     if (isXPost) {
       socialCitations.push({
         url,
@@ -107,7 +129,8 @@ function extractSources(nodes) {
         title,
         domain,
         snippet,
-        type: isCited ? "cited" : "fetched",
+        outcome: isCited ? "cited" : "fetched",
+        type: isXPost ? "other" : "citation",
         platformSpecific: {
           isSocialPost: isXPost,
           author: item.author || null,
@@ -117,18 +140,73 @@ function extractSources(nodes) {
     );
   }
 
+  // 1. Check cardAttachmentsJson for explicitly cited cards
+  const citedUrls = new Set();
+  for (const n of nodes) {
+    if (!n || typeof n !== "object") continue;
+    if (Array.isArray(n.cardAttachmentsJson)) {
+      n.cardAttachmentsJson.forEach((cardStr) => {
+        try {
+          const card = typeof cardStr === "string" ? JSON.parse(cardStr) : cardStr;
+          if (card && card.url) {
+            citedUrls.add(card.url);
+            addSource(card, true);
+          }
+        } catch (_) {}
+      });
+    }
+    if (Array.isArray(n.citedWebSearchResults)) {
+      n.citedWebSearchResults.forEach((item) => {
+        if (item && item.url) {
+          citedUrls.add(item.url);
+          addSource(item, true);
+        }
+      });
+    }
+  }
+
+  // 2. Check all search results
   for (const n of nodes) {
     if (!n || typeof n !== "object") continue;
     const lists = [
+      n.webSearchResults,
       n.web_search_results,
       n.searchResults,
       n.sources,
       n.citations,
+      n.xposts,
       n.x_post_results,
       n.posts,
     ];
     for (const list of lists) {
-      if (Array.isArray(list)) list.forEach((item) => addSource(item, true));
+      if (Array.isArray(list)) {
+        list.forEach((item) => {
+          const isExplicitlyCited = item.url && citedUrls.has(item.url);
+          addSource(item, isExplicitlyCited);
+        });
+      }
+    }
+
+    // Check steps toolUsageResults
+    if (Array.isArray(n.steps)) {
+      n.steps.forEach((st) => {
+        if (Array.isArray(st.toolUsageResults)) {
+          st.toolUsageResults.forEach((tur) => {
+            if (tur && tur.webSearchResults && Array.isArray(tur.webSearchResults.results)) {
+              tur.webSearchResults.results.forEach((item) => {
+                const isExplicitlyCited = item.url && citedUrls.has(item.url);
+                addSource(item, isExplicitlyCited);
+              });
+            }
+          });
+        }
+        if (Array.isArray(st.webSearchResults)) {
+          st.webSearchResults.forEach((item) => {
+            const isExplicitlyCited = item.url && citedUrls.has(item.url);
+            addSource(item, isExplicitlyCited);
+          });
+        }
+      });
     }
   }
 
@@ -143,7 +221,7 @@ function extractFanoutAndThoughts(nodes) {
   const pushQ = (q) => {
     if (typeof q === "string" && q.trim().length > 2 && !seen.has(q.trim())) {
       seen.add(q.trim());
-      search.push(q.trim());
+      search.push({ query: q.trim(), search_type: "search" });
     }
   };
 
@@ -152,9 +230,31 @@ function extractFanoutAndThoughts(nodes) {
     if (Array.isArray(n.queries)) n.queries.forEach(pushQ);
     if (Array.isArray(n.search_queries)) n.search_queries.forEach(pushQ);
     if (typeof n.search_query === "string") pushQ(n.search_query);
+    if (typeof n.query === "string" && n.query) pushQ(n.query);
 
     if (typeof n.thought === "string" && n.thought) thoughts.push(n.thought);
     if (typeof n.reasoning === "string" && n.reasoning) thoughts.push(n.reasoning);
+
+    // Grok steps with toolUsageCards & text annotations
+    if (Array.isArray(n.steps)) {
+      n.steps.forEach((st) => {
+        if (Array.isArray(st.toolUsageCards)) {
+          st.toolUsageCards.forEach((tuc) => {
+            if (tuc && tuc.webSearch && tuc.webSearch.args && tuc.webSearch.args.query) {
+              pushQ(tuc.webSearch.args.query);
+            }
+          });
+        }
+        if (Array.isArray(st.text)) {
+          st.text.forEach((t) => {
+            if (typeof t === "string" && t.includes("<xai:tool_args>")) {
+              const m = t.match(/"query":\s*"([^"]+)"/);
+              if (m) pushQ(m[1]);
+            }
+          });
+        }
+      });
+    }
   }
 
   return { search, thoughts };
@@ -164,6 +264,7 @@ export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, op
   const nodes = parseFrames(raw);
   const userPrompt = extractPrompt(reqBody, nodes);
   const answerText = extractAnswer(nodes);
+  const model = extractModel(nodes);
   const { sources, socialCitations } = extractSources(nodes);
   const { search, thoughts } = extractFanoutAndThoughts(nodes);
 
@@ -174,14 +275,16 @@ export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, op
   return makeRecord({
     captureId,
     platform: "grok",
+    model: model || "grok-3",
     capturedAt: capturedAt || Date.now(),
     pageUrl: pageUrl || "https://grok.com",
     userPrompt,
     answerText,
     answerChars: answerText.length,
+    searched: sources.length > 0 || search.length > 0,
     sources,
     fanout: {
-      search: search.map((q) => (typeof q === "string" ? { query: q, search_type: "search" } : q)),
+      search,
       shopping: [],
       image: [],
     },

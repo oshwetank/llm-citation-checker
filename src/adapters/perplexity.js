@@ -18,22 +18,35 @@ export const ADAPTER_VERSION = "perplexity@0.1.0";
 function parsePayloads(raw) {
   if (!raw || typeof raw !== "string") return [];
   const nodes = [];
+  const addParsed = (p) => {
+    if (!p) return;
+    if (Array.isArray(p)) {
+      p.forEach((item) => {
+        if (item && typeof item === "object") nodes.push(item);
+      });
+    } else if (typeof p === "object") {
+      nodes.push(p);
+      if (Array.isArray(p.messages)) nodes.push(...p.messages);
+      if (Array.isArray(p.blocks)) nodes.push(...p.blocks);
+    }
+  };
+
   const trimmed = raw.trim();
   if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
     try {
-      nodes.push(JSON.parse(trimmed));
-      return nodes;
+      addParsed(JSON.parse(trimmed));
+      if (nodes.length) return nodes;
     } catch (_) {}
   }
   for (const line of raw.split(/\r?\n/)) {
     const t = line.trim();
-    if (!t.startsWith("data:") && !t.startsWith("42[")) continue;
+    if (!t.startsWith("data:") && !t.startsWith("42[") && !t.startsWith("{")) continue;
     let payload = t;
     if (t.startsWith("data:")) payload = t.slice(5).trim();
     else if (t.startsWith("42[")) payload = t.slice(2).trim();
     if (!payload || payload === "[DONE]") continue;
     try {
-      nodes.push(JSON.parse(payload));
+      addParsed(JSON.parse(payload));
     } catch (_) {}
   }
   return nodes;
@@ -89,7 +102,8 @@ function extractSources(nodes) {
         title,
         domain,
         snippet,
-        type: isCited ? "cited" : "fetched",
+        outcome: isCited ? "cited" : "fetched",
+        type: "citation",
         platformSpecific: {
           queryPlanQuery: obj.query || null,
           sourceIndex: obj.index != null ? obj.index : null,

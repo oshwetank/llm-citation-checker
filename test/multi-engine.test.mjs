@@ -116,6 +116,51 @@ console.log("\n--- xAI Grok Adapter ---");
   check("social citation likes count parsed", rec.platformSpecific.socialCitations[0].likes === 45200);
   check("DeepSearch thinking thoughts extracted", Boolean(rec.platformSpecific?.thoughts?.length > 0));
   check("brands detected in Grok answer", rec.brandMentions.some((b) => b.brand.toLowerCase() === "tesla"));
+
+  // Test real-world grok.com load-responses payload structure
+  const grokRealPayload = JSON.stringify({
+    responses: [
+      {
+        responseId: "ed9e77b9-be20-4e87-935e-f6f9b7ea3d8a",
+        message: "best camera phone under 40000 in india",
+        sender: "human",
+      },
+      {
+        responseId: "6e00071b-5667-4bca-8b69-508764e03ce4",
+        message: "**Tecno Camon 50 Ultra (around ₹39,999) is currently one of the strongest camera-focused picks under ₹40,000 in India**",
+        sender: "assistant",
+        model: "grok-3",
+        webSearchResults: [
+          { url: "https://www.91mobiles.com/list-of-phones/top-10-camera-mobiles-below-40000-in-india", title: "91mobiles", preview: "Review preview text" }
+        ],
+        cardAttachmentsJson: [
+          JSON.stringify({ id: "64481f", type: "render_inline_citation", url: "https://www.91mobiles.com/list-of-phones/top-10-camera-mobiles-below-40000-in-india" })
+        ],
+        steps: [
+          {
+            toolUsageCards: [
+              { webSearch: { args: { query: "best camera phone under 40000 in India 2026" } } }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+
+  const realRec = await adaptGrok({
+    captureId: "grok-real-1",
+    raw: grokRealPayload,
+    pageUrl: "https://grok.com/chat/123",
+  }, {
+    tracked: [{ name: "Tecno" }],
+  });
+
+  check("real grok payload prompt extracted", realRec.userPrompt === "best camera phone under 40000 in india");
+  check("real grok payload model extracted", realRec.model === "grok-3");
+  check("real grok payload answer extracted", realRec.answerText.includes("Tecno Camon 50 Ultra"));
+  check("real grok payload source extracted with preview", realRec.sources.length === 1);
+  check("real grok payload inline citation marked cited", realRec.sources[0].outcome === "cited");
+  check("real grok payload sub-query extracted into fanout", realRec.fanout.search.some((s) => s.query.includes("best camera phone under 40000")));
 }
 
 console.log("\n--- Anthropic Claude Adapter ---");
