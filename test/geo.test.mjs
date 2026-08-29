@@ -61,14 +61,31 @@ console.log("normalisation helpers");
 console.log("\nengine registry reflects what can actually run");
 {
   const avail = availableEngines().map((e) => e.id);
-  check("all 5 engines (chatgpt, gemini, perplexity, claude, grok) are available",
-    ["chatgpt", "gemini", "perplexity", "claude", "grok"].every((id) => avail.includes(id)),
+  // Claude is blocked pending a real-capture calibration pass (the same bar
+  // Perplexity and Grok had to clear first — see geo.js's own comment on the
+  // registry entry). This is a "coming soon" gate, not a removal: the
+  // registry still lists it (available:false + a note), which is what keeps
+  // it visible-but-disabled in the campaign engine picker instead of
+  // silently vanishing — see the ENGINES module comment above.
+  check("chatgpt, gemini, perplexity and grok are available; claude is not",
+    ["chatgpt", "gemini", "perplexity", "grok"].every((id) => avail.includes(id)) && !avail.includes("claude"),
     avail.join(",")
   );
-  check("every registered engine is available and active",
-    ENGINES.every((e) => e.available));
-  check("a profile selects active available engines",
-    makeProfile({ engines: ["chatgpt", "perplexity", "claude", "grok"] }).engines.every((id) => avail.includes(id)));
+  check("claude is still registered, just blocked with a note",
+    ENGINES.some((e) => e.id === "claude" && e.available === false && !!e.note));
+  check("exactly 4 of 5 registered engines are available",
+    ENGINES.filter((e) => e.available).length === 4 && ENGINES.length === 5);
+  // A profile requesting claude alongside available engines must have it
+  // silently dropped, not silently kept — this is what actually enforces
+  // "blocked" rather than merely hiding it in one UI. (The picker itself
+  // already can't select it; this is the save-time backstop for a value
+  // that reached makeProfile some other way — a hand-built message, a
+  // profile object carried over from before the block.)
+  const saved = makeProfile({ engines: ["chatgpt", "perplexity", "claude", "grok"] });
+  check("a profile requesting claude has it dropped on save",
+    !saved.engines.includes("claude"), saved.engines.join(","));
+  check("the other three requested engines all survive",
+    ["chatgpt", "perplexity", "grok"].every((id) => saved.engines.includes(id)));
 }
 
 /* ---------------- isolation ---------------- */

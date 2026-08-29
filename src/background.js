@@ -30,7 +30,7 @@ import { adapt as adaptClaude } from "./adapters/claude.js";
 import {
   MAX_PROFILES, TRASH_RETENTION_DAYS, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
   selectTracked, computeMetrics, computeSeries, brandPresence, normName,
-  effectiveTrackedBrands, headToHead, brandSourceDomains,
+  effectiveTrackedBrands, headToHead, brandSourceDomains, availableEngines,
   hasSignal, countCompletedForRun, countCompletedForLeg, isPrunableCapture,
 } from "./lib/geo.js";
 export { hasSignal };
@@ -1032,7 +1032,13 @@ async function loaderStart(prompts, options) {
   if (!clean.length) return { ok: false, error: "No prompts provided." };
 
   const platforms = (options && options.platforms) || ["chatgpt"];
-  const supported = platforms.filter((p) => ["chatgpt", "gemini", "perplexity", "grok", "claude"].includes(p));
+  // Was a hardcoded literal list of all 5 engine ids, so blocking one in the
+  // ENGINES registry (available:false) only hid it from the picker UI —
+  // anything already in `platforms` (a stale saved profile, a hand-built
+  // message) still ran here regardless of the registry. Deriving from
+  // availableEngines() makes the registry the actual gate, not just cosmetic.
+  const ids = availableEngines().map((e) => e.id);
+  const supported = platforms.filter((p) => ids.includes(p));
   if (!supported.length) return { ok: false, error: "Select at least one supported AI engine." };
 
   loader = newLoaderState();
@@ -1135,7 +1141,14 @@ async function geoRunStart(profileId) {
     .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
   if (!prompts.length) return { ok: false, error: "Add at least one tracked prompt first." };
 
-  const engines = (profile.engines || []).filter((e) => ["chatgpt", "gemini", "perplexity", "grok", "claude"].includes(e));
+  // Same fix as loaderStart's `supported` above and for the same reason:
+  // this used to be a hardcoded literal list of all 5 ids, which is not a
+  // real gate — a campaign saved before an engine got blocked keeps it in
+  // profile.engines (makeProfile() only re-filters on the NEXT save), and
+  // this line would have happily run it anyway. availableEngines() is the
+  // one place that decides "can this actually run", enforced here where the
+  // run is kicked off, not just in the picker UI.
+  const engines = (profile.engines || []).filter((e) => availableEngines().some((a) => a.id === e));
   if (!engines.length) return { ok: false, error: "Select at least one engine with an active adapter." };
 
   const vol = runVolume(prompts, engines);

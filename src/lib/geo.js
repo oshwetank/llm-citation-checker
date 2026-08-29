@@ -54,7 +54,12 @@ export const ENGINES = [
   { id: "chatgpt", label: "ChatGPT", host: "chatgpt.com", available: true },
   { id: "gemini", label: "Gemini", host: "gemini.google.com", available: true },
   { id: "perplexity", label: "Perplexity", host: "perplexity.ai", available: true },
-  { id: "claude", label: "Claude", host: "claude.ai", available: true },
+  // Blocked pending a real-capture calibration pass — the same bar Perplexity
+  // and Grok had to clear before flipping to available:true. Both of those
+  // shipped bugs when built against guessed markup instead of a real capture
+  // (see the interception + citation-marking fixes in this repo's history);
+  // adapters/claude.js has zero real fixtures backing it, unlike either.
+  { id: "claude", label: "Claude", host: "claude.ai", available: false, note: "coming soon" },
   { id: "grok", label: "Grok", host: "grok.com", available: true },
 ];
 

@@ -106,6 +106,17 @@ function applyMode() {
   document.documentElement.classList.toggle("popup", !isTab);
   document.body.classList.toggle("tab", isTab);
   document.body.classList.toggle("popup", !isTab);
+  // Analyze's sticky prompt/engine bar needs to stick BELOW .app-header, not
+  // at the true viewport top, or the two would overlap. .app-header's own
+  // height differs by mode (tab mode adds its own margin/padding via
+  // body.tab .app-header, popup mode is a stacked two-row header) and isn't
+  // a fixed number in either — so it's measured here, where mode changes are
+  // already funneled through, rather than guessed as a magic-number `top`
+  // in CSS that would drift the next time the header's own layout changes.
+  const header = document.querySelector(".app-header");
+  if (header) {
+    document.documentElement.style.setProperty("--analyze-bar-top", `${header.offsetHeight}px`);
+  }
 }
 applyMode();
 window.addEventListener("resize", applyMode);
@@ -600,7 +611,7 @@ async function load() {
     if (root) {
       root.textContent = "";
       root.append(
-        el("div", { className: "card warn-box", style: "margin: 20px; color: #b91c1c;" },
+        el("div", { className: "card warn-box", style: "margin: 20px; color: var(--red-fg);" },
           el("h3", {}, "Couldn't connect to the extension"),
           el("p", {}, "This usually happens right after the extension is reloaded or updated while this popup/tab was already open."),
           el("p", { style: "font-weight:600;" }, "Close this popup and reopen it (or refresh the page, if you're in Full tab view)."),
@@ -1032,7 +1043,13 @@ function openProductModal(product, rec) {
   const body = el("div", { className: "modal-body" });
 
   // Price & Merchant Breakdown
-  const priceInfo = el("div", { className: "card", style: "margin-bottom: 12px; background: rgba(255,255,255,0.75);" },
+  // Was overriding .card's own theme-aware var(--card-bg) with a hardcoded
+  // translucent WHITE. In dark mode this card stayed a near-white box while
+  // .card's default text color (inherited var(--fg-primary), near-white in
+  // dark mode) never changed — near-white text on a near-white background,
+  // genuinely illegible. Dropping the override lets .card's real background
+  // apply, the same as every other card in the app.
+  const priceInfo = el("div", { className: "card", style: "margin-bottom: 12px;" },
     el("div", { style: "font-weight: 600; font-size: 14px; color: var(--accent);" }, product.price || "Price specified in response text"),
     el("div", { className: "muted", style: "font-size: 12px; margin-top: 4px;" }, `E-Commerce Merchant: ${product.merchant || "Multiple E-Commerce Retailers"}`),
     el("div", { className: "muted", style: "font-size: 11px; margin-top: 2px;" }, `Rating Source: ${product.rating ? product.rating + " ★ rating aggregated from store metadata & search snippets" : "Rating derived from user evaluation in response"}`)
@@ -1170,6 +1187,29 @@ function renderAnalyze() {
       );
       return;
     }
+
+  // Sticky prompt/engine identity bar — the first thing in #analyze, before
+  // even the context banner below. On a long Analyze view (Verbatim
+  // Grounding is now the LAST card, so this page can run long) scrolling
+  // down used to lose all track of WHICH prompt and WHICH engine's answer
+  // you were looking at; this stays glued to the top of the scroll area so
+  // that's always visible. Sticks below .app-header (--analyze-bar-top,
+  // measured by applyMode()) in the full-tab view, where both are sticky in
+  // the SAME scrolling context; in the popup, .app-header is a non-scrolling
+  // flex sibling of .app-content rather than part of its scrollport, so
+  // top:0 there is already correct without an offset — see the CSS.
+  {
+    const promptBar = el("div", { className: "analyze-context-bar" });
+    promptBar.append(
+      el("span", { className: "analyze-context-label muted small" }, "Analyzing"),
+      el("span", {
+        className: "analyze-context-prompt",
+        title: rec.userPrompt || "",
+      }, rec.userPrompt || "(no prompt text)"),
+      engineChip(rec.platform, ENGINES.find((e) => e.id === rec.platform)?.label || rec.platform || "Unknown")
+    );
+    root.append(promptBar);
+  }
 
   // Context banner — two independent signals, shown together when both
   // apply, and deliberately the FIRST thing appended so it's visible
@@ -1669,48 +1709,7 @@ function renderAnalyze() {
     mainCol.append(socCard);
   }
 
-  // Verbatim Grounding & Claim Integrity (2026 Grounding Innovation)
-  if (rec.sources && rec.sources.length && rec.answerText) {
-    const vg = computeVerbatimGrounding(rec.answerText, rec.sources);
-    const scoreColor = vg.score >= 70 ? "var(--accent-emerald, #10b981)" : vg.score >= 40 ? "#f59e0b" : "#ef4444";
-    const grdCard = el("div", { className: "card", id: "card-grounding-integrity" },
-      el("div", { className: "card-header" },
-        el("h3", { "data-term": "verbatimGrounding" }, "Verbatim Grounding & Claim Integrity"),
-        el("span", {
-          className: "tag cited",
-          style: `background:${scoreColor}18; color:${scoreColor}; border:1px solid ${scoreColor}40; font-weight:700;`,
-          "data-term": "verbatimGrounding",
-        }, `${vg.score}% Grounded`),
-        el("span", { className: "tag", "data-term": "hallucinationGap" }, `${vg.groundedClaims}/${vg.totalClaims} Claims Substantiated`)
-      ),
-      el("div", { className: "muted small", style: "margin-bottom:10px" },
-        `Verdict: `, el("strong", { style: `color:${scoreColor};` }, vg.verdict),
-        ` — Cross-referenced against ${rec.sources.length} cited source passages and scroll-to-text anchors.`)
-    );
-
-    if (vg.claimMatches && vg.claimMatches.length) {
-      const claimList = el("div", { style: "display:flex; flex-direction:column; gap:6px;" });
-      vg.claimMatches.slice(0, 4).forEach((cm) => {
-        const item = el("div", {
-          style: "background:var(--bg-subtle, rgba(255,255,255,0.03)); border:1px solid var(--border); border-radius:6px; padding:7px 10px; font-size:12px;",
-        },
-          el("div", { style: "display:flex; justify-content:space-between; margin-bottom:3px; gap:8px;" },
-            el("span", {
-              className: "tag",
-              style: `font-size:10px; padding:1px 5px; font-weight:600; background:${cm.isGrounded ? "rgba(16,185,129,0.12)" : "rgba(239,68,68,0.12)"}; color:${cm.isGrounded ? "#10b981" : "#ef4444"};`,
-            }, cm.isGrounded ? `✓ Grounded (${cm.confidence}%)` : `⚠ Unsubstantiated`),
-            cm.sourceDomain ? el("span", { className: "muted small" }, `via ${cm.sourceDomain}`) : ""
-          ),
-          el("div", { style: "line-height:1.4;" }, `“${cm.sentence}…”`)
-        );
-        claimList.append(item);
-      });
-      grdCard.append(claimList);
-    }
-    mainCol.append(grdCard);
-  }
-
-  // Social vs. Editorial Authority Split
+// Social vs. Editorial Authority Split
   if (rec.sources && rec.sources.length) {
     const auth = computeAuthoritySplit(rec.sources, ps.socialCitations);
     if (auth.socialCount > 0) {
@@ -2022,7 +2021,16 @@ function renderAnalyze() {
           (sm.presentBrands || []).forEach((pb) => {
             brandsRow.append(el("span", {
               className: "tag",
-              style: "font-size:9.5px; padding:1px 5px; background:rgba(16, 185, 129, 0.12); color:#059669; border:1px solid rgba(16, 185, 129, 0.3); border-radius:4px"
+              // Was a hardcoded light-mode-only green (bg rgba(16,185,129,.12)
+              // + text #059669) — a translucent tint blended over whatever
+              // sits behind it, so in dark mode it inherited the dark card
+              // background underneath and the same medium-dark green text
+              // read as low-contrast on it. --green-bg/--green-fg are the
+              // same semantic color, already redefined per theme (dark mode
+              // brightens the text and deepens the tint), and are what
+              // .tag.cited already uses elsewhere for this identical
+              // "present/positive" meaning.
+              style: "font-size:9.5px; padding:1px 5px; background:var(--green-bg); color:var(--green-fg); border:1px solid var(--green-border); border-radius:4px"
             }, `+ ${pb}`));
           });
           if (showSnippets && sm.missingBrands && sm.missingBrands.length) {
@@ -2162,7 +2170,13 @@ function renderAnalyze() {
       const head = el("div", { className: "item-head" });
       const nameSpan = el("span", { className: "item-name", style: "font-weight: 600;" });
       if (isHero) {
-        nameSpan.append(el("span", { className: "tag rank-tag", style: "background: #fef3c7; color: #b45309; border: 1px solid #fde68a; margin-right: 6px;" }, "⭐ HERO PICK"));
+        // Was a hand-picked pale yellow (#fef3c7/#b45309/#fde68a) that
+        // happens to be close to the amber tokens but isn't wired to them —
+        // stayed bright light-yellow in dark mode regardless, a jarring lit
+        // patch against the rest of the dark UI. Same semantic meaning as
+        // every other amber highlight in this app, so it should use the
+        // same tokens and adapt with them.
+        nameSpan.append(el("span", { className: "tag rank-tag", style: "background: var(--amber-bg); color: var(--amber-fg); border: 1px solid var(--amber-border); margin-right: 6px;" }, "⭐ HERO PICK"));
       }
       nameSpan.append(p.name || "—");
       head.append(nameSpan);
@@ -2219,6 +2233,54 @@ function renderAnalyze() {
     mainCol.append(ic);
   }
 
+  // Verbatim Grounding & Claim Integrity (2026 Grounding Innovation).
+  //
+  // Moved to be the LAST card in mainCol (was near the top, right after the
+  // social-post card) — requested placement: a synthesized cross-check
+  // against every OTHER section above it (sources, fan-out, products,
+  // places, entities, images) reads better as a closing verdict than as the
+  // first thing shown before any of what it's cross-referencing has been
+  // seen.
+  if (rec.sources && rec.sources.length && rec.answerText) {
+    const vg = computeVerbatimGrounding(rec.answerText, rec.sources);
+    const scoreColor = vg.score >= 70 ? "var(--accent-emerald, #10b981)" : vg.score >= 40 ? "#f59e0b" : "#ef4444";
+    const grdCard = el("div", { className: "card", id: "card-grounding-integrity" },
+      el("div", { className: "card-header" },
+        el("h3", { "data-term": "verbatimGrounding" }, "Verbatim Grounding & Claim Integrity"),
+        el("span", {
+          className: "tag cited",
+          style: `background:${scoreColor}18; color:${scoreColor}; border:1px solid ${scoreColor}40; font-weight:700;`,
+          "data-term": "verbatimGrounding",
+        }, `${vg.score}% Grounded`),
+        el("span", { className: "tag", "data-term": "hallucinationGap" }, `${vg.groundedClaims}/${vg.totalClaims} Claims Substantiated`)
+      ),
+      el("div", { className: "muted small", style: "margin-bottom:10px" },
+        `Verdict: `, el("strong", { style: `color:${scoreColor};` }, vg.verdict),
+        ` — Cross-referenced against ${rec.sources.length} cited source passages and scroll-to-text anchors.`)
+    );
+
+    if (vg.claimMatches && vg.claimMatches.length) {
+      const claimList = el("div", { style: "display:flex; flex-direction:column; gap:6px;" });
+      vg.claimMatches.slice(0, 4).forEach((cm) => {
+        const item = el("div", {
+          style: "background:var(--bg-subtle, rgba(255,255,255,0.03)); border:1px solid var(--border); border-radius:6px; padding:7px 10px; font-size:12px;",
+        },
+          el("div", { style: "display:flex; justify-content:space-between; margin-bottom:3px; gap:8px;" },
+            el("span", {
+              className: "tag",
+              style: `font-size:10px; padding:1px 5px; font-weight:600; background:${cm.isGrounded ? "rgba(16,185,129,0.12)" : "rgba(239,68,68,0.12)"}; color:${cm.isGrounded ? "#10b981" : "#ef4444"};`,
+            }, cm.isGrounded ? `✓ Grounded (${cm.confidence}%)` : `⚠ Unsubstantiated`),
+            cm.sourceDomain ? el("span", { className: "muted small" }, `via ${cm.sourceDomain}`) : ""
+          ),
+          el("div", { style: "line-height:1.4;" }, `“${cm.sentence}…”`)
+        );
+        claimList.append(item);
+      });
+      grdCard.append(claimList);
+    }
+    mainCol.append(grdCard);
+  }
+
   // Append columns to layout grid
   // Order matters for the narrow popup (a plain flex column); the tab layout
   // overrides placement explicitly with grid-area rules.
@@ -2232,7 +2294,7 @@ function renderAnalyze() {
     if (root) {
       root.textContent = "";
       root.append(
-        el("div", { className: "card warn-box", style: "margin: 20px; color: #b91c1c;" },
+        el("div", { className: "card warn-box", style: "margin: 20px; color: var(--red-fg);" },
           el("h3", {}, "Render Warning"),
           el("p", {}, `Could not render capture details: ${err.message}`),
           el("p", { className: "muted", style: "font-size: 11px;" }, "Try selecting another capture from the Dashboard.")
@@ -3679,8 +3741,25 @@ const ENGINE_ICON_SVG = {
   // duplicated by every copy of this icon — see the note there.
   gemini: `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><defs><linearGradient id="__UID__" x1="0" y1="24" x2="24" y2="0" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#1C7DFF"/><stop offset=".52" stop-color="#8E6FF7"/><stop offset="1" stop-color="#D96570"/></linearGradient></defs><path fill="url(#__UID__)" d="M12 24A14.304 14.304 0 0 0 0 12A14.304 14.304 0 0 0 12 0a14.305 14.305 0 0 0 12 12a14.305 14.305 0 0 0-12 12"/></svg>`,
   claude: `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><g fill="#D97757"><path d="M11.1 1.6h1.8v20.8h-1.8z"/><path d="M1.6 11.1h20.8v1.8H1.6z"/><path d="M4.08 2.81l1.27-1.27 14.7 14.7-1.27 1.28z" opacity=".92"/><path d="M19.92 2.81l1.27 1.28-14.7 14.7-1.27-1.28z" opacity=".92"/></g></svg>`,
-  perplexity: `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><g fill="none" stroke="#20808D" stroke-width="1.9" stroke-linecap="round"><path d="M12 3.2v17.6"/><path d="M12 7.4L5.2 3.2v7.2h13.6V3.2L12 7.4z"/><path d="M12 16.6l-6.8 4.2v-7.2h13.6v7.2L12 16.6z"/><path d="M3.4 10.4h17.2"/></g></svg>`,
-  grok: `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M6.1 21.5H3.2L14.4 6.2h2.9L6.1 21.5zM17.4 21.5h-2.7l-3.3-4.5 1.4-1.9 4.6 6.4zM9.6 8.9L6.3 4.4h2.7l3.3 4.5-1.4 1.9-1.3-1.9z"/><path d="M20.8 2.5l-6.4 8.7 6.4 8.7v-4.1l-3.4-4.6 3.4-4.6V2.5z" opacity=".55"/></svg>`,
+  // Was a hand-drawn hourglass/compass shape that doesn't read as Perplexity
+  // to anyone who knows the product — the other four marks here are each the
+  // real logo, so this was the odd one out. Replaced with the actual mark,
+  // exact path from simple-icons (simple-icons/simple-icons, CC0), the same
+  // source most open-source projects pull verified brand SVGs from. Fill is
+  // Perplexity's own published brand teal (#20808D, "True Turquoise"), which
+  // the old placeholder's stroke color already had right — only the shape
+  // was wrong.
+  perplexity: `<svg viewBox="0 0 24 24" width="20" height="20" fill="#20808D" aria-hidden="true"><path d="M22.3977 7.0896h-2.3106V.0676l-7.5094 6.3542V.1577h-1.1554v6.1966L4.4904 0v7.0896H1.6023v10.3976h2.8882V24l6.932-6.3591v6.2005h1.1554v-6.0469l6.9318 6.1807v-6.4879h2.8882V7.0896zm-3.4657-4.531v4.531h-5.355l5.355-4.531zm-13.2862.0676 4.8691 4.4634H5.6458V2.6262zM2.7576 16.332V8.245h7.8476l-6.1149 6.1147v1.9723H2.7576zm2.8882 5.0404v-3.8852h.0001v-2.6488l5.7763-5.7764v7.0111l-5.7764 5.2993zm12.7086.0248-5.7766-5.1509V9.0618l5.7766 5.7766v6.5588zm2.8882-5.0652h-1.733v-1.9723L13.3948 8.245h7.8478v8.087z"/></svg>`,
+  // Was the "bowtie" shape (two crossed strokes), which is not Grok's mark at
+  // all — no version of it has looked like that. Replaced with the actual
+  // current app icon (the twisted-loop mark used on grok.com, X, and the iOS
+  // app today), sourced from lobehub/lobe-icons — simple-icons has no Grok
+  // entry yet (open feature request, simple-icons/simple-icons#13853) at time
+  // of writing. currentColor, like chatgpt above: this mark is genuinely
+  // monochrome in Grok's own branding (no distinct brand color the way
+  // Perplexity/Claude have), so it should track theme/text color rather than
+  // carry a fixed hex that could go invisible in dark mode.
+  grok: `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" fill-rule="evenodd" aria-hidden="true"><path d="M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.542 5.215-1.41 7.169-1.951 1.954-4.667 2.382-7.149 1.406l-2.711 1.257c3.889 2.661 8.611 2.003 11.562-.953 2.341-2.344 3.066-5.539 2.388-8.42l.006.007c-.983-4.232.242-5.924 2.75-9.383.06-.082.12-.164.179-.248l-3.301 3.305v-.01L9.267 15.292M7.623 16.723c-2.792-2.67-2.31-6.801.071-9.184 1.761-1.763 4.647-2.483 7.166-1.425l2.705-1.25a7.808 7.808 0 00-1.829-1A8.975 8.975 0 005.984 5.83c-2.533 2.536-3.33 6.436-1.962 9.764 1.022 2.487-.653 4.246-2.34 6.022-.599.63-1.199 1.259-1.682 1.925l7.62-6.815"/></svg>`,
 };
 
 // Builds a fresh element each call — the same node can't be appended in two
@@ -6585,7 +6664,7 @@ load().catch((err) => { // also fills the Compare pickers, after projects are kn
   if (root) {
     root.textContent = "";
     root.append(
-      el("div", { className: "card warn-box", style: "margin: 20px; color: #b91c1c;" },
+      el("div", { className: "card warn-box", style: "margin: 20px; color: var(--red-fg);" },
         el("h3", {}, "Something went wrong loading this panel"),
         el("p", {}, "Try closing this popup and reopening it. If it keeps happening, reloading the extension from chrome://extensions may help."),
         el("p", { className: "muted", style: "font-size: 11px;" }, `Details: ${esc(err && err.message ? err.message : String(err))}`)

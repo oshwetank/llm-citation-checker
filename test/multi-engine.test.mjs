@@ -25,10 +25,17 @@ const check = (label, cond, detail) => {
 console.log("\n--- Engine Registry & URL Attribution ---");
 {
   const available = availableEngines();
-  check("all 5 engines are now available in ENGINES registry", available.length === 5, `count=${available.length}`);
+  // Claude is blocked pending a real-capture calibration pass — the same bar
+  // Perplexity and Grok had to clear before flipping to available:true (see
+  // the comment on the ENGINES entry in geo.js). It stays REGISTERED
+  // (available:false + a "coming soon" note) rather than removed, so it's
+  // still visible-but-disabled in the campaign picker instead of vanishing.
+  check("4 of 5 engines are available in ENGINES registry", available.length === 4, `count=${available.length}`);
   check("perplexity is registered and available", available.some((e) => e.id === "perplexity"));
   check("grok is registered and available", available.some((e) => e.id === "grok"));
-  check("claude is registered and available", available.some((e) => e.id === "claude"));
+  check("claude is registered but NOT available", !available.some((e) => e.id === "claude"));
+  check("claude is still listed in ENGINES itself, with a note explaining why",
+    ENGINES.some((e) => e.id === "claude" && e.available === false && !!e.note));
 
   // Check URL attribution
   const platformFromUrl = (url) => {

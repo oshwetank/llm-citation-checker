@@ -104,13 +104,37 @@
   --red-border: #dc2626;
 }
 
-[data-theme="dark"] html,
+/* Was `[data-theme="dark"] html, [data-theme="dark"] body` — a descendant
+   combinator asking for an <html> that is a descendant of an element with
+   data-theme="dark". That can never match: data-theme="dark" is set ON
+   <html> itself (initTheme()/the toggle both call
+   document.documentElement.setAttribute), and <html> is the document root —
+   it can never be a descendant of anything. So this rule silently never
+   applied to <html> at all; only the second half (`[data-theme="dark"]
+   body`, where <body> genuinely IS a descendant of the themed <html>) ever
+   fired. <html>'s canvas kept the LIGHT gradient below it permanently, in
+   BOTH themes, so any area <body> didn't fully paint over (scroll overshoot,
+   a shorter-than-viewport page) showed the bright light-mode backdrop
+   bleeding through behind dark glass cards — which is what actually wrecks
+   contrast, more than any single hardcoded color: glassmorphism cards are
+   built to refract whatever is BEHIND them, and in dark mode that was still
+   the light pastel wash this whole system was designed to sit on top of in
+   light mode only.
+   :root matches <html> directly (not as anyone's descendant), which is the
+   correct way to target "the root element, when it carries this attribute".
+   background-attachment: fixed is repeated explicitly because the
+   `background` SHORTHAND (used below) resets every sub-property it doesn't
+   name — including attachment — back to its initial value (`scroll`), so
+   without this the dark backdrop would scroll away instead of staying
+   fixed like the light-mode one does. */
+:root[data-theme="dark"],
 [data-theme="dark"] body {
   background: radial-gradient(at 8% 0%, rgba(30, 58, 138, 0.45) 0px, transparent 45%),
               radial-gradient(at 100% 4%, rgba(6, 78, 59, 0.35) 0px, transparent 42%),
               radial-gradient(at 92% 92%, rgba(120, 53, 15, 0.35) 0px, transparent 45%),
               radial-gradient(at 0% 100%, rgba(76, 29, 149, 0.4) 0px, transparent 45%),
               #080c14;
+  background-attachment: fixed;
 }
 
 /* Claim / Citation Interactive Highlighting */
@@ -1257,6 +1281,68 @@ select.filter {
 }
 .viewing-sep { opacity: 0.45; }
 .viewing .linkbtn { font-weight: 600; }
+
+/* Analyze's sticky prompt/engine bar. First thing in #analyze, glued to the
+   top of whichever container actually scrolls, so scrolling through a long
+   Analyze view (Verbatim Grounding is now the LAST card) never loses track
+   of which prompt and which engine's answer is on screen.
+   `top` is 0 by default — correct for the popup, where .app-header is a
+   non-scrolling flex sibling of .app-content (see body.popup .app-content
+   further down), not part of its scrollport, so nothing sits above this bar
+   within that scroll area. body.tab overrides `top` to --analyze-bar-top
+   (the real, MEASURED height of .app-header — see applyMode() in panel.js),
+   because in the full-tab view the whole PAGE scrolls and .app-header is
+   sticky within that SAME scroll context, so this bar needs to dock below
+   it rather than underneath/behind it. */
+.analyze-context-bar {
+  position: sticky;
+  top: 0;
+  z-index: 40; /* below .app-header (100), above ordinary card content */
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  border-radius: 10px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-shadow);
+}
+body.tab .analyze-context-bar { top: var(--analyze-bar-top, 64px); }
+.analyze-context-label {
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 10px;
+  font-weight: 700;
+}
+.analyze-context-prompt {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: center;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--fg-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* engineChip() already provides icon+label as one inline unit; this just
+   pins it to the bar's right edge and keeps it from ever being the thing
+   that shrinks/wraps when the prompt text is long. */
+.analyze-context-bar .engine-chip {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-secondary);
+}
+/* Narrow popup: the label ("Analyzing") is the first thing to go — there
+   isn't room for three segments at 524px, and the engine badge alone
+   already answers "which engine" without it. */
+body.popup .analyze-context-label { display: none; }
+body.popup .analyze-context-prompt { text-align: left; font-size: 12.5px; }
 
 .linkbtn {
   background: none;
