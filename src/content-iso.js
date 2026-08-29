@@ -645,6 +645,16 @@
 
       let promptText = "";
       let answerText = "";
+      // Declared HERE, not inside the perplexity branch. It is read further
+      // down in the shared syntheticRaw payload, which runs for every
+      // platform — a `let` inside `if (plat === "perplexity")` is scoped to
+      // that block, so reading it below threw
+      // "ReferenceError: generatedTitle is not defined" on EVERY successful
+      // harvest, for Perplexity, Grok and Claude alike. The throw escaped
+      // from a setTimeout callback (the try/catch further down only wraps
+      // sendMessage, not the payload construction), so the harvest failed
+      // silently with no capture and nothing in the page console to notice.
+      let generatedTitle = "";
       const sources = [];
 
       if (plat === "perplexity") {
@@ -653,7 +663,6 @@
         if (userBubble) promptText = (userBubble.textContent || "").trim();
 
         const headingEl = document.querySelector('h1, h2, .font-display');
-        let generatedTitle = "";
         if (headingEl) generatedTitle = (headingEl.textContent || "").trim();
 
         if (!promptText) {
