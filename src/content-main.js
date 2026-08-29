@@ -35,9 +35,21 @@
     }
   };
 
+  const isBackgroundSubscription = (str) => {
+    if (typeof str !== "string") return false;
+    return str.includes("SidebarRecentThreads") ||
+           str.includes("SidebarPinnedThreads") ||
+           str.includes("SpaceUpdatesSubscription") ||
+           str.includes("CollectionThreadsSubscription") ||
+           str.includes("NotificationSubscription") ||
+           str.includes("ViewerUserQuery") ||
+           str.includes('"type":"ping"') ||
+           str.includes('"type":"pong"');
+  };
+
   const CHATGPT_RE = /\/backend-api\/(?:f\/)?conversation(?:\?|$)/i;
   const GEMINI_RE = /assistant\.lamda\.BardFrontendService\/StreamGenerate|\/StreamGenerate\b/i;
-  const PERPLEXITY_RE = /\/api\/(?:sse\/)?(?:query|ask)|\/rest\/(?:threads|queries|answers|conversations|search)|\/api\/thread|\/socket\.io\/|\/p\/api\/|\/api\/predict|\/api\/search/i;
+  const PERPLEXITY_RE = /\/p\/api\/|\/api\/(?:sse\/)?|\/rest\/(?:threads|queries|answers|conversations|search|perplexity_ask)|\/api\/thread|\/socket\.io\/|\/api\/predict|\/api\/search|\/search/i;
   const GROK_RE = /\/api\/rpc|\/rest\/app-chat\/conversations|\/i\/api\/(?:graphql\/[^\/]+\/)?(?:Create)?Grok|\/2\/grok/i;
   const CLAUDE_RE = /\/api\/organizations\/[^\/]+\/(?:chat_conversations|messages|retry|completion)|\/api\/append_message/i;
 
@@ -105,7 +117,9 @@
       /* partial capture is still useful */
     }
     raw += decoder.decode();
-    if (raw) emit({ ...meta, raw, capturedAt: Date.now() });
+    if (raw && !isBackgroundSubscription(raw)) {
+      emit({ ...meta, raw, capturedAt: Date.now() });
+    }
   }
 
   // --- fetch patch (ChatGPT, Claude, Perplexity REST stream via fetch) ---
@@ -124,12 +138,17 @@
       url = "";
     }
 
-    const isConv = (method === "POST" || (IS_PERPLEXITY && method === "GET" && /socket\.io/i.test(url))) && CONV_RE.test(url || "");
+    const isConv = (method === "POST" || (IS_PERPLEXITY && /socket\.io|sse/i.test(url))) && CONV_RE.test(url || "");
     let reqBody = null;
     if (isConv) {
       try {
-        if (init && typeof init.body === "string") reqBody = init.body;
-        else if (input instanceof Request) reqBody = await input.clone().text();
+        if (init && typeof init.body === "string") {
+          if (isBackgroundSubscription(init.body)) return origFetch.apply(this, args);
+          reqBody = init.body;
+        } else if (input instanceof Request) {
+          reqBody = await input.clone().text();
+          if (isBackgroundSubscription(reqBody)) return origFetch.apply(this, args);
+        }
       } catch (_) {
         reqBody = null;
       }
@@ -146,7 +165,9 @@
           drain(cloned.body, { url, reqBody, transport: "fetch" });
         } else if (typeof cloned.text === "function") {
           cloned.text().then((raw) => {
-            if (raw) emit({ url, reqBody, transport: "fetch", raw, capturedAt: Date.now() });
+            if (raw && !isBackgroundSubscription(raw)) {
+              emit({ url, reqBody, transport: "fetch", raw, capturedAt: Date.now() });
+            }
           }).catch(() => {});
         }
       } catch (_) {
@@ -171,6 +192,7 @@
       if (this.__lcfc_post) dbg("xhr", { url: this.__lcfc_url.slice(0, 140), matched: !!this.__lcfc_conv });
       if (this.__lcfc_conv) {
         this.__lcfc_body = typeof body === "string" ? body : null;
+        if (isBackgroundSubscription(this.__lcfc_body)) return send.call(this, body);
         this.addEventListener("load", () => {
           let raw = "";
           try {
@@ -179,7 +201,7 @@
             raw = "";
           }
           dbg("xhr-done", { url: this.__lcfc_url.slice(0, 100), len: raw.length, rt: this.responseType || "text" });
-          if (raw) {
+          if (raw && !isBackgroundSubscription(raw)) {
             try {
               emit({ url: this.__lcfc_url, reqBody: this.__lcfc_body, transport: "xhr", raw, capturedAt: Date.now() });
             } catch (_) {
@@ -195,10 +217,10 @@
   // --- WebSocket patch (Perplexity & Grok stream queries and search results over WebSocket/Socket.IO) ---
   const OrigWebSocket = window.WebSocket;
   if (OrigWebSocket) {
-    const PatchedWebSocket = function (url, protocols) {
-      const ws = protocols ? new OrigWebSocket(url, protocols) : new OrigWebSocket(url);
+    function PatchedWebSocket(url, protocols) {
+      const ws = Reflect.construct(OrigWebSocket, arguments, PatchedWebSocket);
       const wsUrl = String(url || "");
-      const isTargetWs = (IS_PERPLEXITY && /socket\.io|perplexity\.ai/i.test(wsUrl)) ||
+      const isTargetWs = (IS_PERPLEXITY && (/socket\.io|perplexity\.ai/i.test(wsUrl) || !isThirdParty(wsUrl))) ||
                          (IS_GROK && /rpc|grok/i.test(wsUrl));
 
       if (isTargetWs) {
@@ -209,9 +231,11 @@
         const scheduleEmit = () => {
           if (emitTimer) clearTimeout(emitTimer);
           emitTimer = setTimeout(() => {
-            if (frames.length) {
+            if (frames.length && lastReqBody) {
               const raw = frames.join("\n");
-              emit({ url: wsUrl, reqBody: lastReqBody, transport: "websocket", raw, capturedAt: Date.now() });
+              if (!isBackgroundSubscription(raw)) {
+                emit({ url: wsUrl, reqBody: lastReqBody, transport: "websocket", raw, capturedAt: Date.now() });
+              }
             }
           }, 1500);
         };
@@ -220,19 +244,21 @@
         ws.send = function (data) {
           try {
             if (typeof data === "string") {
-              if (/^4[0-9]/.test(data) || (data.startsWith("{") && (data.includes('"query"') || data.includes('"variables"')))) {
-                lastReqBody = data;
-                frames = [];
+              if (!isBackgroundSubscription(data)) {
+                if (/^4[0-9]/.test(data) || (data.startsWith("{") && (data.includes('"query"') || data.includes('"variables"')))) {
+                  lastReqBody = data;
+                  frames = [];
+                }
               }
             }
           } catch (_) {}
-          return origSend.call(this, data);
+          return origSend.apply(this, arguments);
         };
 
         ws.addEventListener("message", (event) => {
           try {
             const d = typeof event.data === "string" ? event.data : "";
-            if (d && (/^4[0-9]/.test(d) || d.startsWith("{") || d.startsWith("["))) {
+            if (d && !isBackgroundSubscription(d) && (/^4[0-9]/.test(d) || d.startsWith("{") || d.startsWith("["))) {
               frames.push(d);
               scheduleEmit();
             }
@@ -241,18 +267,22 @@
 
         ws.addEventListener("close", () => {
           if (emitTimer) clearTimeout(emitTimer);
-          if (frames.length) {
-            emit({ url: wsUrl, reqBody: lastReqBody, transport: "websocket", raw: frames.join("\n"), capturedAt: Date.now() });
+          if (frames.length && lastReqBody) {
+            const raw = frames.join("\n");
+            if (!isBackgroundSubscription(raw)) {
+              emit({ url: wsUrl, reqBody: lastReqBody, transport: "websocket", raw, capturedAt: Date.now() });
+            }
           }
         });
       }
       return ws;
-    };
+    }
     PatchedWebSocket.prototype = OrigWebSocket.prototype;
     PatchedWebSocket.CONNECTING = OrigWebSocket.CONNECTING;
     PatchedWebSocket.OPEN = OrigWebSocket.OPEN;
     PatchedWebSocket.CLOSING = OrigWebSocket.CLOSING;
     PatchedWebSocket.CLOSED = OrigWebSocket.CLOSED;
+    Object.setPrototypeOf(PatchedWebSocket, OrigWebSocket);
     window.WebSocket = PatchedWebSocket;
   }
 })();
