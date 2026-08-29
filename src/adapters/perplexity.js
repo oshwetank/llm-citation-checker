@@ -1,8 +1,9 @@
 /*
  * adapters/perplexity.js — derive a normalized record from raw Perplexity AI captures.
  *
- * Normalizes Perplexity web SSE/REST/Socket.IO responses:
+ * Normalizes Perplexity web SSE / REST / Socket.IO / GraphQL WebSocket responses:
  *   - Answer text & citation markers ([1], [2] footnotes)
+ *   - GraphQL thread entries, answerPreview, and live stream deltas
  *   - Model identity (sonar, sonar-pro, sonar-reasoning, etc.)
  *   - Search sources (web_results, search_results, chunks, sources, context)
  *   - Query Plan sub-searches (query_plan, queries, sub_queries)
@@ -14,7 +15,7 @@ import { makeRecord, makeSource } from "../schema.js";
 import { isHttpUrl, domainOf } from "../lib/deep.js";
 import { detectBrands } from "../lib/brands.js";
 
-export const ADAPTER_VERSION = "perplexity@0.2.0";
+export const ADAPTER_VERSION = "perplexity@0.3.0";
 
 function extractJsonPayload(line) {
   const t = line.trim();
@@ -28,23 +29,34 @@ function extractJsonPayload(line) {
 function parsePayloads(raw) {
   if (!raw || typeof raw !== "string") return [];
   const nodes = [];
+
   const addParsed = (p) => {
     if (!p) return;
     if (Array.isArray(p)) {
       p.forEach((item) => {
-        if (item && typeof item === "object") {
-          nodes.push(item);
-          if (Array.isArray(item.messages)) nodes.push(...item.messages);
-          if (Array.isArray(item.blocks)) nodes.push(...item.blocks);
-        }
+        if (item && typeof item === "object") addParsed(item);
       });
-    } else if (typeof p === "object") {
-      nodes.push(p);
-      if (Array.isArray(p.messages)) nodes.push(...p.messages);
-      if (Array.isArray(p.blocks)) nodes.push(...p.blocks);
-      if (Array.isArray(p.entries)) nodes.push(...p.entries);
-      if (p.entry && typeof p.entry === "object") nodes.push(p.entry);
+      return;
     }
+    if (typeof p !== "object") return;
+    nodes.push(p);
+
+    // Flatten nested arrays and GraphQL/Relay shapes
+    if (p.payload && typeof p.payload === "object") addParsed(p.payload);
+    if (p.data && typeof p.data === "object") addParsed(p.data);
+    if (p.sidebarRecentThreads && typeof p.sidebarRecentThreads === "object") addParsed(p.sidebarRecentThreads);
+    if (p.threads && typeof p.threads === "object") addParsed(p.threads);
+    if (Array.isArray(p.edges)) {
+      p.edges.forEach((edge) => {
+        if (edge && edge.node) addParsed(edge.node);
+      });
+    }
+    if (p.node && typeof p.node === "object") addParsed(p.node);
+    if (p.threadEntry && typeof p.threadEntry === "object") addParsed(p.threadEntry);
+    if (Array.isArray(p.messages)) addParsed(p.messages);
+    if (Array.isArray(p.blocks)) addParsed(p.blocks);
+    if (Array.isArray(p.entries)) addParsed(p.entries);
+    if (p.entry && typeof p.entry === "object") addParsed(p.entry);
   };
 
   const trimmed = raw.trim();
@@ -72,16 +84,34 @@ function extractPrompt(reqBody, nodes) {
       if (m) raw = m[1];
       else if (raw.startsWith("42[")) raw = raw.slice(2);
       const parsed = JSON.parse(raw);
-      if (parsed.query && typeof parsed.query === "string") return parsed.query;
+
+      // Check direct properties
+      if (parsed.query && typeof parsed.query === "string" && parsed.query.length > 1) return parsed.query;
       if (parsed.message && typeof parsed.message === "string") return parsed.message;
       if (parsed.text && typeof parsed.text === "string") return parsed.text;
+      if (parsed.prompt && typeof parsed.prompt === "string") return parsed.prompt;
+
+      // Check GraphQL variables
+      if (parsed.variables && typeof parsed.variables === "object") {
+        if (parsed.variables.query && typeof parsed.variables.query === "string") return parsed.variables.query;
+        if (parsed.variables.message && typeof parsed.variables.message === "string") return parsed.variables.message;
+        if (parsed.variables.prompt && typeof parsed.variables.prompt === "string") return parsed.variables.prompt;
+        if (parsed.variables.text && typeof parsed.variables.text === "string") return parsed.variables.text;
+      }
+      if (parsed.payload && typeof parsed.payload === "object") {
+        if (parsed.payload.variables && typeof parsed.payload.variables === "object") {
+          if (parsed.payload.variables.query && typeof parsed.payload.variables.query === "string") return parsed.payload.variables.query;
+          if (parsed.payload.variables.message && typeof parsed.payload.variables.message === "string") return parsed.payload.variables.message;
+        }
+      }
+
       if (parsed.params && parsed.params.query && typeof parsed.params.query === "string") return parsed.params.query;
       if (Array.isArray(parsed)) {
         for (const item of parsed) {
           if (item && typeof item === "object") {
-            if (item.query) return item.query;
-            if (item.text) return item.text;
-            if (item.message) return item.message;
+            if (item.query && typeof item.query === "string") return item.query;
+            if (item.text && typeof item.text === "string") return item.text;
+            if (item.message && typeof item.message === "string") return item.message;
           }
         }
       }
@@ -93,11 +123,17 @@ function extractPrompt(reqBody, nodes) {
       }
     } catch (_) {}
   }
+
+  // Fallback: extract prompt from node fields (e.g. node.name or node.query in GraphQL responses)
   for (const node of nodes) {
     if (node && typeof node === "object") {
-      if (typeof node.query === "string" && node.query) return node.query;
-      if (typeof node.user_query === "string" && node.user_query) return node.user_query;
-      if (typeof node.prompt === "string" && node.prompt) return node.prompt;
+      if (typeof node.query === "string" && node.query.length > 2) return node.query;
+      if (typeof node.user_query === "string" && node.user_query.length > 2) return node.user_query;
+      if (typeof node.prompt === "string" && node.prompt.length > 2) return node.prompt;
+      // In GraphQL thread edge nodes, `name` is the user query title!
+      if (typeof node.name === "string" && node.name.length > 2 && (node.answerPreview || node.status)) {
+        return node.name;
+      }
     }
   }
   return "";
@@ -120,6 +156,7 @@ function extractAnswer(nodes) {
     const candidates = [
       n.text,
       n.answer,
+      n.answerPreview,
       n.output,
       n.completion,
       n.response,

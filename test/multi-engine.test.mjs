@@ -110,6 +110,37 @@ console.log("\n--- Perplexity AI Adapter ---");
   check("perplexity ACK prompt extracted", ackRec.userPrompt === "smartphone rankings 2026");
   check("perplexity ACK answer extracted", ackRec.answerText.includes("latest results for smartphone rankings"));
   check("perplexity ACK sources extracted", ackRec.sources.length === 1);
+
+  // Test GraphQL Relay Thread Updates payload (from live user capture)
+  const gqlRaw = JSON.stringify({
+    payload: {
+      data: {
+        sidebarRecentThreads: {
+          threads: {
+            edges: [
+              {
+                node: {
+                  name: "best processor phone under 50000",
+                  mode: "SEARCH",
+                  status: "COMPLETED",
+                  answerPreview: "For pure processor performance under ₹50,000 in India (August 2026), the iQOO 15R with the Snapdragon 8 Gen 5 is currently the best choice."
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  });
+
+  const gqlRec = await adaptPerplexity({
+    captureId: "perp-gql-1",
+    raw: gqlRaw,
+    pageUrl: "https://www.perplexity.ai",
+  });
+
+  check("perplexity GraphQL thread prompt extracted", gqlRec.userPrompt === "best processor phone under 50000");
+  check("perplexity GraphQL thread answer extracted", gqlRec.answerText.includes("iQOO 15R with the Snapdragon 8 Gen 5"));
 }
 
 console.log("\n--- xAI Grok Adapter ---");

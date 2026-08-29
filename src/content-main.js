@@ -209,7 +209,7 @@
         const scheduleEmit = () => {
           if (emitTimer) clearTimeout(emitTimer);
           emitTimer = setTimeout(() => {
-            if (frames.length && lastReqBody) {
+            if (frames.length) {
               const raw = frames.join("\n");
               emit({ url: wsUrl, reqBody: lastReqBody, transport: "websocket", raw, capturedAt: Date.now() });
             }
@@ -220,7 +220,7 @@
         ws.send = function (data) {
           try {
             if (typeof data === "string") {
-              if (data.startsWith("42[") || (data.startsWith("{") && data.includes("query"))) {
+              if (/^4[0-9]/.test(data) || (data.startsWith("{") && (data.includes('"query"') || data.includes('"variables"')))) {
                 lastReqBody = data;
                 frames = [];
               }
@@ -232,18 +232,16 @@
         ws.addEventListener("message", (event) => {
           try {
             const d = typeof event.data === "string" ? event.data : "";
-            if (d && (d.startsWith("42[") || d.startsWith("{"))) {
+            if (d && (/^4[0-9]/.test(d) || d.startsWith("{") || d.startsWith("["))) {
               frames.push(d);
-              if (d.includes('"status":"COMPLETED"') || d.includes('"final":true') || d.includes('"text":')) {
-                scheduleEmit();
-              }
+              scheduleEmit();
             }
           } catch (_) {}
         });
 
         ws.addEventListener("close", () => {
           if (emitTimer) clearTimeout(emitTimer);
-          if (frames.length && lastReqBody) {
+          if (frames.length) {
             emit({ url: wsUrl, reqBody: lastReqBody, transport: "websocket", raw: frames.join("\n"), capturedAt: Date.now() });
           }
         });
