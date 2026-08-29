@@ -178,7 +178,16 @@ html, body {
               #eaf0f8;
   background-attachment: fixed;
   color: var(--fg-primary);
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Inter, sans-serif;
+  /* System stacks only — no webfont is fetched (see the note in panel.html).
+     The old stack ended "...'Helvetica Neue', Inter, sans-serif", where Inter
+     was the REMOTE font and also the only entry that resolved on Windows
+     (every preceding name is macOS-only), so simply deleting the <link> would
+     have dropped Windows to plain Arial. Segoe UI + system-ui are added here
+     to cover Windows/Linux natively. Inter is still named — free if the user
+     happens to have it installed, never downloaded if not. */
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+               "Segoe UI Variable Text", "Segoe UI", system-ui, Inter, Roboto,
+               "Helvetica Neue", Arial, sans-serif;
   font-size: 13px;
   line-height: 1.5;
   letter-spacing: -0.011em;
@@ -1277,7 +1286,7 @@ td.clickable:hover {
   margin-top: 10px;
   max-height: 280px;
   overflow: auto;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 11px;
   line-height: 1.6;
   background: var(--bg-subtle);
@@ -1712,7 +1721,7 @@ html {
 
 /* Top URLs Rank & Snippet Box */
 .url-rank-badge {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 11px;
   font-weight: 700;
   color: var(--accent);

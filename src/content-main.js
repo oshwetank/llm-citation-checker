@@ -49,7 +49,18 @@
 
   const CHATGPT_RE = /\/backend-api\/(?:f\/)?conversation(?:\?|$)/i;
   const GEMINI_RE = /assistant\.lamda\.BardFrontendService\/StreamGenerate|\/StreamGenerate\b/i;
-  const PERPLEXITY_RE = /\/p\/api\/|\/api\/sse\/|\/rest\/(?:threads|queries|answers|conversations)|\/api\/thread|\/socket\.io\//i;
+  // NOTE: `sse` is in the /rest/ alternation deliberately. The previous
+  // pattern had `\/api\/sse\/` and `\/rest\/(threads|queries|answers|
+  // conversations)` but NOT `/rest/sse/` — so a request to
+  // /rest/sse/perplexity_ask matched no branch at all and was never
+  // intercepted. That is a capture-nothing failure, not a parse failure:
+  // the adapter can be perfect and still see zero bytes.
+  //
+  // Widening here is safe for the other engines: CONV_RE dispatches on
+  // hostname first, so this pattern is only ever tested against
+  // perplexity.ai URLs. The noise filter just below (suggest./search/v2/
+  // /api/predict) still applies.
+  const PERPLEXITY_RE = /\/p\/api\/|\/api\/sse\/|\/rest\/(?:sse|threads|queries|answers|conversations)|perplexity_ask|\/api\/thread|\/socket\.io\//i;
   const GROK_RE = /\/api\/rpc|\/rest\/app-chat\/conversations|\/i\/api\/(?:graphql\/[^\/]+\/)?(?:Create)?Grok|\/2\/grok/i;
   const CLAUDE_RE = /\/api\/organizations\/[^\/]+\/(?:chat_conversations|messages|retry|completion)|\/api\/append_message/i;
 

@@ -4,9 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CitoSkeleton</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <!-- NO remote font links here, deliberately.
+         This panel used to <link> Inter + JetBrains Mono from
+         fonts.googleapis.com / fonts.gstatic.com, which fired a request to
+         Google (carrying the user's IP, UA and a timestamp) every single time
+         the popup opened. That flatly contradicted this extension's core
+         promise — "no network calls of our own", stated in the store listing,
+         the About tab and the README. A privacy tool that phones home for a
+         typeface is not a privacy tool.
+         panel.css now uses system font stacks only. 'JetBrains Mono' is still
+         NAMED first in the monospace stacks so anyone who has it installed
+         locally still gets it — it just is never fetched. -->
     <link rel="stylesheet" href="panel.css" />
   </head>
   <body>

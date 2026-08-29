@@ -10,8 +10,9 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.27.0** — ChatGPT and Gemini. See [ARCHITECTURE.md](ARCHITECTURE.md) for the design
-> and [RESEARCH.md](RESEARCH.md) for the original feasibility research.
+> **v0.31.0** — ChatGPT, Gemini, Perplexity, Grok and Claude. See
+> [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
+> for the original feasibility research.
 
 ## Two modes, deliberately kept apart
 
@@ -166,7 +167,8 @@ test/                    five suites + real capture fixtures
 ## Privacy
 
 Everything stays in your browser's IndexedDB. The extension makes no network requests and
-asks for host access to ChatGPT and Gemini only. Raw payloads are gzipped; storage is capped
+asks for host access to the supported engines only (ChatGPT, Gemini, Perplexity, Grok and
+Claude). Raw payloads are gzipped; storage is capped
 (default 2,000 captures, 8 MB per payload) with oldest-first pruning. Clear everything from
 the Dashboard at any time.
 

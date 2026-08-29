@@ -75,9 +75,29 @@ export function makeRecord(base = {}) {
   };
 }
 
+// Only http(s) URLs are ever stored as a source.
+//
+// Source URLs come from third-party pages an engine chose to cite, parsed out
+// of deep, loosely-shaped JSON by the adapters — so they are attacker-
+// influenceable, not trusted input. exportDoc.js renders them into
+// `<a href="${esc(url)}">`, and esc() escapes & < > " — none of which stop a
+// `javascript:` URL. Inside the extension the MV3 CSP would block it, but the
+// STANDALONE .html export is opened from file:// with no CSP at all, where it
+// would execute on click.
+//
+// Enforcing the scheme here rather than in exportDoc.js is deliberate: this is
+// the one chokepoint every adapter already goes through, so every consumer
+// (export, the panel's source lists, drill-down modals) is covered at once and
+// no future consumer can miss the check.
+function safeSourceUrl(u) {
+  if (typeof u !== "string") return null;
+  const trimmed = u.trim();
+  return /^https?:\/\//i.test(trimmed) ? trimmed : null;
+}
+
 export function makeSource(s = {}) {
   return {
-    url: s.url || null,
+    url: safeSourceUrl(s.url),
     domain: s.domain || null,
     title: s.title || null,
     snippet: s.snippet || null,
