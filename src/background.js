@@ -142,7 +142,7 @@ async function storeCapture(payload, meta) {
   if (platform === "gemini" && rawText.length < 2000) return null;
 
   // Reject autocomplete, suggest, and navigation prediction requests (they are not answers)
-  if (/suggest\.perplexity\.ai|\/search\/v2\/|\/api\/predict/i.test(payload.url || "")) {
+  if (/suggest\.perplexity\.ai|\/navigate\b|\/autocomplete\b|\/api\/auth/i.test(payload.url || "")) {
     return null;
   }
 

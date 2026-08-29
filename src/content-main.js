@@ -68,7 +68,7 @@
     test: (url) => {
       const u = url || "";
       if (isThirdParty(u)) return false;
-      if (/suggest\.perplexity\.ai|\/search\/v2\/|\/api\/predict/i.test(u)) return false;
+      if (/suggest\.perplexity\.ai|\/navigate\b|\/autocomplete\b|\/api\/auth/i.test(u)) return false;
       if (IS_GEMINI) return GEMINI_RE.test(u);
       if (IS_CHATGPT) return CHATGPT_RE.test(u);
       if (IS_PERPLEXITY) return PERPLEXITY_RE.test(u);
@@ -243,13 +243,13 @@
         const scheduleEmit = () => {
           if (emitTimer) clearTimeout(emitTimer);
           emitTimer = setTimeout(() => {
-            if (frames.length && lastReqBody) {
+            if (frames.length) {
               const raw = frames.join("\n");
               if (!isBackgroundSubscription(raw)) {
                 emit({ url: wsUrl, reqBody: lastReqBody, transport: "websocket", raw, capturedAt: Date.now() });
               }
             }
-          }, 1500);
+          }, 1200);
         };
 
         const origSend = ws.send;
@@ -279,7 +279,7 @@
 
         ws.addEventListener("close", () => {
           if (emitTimer) clearTimeout(emitTimer);
-          if (frames.length && lastReqBody) {
+          if (frames.length) {
             const raw = frames.join("\n");
             if (!isBackgroundSubscription(raw)) {
               emit({ url: wsUrl, reqBody: lastReqBody, transport: "websocket", raw, capturedAt: Date.now() });
