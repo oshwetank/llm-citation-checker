@@ -141,6 +141,11 @@ async function storeCapture(payload, meta) {
   // Gemini emits many small RPCs; only the assistant generation is substantial.
   if (platform === "gemini" && rawText.length < 2000) return null;
 
+  // Perplexity background sidebar subscriptions shouldn't create dummy captures.
+  if (rawText.includes("SidebarRecentThreadsUpdatesRelaySubscription") && !rawText.includes('"web_results"') && !rawText.includes('"sources"') && !rawText.includes('"chunks"')) {
+    return null;
+  }
+
   // Guard against pathological payloads (Gemini local/map answers have been seen
   // at 25MB raw / ~5MB stored). Without a cap the store grows ~1GB per 1k captures.
   const capBytes = Math.max(1, settings.maxCaptureMB) * 1024 * 1024;

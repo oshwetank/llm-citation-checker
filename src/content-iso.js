@@ -633,4 +633,102 @@
       }, TICK_MS);
     }
   })();
+
+  /* ---------- Live DOM Harvester (Fall-safe capture layer for Perplexity / Claude / Grok) ---------- */
+  (function initDomHarvester() {
+    let lastHarvestedSig = "";
+    let harvestTimer = null;
+
+    const tryHarvest = () => {
+      const plat = getPlatform();
+      if (plat !== "perplexity" && plat !== "grok" && plat !== "claude") return;
+
+      let promptText = "";
+      let answerText = "";
+      const sources = [];
+
+      if (plat === "perplexity") {
+        const queryEl = document.querySelector('[data-testid="user-query"], h1, .font-display');
+        if (queryEl) promptText = (queryEl.textContent || "").trim();
+
+        const proseEls = document.querySelectorAll('.prose, [data-testid="thread-message"], [data-testid="answer-content"]');
+        if (proseEls.length) {
+          answerText = Array.from(proseEls).map((p) => p.innerText || p.textContent || "").join("\n\n").trim();
+        }
+
+        const links = document.querySelectorAll('a[href^="http"]:not([href*="perplexity.ai"])');
+        const seen = new Set();
+        links.forEach((a) => {
+          const u = a.href;
+          if (u && !seen.has(u) && !u.includes("google.com/search") && !u.includes("twitter.com/intent")) {
+            seen.add(u);
+            const title = (a.getAttribute("title") || a.innerText || a.textContent || "").trim();
+            sources.push({ url: u, title, name: title, snippet: "" });
+          }
+        });
+      } else if (plat === "grok") {
+        const userEl = document.querySelector('.user-message, [data-message-author="user"]');
+        if (userEl) promptText = (userEl.textContent || "").trim();
+
+        const msgEls = document.querySelectorAll('.message-row, [data-message-author="assistant"]');
+        if (msgEls.length) {
+          answerText = Array.from(msgEls).map((p) => p.innerText || p.textContent || "").join("\n\n").trim();
+        }
+      } else if (plat === "claude") {
+        const userEl = document.querySelector('[data-testid="user-message"], .font-user-message');
+        if (userEl) promptText = (userEl.textContent || "").trim();
+
+        const msgEls = document.querySelectorAll('[data-testid="chat-message"], .font-claude-message');
+        if (msgEls.length) {
+          answerText = Array.from(msgEls).map((p) => p.innerText || p.textContent || "").join("\n\n").trim();
+        }
+      }
+
+      if (promptText && answerText && answerText.length > 50) {
+        const sig = `${plat}::${promptText}::${answerText.slice(0, 100)}`;
+        if (sig === lastHarvestedSig) return;
+        lastHarvestedSig = sig;
+
+        const syntheticRaw = JSON.stringify({
+          query: promptText,
+          text: answerText,
+          web_results: sources,
+          status: "COMPLETED",
+          harvestSource: "dom"
+        });
+
+        try {
+          chrome.runtime.sendMessage(
+            {
+              type: "raw-conversation",
+              payload: {
+                url: location.href,
+                reqBody: JSON.stringify({ query: promptText }),
+                transport: "dom_harvest",
+                raw: syntheticRaw,
+                capturedAt: Date.now(),
+                pageUrl: location.href,
+              },
+            },
+            () => void chrome.runtime.lastError
+          );
+        } catch (_) {}
+      }
+    };
+
+    const observer = new MutationObserver(() => {
+      if (harvestTimer) clearTimeout(harvestTimer);
+      harvestTimer = setTimeout(tryHarvest, 1500);
+    });
+
+    try {
+      if (document.body) {
+        observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+      } else {
+        document.addEventListener("DOMContentLoaded", () => {
+          if (document.body) observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+        });
+      }
+    } catch (_) {}
+  })();
 })();
