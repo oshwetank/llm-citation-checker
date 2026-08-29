@@ -290,7 +290,7 @@ const MARKETPLACE_DOMAINS = new Set([
   "dhgate.com", "made-in-china.com", "wish.com", "rakuten.com",
 ]);
 
-// Publishers, news outlets, tech portals, aggregators, and social platforms that
+// Publishers, news outlets, tech portals, aggregators, price comparison sites, and social platforms that
 // produce citations or host discussions, NOT product brands being reviewed.
 const EDITORIAL_DOMAINS = new Set([
   "digit.in", "gadgets01.com", "91mobiles.com", "gsmarena.com", "techradar.com",
@@ -299,7 +299,8 @@ const EDITORIAL_DOMAINS = new Set([
   "beebom.com", "youtube.com", "etnownews.com", "hindustantimes.com", "indiatoday.in",
   "timesofindia.com", "indianexpress.com", "livemint.com", "moneycontrol.com",
   "reddit.com", "quora.com", "medium.com", "wikipedia.org", "x.com", "twitter.com",
-  "facebook.com", "instagram.com", "linkedin.com", "pinterest.com", "tiktok.com"
+  "facebook.com", "instagram.com", "linkedin.com", "pinterest.com", "tiktok.com",
+  "cashkr.com", "reviehub.in", "priceoye.pk", "godigit.com", "godigit.in", "winnerwinnerchickendinner.com"
 ]);
 
 function isMarketplaceDomain(domain) {
@@ -311,6 +312,7 @@ function isMarketplaceDomain(domain) {
   for (const d of EDITORIAL_DOMAINS) {
     if (host === d || host.endsWith("." + d)) return true;
   }
+  if (/^(blog|news|reviews?|pricing|prices?|compare|deals?|coupon|cashback|wiki|forum|community|support|help|faq|docs)\./i.test(host)) return true;
   return false;
 }
 
@@ -507,33 +509,52 @@ export function looksLikeProperName(phrase) {
  * @param {object} ctx          { products, sources, tracked }
  *   tracked: [{ name, url, relation:"own"|"competitor" }] — labels only.
  */
+const COMPONENT_CHIPS = new Set([
+  "snapdragon", "dimensity", "exynos", "tensor", "helio", "bionic", "cortex", "kryo",
+  "mali", "adreno", "geforce", "radeon", "supercomputing", "antutu", "geekbench",
+  "qualcomm", "mediatek", "arm", "tsmc", "intel", "amd", "nvidia", "oled", "amoled",
+  "retina", "gorilla", "battery", "processor", "chipset", "soc", "display", "camera",
+  "refresh", "charging", "cooling", "storage", "durability", "thermal", "performance",
+  "ram", "rom", "fps", "hz", "mah", "watt", "approx", "price", "verdict", "final",
+  "cooling fan", "active cooling"
+]);
+
+function isComponentOrChip(name) {
+  if (!name) return true;
+  const lower = String(name).trim().toLowerCase();
+  const first = lower.split(/\s+/)[0];
+  if (COMPONENT_CHIPS.has(first) || COMPONENT_CHIPS.has(lower)) return true;
+  if (/^(snapdragon|dimensity|exynos|tensor|helio|qualcomm|mediatek|antutu)\b/i.test(lower)) return true;
+  return false;
+}
+
+function isEditorialOrReviewDomain(domain) {
+  const host = String(domain || "").trim().toLowerCase().replace(/^www\./, "");
+  if (!host) return false;
+  if (isMarketplaceDomain(host)) return true;
+  for (const d of EDITORIAL_DOMAINS) {
+    if (host === d || host.endsWith("." + d)) return true;
+  }
+  if (/^(blog|news|reviews?|pricing|prices?|compare|deals?|coupon|cashback|wiki|forum|community|support|help|faq|docs)\./i.test(host)) return true;
+  return false;
+}
+
 export function detectBrands(answerText, plainText, ctx = {}) {
   const text = plainText || answerText || "";
   if (!text) return { brands: [], entities: [] };
 
   const { entities: markerEntities, productNames } = parseMarkers(answerText || "");
   const candidates = new Map(); // lowerName -> { name, category, description }
-  // The length cap guards against freeform text (a bold sentence, a table cell)
-  // being mistaken for a name. Sources the model has ALREADY identified as a
-  // named entity — entity markers and local-business listings — are exempt from
-  // the tight cap, because business names legitimately run long with location
-  // qualifiers ("Malabar Gold and Diamonds - Andheri West - Mumbai" is 51 chars).
+
   const MAX_LEN = { structural: 40, default: 60, trusted: 120 };
-  // `weak` marks a candidate whose ONLY evidence is a plain ### section
-  // heading. Those label sections far more often than they name companies
-  // ("Selection Guidelines", "Next Steps", "Storage Water Heaters" all
-  // reached Brand Mentions on real captures), so they are required below to
-  // also appear in the prose. Any other signal for the same name clears it.
   const addCand = (name, category, description, trust = "default", shownOnly = false, weak = false) => {
     const n = String(name || "").trim().replace(/[*_`]/g, "");
     const cap = MAX_LEN[trust] ?? MAX_LEN.default;
     if (!n || n.length < 2 || n.length > cap) return;
     if (isNoise(n) || isNoise(n.split(/\s+/)[0])) return;
+    if (trust !== "trusted" && isComponentOrChip(n)) return;
     const k = n.toLowerCase();
     const prev = candidates.get(k);
-    // "trusted" candidates (entity markers, place listings) came from structured
-    // data that already asserts this IS one name — never split them into their
-    // head word later, however many words they run.
     const keepWhole = trust === "trusted";
     if (!prev) candidates.set(k, { name: n, category: category || null, description: description || null, keepWhole, shownOnly, weak });
     else {
@@ -633,7 +654,7 @@ export function detectBrands(answerText, plainText, ctx = {}) {
   // domain-derived detection reported the PLATFORM as a mentioned brand
   // alongside the real competitors the answer was actually comparing.
   (ctx.sources || []).forEach((s) => {
-    if (isMarketplaceDomain(s.domain)) return;
+    if (isEditorialOrReviewDomain(s.domain)) return;
     addCand(brandFromDomain(s.domain), "cited_domain");
   });
   // The user's tracked brands are added as candidates too so their share of voice

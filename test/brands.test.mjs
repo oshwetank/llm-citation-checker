@@ -341,5 +341,41 @@ console.log("\na spec-sheet's bolded row labels are not brands, even when the pr
     names(realBrand, {}).some((n) => /nothing/i.test(n)), names(realBrand, {}).join(", "));
 }
 
+console.log("\nprocessor chipsets and cited sources are not reported as smartphone brands");
+{
+  const answer = [
+    "The iQOO 15R (12GB) is powered by Snapdragon 8 Gen 5 chipset, 7600mAh battery.",
+    "",
+    "Rank\tPhone\tProcessor\tBattery\tDisplay\tPrice",
+    "1\tiQOO 15R (12GB)\tSnapdragon 8 Gen 5\t7600mAh, 100W\t1.5K 144Hz\t₹46,999",
+    "2\tiQOO Neo 10\tSnapdragon 8s Gen 4\t7000mAh, 120W\t1.5K 144Hz\t₹42,999",
+    "3\tRealme GT 6\tSnapdragon 8s Gen 3\t5500mAh, 120W\t6.78\" LTPO\t₹32,999",
+    "4\tiQOO Z11x 5G\tDimensity 7400-Turbo\t7200mAh, 44W\t120Hz\t₹24,999",
+    "5\tOnePlus 12R\tSnapdragon 8 Gen 2\t5500mAh, 100W\t6.78\" LTPO4\t₹38,299",
+    "",
+    "Why the iQOO 15R Leads",
+    "Flagship Performance: The Snapdragon 8 Gen 5 scores high on AnTuTu.",
+    "cashkr",
+    "reviehub",
+    "priceoye",
+  ].join("\n");
+
+  const sources = [
+    { url: "https://priceoye.pk/mobiles", domain: "priceoye.pk" },
+    { url: "https://reviehub.in/best-gaming", domain: "reviehub.in" },
+    { url: "https://cashkr.com/blog", domain: "cashkr.com" }
+  ];
+
+  const found = names(answer, { sources });
+  check("iQOO is detected as brand", found.some((n) => /iQOO/i.test(n)), found.join(", "));
+  check("Realme is detected as brand", found.some((n) => /Realme/i.test(n)), found.join(", "));
+  check("OnePlus is detected as brand", found.some((n) => /OnePlus/i.test(n)), found.join(", "));
+  check("Snapdragon is filtered out (chipset)", !found.some((n) => /Snapdragon/i.test(n)), found.join(", "));
+  check("Dimensity is filtered out (chipset)", !found.some((n) => /Dimensity/i.test(n)), found.join(", "));
+  check("cashkr is filtered out (cited source)", !found.some((n) => /cashkr/i.test(n)), found.join(", "));
+  check("reviehub is filtered out (cited source)", !found.some((n) => /reviehub/i.test(n)), found.join(", "));
+  check("priceoye is filtered out (cited source)", !found.some((n) => /priceoye/i.test(n)), found.join(", "));
+}
+
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
 process.exit(failures ? 1 : 0);

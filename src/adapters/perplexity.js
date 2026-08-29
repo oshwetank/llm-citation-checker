@@ -191,13 +191,14 @@ function extractSources(nodes) {
     const title = obj.name || obj.title || obj.headline || "";
     const snippet = obj.snippet || obj.text || obj.extract || obj.content || obj.preview || "";
     const domain = domainOf(url);
+    const outcome = obj.outcome || (isCited ? "cited" : "fetched");
     sources.push(
       makeSource({
         url,
         title,
         domain,
         snippet,
-        outcome: isCited ? "cited" : "fetched",
+        outcome,
         type: "citation",
         platformSpecific: {
           queryPlanQuery: obj.query || null,

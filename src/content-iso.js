@@ -672,19 +672,81 @@
           }
         }
 
-        const proseEls = document.querySelectorAll('.prose, [data-testid="thread-message"], [data-testid="answer-content"], div[dir="auto"].select-text, div.select-text, .answer-content');
+        const proseEls = document.querySelectorAll('.prose, [data-testid="thread-message"], [data-testid="answer-content"], div[dir="auto"].select-text, .answer-content');
         if (proseEls.length) {
           answerText = Array.from(proseEls).map((p) => p.innerText || p.textContent || "").join("\n\n").trim();
         }
 
-        const links = document.querySelectorAll('a[href^="http"]:not([href*="perplexity.ai"]), a[target="_blank"]');
         const seen = new Set();
-        links.forEach((a) => {
-          const u = a.href;
-          if (u && !seen.has(u) && !u.includes("perplexity.ai") && !u.includes("google.com/search") && !u.includes("twitter.com/intent")) {
-            seen.add(u);
-            const title = (a.getAttribute("title") || a.getAttribute("aria-label") || a.innerText || a.textContent || "").trim();
-            sources.push({ url: u, title, name: title, snippet: "" });
+        const addSource = (url, title, snippet, isCited = false) => {
+          if (!url || typeof url !== "string" || !url.startsWith("http")) return;
+          if (url.includes("perplexity.ai") || url.includes("google.com/search") || url.includes("twitter.com/intent")) return;
+          if (seen.has(url)) return;
+          seen.add(url);
+          sources.push({
+            url,
+            title: String(title || "").trim(),
+            name: String(title || "").trim(),
+            snippet: String(snippet || "").trim(),
+            outcome: isCited ? "cited" : "fetched"
+          });
+        };
+
+        // 1. Scan script tags (e.g. Next.js / Relay state) for complete web_results arrays
+        try {
+          const scripts = document.querySelectorAll('script[type="application/json"], script#__NEXT_DATA__');
+          scripts.forEach((s) => {
+            const txt = s.textContent || "";
+            if (txt.includes('"web_results"') || (txt.includes('"url"') && txt.includes('"name"'))) {
+              try {
+                const data = JSON.parse(txt);
+                const walk = (obj) => {
+                  if (!obj || typeof obj !== "object") return;
+                  if (Array.isArray(obj.web_results)) {
+                    obj.web_results.forEach((item) => {
+                      if (item && item.url) addSource(item.url, item.name || item.title, item.snippet);
+                    });
+                  }
+                  if (Array.isArray(obj.sources)) {
+                    obj.sources.forEach((item) => {
+                      if (item && item.url) addSource(item.url, item.name || item.title, item.snippet);
+                    });
+                  }
+                  if (Array.isArray(obj.search_results)) {
+                    obj.search_results.forEach((item) => {
+                      if (item && item.url) addSource(item.url, item.name || item.title, item.snippet);
+                    });
+                  }
+                  Object.values(obj).forEach(walk);
+                };
+                walk(data);
+              } catch (_) {}
+            }
+          });
+        } catch (_) {}
+
+        // 2. Scan all links and source cards on the page (carousel, Links tab, footnotes)
+        const linkNodes = document.querySelectorAll('a[href^="http"], [data-url^="http"], [data-href^="http"], [data-testid*="source"] a, [data-testid*="citation"] a');
+        linkNodes.forEach((node) => {
+          const u = node.href || node.getAttribute("data-url") || node.getAttribute("data-href");
+          const title = (node.getAttribute("title") || node.getAttribute("aria-label") || node.innerText || node.textContent || "").trim();
+          addSource(u, title, "");
+        });
+
+        // 3. Mark sources as cited if their domain/name appears in inline citation pills in the prose
+        const citeBadges = new Set();
+        const badgeNodes = document.querySelectorAll('[data-testid*="citation"], [class*="citation"], .citation, a[class*="citation"]');
+        badgeNodes.forEach((b) => {
+          const bText = (b.innerText || b.textContent || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+          if (bText && bText.length >= 3) citeBadges.add(bText);
+        });
+
+        sources.forEach((s) => {
+          const d = (s.url || "").toLowerCase();
+          const host = (d.split("/")[2] || "").replace(/^www\./, "");
+          const hostName = host.split(".")[0];
+          if (citeBadges.has(hostName) || (s.title && citeBadges.has(s.title.toLowerCase().replace(/[^a-z0-9]/g, "")))) {
+            s.outcome = "cited";
           }
         });
       } else if (plat === "grok") {
