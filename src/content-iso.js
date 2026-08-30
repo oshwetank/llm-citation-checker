@@ -638,6 +638,11 @@
   (function initDomHarvester() {
     let lastHarvestedSig = "";
     let harvestTimer = null;
+    // Capped retry budget for expanding Perplexity's collapsible "Sources"
+    // panel (see the perplexity branch below) — reset once a harvest
+    // actually succeeds, so every new answer gets a fresh budget, but a
+    // stuck/broken trigger can't retry forever.
+    let sourcesExpandAttempts = 0;
 
     const tryHarvest = () => {
       const plat = getPlatform();
@@ -676,6 +681,55 @@
         if (proseEls.length) {
           answerText = Array.from(proseEls).map((p) => p.innerText || p.textContent || "").join("\n\n").trim();
         }
+
+        // Perplexity's "Sources" panel is a collapsible disclosure (a
+        // <button aria-expanded="true|false">Sources</button> whose actual
+        // <a href> list is a sibling that only carries real content once
+        // expanded). Real evidence (a user-provided DevTools capture): the
+        // answer's inline citations only ever named 2-5 of the ~10 sources
+        // Perplexity's own "Sources (10)" panel lists — the link scan below
+        // only ever finds what's ALREADY in the DOM, so if this panel
+        // hadn't been expanded yet when harvest ran, most of the source
+        // list was never there to find at all. Expanding it here closes
+        // that gap; it's a no-op if already open.
+        //
+        // Matched by visible TEXT ("Sources"), not a class name — Perplexity's
+        // own class names in this markup are Tailwind-generated utility
+        // soup with no semantic hook, and this project's own house rule
+        // (see brands.js's file header) is to key detection off structure/
+        // semantics wherever a real content signal exists, not a guessed
+        // class string that churns on the next redeploy.
+        //
+        // There is more than one "Sources"-labelled control on a real
+        // Perplexity page (a compact top-right pill, a bottom-of-answer
+        // "N sources" line, and the actual accordion trigger whose sibling
+        // mounts the <a> list) — `.find()` would click whichever happens to
+        // come first in DOM order, which is not guaranteed to be the one
+        // that actually gates the link list. `button[aria-expanded]` is a
+        // disclosure-widget attribute by definition, never present on an
+        // ordinary navigation link, so clicking every collapsed match this
+        // finds is safe (nothing here can navigate away) and strictly more
+        // likely to hit the right one than picking just the first.
+        try {
+          const sourcesTriggers = Array.from(document.querySelectorAll("button[aria-expanded]")).filter(
+            (btn) => (btn.textContent || "").trim().toLowerCase().startsWith("sources")
+          );
+          const collapsed = sourcesTriggers.filter((btn) => btn.getAttribute("aria-expanded") === "false");
+          if (collapsed.length && sourcesExpandAttempts < 3) {
+            collapsed.forEach((btn) => btn.click());
+            sourcesExpandAttempts++;
+            // Bail out of THIS pass rather than reading the DOM in the same
+            // synchronous tick: a click doesn't guarantee React has
+            // reconciled and mounted the newly-visible <a> nodes yet. Defer
+            // to a fresh tryHarvest() shortly after, which (a) gives the
+            // expand time to settle and (b) is a NEW call that hasn't set
+            // lastHarvestedSig for this answer yet, so it won't be blocked
+            // by the dedup guard below the way a MutationObserver-triggered
+            // re-run of THIS same signature would be.
+            setTimeout(tryHarvest, 400);
+            return;
+          }
+        } catch (_) {}
 
         const seen = new Set();
         const addSource = (url, title, snippet, isCited = false) => {
@@ -805,6 +859,7 @@
         const sig = `${plat}::${promptText}::${answerText.slice(0, 100)}`;
         if (sig === lastHarvestedSig) return;
         lastHarvestedSig = sig;
+        sourcesExpandAttempts = 0; // fresh retry budget for the NEXT answer
 
         const syntheticRaw = JSON.stringify({
           query: promptText,

@@ -113,6 +113,95 @@ if (body) {
   }
 }
 
+// --- Sources-panel auto-expand (real bug: a collapsed <button
+// aria-expanded="false">Sources</button> means its <a href> list siblings
+// carry no real content yet — the harvester used to just read whatever
+// happened to already be in the DOM, so a collapsed panel meant most of
+// Perplexity's ~10 sources were simply never there to find. See a real
+// DevTools capture of this exact markup in the bug report this fixes.) ---
+if (body) {
+  console.log("\ndom-harvest: Perplexity Sources-panel auto-expand");
+
+  const promptNode = { textContent: "best wireless speakers under 5000", innerText: "best wireless speakers under 5000", getAttribute: () => null };
+  const proseNode = { textContent: "X".repeat(80), innerText: "X".repeat(80), getAttribute: () => null };
+  const linkNode = (href) => ({ href, textContent: "A real source title", innerText: "A real source title", getAttribute: () => null });
+
+  function makeSourcesEnv(expandedAtStart) {
+    // Two "Sources"-labelled controls, modelling a real Perplexity page: a
+    // compact top-right pill (decoy — never gates the link list, but IS a
+    // disclosure button and DOES start collapsed) and the actual accordion
+    // trigger whose sibling mounts the <a> list. Both must get clicked; the
+    // fix must not stop after the first (decoy) match.
+    let expanded = expandedAtStart;
+    let decoyExpanded = expandedAtStart;
+    const clicks = [];
+    const pillBtn = {
+      textContent: "Sources10", // the compact "Sources [icons] 10 >" pill
+      getAttribute: (name) => (name === "aria-expanded" ? String(decoyExpanded) : null),
+      click: () => { clicks.push("pill"); decoyExpanded = true; },
+    };
+    const sourcesBtn = {
+      textContent: "Sources", // the real accordion trigger gating the <a> list
+      getAttribute: (name) => (name === "aria-expanded" ? String(expanded) : null),
+      click: () => { clicks.push("accordion"); expanded = true; },
+    };
+    const scheduled = [];
+    const doc = {
+      title: "best wireless speakers under 5000 - Perplexity",
+      querySelector: () => promptNode,
+      querySelectorAll: (sel) => {
+        if (sel === "button[aria-expanded]") return [pillBtn, sourcesBtn];
+        if (sel.startsWith("a[href")) return expanded ? [linkNode("https://a.example/1"), linkNode("https://b.example/2")] : [];
+        if (sel.includes(".prose")) return [proseNode];
+        return [];
+      },
+    };
+    const scope = {
+      getPlatform: () => "perplexity",
+      document: doc,
+      location: { href: "https://perplexity.ai/thread/1" },
+      setTimeout: (fn) => { scheduled.push(fn); return scheduled.length; },
+      chrome: { runtime: { sendMessage: (msg) => sent.push(msg), get lastError() { return undefined; } } },
+    };
+    const sent = [];
+    scope.chrome.runtime.sendMessage = (msg) => sent.push(msg);
+    const names = [...Object.keys(scope), "tryHarvest"];
+    const fn = new Function(...names, `let lastHarvestedSig = null;\nlet sourcesExpandAttempts = 0;\n${body}`);
+    return { fn, names, scope, sent, scheduled, clicks, isExpanded: () => expanded };
+  }
+
+  // Case 1: panel starts collapsed.
+  {
+    const { fn, names, scope, sent, scheduled, clicks, isExpanded } = makeSourcesEnv(false);
+    let threw = null;
+    try {
+      fn(...names.map((n) => (n === "tryHarvest" ? fn : scope[n])));
+    } catch (e) { threw = e; }
+    check("collapsed panel: harvest completes without throwing", !threw, threw && `${threw.constructor.name}: ${threw.message}`);
+    check("collapsed panel: BOTH matching controls get clicked, not just the first", clicks.length === 2 && clicks.includes("pill") && clicks.includes("accordion"), `clicked: ${clicks.join(", ")}`);
+    check("collapsed panel: aria-expanded flips as a result", isExpanded() === true);
+    check("collapsed panel: no capture is sent on this pass (bails to let the expand settle)", sent.length === 0, `sent ${sent.length}`);
+    check("collapsed panel: a follow-up harvest is scheduled instead", scheduled.length === 1);
+  }
+
+  // Case 2: panel already expanded — normal harvest, links are found.
+  {
+    const { fn, names, scope, sent, clicks } = makeSourcesEnv(true);
+    let threw = null;
+    try {
+      fn(...names.map((n) => (n === "tryHarvest" ? fn : scope[n])));
+    } catch (e) { threw = e; }
+    check("expanded panel: harvest completes without throwing", !threw, threw && `${threw.constructor.name}: ${threw.message}`);
+    check("expanded panel: the trigger is left alone (already open)", clicks.length === 0);
+    check("expanded panel: a capture is sent", sent.length === 1);
+    if (sent.length) {
+      let parsed = null;
+      try { parsed = JSON.parse(sent[0].payload.raw); } catch (_) {}
+      check("expanded panel: both sources are captured", (parsed?.web_results || []).length === 2, `got ${(parsed?.web_results || []).length}`);
+    }
+  }
+}
+
 if (failures) {
   console.log(`\n${failures} FAILED`);
   process.exit(1);
