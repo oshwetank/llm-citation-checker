@@ -59,6 +59,30 @@ function extractDomToMarkdown(source) {
 }
 const DOM2MD = extractDomToMarkdown(src);
 
+// tryHarvest also calls harvestPerplexitySteps(), another enclosing-scope
+// sibling. Same rule as domToMarkdown: hand the body the REAL one, pulled
+// from source, so this harness can't quietly diverge from shipped code.
+function extractStepsHelper(source) {
+  const grab = (decl, open, close) => {
+    const at = source.indexOf(decl);
+    if (at === -1) return "";
+    const s = source.indexOf(open, at);
+    let d = 0;
+    for (let i = s; i < source.length; i++) {
+      if (source[i] === open) d++;
+      else if (source[i] === close) { d--; if (d === 0) return source.slice(at, i + 1) + ";"; }
+    }
+    return "";
+  };
+  const reLine = (source.match(/const PPLX_STEP_LABEL_RE = .*;/) || [""])[0];
+  const selectors = grab("const PPLX_STEP_SELECTORS = [", "[", "]");
+  const fn = grab("const harvestPerplexitySteps = (doc) => {", "{", "}");
+  if (!fn) return "const harvestPerplexitySteps = () => [];";
+  return [reLine, selectors, fn].filter(Boolean).join(String.fromCharCode(10));
+}
+const STEPS = extractStepsHelper(src);
+
+
 function extractTryHarvest() {
   const start = src.indexOf("const tryHarvest = () => {");
   if (start === -1) return null;
@@ -139,7 +163,8 @@ if (body) {
       },
     };
     const names = Object.keys(scope);
-    const fn = new Function(...names, `${DOM2MD}\nlet lastHarvestedSig = null;\n${body}`);
+    const fn = new Function(...names, `${DOM2MD}
+${STEPS}\nlet lastHarvestedSig = null;\n${body}`);
     fn(...names.map((n) => scope[n]));
     if (!sent.length) return null;
     return JSON.parse(sent[0].payload.raw);

@@ -754,6 +754,77 @@
     }
   };
 
+  /*
+   * Perplexity fan-out (sub-query) harvesting.
+   *
+   * Fan-out is the set of searches an engine actually ran to answer one
+   * prompt, and it is core GEO data: it's where you see that "best gaming
+   * phone under 50000" became four separate searches, and which of them
+   * surfaced which source. Perplexity exposes this in its answer UI as a
+   * steps disclosure ("Finished 1 step" / "Searched the web"), but it has
+   * ALWAYS reported 0 here, because the DOM harvester never looked for it
+   * and the network payload that would carry query_plan never arrives (of
+   * the 20 fields adapters/perplexity.js can read, only 3 ever do).
+   *
+   * The plumbing below needs no adapter change: extractFanout() already
+   * accepts `query_plan`, `sub_queries`, `related_queries` and `queries`,
+   * and extractSources() already attaches `queryPlanQuery` to each source
+   * inside a query_plan entry. Those are dead paths purely because nothing
+   * ever supplied the field. Emitting `query_plan` here lights all of it up.
+   */
+  const PPLX_STEP_LABEL_RE = /^(finished|searched|reading|browsing|thinking)\b|^\d+\s+steps?\b|^steps?$/;
+
+  /*
+   * PROVISIONAL SELECTORS — the one markup-dependent part of this feature.
+   *
+   * Everything else here is confirmed: the disclosure-button pattern is the
+   * same one verified against a real DevTools capture of the Sources panel,
+   * and the downstream adapter path is already tested. What is NOT confirmed
+   * is which element holds an individual step's query text, because no real
+   * capture of the expanded steps panel exists yet.
+   *
+   * These are therefore a best-effort net, deliberately written so a miss
+   * costs nothing (fan-out stays 0, exactly as today) rather than producing
+   * junk. This project has been burned three times by guessed Perplexity
+   * selectors — the `[class*="citation"]` badge selectors matched nothing
+   * at all, and the query-bubble selectors still miss — so this stays
+   * quarantined in one constant and one function until real markup lands.
+   */
+  const PPLX_STEP_SELECTORS = [
+    '[data-testid*="step"]',
+    '[class*="step-"] [class*="query"]',
+    '[aria-label*="search" i] li',
+  ];
+
+  const harvestPerplexitySteps = (doc) => {
+    const out = [];
+    const seen = new Set();
+    const push = (q) => {
+      const s = String(q || "").replace(/\s+/g, " ").trim();
+      // A step's label is a QUERY, not prose. Anything sentence-length is
+      // the answer bleeding in through an over-broad selector, and a bare
+      // token is chrome — both are rejected rather than reported as a
+      // sub-query the engine never ran.
+      if (s.length < 3 || s.length > 120) return;
+      if (/^(finished|sources?|steps?|searched)$/i.test(s)) return;
+      const k = s.toLowerCase();
+      if (seen.has(k)) return;
+      seen.add(k);
+      out.push({ query: s, results: [] });
+    };
+    try {
+      for (const sel of PPLX_STEP_SELECTORS) {
+        let nodes = [];
+        try { nodes = Array.from(doc.querySelectorAll(sel) || []); } catch (_) { continue; }
+        for (const n of nodes) push(n.innerText || n.textContent || "");
+        if (out.length) break; // first selector that finds anything wins
+      }
+    } catch (_) {
+      // Fan-out is additive. Never let it cost us the capture.
+    }
+    return out;
+  };
+
   (function initDomHarvester() {
     let lastHarvestedSig = "";
     let harvestTimer = null;
@@ -780,6 +851,10 @@
       // silently with no capture and nothing in the page console to notice.
       let generatedTitle = "";
       const sources = [];
+      // Perplexity's sub-query breakdown, when its steps disclosure exposes
+      // one. Empty on every other platform and whenever the steps panel
+      // isn't present — see harvestPerplexitySteps().
+      let queryPlan = [];
 
       if (plat === "perplexity") {
         // LAST bubble, not first. A Perplexity thread keeps every turn mounted,
@@ -870,9 +945,16 @@
         // finds is safe (nothing here can navigate away) and strictly more
         // likely to hit the right one than picking just the first.
         try {
-          const sourcesTriggers = Array.from(document.querySelectorAll("button[aria-expanded]")).filter(
-            (btn) => (btn.textContent || "").trim().toLowerCase().startsWith("sources")
-          );
+          // Both disclosures we need to read are the same widget: a
+          // <button aria-expanded> whose content only mounts once open.
+          // "Sources" hides the full ~10-source list; the steps disclosure
+          // ("Finished 1 step", "Searched the web") hides Perplexity's
+          // sub-query breakdown, which is the fan-out this tool reports and
+          // which currently always reads 0.
+          const sourcesTriggers = Array.from(document.querySelectorAll("button[aria-expanded]")).filter((btn) => {
+            const t = (btn.textContent || "").trim().toLowerCase();
+            return t.startsWith("sources") || PPLX_STEP_LABEL_RE.test(t);
+          });
           const collapsed = sourcesTriggers.filter((btn) => btn.getAttribute("aria-expanded") === "false");
           if (collapsed.length && sourcesExpandAttempts < 3) {
             collapsed.forEach((btn) => btn.click());
@@ -996,6 +1078,12 @@
           ) || (titleStripped && citeBadges.has(titleStripped));
           if (cited) s.outcome = "cited";
         });
+
+        // Sub-queries from the steps disclosure (expanded above alongside
+        // Sources). Additive: when the steps panel isn't present or the
+        // selectors miss, this stays empty and fan-out reports 0 exactly as
+        // it does today — it never degrades an otherwise good capture.
+        queryPlan = harvestPerplexitySteps(document);
       } else if (plat === "grok") {
         // LAST turn, not first — same follow-up bug as the Perplexity branch
         // above. Reported on Grok too.
@@ -1056,6 +1144,12 @@
           generatedTitle: (generatedTitle && generatedTitle !== promptText) ? generatedTitle : undefined,
           text: answerText,
           web_results: sources,
+          // extractFanout()/extractSources() in adapters/perplexity.js
+          // already understand this shape (query + per-step results); it
+          // has simply never been supplied before, which is why fan-out
+          // has always reported 0. Omitted entirely when empty so a record
+          // never claims a fan-out it didn't observe.
+          query_plan: queryPlan.length ? queryPlan : undefined,
           status: "COMPLETED",
           harvestSource: "dom"
         });

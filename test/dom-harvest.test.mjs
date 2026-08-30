@@ -52,6 +52,30 @@ function extractDomToMarkdown(source) {
 }
 const DOM2MD = extractDomToMarkdown(src);
 
+// tryHarvest also calls harvestPerplexitySteps(), another enclosing-scope
+// sibling. Same rule as domToMarkdown: hand the body the REAL one, pulled
+// from source, so this harness can't quietly diverge from shipped code.
+function extractStepsHelper(source) {
+  const grab = (decl, open, close) => {
+    const at = source.indexOf(decl);
+    if (at === -1) return "";
+    const s = source.indexOf(open, at);
+    let d = 0;
+    for (let i = s; i < source.length; i++) {
+      if (source[i] === open) d++;
+      else if (source[i] === close) { d--; if (d === 0) return source.slice(at, i + 1) + ";"; }
+    }
+    return "";
+  };
+  const reLine = (source.match(/const PPLX_STEP_LABEL_RE = .*;/) || [""])[0];
+  const selectors = grab("const PPLX_STEP_SELECTORS = [", "[", "]");
+  const fn = grab("const harvestPerplexitySteps = (doc) => {", "{", "}");
+  if (!fn) return "const harvestPerplexitySteps = () => [];";
+  return [reLine, selectors, fn].filter(Boolean).join(String.fromCharCode(10));
+}
+const STEPS = extractStepsHelper(src);
+
+
 // Lift `const tryHarvest = () => { ... };` out by brace matching.
 function extractTryHarvest() {
   const start = src.indexOf("const tryHarvest = () => {");
@@ -109,7 +133,8 @@ if (body) {
   for (const plat of ["perplexity", "grok", "claude"]) {
     const { sent, scope } = makeEnv(plat);
     const names = Object.keys(scope);
-    const fn = new Function(...names, `${DOM2MD}\nlet lastHarvestedSig = null;\n${body}`);
+    const fn = new Function(...names, `${DOM2MD}
+${STEPS}\nlet lastHarvestedSig = null;\n${body}`);
     let threw = null;
     try {
       fn(...names.map((n) => scope[n]));
@@ -186,7 +211,8 @@ if (body) {
     const sent = [];
     scope.chrome.runtime.sendMessage = (msg) => sent.push(msg);
     const names = [...Object.keys(scope), "tryHarvest"];
-    const fn = new Function(...names, `${DOM2MD}\nlet lastHarvestedSig = null;\nlet sourcesExpandAttempts = 0;\n${body}`);
+    const fn = new Function(...names, `${DOM2MD}
+${STEPS}\nlet lastHarvestedSig = null;\nlet sourcesExpandAttempts = 0;\n${body}`);
     return { fn, names, scope, sent, scheduled, clicks, isExpanded: () => expanded };
   }
 

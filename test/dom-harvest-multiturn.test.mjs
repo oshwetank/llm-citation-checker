@@ -60,6 +60,30 @@ function extractDomToMarkdown(source) {
 }
 const DOM2MD = extractDomToMarkdown(src);
 
+// tryHarvest also calls harvestPerplexitySteps(), another enclosing-scope
+// sibling. Same rule as domToMarkdown: hand the body the REAL one, pulled
+// from source, so this harness can't quietly diverge from shipped code.
+function extractStepsHelper(source) {
+  const grab = (decl, open, close) => {
+    const at = source.indexOf(decl);
+    if (at === -1) return "";
+    const s = source.indexOf(open, at);
+    let d = 0;
+    for (let i = s; i < source.length; i++) {
+      if (source[i] === open) d++;
+      else if (source[i] === close) { d--; if (d === 0) return source.slice(at, i + 1) + ";"; }
+    }
+    return "";
+  };
+  const reLine = (source.match(/const PPLX_STEP_LABEL_RE = .*;/) || [""])[0];
+  const selectors = grab("const PPLX_STEP_SELECTORS = [", "[", "]");
+  const fn = grab("const harvestPerplexitySteps = (doc) => {", "{", "}");
+  if (!fn) return "const harvestPerplexitySteps = () => [];";
+  return [reLine, selectors, fn].filter(Boolean).join(String.fromCharCode(10));
+}
+const STEPS = extractStepsHelper(src);
+
+
 function extractTryHarvest() {
   const start = src.indexOf("const tryHarvest = () => {");
   if (start === -1) return null;
@@ -122,7 +146,8 @@ function runThread(plat, turnSets, opts) {
     const fn = new Function(
       ...names,
       "__sigBox",
-      `${DOM2MD}\nlet lastHarvestedSig = __sigBox.sig;\nlet sourcesExpandAttempts = 99;\nconst tryHarvest = () => {};\n${body}\n__sigBox.sig = lastHarvestedSig;`
+      `${DOM2MD}
+${STEPS}\nlet lastHarvestedSig = __sigBox.sig;\nlet sourcesExpandAttempts = 99;\nconst tryHarvest = () => {};\n${body}\n__sigBox.sig = lastHarvestedSig;`
     );
     fn(...names.map((n) => scope[n]), shared);
     allSent.push(...sent);
@@ -188,7 +213,8 @@ if (body) {
       const fn = new Function(
         ...names,
         "__sigBox",
-        `${DOM2MD}\nlet lastHarvestedSig = __sigBox.sig;\nlet sourcesExpandAttempts = 99;\nconst tryHarvest = () => {};\n${body}\n__sigBox.sig = lastHarvestedSig;`
+        `${DOM2MD}
+${STEPS}\nlet lastHarvestedSig = __sigBox.sig;\nlet sourcesExpandAttempts = 99;\nconst tryHarvest = () => {};\n${body}\n__sigBox.sig = lastHarvestedSig;`
       );
       fn(...names.map((n) => scope[n]), shared);
     };
@@ -227,7 +253,8 @@ if (body) {
       chrome: { runtime: { sendMessage: (m) => sent.push(m), get lastError() { return undefined; } } },
     };
     const names = Object.keys(scope);
-    const fn = new Function(...names, `${DOM2MD}\nlet lastHarvestedSig = null;\nlet sourcesExpandAttempts = 99;\nconst tryHarvest = () => {};\n${body}`);
+    const fn = new Function(...names, `${DOM2MD}
+${STEPS}\nlet lastHarvestedSig = null;\nlet sourcesExpandAttempts = 99;\nconst tryHarvest = () => {};\n${body}`);
     fn(...names.map((n) => scope[n]));
 
     check("a capture is still produced", sent.length === 1, `got ${sent.length}`);
