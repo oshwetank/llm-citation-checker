@@ -772,7 +772,11 @@
    * inside a query_plan entry. Those are dead paths purely because nothing
    * ever supplied the field. Emitting `query_plan` here lights all of it up.
    */
-  const PPLX_STEP_LABEL_RE = /^(finished|searched|reading|browsing|thinking)\b|^\d+\s+steps?\b|^steps?$/;
+  // No  after the verb: the REAL button text is "Finished2 steps" — no space
+  // between label and count (confirmed against live markup) — and  can never
+  // match between "d" and "2", since both are word characters. The first
+  // version of this regex was therefore a silent no-op against the real page.
+  const PPLX_STEP_LABEL_RE = /^(finished|searched|reading|browsing|thinking)|\d+\s*steps?|^steps?$/;
 
   /*
    * PROVISIONAL SELECTORS — the one markup-dependent part of this feature.
@@ -863,7 +867,16 @@
         // half of why follow-up questions in an existing chat were never
         // captured as their own turn. See the sig note further down for the
         // other half.
-        const userBubbles = document.querySelectorAll('[data-testid="user-query"], .user-query, [data-message-author="user"], div[class*="userMessage"], div[class*="UserMessage"], div[class*="queryBubble"]');
+        // `[class*="user-bubble"]` FIRST — it is the only one of these
+        // confirmed against real Perplexity markup, where the query sits in
+        // <div class="group group/user-bubble ...">. None of the others
+        // (data-testid="user-query", .user-query, userMessage, queryBubble)
+        // appear on the live page at all; they were guesses, and their
+        // missing is exactly why the prompt used to fall through to the
+        // answer's own h1/h2 and record a section heading as the user's
+        // question. Kept anyway, after the real one, since a Set-union of
+        // selectors costs nothing and Perplexity's markup does churn.
+        const userBubbles = document.querySelectorAll('[class*="user-bubble"], [data-testid="user-query"], .user-query, [data-message-author="user"], div[class*="userMessage"], div[class*="UserMessage"], div[class*="queryBubble"]');
         if (userBubbles.length) promptText = (userBubbles[userBubbles.length - 1].textContent || "").trim();
 
         // h1 ONLY — not "h1, h2, .font-display". Perplexity renders the
@@ -1078,6 +1091,39 @@
           ) || (titleStripped && citeBadges.has(titleStripped));
           if (cited) s.outcome = "cited";
         });
+
+        // EXACT cited-source URLs, straight from Perplexity's own markup.
+        //
+        // Every inline citation carries the full source URL in a data
+        // attribute: <span class="citation inline" data-pplx-citation-url="...">.
+        // That is a far better signal than anything this file was doing
+        // before — it is exact (no domain-label guessing), complete (every
+        // claim's citation, not just what the Sources panel had rendered),
+        // and it is a stable data attribute rather than a Tailwind class
+        // name that churns. Confirmed against real captured markup; see
+        // test/fixtures/perplexity-answer-dom.html.
+        //
+        // These are `cited` by definition — the answer is pointing at them
+        // mid-sentence — which is a stronger claim than the badge-text
+        // matching below can make, so they are marked cited outright.
+        try {
+          document.querySelectorAll("[data-pplx-citation-url]").forEach((node) => {
+            const u = node.getAttribute("data-pplx-citation-url");
+            if (!u) return;
+            // Perplexity flags sources it considers reputable with its own
+            // shield marker. No other engine this tool supports exposes a
+            // per-source trust judgement, so it is worth carrying through
+            // rather than discarding as decoration.
+            const trusted = !!node.querySelector('[data-testid="trusted-citation-check"]');
+            const label = (node.textContent || "").replace(/\+\d+\s*$/, "").trim();
+            addSource(u, label, "", true);
+            const rec = sources.find((x) => x.url === u);
+            if (rec) {
+              rec.outcome = "cited";
+              if (trusted) rec.trusted = true;
+            }
+          });
+        } catch (_) {}
 
         // Sub-queries from the steps disclosure (expanded above alongside
         // Sources). Additive: when the steps panel isn't present or the

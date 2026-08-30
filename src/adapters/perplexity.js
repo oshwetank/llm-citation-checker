@@ -309,6 +309,13 @@ function extractSources(nodes) {
         platformSpecific: {
           queryPlanQuery: obj.query || null,
           sourceIndex: obj.index != null ? obj.index : null,
+          // Perplexity's own "Trusted domain" shield, harvested from the
+          // inline citation markup. No other engine this tool supports
+          // publishes a per-source trust judgement, so it's carried through
+          // rather than dropped — it's exactly the kind of engine-specific
+          // signal worth surfacing instead of flattening every platform
+          // into a shared lowest common denominator.
+          trusted: obj.trusted === true ? true : null,
         },
       })
     );
