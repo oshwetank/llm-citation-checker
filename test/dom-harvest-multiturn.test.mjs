@@ -40,6 +40,26 @@ const check = (label, cond, detail) => {
 
 const src = readFileSync(new URL("../src/content-iso.js", import.meta.url), "utf8");
 
+// tryHarvest calls domToMarkdown(), which lives in content-iso.js's enclosing
+// scope rather than inside tryHarvest itself — so a body executed in
+// isolation has to be handed the REAL implementation, not a stub. Extracted
+// from source the same way tryHarvest is, so this stays honest if it changes.
+function extractDomToMarkdown(source) {
+  const start = source.indexOf("const domToMarkdown = (root) => {");
+  if (start === -1) return "const domToMarkdown = (n) => (n && (n.innerText || n.textContent)) || \"\";";
+  const bodyStart = source.indexOf("{", source.indexOf("=>", start));
+  let depth = 0;
+  for (let i = bodyStart; i < source.length; i++) {
+    if (source[i] === "{") depth++;
+    else if (source[i] === "}") {
+      depth--;
+      if (depth === 0) return "const domToMarkdown = (root) => " + source.slice(bodyStart, i + 1) + ";";
+    }
+  }
+  return "const domToMarkdown = (n) => (n && (n.innerText || n.textContent)) || \"\";";
+}
+const DOM2MD = extractDomToMarkdown(src);
+
 function extractTryHarvest() {
   const start = src.indexOf("const tryHarvest = () => {");
   if (start === -1) return null;
@@ -102,7 +122,7 @@ function runThread(plat, turnSets, opts) {
     const fn = new Function(
       ...names,
       "__sigBox",
-      `let lastHarvestedSig = __sigBox.sig;\nlet sourcesExpandAttempts = 99;\nconst tryHarvest = () => {};\n${body}\n__sigBox.sig = lastHarvestedSig;`
+      `${DOM2MD}\nlet lastHarvestedSig = __sigBox.sig;\nlet sourcesExpandAttempts = 99;\nconst tryHarvest = () => {};\n${body}\n__sigBox.sig = lastHarvestedSig;`
     );
     fn(...names.map((n) => scope[n]), shared);
     allSent.push(...sent);
@@ -168,7 +188,7 @@ if (body) {
       const fn = new Function(
         ...names,
         "__sigBox",
-        `let lastHarvestedSig = __sigBox.sig;\nlet sourcesExpandAttempts = 99;\nconst tryHarvest = () => {};\n${body}\n__sigBox.sig = lastHarvestedSig;`
+        `${DOM2MD}\nlet lastHarvestedSig = __sigBox.sig;\nlet sourcesExpandAttempts = 99;\nconst tryHarvest = () => {};\n${body}\n__sigBox.sig = lastHarvestedSig;`
       );
       fn(...names.map((n) => scope[n]), shared);
     };
@@ -207,7 +227,7 @@ if (body) {
       chrome: { runtime: { sendMessage: (m) => sent.push(m), get lastError() { return undefined; } } },
     };
     const names = Object.keys(scope);
-    const fn = new Function(...names, `let lastHarvestedSig = null;\nlet sourcesExpandAttempts = 99;\nconst tryHarvest = () => {};\n${body}`);
+    const fn = new Function(...names, `${DOM2MD}\nlet lastHarvestedSig = null;\nlet sourcesExpandAttempts = 99;\nconst tryHarvest = () => {};\n${body}`);
     fn(...names.map((n) => scope[n]));
 
     check("a capture is still produced", sent.length === 1, `got ${sent.length}`);

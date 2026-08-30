@@ -676,6 +676,28 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     if (candidates.has(headKey) && headKey !== k) candidates.delete(k);
   }
 
+  // Same collapse, for the HYPHENATED form a brand's own domain often takes.
+  // A company's site is regularly brand + suffix — boat-lifestyle.com,
+  // samsung-india.com, nike-store.com — so brandFromDomain() yields
+  // "Boat-lifestyle" while the answer's prose says "boAt". Those are one
+  // company, but they were reported as two brands with the mentions split
+  // between them, which is exactly the number a share-of-voice tool must not
+  // get wrong. Seen live: "boAt x8" and "boat-lifestyle x12" listed as
+  // separate brands for the same answer.
+  //
+  // Keyed on the HYPHEN specifically rather than any prefix match, because a
+  // bare prefix test would happily merge unrelated companies that merely
+  // start alike ("apple" into "applebees"). A hyphen in a registrable domain
+  // label is a real word boundary the registrant chose, so the leading
+  // segment matching a brand we already detected is strong evidence, not a
+  // coincidence.
+  for (const [k, v] of [...candidates]) {
+    if (v.keepWhole || v.category !== "cited_domain") continue;
+    if (!v.name.includes("-")) continue;
+    const headKey = v.name.split("-")[0].toLowerCase();
+    if (headKey.length >= 3 && candidates.has(headKey) && headKey !== k) candidates.delete(k);
+  }
+
   // Character offsets that fall on a markdown heading line. A name that only
   // ever occurs inside a heading is labelling that section; a brand the answer
   // is actually about gets written about underneath its own heading.

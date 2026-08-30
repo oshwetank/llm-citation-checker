@@ -635,6 +635,125 @@
   })();
 
   /* ---------- Live DOM Harvester (Fall-safe capture layer for Perplexity / Claude / Grok) ---------- */
+  /*
+   * domToMarkdown — serialize an answer element to MARKDOWN, not flat text.
+   *
+   * This is load-bearing for brand detection, not a formatting nicety.
+   * lib/brands.js derives its candidates almost entirely from STRUCTURE:
+   * bold list headers, markdown headings, and the first column of markdown
+   * tables (see its file header — that design is what makes detection work
+   * across any industry without a hardcoded vocabulary). ChatGPT's payload
+   * arrives as markdown natively, so that worked from day one there.
+   *
+   * Perplexity has no usable answer stream, so its capture comes from the
+   * DOM harvester below — which called `innerText` and threw every one of
+   * those signals away. Measured on the same content: markdown in yields
+   * "boAt, Sony, Noise"; the innerText-flattened version of the SAME answer
+   * yields nothing at all. That is the real reason Perplexity captures show
+   * empty or junk Brand Mentions, and it's a textbook case of ChatGPT-shaped
+   * assumptions leaking into an engine that works differently.
+   *
+   * The structure is right there in the DOM (<strong>, <h2>, <table>), so
+   * this rebuilds the markdown the detector already knows how to read,
+   * rather than adding a second, prose-based detection path that would need
+   * its own heuristics and its own false positives.
+   */
+  const domToMarkdown = (root) => {
+    if (!root) return "";
+    const MAX_DEPTH = 40;
+
+    const inline = (node, d = 0) => {
+      if (!node || d > MAX_DEPTH) return "";
+      let out = "";
+      const kids = node.childNodes || [];
+      for (const c of kids) {
+        if (c.nodeType === 3) { out += c.nodeValue || ""; continue; }
+        if (c.nodeType !== 1) continue;
+        const tag = (c.tagName || "").toLowerCase();
+        if (tag === "strong" || tag === "b") {
+          const t = inline(c, d + 1).trim();
+          out += t ? `**${t}**` : "";
+        } else if (tag === "em" || tag === "i") {
+          const t = inline(c, d + 1).trim();
+          out += t ? `*${t}*` : "";
+        } else if (tag === "br") {
+          out += "\n";
+        } else {
+          out += inline(c, d + 1);
+        }
+      }
+      return out;
+    };
+
+    const cellText = (td) => inline(td).replace(/\s+/g, " ").replace(/\|/g, "\\|").trim();
+
+    const tableToMd = (table) => {
+      const rows = Array.from(table.querySelectorAll ? table.querySelectorAll("tr") : []);
+      if (!rows.length) return "";
+      const rowCells = (tr) => Array.from(tr.children || []).map(cellText);
+      const head = rowCells(rows[0]);
+      if (!head.length) return "";
+      // The separator row is what makes parseMarkdownTables() recognise this
+      // as a real table rather than two lines that happen to contain pipes.
+      const out = [
+        `| ${head.join(" | ")} |`,
+        `| ${head.map(() => "---").join(" | ")} |`,
+      ];
+      for (let i = 1; i < rows.length; i++) {
+        const cells = rowCells(rows[i]);
+        if (cells.length) out.push(`| ${cells.join(" | ")} |`);
+      }
+      return out.join("\n");
+    };
+
+    const block = (node, d = 0) => {
+      if (!node || d > MAX_DEPTH) return "";
+      let out = "";
+      const kids = node.childNodes || [];
+      for (const c of kids) {
+        if (c.nodeType === 3) {
+          const t = (c.nodeValue || "").trim();
+          if (t) out += t + "\n";
+          continue;
+        }
+        if (c.nodeType !== 1) continue;
+        const tag = (c.tagName || "").toLowerCase();
+        if (/^h[1-6]$/.test(tag)) {
+          out += `\n${"#".repeat(Number(tag[1]))} ${inline(c).trim()}\n\n`;
+        } else if (tag === "p") {
+          const t = inline(c).trim();
+          if (t) out += t + "\n\n";
+        } else if (tag === "li") {
+          const t = inline(c).trim();
+          if (t) out += `- ${t}\n`;
+        } else if (tag === "table") {
+          const t = tableToMd(c);
+          if (t) out += `\n${t}\n\n`;
+        } else if (tag === "script" || tag === "style") {
+          continue;
+        } else {
+          out += block(c, d + 1);
+        }
+      }
+      return out;
+    };
+
+    const flat = () => String((root && (root.innerText || root.textContent)) || "").trim();
+    try {
+      const md = block(root).replace(/\n{3,}/g, "\n\n").trim();
+      // An EMPTY serialization must never cost us the capture. The walk can
+      // legitimately come back with nothing on markup this doesn't model
+      // (an unexpected wrapper, content behind a shadow root, a node handed
+      // to us without childNodes), and returning "" there would be strictly
+      // worse than the innerText behaviour this replaced — it would turn a
+      // partially-understood answer into no answer at all. Structure is an
+      // upgrade when we can get it, never a precondition for capturing.
+      return md || flat();
+    } catch (_) {
+      return flat();
+    }
+  };
+
   (function initDomHarvester() {
     let lastHarvestedSig = "";
     let harvestTimer = null;
@@ -699,7 +818,10 @@
           const els = Array.from(proseEls);
           const perTurn = userBubbles.length > 0 && els.length === userBubbles.length;
           const chosen = perTurn ? [els[els.length - 1]] : els;
-          answerText = chosen.map((p) => p.innerText || p.textContent || "").join("\n\n").trim();
+          // Markdown, not innerText — see domToMarkdown's header. The structural
+          // signals brand detection depends on (bold, headings, table columns)
+          // are present in the DOM and destroyed by innerText.
+          answerText = chosen.map((p) => domToMarkdown(p)).filter(Boolean).join("\n\n").trim();
         }
 
         // Prompt fallbacks, in order of how much they can be trusted. This
@@ -885,7 +1007,10 @@
           const els = Array.from(msgEls);
           const perTurn = userEls.length > 0 && els.length === userEls.length;
           const chosen = perTurn ? [els[els.length - 1]] : els;
-          answerText = chosen.map((p) => p.innerText || p.textContent || "").join("\n\n").trim();
+          // Markdown, not innerText — see domToMarkdown's header. The structural
+          // signals brand detection depends on (bold, headings, table columns)
+          // are present in the DOM and destroyed by innerText.
+          answerText = chosen.map((p) => domToMarkdown(p)).filter(Boolean).join("\n\n").trim();
         }
       } else if (plat === "claude") {
         // Same last-turn handling as the other two. Claude is currently
@@ -899,7 +1024,10 @@
           const els = Array.from(msgEls);
           const perTurn = userEls.length > 0 && els.length === userEls.length;
           const chosen = perTurn ? [els[els.length - 1]] : els;
-          answerText = chosen.map((p) => p.innerText || p.textContent || "").join("\n\n").trim();
+          // Markdown, not innerText — see domToMarkdown's header. The structural
+          // signals brand detection depends on (bold, headings, table columns)
+          // are present in the DOM and destroyed by innerText.
+          answerText = chosen.map((p) => domToMarkdown(p)).filter(Boolean).join("\n\n").trim();
         }
       }
 

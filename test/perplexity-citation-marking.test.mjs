@@ -39,6 +39,26 @@ const check = (label, cond, detail) => {
 
 const src = readFileSync(new URL("../src/content-iso.js", import.meta.url), "utf8");
 
+// tryHarvest calls domToMarkdown(), which lives in content-iso.js's enclosing
+// scope rather than inside tryHarvest itself — so a body executed in
+// isolation has to be handed the REAL implementation, not a stub. Extracted
+// from source the same way tryHarvest is, so this stays honest if it changes.
+function extractDomToMarkdown(source) {
+  const start = source.indexOf("const domToMarkdown = (root) => {");
+  if (start === -1) return "const domToMarkdown = (n) => (n && (n.innerText || n.textContent)) || \"\";";
+  const bodyStart = source.indexOf("{", source.indexOf("=>", start));
+  let depth = 0;
+  for (let i = bodyStart; i < source.length; i++) {
+    if (source[i] === "{") depth++;
+    else if (source[i] === "}") {
+      depth--;
+      if (depth === 0) return "const domToMarkdown = (root) => " + source.slice(bodyStart, i + 1) + ";";
+    }
+  }
+  return "const domToMarkdown = (n) => (n && (n.innerText || n.textContent)) || \"\";";
+}
+const DOM2MD = extractDomToMarkdown(src);
+
 function extractTryHarvest() {
   const start = src.indexOf("const tryHarvest = () => {");
   if (start === -1) return null;
@@ -119,7 +139,7 @@ if (body) {
       },
     };
     const names = Object.keys(scope);
-    const fn = new Function(...names, `let lastHarvestedSig = null;\n${body}`);
+    const fn = new Function(...names, `${DOM2MD}\nlet lastHarvestedSig = null;\n${body}`);
     fn(...names.map((n) => scope[n]));
     if (!sent.length) return null;
     return JSON.parse(sent[0].payload.raw);
