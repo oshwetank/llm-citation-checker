@@ -1200,7 +1200,26 @@ function renderAnalyze() {
   // top:0 there is already correct without an offset — see the CSS.
   {
     const promptBar = el("div", { className: "analyze-context-bar" });
+
+    // Back control lives HERE rather than only in the .viewing banner below,
+    // because this bar is the one thing that stays on screen at every scroll
+    // position — reaching the banner's back link meant scrolling back to the
+    // top of a long Analyze view first. When this capture was opened from
+    // another tab (returnTab) it returns exactly there; otherwise Dashboard
+    // is the sane home, so the control is never a dead end.
+    const backTo = returnTab || "dashboard";
+    const backBtn = el("button", {
+      className: "analyze-context-back",
+      title: `Back to ${TAB_LABELS[backTo] || backTo}`,
+    });
+    backBtn.append(
+      el("span", { "aria-hidden": "true" }, "←"),
+      el("span", { className: "analyze-context-back-label" }, TAB_LABELS[backTo] || backTo)
+    );
+    backBtn.onclick = () => { returnTab = null; showTab(backTo); };
+
     promptBar.append(
+      backBtn,
       el("span", { className: "analyze-context-label muted small" }, "Analyzing"),
       el("span", {
         className: "analyze-context-prompt",
@@ -1228,12 +1247,11 @@ function renderAnalyze() {
   //     unconditional findIndex here returned -1 and would have rendered
   //     the nonsensical "viewing capture 0 of N" for that exact flow.
   {
+    // NOTE: no back link here any more — it moved into the sticky context
+    // bar above, which is reachable from every scroll position. Repeating it
+    // here would just be a second copy of the same control a few pixels
+    // apart.
     const parts = [];
-    if (returnTab) {
-      const backBtn = el("button", { className: "linkbtn" }, `← Back to ${TAB_LABELS[returnTab] || returnTab}`);
-      backBtn.onclick = () => { const rt = returnTab; returnTab = null; showTab(rt); };
-      parts.push(backBtn);
-    }
     const adhocIdx = RECORDS.findIndex((r) => r.captureId === rec.captureId);
     if (adhocIdx > 0) {
       parts.push(el("span", {}, `Viewing capture ${adhocIdx + 1} of ${RECORDS.length} (${new Date(rec.capturedAt).toLocaleString()})`));

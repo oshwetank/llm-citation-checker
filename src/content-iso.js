@@ -663,23 +663,60 @@
       const sources = [];
 
       if (plat === "perplexity") {
-        // User's typed query bubble
-        const userBubble = document.querySelector('[data-testid="user-query"], .user-query, [data-message-author="user"], div[class*="userMessage"], div[class*="UserMessage"], div[class*="queryBubble"]');
-        if (userBubble) promptText = (userBubble.textContent || "").trim();
+        // LAST bubble, not first. A Perplexity thread keeps every turn mounted,
+        // so querySelector() (which returns the FIRST match) always returned
+        // turn 1's prompt no matter how many follow-ups the user asked — one
+        // half of why follow-up questions in an existing chat were never
+        // captured as their own turn. See the sig note further down for the
+        // other half.
+        const userBubbles = document.querySelectorAll('[data-testid="user-query"], .user-query, [data-message-author="user"], div[class*="userMessage"], div[class*="UserMessage"], div[class*="queryBubble"]');
+        if (userBubbles.length) promptText = (userBubbles[userBubbles.length - 1].textContent || "").trim();
 
-        const headingEl = document.querySelector('h1, h2, .font-display');
+        // h1 ONLY — not "h1, h2, .font-display". Perplexity renders the
+        // ANSWER's own section headings as h2 (and its design font class is
+        // used all over the answer body), so the old selector's first match
+        // was routinely a heading from inside the answer rather than the
+        // thread title. That heading then became the user's "prompt" via the
+        // fallback below whenever the query-bubble selectors missed.
+        // Confirmed against every real capture in test/fixtures: "Key Paint
+        // Characteristics", "Top picks (August 2026)", "What to prioritize
+        // for gaming + editing" were all recorded as the user's prompt, and
+        // all three appear verbatim as a heading LINE inside their own
+        // answer body — the real questions were about bathroom paint, phones
+        // and laptops respectively.
+        const headingEl = document.querySelector("h1");
         if (headingEl) generatedTitle = (headingEl.textContent || "").trim();
-
-        if (!promptText) {
-          if (generatedTitle) promptText = generatedTitle;
-          else if (document.title) {
-            promptText = document.title.replace(/\s*-\s*Perplexity.*$/i, "").replace(/^Perplexity\s*-\s*/i, "").trim();
-          }
-        }
 
         const proseEls = document.querySelectorAll('.prose, [data-testid="thread-message"], [data-testid="answer-content"], div[dir="auto"].select-text, .answer-content');
         if (proseEls.length) {
-          answerText = Array.from(proseEls).map((p) => p.innerText || p.textContent || "").join("\n\n").trim();
+          // When each turn's answer is its own block and the block count
+          // lines up with the number of user bubbles, capture only the LAST
+          // turn — otherwise every follow-up re-sent the whole thread
+          // concatenated as one giant "answer". When the counts don't line
+          // up (one answer split across several blocks), fall back to
+          // joining everything, which is the pre-existing behaviour and
+          // still correct for a single-turn thread.
+          const els = Array.from(proseEls);
+          const perTurn = userBubbles.length > 0 && els.length === userBubbles.length;
+          const chosen = perTurn ? [els[els.length - 1]] : els;
+          answerText = chosen.map((p) => p.innerText || p.textContent || "").join("\n\n").trim();
+        }
+
+        // Prompt fallbacks, in order of how much they can be trusted. This
+        // runs AFTER answerText is known so the heading guard below can
+        // actually check against it.
+        const titleFromDoc = document.title
+          ? document.title.replace(/\s*-\s*Perplexity.*$/i, "").replace(/^Perplexity\s*-\s*/i, "").trim()
+          : "";
+        // A candidate that appears verbatim as its own LINE inside the answer
+        // is a section heading the model wrote, not something the user typed.
+        // This is the check that would have caught all four bad real captures.
+        const isAnswerHeading = (s) =>
+          !!s && answerText.split("\n").some((line) => line.trim() === s.trim());
+        if (!promptText || isAnswerHeading(promptText)) {
+          if (titleFromDoc && !isAnswerHeading(titleFromDoc)) promptText = titleFromDoc;
+          else if (generatedTitle && !isAnswerHeading(generatedTitle)) promptText = generatedTitle;
+          else promptText = promptText || titleFromDoc || generatedTitle;
         }
 
         // Perplexity's "Sources" panel is a collapsible disclosure (a
@@ -838,25 +875,50 @@
           if (cited) s.outcome = "cited";
         });
       } else if (plat === "grok") {
-        const userEl = document.querySelector('.user-message, [data-message-author="user"]');
-        if (userEl) promptText = (userEl.textContent || "").trim();
+        // LAST turn, not first — same follow-up bug as the Perplexity branch
+        // above. Reported on Grok too.
+        const userEls = document.querySelectorAll('.user-message, [data-message-author="user"]');
+        if (userEls.length) promptText = (userEls[userEls.length - 1].textContent || "").trim();
 
         const msgEls = document.querySelectorAll('.message-row, [data-message-author="assistant"]');
         if (msgEls.length) {
-          answerText = Array.from(msgEls).map((p) => p.innerText || p.textContent || "").join("\n\n").trim();
+          const els = Array.from(msgEls);
+          const perTurn = userEls.length > 0 && els.length === userEls.length;
+          const chosen = perTurn ? [els[els.length - 1]] : els;
+          answerText = chosen.map((p) => p.innerText || p.textContent || "").join("\n\n").trim();
         }
       } else if (plat === "claude") {
-        const userEl = document.querySelector('[data-testid="user-message"], .font-user-message');
-        if (userEl) promptText = (userEl.textContent || "").trim();
+        // Same last-turn handling as the other two. Claude is currently
+        // blocked as an engine (see lib/geo.js), but this harvester branch
+        // stays correct so it isn't a landmine whenever Claude is enabled.
+        const userEls = document.querySelectorAll('[data-testid="user-message"], .font-user-message');
+        if (userEls.length) promptText = (userEls[userEls.length - 1].textContent || "").trim();
 
         const msgEls = document.querySelectorAll('[data-testid="chat-message"], .font-claude-message');
         if (msgEls.length) {
-          answerText = Array.from(msgEls).map((p) => p.innerText || p.textContent || "").join("\n\n").trim();
+          const els = Array.from(msgEls);
+          const perTurn = userEls.length > 0 && els.length === userEls.length;
+          const chosen = perTurn ? [els[els.length - 1]] : els;
+          answerText = chosen.map((p) => p.innerText || p.textContent || "").join("\n\n").trim();
         }
       }
 
       if (promptText && answerText && answerText.length > 50) {
-        const sig = `${plat}::${promptText}::${answerText.slice(0, 100)}`;
+        // The dedup signature has to change when a FOLLOW-UP arrives, or the
+        // guard below silently drops it. It used to be
+        // `plat::promptText::answerText.slice(0,100)`, and in a multi-turn
+        // thread NEITHER of those two moved: promptText was always turn 1's
+        // (querySelector returns the first match) and the first 100 chars of
+        // the concatenated thread are always the START of turn 1's answer,
+        // no matter how many turns get appended after it. So every follow-up
+        // in an existing chat produced a byte-identical sig to the turn
+        // before it and was thrown away — reported on both Perplexity and
+        // Grok, and it would have behaved the same on Claude.
+        //
+        // Length plus the answer's TAIL both move on every new turn, which
+        // is what makes each follow-up its own capture.
+        const tail = answerText.slice(-160);
+        const sig = `${plat}::${promptText}::${answerText.length}::${tail}`;
         if (sig === lastHarvestedSig) return;
         lastHarvestedSig = sig;
         sourcesExpandAttempts = 0; // fresh retry budget for the NEXT answer

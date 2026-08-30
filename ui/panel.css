@@ -15,6 +15,28 @@
   --bg-subtle: rgba(241, 245, 249, 0.7);
   --card-bg: linear-gradient(160deg, rgba(255, 255, 255, 0.78) 0%, rgba(255, 255, 255, 0.58) 100%);
   --card-hover: linear-gradient(160deg, rgba(255, 255, 255, 0.92) 0%, rgba(255, 255, 255, 0.74) 100%);
+  /* The header gets its OWN surface token rather than reusing --card-bg: it
+     sits above everything as a sticky chrome element and reads better very
+     slightly brighter and flatter than a content card. It exists as a token
+     at all because both header rules used to hardcode a near-white
+     rgba(255,255,255,.78) — one of them with !important — which never
+     changed in dark mode, leaving near-white text on a near-white bar. */
+  --header-bg: rgba(255, 255, 255, 0.78);
+  /* SURFACE SCALE. Every raised/inset surface in the app resolves to one of
+     these four, so dark mode is correct BY CONSTRUCTION instead of needing a
+     per-component override. An audit found 30 selectors that hardcoded a
+     light background with no dark counterpart — nav tabs, list rows, table
+     headers, modals, menus, chips — which is why dark mode looked unfinished
+     no matter how well the cards themselves were themed: the cards were the
+     only surface that had ever been converted.
+       raised        — a list row / chip at rest, sitting ON a card
+       raised-hover  — the same row under the cursor
+       solid         — fully opaque chrome: modals, menus, the active nav tab
+       sunken        — inset areas: sticky table headers, scroll wells */
+  --surface-raised: rgba(255, 255, 255, 0.65);
+  --surface-raised-hover: rgba(255, 255, 255, 0.92);
+  --surface-solid: #ffffff;
+  --surface-sunken: rgba(248, 250, 252, 0.97);
   --border: rgba(148, 163, 184, 0.38);   /* translucent so the backdrop tints it */
   --border-hover: rgba(0, 122, 255, 0.42);
   --glass-blur: blur(22px) saturate(190%);
@@ -67,6 +89,17 @@
   --bg-subtle: rgba(15, 23, 42, 0.75);
   --card-bg: linear-gradient(160deg, rgba(30, 41, 59, 0.72) 0%, rgba(15, 23, 42, 0.65) 100%);
   --card-hover: linear-gradient(160deg, rgba(51, 65, 85, 0.85) 0%, rgba(30, 41, 59, 0.78) 100%);
+  /* Slightly lighter than a card so the sticky chrome still separates from
+     the content scrolling under it, but unmistakably DARK — this is the
+     value whose absence made the header a near-white slab in dark mode. */
+  --header-bg: rgba(23, 33, 51, 0.82);
+  /* Dark counterparts of the surface scale — see the light block for what
+     each one is for. Kept deliberately close in lightness to each other so
+     the UI reads as one calm material rather than a patchwork of greys. */
+  --surface-raised: rgba(30, 41, 59, 0.55);
+  --surface-raised-hover: rgba(51, 65, 85, 0.78);
+  --surface-solid: #131c2e;
+  --surface-sunken: rgba(15, 23, 42, 0.88);
   --border: rgba(148, 163, 184, 0.18);
   --border-hover: rgba(56, 189, 248, 0.45);
   --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.12);
@@ -127,13 +160,21 @@
    name — including attachment — back to its initial value (`scroll`), so
    without this the dark backdrop would scroll away instead of staying
    fixed like the light-mode one does. */
+/* Dark canvas. Previously four SATURATED blobs in four different hues —
+   blue, green, amber and purple, at 0.35-0.45 alpha — which collided into a
+   muddy multicolour smear, most obvious in the empty area below the content
+   where nothing sits on top to break it up. Reported as the dark theme
+   looking unpolished next to the light one.
+   Now: a genuinely near-black base with two low-alpha glows in ONE cool
+   family, both anchored to the top where the content actually is, so the
+   page reads as a single calm material and the lower canvas stays clean.
+   The glass surfaces above it supply the depth; the backdrop shouldn't
+   compete with them. */
 :root[data-theme="dark"],
 [data-theme="dark"] body {
-  background: radial-gradient(at 8% 0%, rgba(30, 58, 138, 0.45) 0px, transparent 45%),
-              radial-gradient(at 100% 4%, rgba(6, 78, 59, 0.35) 0px, transparent 42%),
-              radial-gradient(at 92% 92%, rgba(120, 53, 15, 0.35) 0px, transparent 45%),
-              radial-gradient(at 0% 100%, rgba(76, 29, 149, 0.4) 0px, transparent 45%),
-              #080c14;
+  background: radial-gradient(at 10% -5%, rgba(37, 99, 235, 0.18) 0px, transparent 55%),
+              radial-gradient(at 95% 0%, rgba(79, 70, 229, 0.14) 0px, transparent 50%),
+              #070b12;
   background-attachment: fixed;
 }
 
@@ -335,10 +376,10 @@ body.tab .app-wrapper, body:not(.popup) .app-wrapper {
   position: sticky;
   top: 0;
   z-index: 100;
-  background: rgba(248, 250, 252, 0.82);
+  background: var(--header-bg);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
-  border-bottom: 1px solid rgba(226, 232, 240, 0.8);
+  border-bottom: 1px solid var(--border);
   box-shadow: 0 4px 12px rgba(15, 23, 42, 0.03);
 }
 
@@ -349,7 +390,7 @@ body.tab .app-header, body:not(.popup) .app-header {
   align-items: center !important;
   justify-content: space-between !important;
   gap: 16px !important;
-  background: rgba(255, 255, 255, 0.78) !important;
+  background: var(--header-bg) !important;
   backdrop-filter: var(--glass-blur) !important;
   -webkit-backdrop-filter: var(--glass-blur) !important;
   border: 1px solid var(--border) !important;
@@ -402,7 +443,7 @@ body::before {
   width: 32px;
   height: 32px;
   border-radius: 8px;
-  background: #ffffff;
+  background: var(--surface-solid);
   border: 1px solid var(--border);
   display: flex;
   align-items: center;
@@ -494,12 +535,16 @@ body.popup .nav-tab {
 
 .nav-tab:hover {
   color: var(--fg-primary);
-  background: rgba(255, 255, 255, 0.45);
+  background: var(--surface-raised);
 }
 
+/* The selected tab's LABEL has to flip with its pill. This used to be a
+   hardcoded near-black on a hardcoded white pill; once the pill became a
+   themed surface the text had to become one too, or the active tab reads as
+   dark-on-dark and the label disappears entirely in dark mode. */
 .nav-tab.active {
-  color: #0f172a;
-  background: #ffffff;
+  color: var(--fg-primary);
+  background: var(--surface-solid);
   font-weight: 600;
   box-shadow: 0 3px 10px rgba(15, 23, 42, 0.1), 0 1px 3px rgba(15, 23, 42, 0.05);
 }
@@ -519,7 +564,12 @@ body.popup .nav-tab {
 }
 
 body.tab .app-content {
-  padding: 24px 0;
+  /* Asymmetric on purpose. 24px on top left a conspicuous dead band between
+     the sticky .app-header and the first thing in the panel (most visibly
+     the Analyze context bar, which docks right under the header) — reported
+     as too much space above the bar. The bottom keeps the roomier value so
+     the last card still clears the footer. */
+  padding: 10px 0 24px;
   max-height: none;
 }
 
@@ -898,7 +948,7 @@ td.num, th.num {
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.68);
+  background: var(--surface-raised);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   margin-bottom: 8px;
@@ -906,7 +956,7 @@ td.num, th.num {
 }
 
 .capture-item:hover {
-  background: rgba(255, 255, 255, 0.92);
+  background: var(--surface-raised-hover);
   border-color: var(--border-hover);
   box-shadow: 0 4px 14px rgba(15, 23, 42, 0.04);
 }
@@ -1344,6 +1394,41 @@ body.tab .analyze-context-bar { top: var(--analyze-bar-top, 64px); }
 body.popup .analyze-context-label { display: none; }
 body.popup .analyze-context-prompt { text-align: left; font-size: 12.5px; }
 
+/* Back control, pinned inside the sticky bar so it's reachable from ANY
+   scroll position. It previously lived only in the .viewing banner further
+   down the page, which meant "go back" required scrolling all the way to
+   the top of a long Analyze view first — the exact complaint this fixes. */
+.analyze-context-back {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.analyze-context-back:hover {
+  background: var(--hover-bg, rgba(127, 127, 127, 0.12));
+  color: var(--fg-primary);
+  border-color: var(--fg-muted);
+}
+.analyze-context-back:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* At popup width the destination name is what gets dropped, not the whole
+   control — the arrow alone still reads as "back" and keeps the target big
+   enough to hit. */
+body.popup .analyze-context-back-label { display: none; }
+body.popup .analyze-context-back { padding: 4px 8px; }
+
 .linkbtn {
   background: none;
   border: none;
@@ -1516,7 +1601,7 @@ html {
    panel.js. Without it every row is short and the same height, so the list
    reads as the ranking it is. */
 .brand-item {
-  background: rgba(255, 255, 255, 0.65);
+  background: var(--surface-raised);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   border: 1px solid var(--border);
@@ -1526,7 +1611,7 @@ html {
 }
 .brand-item:hover {
   border-color: var(--border-hover);
-  background: rgba(255, 255, 255, 0.92);
+  background: var(--surface-raised-hover);
 }
 
 .brand-head {
@@ -1591,7 +1676,7 @@ html {
   padding: 6px 10px;
   margin-top: 6px;
   font-style: italic;
-  background: rgba(248, 250, 252, 0.75);
+  background: var(--surface-sunken);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
   border-radius: 0 8px 8px 0;
@@ -1614,7 +1699,7 @@ html {
 }
 
 .src-item {
-  background: rgba(255, 255, 255, 0.65);
+  background: var(--surface-raised);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   border: 1px solid var(--border);
@@ -1624,7 +1709,7 @@ html {
 }
 .src-item:hover {
   border-color: var(--border-hover);
-  background: rgba(255, 255, 255, 0.92);
+  background: var(--surface-raised-hover);
   box-shadow: 0 4px 14px rgba(15, 23, 42, 0.04);
 }
 
@@ -1935,7 +2020,7 @@ body.popup .type-tag-group .tag {
      read as flat grey. A modal doesn't need to look like glass; it reads
      better as a solid, slightly-elevated sheet with its own accent wash. */
   position: relative;
-  background: linear-gradient(165deg, #ffffff 0%, #f8fafc 100%);
+  background: linear-gradient(165deg, var(--surface-solid) 0%, var(--surface-sunken) 100%);
   border: 1px solid rgba(255, 255, 255, 0.5);
   border-radius: 16px;
   width: 100%;
@@ -2114,7 +2199,7 @@ body.popup .type-tag-group .tag {
   max-width: 100%;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.5);
+  background: var(--surface-raised);
 }
 .drill-table {
   width: 100%;
@@ -2140,7 +2225,7 @@ body.popup .type-tag-group .tag {
 .drilldown th {
   position: sticky;
   top: 0;
-  background: rgba(248, 250, 252, 0.97);
+  background: var(--surface-sunken);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
   z-index: 1;
@@ -2230,7 +2315,7 @@ body.popup .drill-table th:first-child { min-width: 180px; }
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.45);
+  background: var(--surface-raised);
 }
 .h2h-n { font-size: 20px; font-weight: 600; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .h2h-l { margin-top: 1px; }
@@ -2263,7 +2348,7 @@ body.popup .drill-table th:first-child { min-width: 180px; }
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.45);
+  background: var(--surface-raised);
 }
 .engine-split-head {
   display: flex;
@@ -2347,7 +2432,7 @@ body.popup .drill-table th:first-child { min-width: 180px; }
 .geo-chip {
   font: inherit; font-size: 12px; padding: 6px 12px; border-radius: 999px; cursor: pointer;
   border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.6);
+  background: var(--surface-raised);
   color: var(--fg-secondary);
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -2583,7 +2668,7 @@ tr.clickable-row.own-brand:hover td { background: rgba(0, 122, 255, 0.14); }
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.5);
+  background: var(--surface-raised);
 }
 .prompt-table {
   width: 100%;
@@ -2599,7 +2684,7 @@ tr.clickable-row.own-brand:hover td { background: rgba(0, 122, 255, 0.14); }
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--fg-muted);
-  background: rgba(248, 250, 252, 0.97);
+  background: var(--surface-sunken);
   backdrop-filter: blur(6px);
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
@@ -2990,7 +3075,7 @@ body.popup .app-content {
   font-size: 11px;
   font-weight: 600;
   color: var(--fg-secondary);
-  background: rgba(255, 255, 255, 0.7);
+  background: var(--surface-raised);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 4px 9px;
@@ -3003,7 +3088,7 @@ body.popup .app-content {
 .popout-btn:hover {
   color: var(--accent);
   border-color: var(--border-hover);
-  background: #ffffff;
+  background: var(--surface-solid);
   box-shadow: 0 2px 8px rgba(0, 122, 255, 0.14), var(--glass-highlight);
 }
 .popout-btn svg { flex-shrink: 0; }
@@ -3041,7 +3126,7 @@ mark.search-hit {
   padding: 5px;
   border-radius: 10px;
   border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.97);
+  background: var(--surface-solid);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
   box-shadow: 0 12px 28px -6px rgba(15, 23, 42, 0.22), var(--glass-highlight);
@@ -3222,7 +3307,7 @@ body.popup .src-table th:first-child { min-width: 30px; }
 .url-drill-item {
   border: 1px solid var(--border);
   border-radius: 11px;
-  background: #ffffff;
+  background: var(--surface-solid);
   overflow: hidden;
   box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
   transition: box-shadow 0.15s ease, border-color 0.15s ease;
@@ -3331,7 +3416,7 @@ body.popup .url-drill-meta { width: 100%; justify-content: flex-start; padding-l
   height: 56px;
   flex-shrink: 0;
   border-radius: 14px;
-  background: #ffffff;
+  background: var(--surface-solid);
   border: 1px solid var(--border);
   display: flex;
   align-items: center;
@@ -3534,7 +3619,7 @@ body.popup .prompt-perf-table { min-width: 480px; }
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.6);
+  background: var(--surface-raised);
 }
 .pp-card.idle { opacity: 0.72; }
 .pp-card-title {
@@ -3713,7 +3798,7 @@ body.popup .pp-chip { font-size: 9.5px; }
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.45);
+  background: var(--surface-raised);
 }
 .glossary-term { font-weight: 600; font-size: 12px; margin-bottom: 3px; }
 .glossary-what { font-size: 12px; line-height: 1.45; }
