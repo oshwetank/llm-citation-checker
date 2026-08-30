@@ -19,6 +19,7 @@ import {
   parseCooldownFromNotice, formatCooldown,
 } from "./lib/pacing.js";
 import { createErrorLog } from "./lib/errorlog.js";
+import { checkEnginesAuth, AUTH_COOKIES } from "./lib/auth-check.js";
 import { buildCampaignWorkbook } from "./lib/campaignWorkbook.js";
 import { gzipString, gunzipToString } from "./lib/gzip.js";
 import { adapt as adaptChatGpt, cleanPassage } from "./adapters/chatgpt.js";
@@ -1041,6 +1042,37 @@ async function loaderStart(prompts, options) {
   const supported = platforms.filter((p) => ids.includes(p));
   if (!supported.length) return { ok: false, error: "Select at least one supported AI engine." };
 
+  // PRE-FLIGHT AUTH GATE — before newLoaderState(), before any window or tab
+  // is created, and before the run is written to the "runs" store. Running
+  // while signed out is a quiet, expensive failure: prompts get typed into a
+  // login wall, every turn records as a failure or an empty capture, and the
+  // whole prompt list is burned before anyone notices. Checking here (by
+  // session cookie — the only signal available WITHOUT opening a tab, which
+  // is the entire point) means nothing has happened yet when we refuse, so
+  // there is nothing to unwind.
+  //
+  // `options.skipAuthCheck` is the user's explicit override from the warning
+  // dialog. It is honoured because our cookie names are vendor internals
+  // that can churn — see the three-state note in lib/auth-check.js — so the
+  // user must always be able to say "I really am signed in, proceed."
+  if (!(options && options.skipAuthCheck)) {
+    try {
+      const auth = await checkEnginesAuth(supported, (q) => chrome.cookies.getAll(q));
+      if (!auth.ok) {
+        return {
+          ok: false,
+          error: auth.message,
+          authBlocked: true,
+          signedOut: auth.signedOut.map((r) => ({ engine: r.engine, label: r.label, loginUrl: r.loginUrl })),
+          unknown: auth.unknown.map((r) => ({ engine: r.engine, label: r.label, loginUrl: r.loginUrl })),
+        };
+      }
+    } catch (_) {
+      // Our own check failing must never block the user's run — fall through
+      // and let it proceed exactly as it did before this gate existed.
+    }
+  }
+
   loader = newLoaderState();
   loader.running = true;
   loader.options = options || {};
@@ -1128,7 +1160,7 @@ async function loaderStart(prompts, options) {
  * aligned with the prompt list) so each capture is stamped with the profile,
  * run, prompt and tags it belongs to.
  */
-async function geoRunStart(profileId) {
+async function geoRunStart(profileId, runOpts = {}) {
   const profile = await db.get("profiles", profileId);
   if (!profile) return { ok: false, error: "Profile not found." };
   if (!profile.brand || !profile.brand.name) {
@@ -1160,6 +1192,12 @@ async function geoRunStart(profileId) {
       platforms: engines,
       geo: { profileId, runId: geoRunId },
       geoPrompts: prompts.map((p) => ({ id: p.id, tags: p.tags || [] })),
+      // Forwarded so the user's "Run anyway" override from the sign-in
+      // dialog reaches loaderStart's pre-flight gate. Campaign runs go
+      // through here rather than calling loaderStart directly, so without
+      // this the override would be silently dropped and the dialog would
+      // reappear forever.
+      skipAuthCheck: !!runOpts.skipAuthCheck,
     }
   );
   if (!res.ok) return res;
@@ -1684,7 +1722,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
         case "geo-run-start": {
-          sendResponse(await geoRunStart(msg.profileId));
+          sendResponse(await geoRunStart(msg.profileId, { skipAuthCheck: !!msg.skipAuthCheck }));
+          break;
+        }
+        // Opens an engine's own sign-in page for the pre-flight auth gate.
+        // Restricted to the exact login URLs in lib/auth-check.js — this is a
+        // message handler, so it must not become a general "open any URL the
+        // caller names" primitive.
+        case "open-url": {
+          const allowed = Object.values(AUTH_COOKIES).map((s) => s.loginUrl).filter(Boolean);
+          if (!allowed.includes(msg.url)) {
+            sendResponse({ ok: false, error: "Refused: not a known sign-in URL." });
+            break;
+          }
+          try {
+            await chrome.tabs.create({ url: msg.url, active: true });
+            sendResponse({ ok: true });
+          } catch (e) {
+            sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+          }
           break;
         }
         case "geo-metrics": {

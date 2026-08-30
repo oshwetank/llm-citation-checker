@@ -3866,3 +3866,42 @@ body.popup .pp-chip { font-size: 9.5px; }
   font-size: 10px; line-height: 1.5;
   overflow-wrap: anywhere; word-break: break-word; color: var(--fg-secondary);
 }
+
+/* ---------- Sign-in gate (pre-flight auth check before a campaign run) ---------- */
+/* Shown instead of firing prompts into a login wall — see showSignInGate()
+   in panel.js and src/lib/auth-check.js for why this gate exists. */
+.signin-gate .signin-engine-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0;
+}
+.signin-engine {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-raised);
+}
+.signin-engine-name { font-weight: 600; color: var(--fg-primary); font-size: 13px; }
+.signin-engine-state {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.signin-engine-state.is-out {
+  background: var(--red-bg);
+  color: var(--red-fg);
+  border: 1px solid var(--red-border);
+}
+.signin-engine-state.is-unknown {
+  background: var(--amber-bg);
+  color: var(--amber-fg);
+  border: 1px solid var(--amber-border);
+}

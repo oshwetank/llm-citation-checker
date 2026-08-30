@@ -214,6 +214,84 @@ function wireModalDismiss(backdrop, modal) {
   return close;
 }
 
+/*
+ * Sign-in gate dialog. Shown when the background's pre-flight auth check
+ * (src/lib/auth-check.js) finds an engine the user isn't signed in to, which
+ * it does BEFORE any tab is opened — so at this point nothing has happened
+ * yet and there is nothing to unwind.
+ *
+ * Deliberately NOT a bare "you're logged out" error. The whole reason this
+ * failure was worth building a gate for is that it's expensive and quiet, so
+ * the dialog has to also be the fix: it opens the right login pages, waits
+ * while the user signs in, and then re-runs the same check rather than
+ * making them find their way back to the Campaigns tab and start over.
+ *
+ * `onProceed(skipAuthCheck)` re-attempts the run. The override exists
+ * because the cookie names this is built on are vendor internals that churn
+ * (see the three-state note in auth-check.js) — the user must always be able
+ * to say "I really am signed in, go".
+ */
+function showSignInGate({ signedOut = [], unknown = [], message, onProceed }) {
+  document.getElementById("signin-gate-backdrop")?.remove();
+  const backdrop = el("div", { id: "signin-gate-backdrop", className: "modal-backdrop" });
+  const modal = el("div", { className: "modal-content signin-gate" });
+
+  const header = el("div", { className: "modal-header" });
+  header.append(
+    el("h3", { className: "modal-title" }, "Sign in before running"),
+    el("button", { className: "modal-close-btn", title: "Close" }, "×")
+  );
+
+  const body = el("div", { className: "modal-body" });
+  body.append(el("p", {}, message || "Some engines need you to sign in first."));
+
+  const list = el("div", { className: "signin-engine-list" });
+  const needed = [...signedOut, ...unknown];
+  for (const eng of signedOut) {
+    list.append(el("div", { className: "signin-engine" },
+      el("span", { className: "signin-engine-name" }, eng.label),
+      el("span", { className: "signin-engine-state is-out" }, "Not signed in")));
+  }
+  for (const eng of unknown) {
+    list.append(el("div", { className: "signin-engine" },
+      el("span", { className: "signin-engine-name" }, eng.label),
+      el("span", { className: "signin-engine-state is-unknown" }, "Couldn't verify")));
+  }
+  if (needed.length) body.append(list);
+  body.append(el("p", { className: "muted small" },
+    "Opening these signs you in on the engine's own page — this extension never sees or handles your password."));
+
+  const footer = el("div", { className: "modal-footer" });
+  const openBtn = el("button", { className: "btn primary" },
+    needed.length > 1 ? `Open ${needed.length} sign-in pages` : "Open sign-in page");
+  openBtn.onclick = async () => {
+    for (const eng of needed) {
+      if (eng.loginUrl) { try { await send({ type: "open-url", url: eng.loginUrl }); } catch (_) {} }
+    }
+    openBtn.textContent = "Sign in, then click Re-check";
+    openBtn.disabled = true;
+    recheckBtn.style.display = "";
+    recheckBtn.focus();
+  };
+  const recheckBtn = el("button", { className: "btn" }, "Re-check & start run");
+  recheckBtn.style.display = "none";
+  recheckBtn.onclick = () => { close(); onProceed(false); };
+
+  const anywayBtn = el("button", { className: "btn ghost" }, "Run anyway");
+  anywayBtn.title = "Skip this check — use if you know you're signed in";
+  anywayBtn.onclick = () => { close(); onProceed(true); };
+
+  const cancelBtn = el("button", { className: "btn ghost" }, "Cancel");
+  cancelBtn.onclick = () => close();
+
+  footer.append(openBtn, recheckBtn, anywayBtn, cancelBtn);
+  modal.append(header, body, footer);
+  backdrop.append(modal);
+  document.body.append(backdrop);
+  const close = wireModalDismiss(backdrop, modal);
+  header.querySelector(".modal-close-btn").onclick = () => close();
+}
+
 let RECORDS = [];
 let PROJECTS = [];
 let dashboardCampaignId = ""; // "" = no campaign selected
@@ -4089,10 +4167,23 @@ function renderRunCard(profile) {
   }
   const runBtn = el("button", { className: "btn primary" }, "▶ Start run");
   runBtn.onclick = withBusy(runBtn, "Starting…", async () => {
-    if (!confirm(`Run tracking now?\n\n${vol.submissions} submissions (${vol.prompts} prompts × ${vol.engines} engines) will be sent through your logged-in ChatGPT/Gemini sessions at a human pace.`)) return;
-    const r = await send({ type: "geo-run-start", profileId: profile.id });
-    if (!r.ok) { showToast(r.error, "error"); return; }
-    loadGeo();
+    if (!confirm(`Run tracking now?\n\n${vol.submissions} submissions (${vol.prompts} prompts × ${vol.engines} engines) will be sent through your logged-in sessions at a human pace.`)) return;
+    // The auth gate can bounce this back (authBlocked) before any tab opens.
+    // That isn't an error to toast and forget — it's actionable, so it opens
+    // the sign-in dialog, which can retry this same call once the user is in.
+    const attempt = async (skipAuthCheck) => {
+      const r = await send({ type: "geo-run-start", profileId: profile.id, skipAuthCheck });
+      if (r.authBlocked) {
+        showSignInGate({
+          signedOut: r.signedOut, unknown: r.unknown, message: r.error,
+          onProceed: (skip) => attempt(skip),
+        });
+        return;
+      }
+      if (!r.ok) { showToast(r.error, "error"); return; }
+      loadGeo();
+    };
+    await attempt(false);
   });
   const pauseBtn = el("button", { className: "btn ghost" }, "⏸ Pause");
   pauseBtn.onclick = async () => {
