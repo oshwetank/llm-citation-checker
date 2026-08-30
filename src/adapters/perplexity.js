@@ -15,7 +15,14 @@ import { makeRecord, makeSource } from "../schema.js";
 import { isHttpUrl, domainOf } from "../lib/deep.js";
 import { detectBrands } from "../lib/brands.js";
 
-export const ADAPTER_VERSION = "perplexity@0.3.0";
+// 0.4.0: extractAnswer() no longer lets an unrelated sidebarRecentThreads
+// entry's preview outrank the current query's own preview by raw length
+// (matches by title instead, empty rather than a wrong guess when nothing
+// matches); citation-footnote tokens ("...clean.\njaquar\n\n") are stripped
+// from answerText before brand detection and display, so cited-source
+// domains stop being reported as brand mentions. Re-run "Reprocess all
+// captures" to apply this to existing captures.
+export const ADAPTER_VERSION = "perplexity@0.4.0";
 
 function extractJsonPayload(line) {
   const t = line.trim();
@@ -44,6 +51,16 @@ function parsePayloads(raw) {
     // Flatten nested arrays and GraphQL/Relay shapes
     if (p.payload && typeof p.payload === "object") addParsed(p.payload);
     if (p.data && typeof p.data === "object") addParsed(p.data);
+    // `sidebarRecentThreads`/`threads` ARE flattened deliberately: on a
+    // capture where no other network answer stream ever arrives, this
+    // sidebar-history push — a live-updating list of the user's recent
+    // threads — is the ONLY source this adapter has for the query's own
+    // answer (see test/multi-engine.test.mjs's "GraphQL thread" case,
+    // built from a real user capture). The risk this creates — the list
+    // also contains OTHER, unrelated threads, each with its own
+    // answerPreview — is handled in extractAnswer() below by matching the
+    // node's own title against the known query, not by refusing to look at
+    // this data at all.
     if (p.sidebarRecentThreads && typeof p.sidebarRecentThreads === "object") addParsed(p.sidebarRecentThreads);
     if (p.threads && typeof p.threads === "object") addParsed(p.threads);
     if (Array.isArray(p.edges)) {
@@ -149,21 +166,28 @@ function extractModel(nodes) {
   return "sonar";
 }
 
-function extractAnswer(nodes) {
+// `answerPreview` is deliberately NOT a peer candidate alongside the real
+// answer fields below — it's a truncated summary Perplexity generates for a
+// thread-LIST entry (the sidebar, thread history), not the model's live
+// answer to the query being captured. Treating it as equally-weighted in a
+// "longest wins" scan meant an unrelated thread's preview could outrank the
+// CURRENT query's own preview by raw length alone. It's tried only as a
+// last resort, when no real answer field was found in ANY node.
+const REAL_ANSWER_FIELDS = ["text", "answer", "output", "completion", "response", "content", "final_answer"];
+
+// Loose-normalize a title for comparison: lowercase, alphanumerics only.
+// The sidebar's thread title and the submitted query are two different
+// strings from two different systems (one is Perplexity's own generated
+// title, one is what the user typed) — exact string equality is too
+// brittle for what should be "obviously the same query".
+const normTitle = (s) => String(s || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+function extractAnswer(nodes, userPrompt) {
   let longest = "";
   for (const n of nodes) {
     if (!n || typeof n !== "object") continue;
-    const candidates = [
-      n.text,
-      n.answer,
-      n.answerPreview,
-      n.output,
-      n.completion,
-      n.response,
-      n.content,
-      n.final_answer,
-    ];
-    for (const c of candidates) {
+    for (const field of REAL_ANSWER_FIELDS) {
+      const c = n[field];
       if (typeof c === "string") {
         let clean = c;
         if (c.startsWith("{") && c.endsWith("}")) {
@@ -177,7 +201,81 @@ function extractAnswer(nodes) {
       }
     }
   }
-  return longest;
+  if (longest) return longest;
+
+  // Fallback tier: `answerPreview`-only nodes, most often the entries of a
+  // sidebarRecentThreads push — the user's thread history, which can
+  // legitimately contain MULTIPLE unrelated past threads at once, each
+  // with its own answerPreview. Confirmed on a real capture: "longest wins"
+  // among these picked a completely different, older thread's preview over
+  // the current query's own (shorter) preview, because it happened to be
+  // longer — reporting that unrelated thread's brands and content as the
+  // answer to this query.
+  //
+  // Only ever return a preview whose OWN title (name/query/user_query)
+  // actually matches the query being captured. If nothing matches, return
+  // "" rather than guessing via length — an empty answer is a visible,
+  // honest miss; a confidently wrong answer attributed to the user's own
+  // query is the bug this exists to prevent.
+  const promptNorm = normTitle(userPrompt);
+  if (!promptNorm) return "";
+  let matched = "";
+  for (const n of nodes) {
+    if (!n || typeof n !== "object") continue;
+    const title = normTitle(n.name || n.query || n.user_query);
+    if (title && title === promptNorm && typeof n.answerPreview === "string" && n.answerPreview.length > matched.length) {
+      matched = n.answerPreview;
+    }
+  }
+  return matched;
+}
+
+// Perplexity renders each inline citation in the plain-text answer as the
+// cited source's bare domain label sitting alone on its own line right
+// after the cited sentence, sometimes followed by a "+N" line counting
+// additional sources bundled at that same point:
+//   "...easy to clean.\nthespruce\n+3\n\n"
+//   "...low VOC emissions.\nfamilyhandyman\n+1\n\n"
+// These are footnote markers, not brand names — left in place they get
+// misdetected as brands by detectBrands's structural heuristics (a bare
+// word starting its own paragraph reads exactly like a one-word brand:
+// "Nothing", "Oppo"). Confirmed on real captures: jaquar, familyhandyman,
+// compositepaint, talkofthehouse, paintdeck, edify, and gadgets360 all
+// reached "Brand mentions" as cited-domain false positives this way.
+//
+// Only two shapes are stripped, both requiring positive evidence the line
+// IS a footnote rather than real prose — a bare word is never removed just
+// for being short and lowercase:
+//   1. The line, alnum-only and lowercased, matches a domain actually cited
+//      for THIS answer (from `sources`, which carry a real URL).
+//   2. The line is immediately followed by a "+N" line — Perplexity's own
+//      "N more sources at this point" marker, which real prose never
+//      produces by coincidence.
+// A domain cited in prose but never itself present in `sources` (case 2
+// alone — e.g. "domino"/"bathfitter" in the real fixture) is cleaned out of
+// the brand list this way, but no source entry is fabricated for it: this
+// codebase never invents a citation it can't back with a real URL (see
+// ai-brands.js's "never invent a mention that isn't really there" rule).
+function stripCitationFootnotes(text, sources) {
+  if (!text) return text;
+  const labels = new Set(
+    (sources || [])
+      .map((s) => String(s.domain || "").replace(/^www\./, "").split(".")[0].toLowerCase())
+      .filter(Boolean)
+  );
+  const lines = text.split("\n");
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (/^\+\d+$/.test(trimmed)) continue; // "+3" sibling-count marker
+    const bare = trimmed.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const nextIsCount = /^\+\d+$/.test((lines[i + 1] || "").trim());
+    if (bare && bare.length >= 3 && trimmed.length < 40 && !/\s/.test(trimmed) && (labels.has(bare) || nextIsCount)) {
+      continue;
+    }
+    out.push(lines[i]);
+  }
+  return out.join("\n");
 }
 
 function extractSources(nodes) {
@@ -273,8 +371,14 @@ export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, op
   const userPrompt = extractPrompt(reqBody, nodes);
   const generatedTitle = extractGeneratedTitle(nodes, userPrompt);
   const model = extractModel(nodes);
-  const answerText = extractAnswer(nodes);
   const sources = extractSources(nodes);
+  // Clean citation-footnote noise ("...clean.\njaquar\n\n") out of the answer
+  // BEFORE brand detection runs, since detectBrands has no way to tell a
+  // bare footnote token from a real one-word brand mention on its own line —
+  // see stripCitationFootnotes above. Cleaning it out of the returned
+  // answerText too (not just a brand-detection-only copy) also fixes the
+  // same tokens showing up as visible clutter inline in the rendered answer.
+  const answerText = stripCitationFootnotes(extractAnswer(nodes, userPrompt), sources);
   const fanout = extractFanout(nodes);
   const brandRes = detectBrands(answerText, answerText, { sources, tracked: options.tracked });
   const brandMentions = (brandRes && brandRes.brands) || [];

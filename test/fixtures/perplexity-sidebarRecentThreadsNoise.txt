@@ -1,0 +1,15 @@
+# CitoSkeleton raw capture aaa67c89-cc95-4ce1-b6ce-50282b1b5357
+# url: wss://www.perplexity.ai/rest/perplexity_ask/graphql/ws?account=REDACTED
+# reqBody:
+#
+# NOTE: trimmed from the original real capture. The original sidebarRecentThreads
+# push carried ~20 unrelated thread-history entries (personal/work queries with
+# no bearing on this bug); only the two entries the regression test actually
+# asserts on are kept here — the query actually being captured ("best gaming
+# phone under 50000...") and the decoy that used to win by raw answerPreview
+# length ("best gaming phone under 6000..."). Real UUIDs/cursors kept as-is
+# since they carry no personal information on their own.
+
+{"type":"connection_ack"}
+
+{"payload":{"data":{"sidebarRecentThreads":{"id":"THG:eyJzIjoidmlld2VyIiwidSI6MTA5MDA2MDgsImciOiJSRUNFTlQiLCJtIjpudWxsfQ","type":"RECENT","threads":{"edges":[{"cursor":"THC:eyJzIjoidXNlcl91cGRhdGVkIiwiZCI6eyJ0IjoxNzg3OTk2MjgxOTI5NzA2LCJjIjoiOGJiZjYyNjUtMjNkNC00Y2Y0LWFhODgtNDkyZDE5YzI5ZTQ4In19","node":{"id":"TH:eyJjIjoiOGJiZjYyNjUtMjNkNC00Y2Y0LWFhODgtNDkyZDE5YzI5ZTQ4In0","contextUUID":"8bbf6265-23d4-4cf4-aa88-492d19c29e48","frontendContextUUID":"c07dc8b4-6553-45bb-9d23-bebd8a07fbc0","entryId":"3a8be08e-1c6b-4eec-90e7-f1e38eb50de3","name":"best gaming phone under 50000 with good battery","mode":"SEARCH","variant":"THREAD","status":"COMPLETED","answerPreview":"Based on current 2026 reviews and expert picks, the iQOO 15R is the best gaming phone under ₹50,000 if you prioritize battery life and sustained performance.\nWhy it wins for gaming + battery: It pairs the Snapdragon 8 Gen 5 (3nm, very efficient) with a 7,600 mAh battery, delivering exceptional endurance in drain tests and long BGMI/CoD sessions.\nDisplay: High-refresh AMOLED (often cited around...","space":null,"isUnread":false,"updatedAt":"2026-08-29T09:38:01.929706Z"}},{"cursor":"THC:eyJzIjoidXNlcl91cGRhdGVkIiwiZCI6eyJ0IjoxNzg3OTg1ODU3NTIwNTQ4LCJjIjoiMDA3YzM0NmQtZDU2Ni00OWI0LWFjYTMtODcwYzE5ZWZiMTU1In19","node":{"id":"TH:eyJjIjoiMDA3YzM0NmQtZDU2Ni00OWI0LWFjYTMtODcwYzE5ZWZiMTU1In0","contextUUID":"007c346d-d566-49b4-aca3-870c19efb155","frontendContextUUID":"05c8ff40-eb8c-4442-a729-f40666264c22","entryId":"69ba6db0-4009-4006-836b-4471968c3a74","name":"best gaming phone under 6000 with good battery","mode":"SEARCH","variant":"THREAD","status":"COMPLETED","answerPreview":"At ₹6,000, true “gaming phones” don’t exist in the usual sense (no high‑end chipsets, no 120Hz AMOLED, no advanced cooling). But you can still get a phone that handles light games (BGMI/Free Fire on low, COD Mobile, Subway Surfers, etc.) and has a big battery for long sessions.\nChipsets in this range are entry‑level (Unisoc T606/T616, Snapdragon 680 class, or similar), so expect:  \nLow graphics...","space":null,"isUnread":false,"updatedAt":"2026-08-29T06:44:17.520548Z"}}]}}}},"id":"dba56233-16f7-422b-9993-f0d7b6365a3f","type":"next"}

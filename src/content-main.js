@@ -35,6 +35,19 @@
     }
   };
 
+  // NOTE: this intentionally only matches the OUTBOUND subscribe frame's
+  // PascalCase GraphQL operation name, not the INBOUND push's camelCase data
+  // field ("sidebarRecentThreads") — investigated making this case-
+  // insensitive so it would also reject inbound sidebarRecentThreads pushes,
+  // but that push is NOT pure noise: it's the only source this adapter has
+  // for a query's own answer on captures where no other network answer
+  // stream ever arrives (see extractAnswer in adapters/perplexity.js, and
+  // test/multi-engine.test.mjs's "GraphQL thread" case, both built from a
+  // real user capture). Blocking it here would silently disable that
+  // fallback. The real bug it was chosen to fix (an unrelated OTHER thread's
+  // preview outranking the current query's own preview by raw length) is
+  // fixed at the adapter level instead, where the current query's title is
+  // actually known and can be matched against.
   const isBackgroundSubscription = (str) => {
     if (typeof str !== "string") return false;
     return str.includes("SidebarRecentThreads") ||
