@@ -163,7 +163,15 @@ function extractModel(nodes) {
     if (typeof n.display_model === "string" && n.display_model) return n.display_model;
     if (typeof n.search_model === "string" && n.search_model) return n.search_model;
   }
-  return "sonar";
+  // NULL, not a made-up "sonar". Perplexity captures come from the DOM
+  // harvester (see the research note in this repo's history: of 20 fields
+  // this adapter can extract, only query/text/web_results ever arrive), so
+  // no model field is present on the overwhelming majority of real
+  // captures — and this used to answer "sonar" for every single one of
+  // them regardless. That is fabricated provenance in a tool whose whole
+  // job is reporting what an engine actually did: a reader cannot tell a
+  // genuinely-reported sonar from a guess. Unknown is reported as unknown.
+  return null;
 }
 
 // `answerPreview` is deliberately NOT a peer candidate alongside the real
@@ -387,7 +395,7 @@ export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, op
   return makeRecord({
     captureId,
     platform: "perplexity",
-    model: model || "sonar",
+    model: model || null,
     capturedAt: capturedAt || Date.now(),
     pageUrl: pageUrl || "https://www.perplexity.ai",
     userPrompt,

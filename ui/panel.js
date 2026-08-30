@@ -1419,9 +1419,16 @@ function renderAnalyze() {
   };
   addTechKv("Tool Name", rec.searched ? (tools[rec.platform] || "Web Search Tool") : "—");
   
-  const modelDefault = rec.platform === "gemini" ? "gemini-1.5-pro" : "gpt-4o";
-  addTechKv("Model", rec.model || modelDefault);
-  addTechKv("Plan Type", ps.planType || "free");
+  // No invented model. This used to fall back to "gpt-4o" for every
+  // non-Gemini platform — so a Perplexity or Grok capture with no reported
+  // model displayed a ChatGPT model name as though it were fact, and a
+  // reader had no way to tell a genuinely-reported model from a filled-in
+  // guess. Perplexity captures come from the DOM harvester and carry no
+  // model field at all, so that guess was being shown on essentially every
+  // one of them. Same reasoning for Plan Type, which defaulted to "free"
+  // with nothing behind it. Unknown is shown as unknown.
+  addTechKv("Model", rec.model || "—");
+  addTechKv("Plan Type", ps.planType || "—");
   if (ps.clusterRegion) addTechKv("Cluster Region", ps.clusterRegion);
   addTechKv("Turn Use Case", rec.turnUseCase || "shopping");
   if (ps.ttfvtMs) addTechKv("TTFVT", `${(ps.ttfvtMs / 1000).toFixed(2)}s`);
