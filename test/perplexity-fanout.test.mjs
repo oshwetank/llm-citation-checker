@@ -92,68 +92,19 @@ console.log("\nperplexity-fanout: the adapter carries a supplied query_plan thro
   check("no steps -> fan-out stays empty, nothing invented", rec.fanout.search.length === 0);
 }
 
-console.log("\nperplexity-fanout: the harvester's step extraction");
-
-const body = extractArrow("harvestPerplexitySteps", "doc");
-check("harvestPerplexitySteps() found in content-iso.js", !!body, "renamed or removed?");
-
-if (body) {
-  const harvestPerplexitySteps = new Function(
-    "PPLX_STEP_SELECTORS",
-    `return (doc) => ${body};`
-  );
-  // Drive it with an explicit selector so these assertions test the
-  // EXTRACTION AND FILTERING logic, not today's provisional selector guess.
-  const run = (doc, selectors = ['[data-testid*="step"]']) => harvestPerplexitySteps(selectors)(doc);
-
-  const node = (text) => ({ innerText: text, textContent: text });
-  const docWith = (map) => ({ querySelectorAll: (sel) => (map[sel] || []) });
-
-  {
-    const steps = run(docWith({
-      '[data-testid*="step"]': [node("best gaming phone under 50000 India"), node("iQOO 15R battery review")],
-    }));
-    check("step queries are extracted", steps.length === 2, JSON.stringify(steps));
-    check("they come out in the query_plan shape the adapter expects",
-      steps[0] && typeof steps[0].query === "string" && Array.isArray(steps[0].results),
-      JSON.stringify(steps[0]));
-  }
-
-  {
-    // Over-broad selectors are the realistic failure mode. A step LABEL is a
-    // query; a paragraph of the answer is not — reporting one as a
-    // sub-query the engine ran would be fabricated data, which is worse
-    // than the 0 we report today.
-    const longProse = "Based on current 2026 reviews and expert picks, the iQOO 15R is the best gaming phone under fifty thousand rupees if you prioritise battery life and sustained performance across long sessions.";
-    const steps = run(docWith({ '[data-testid*="step"]': [node(longProse), node("valid sub query")] }));
-    check("answer prose is rejected, not reported as a sub-query", !steps.some((s) => s.query === longProse), JSON.stringify(steps));
-    check("the genuine sub-query alongside it is kept", steps.some((s) => s.query === "valid sub query"), JSON.stringify(steps));
-  }
-
-  {
-    const steps = run(docWith({ '[data-testid*="step"]': [node("Finished"), node("Sources"), node("Steps"), node("ok")] }));
-    check("disclosure chrome ('Finished', 'Sources', 'Steps') is rejected", steps.length === 0, JSON.stringify(steps));
-  }
-
-  {
-    const steps = run(docWith({ '[data-testid*="step"]': [node("same query"), node("Same Query"), node("same query")] }));
-    check("duplicate steps are collapsed case-insensitively", steps.length === 1, JSON.stringify(steps));
-  }
-
-  {
-    check("a document with no steps yields nothing", run(docWith({})).length === 0);
-    const thrower = { querySelectorAll: () => { throw new Error("bad selector"); } };
-    let threw = null;
-    try { run(thrower); } catch (e) { threw = e; }
-    check("a throwing querySelectorAll never escapes", !threw, threw && threw.message);
-  }
-}
+// NOTE: the step-EXTRACTION assertions that used to live here drove a
+// harvestPerplexitySteps() built on three INVENTED selectors, against a stub
+// shaped like those same guesses — so they passed while the real code matched
+// nothing on a live page. Real captured markup has since replaced the guess,
+// and extraction is now covered in test/perplexity-steps.test.mjs against a
+// real expanded-steps panel. What remains here is the adapter path: the half
+// that was always correct, kept isolated from the DOM layer.
 
 console.log("\nperplexity-fanout: wiring");
 
 {
   check("the steps disclosure is expanded alongside Sources",
-    /PPLX_STEP_LABEL_RE\.test\(t\)/.test(src),
+    /PPLX_EXPAND_LABEL_RE\.test\(t\)/.test(src),
     "the steps panel must be opened or its content is never in the DOM to read");
   check("the harvester calls harvestPerplexitySteps", /queryPlan\s*=\s*harvestPerplexitySteps\(document\)/.test(src));
   check("query_plan is emitted in the captured payload", /query_plan:\s*queryPlan\.length\s*\?\s*queryPlan\s*:\s*undefined/.test(src));

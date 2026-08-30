@@ -776,57 +776,163 @@
   // between label and count (confirmed against live markup) — and  can never
   // match between "d" and "2", since both are word characters. The first
   // version of this regex was therefore a silent no-op against the real page.
-  const PPLX_STEP_LABEL_RE = /^(finished|searched|reading|browsing|thinking)|\d+\s*steps?|^steps?$/;
+  // TWO regexes, because these answer different questions.
+  //
+  // PPLX_STEP_LABEL_RE identifies the OUTER "Finished N steps" disclosure —
+  // the one whose region contains the whole steps panel. Kept narrow so
+  // harvestPerplexitySteps anchors on the right element.
+  //
+  // No word-boundary after the verb: the real button reads "Finished2 steps"
+  // with NO space between label and count (confirmed against live markup),
+  // and a boundary can never match between "d" and "2" since both are word
+  // characters. The first version of this regex used one and was a silent
+  // no-op on every real page.
+  const PPLX_STEP_LABEL_RE = /^(finished|searched)|[0-9]+\s*steps?|^steps?$/;
+
+  // PPLX_EXPAND_LABEL_RE is broader and decides only what to CLICK. Each
+  // individual step is its own nested disclosure ("Searching the web",
+  // "Checking headphone reviews"), and a step left collapsed has no results
+  // in the DOM to read. Every candidate carries aria-expanded, so it is a
+  // disclosure widget by definition and clicking it cannot navigate away.
+  const PPLX_EXPAND_LABEL_RE = /^(finished|search|read|brows|think|check|analy|compar|review|look|find)/;
 
   /*
-   * PROVISIONAL SELECTORS — the one markup-dependent part of this feature.
+   * Step harvesting, written against a REAL expanded-steps capture
+   * (test/fixtures/perplexity-steps-expanded.html) rather than guessed
+   * selectors. The previous version of this used three invented selectors
+   * and found nothing on a live page.
    *
-   * Everything else here is confirmed: the disclosure-button pattern is the
-   * same one verified against a real DevTools capture of the Sources panel,
-   * and the downstream adapter path is already tested. What is NOT confirmed
-   * is which element holds an individual step's query text, because no real
-   * capture of the expanded steps panel exists yet.
+   * What the real panel contains, per step:
+   *   - a nested disclosure button carrying the step NAME
+   *     ("Searching the web", "Checking headphone reviews")
+   *   - one or more sub-query rows (the magnifier lines) — the actual query
+   *     or URL that step ran
+   *   - the step's RESULTS: <a rel="noopener" target="_blank" href="...">
+   *     with a title in .text-secondary and a domain label in .text-tertiary
    *
-   * These are therefore a best-effort net, deliberately written so a miss
-   * costs nothing (fan-out stays 0, exactly as today) rather than producing
-   * junk. This project has been burned three times by guessed Perplexity
-   * selectors — the `[class*="citation"]` badge selectors matched nothing
-   * at all, and the query-bubble selectors still miss — so this stays
-   * quarantined in one constant and one function until real markup lands.
+   * Structure is walked in document order rather than matched by class,
+   * because the only stable landmarks here are semantic ones (a disclosure
+   * button, an anchor). Perplexity's class names are Tailwind soup that has
+   * already churned under this project more than once.
+   *
+   * Results are worth as much as the queries: on the captured answer, step 1
+   * alone lists ~10 retrieved sources ("+7 more") against just 3 inline
+   * citations. Retrieved-vs-cited is exactly the distinction this tool
+   * exists to measure.
    */
-  const PPLX_STEP_SELECTORS = [
-    '[data-testid*="step"]',
-    '[class*="step-"] [class*="query"]',
-    '[aria-label*="search" i] li',
-  ];
-
   const harvestPerplexitySteps = (doc) => {
-    const out = [];
-    const seen = new Set();
-    const push = (q) => {
-      const s = String(q || "").replace(/\s+/g, " ").trim();
-      // A step's label is a QUERY, not prose. Anything sentence-length is
-      // the answer bleeding in through an over-broad selector, and a bare
-      // token is chrome — both are rejected rather than reported as a
-      // sub-query the engine never ran.
-      if (s.length < 3 || s.length > 120) return;
-      if (/^(finished|sources?|steps?|searched)$/i.test(s)) return;
-      const k = s.toLowerCase();
-      if (seen.has(k)) return;
-      seen.add(k);
-      out.push({ query: s, results: [] });
-    };
+    const norm = (t) => String(t || "").replace(/\s+/g, " ").trim();
+    const steps = [];
     try {
-      for (const sel of PPLX_STEP_SELECTORS) {
-        let nodes = [];
-        try { nodes = Array.from(doc.querySelectorAll(sel) || []); } catch (_) { continue; }
-        for (const n of nodes) push(n.innerText || n.textContent || "");
-        if (out.length) break; // first selector that finds anything wins
+      const buttons = Array.from(doc.querySelectorAll("button[aria-expanded]") || []);
+      const outer = buttons.find((b) => PPLX_STEP_LABEL_RE.test(norm(b.textContent).toLowerCase().replace(/\s+/g, "")));
+      if (!outer) return steps;
+
+      // Climb to the smallest ancestor that actually holds result links —
+      // that is the steps region. Bounded so a detached node can't loop.
+      let region = outer;
+      for (let i = 0; i < 8 && region && region.parentNode; i++) {
+        region = region.parentNode;
+        let hits = [];
+        try { hits = region.querySelectorAll('a[target="_blank"]') || []; } catch (_) { hits = []; }
+        if (hits.length) break;
       }
+      if (!region || !region.querySelectorAll) return steps;
+
+      // Flatten to an ordered sequence of the three things that matter.
+      // Descent stops at each of them so nothing is counted twice.
+      const seq = [];
+      const walk = (n, d) => {
+        if (!n || d > 40) return;
+        for (const c of n.childNodes || []) {
+          if (!c || c.nodeType !== 1) continue;
+          const tag = String(c.tagName || "").toLowerCase();
+          if (tag === "button") {
+            if (c !== outer && c.getAttribute && c.getAttribute("aria-expanded") !== null) {
+              seq.push({ t: "step", text: norm(c.textContent) });
+            }
+            continue;
+          }
+          if (tag === "a") {
+            const href = c.getAttribute && c.getAttribute("href");
+            if (href && /^https?:\/\//i.test(href)) {
+              const grab = (sel) => {
+                let el = null;
+                try { el = c.querySelector(sel); } catch (_) {}
+                return el ? norm(el.textContent) : "";
+              };
+              seq.push({
+                t: "result",
+                url: href,
+                title: grab('[class*="text-secondary"]'),
+                label: grab('[class*="text-tertiary"]'),
+                trusted: (() => {
+                  try { return !!c.querySelector('[data-testid="trusted-citation-check"]'); } catch (_) { return false; }
+                })(),
+              });
+            }
+            continue;
+          }
+          // A leaf-ish text row with no link or button inside it: candidate
+          // sub-query line. Not descended into, so one row yields one entry.
+          let inner = 0;
+          try { inner = (c.querySelectorAll("a") || []).length + (c.querySelectorAll("button") || []).length; } catch (_) { inner = 1; }
+          if (inner === 0) {
+            const txt = norm(c.textContent);
+            if (txt) { seq.push({ t: "text", text: txt }); continue; }
+          }
+          walk(c, d + 1);
+        }
+      };
+      walk(region, 0);
+
+      // Fold the sequence into steps. A step button opens a step; text rows
+      // seen BEFORE that step's first result are its sub-queries; anchors
+      // are its results.
+      let cur = null;
+      const open = (name) => {
+        cur = { name: name || "", subQueries: [], results: [] };
+        steps.push(cur);
+      };
+      for (const item of seq) {
+        if (item.t === "step") { open(item.text); continue; }
+        if (!cur) open("");
+        if (item.t === "result") {
+          if (!cur.results.some((r) => r.url === item.url)) {
+            cur.results.push({ url: item.url, name: item.title || item.label || "", snippet: "", trusted: item.trusted || undefined });
+          }
+          continue;
+        }
+        // text
+        if (cur.results.length) continue;                 // trailing chrome ("+7 more")
+        const t = item.text;
+        if (t.length < 3 || t.length > 300) continue;      // prose or a bare glyph
+        if (/^\+\d+\s*more$/i.test(t)) continue;
+        if (/^(finished|sources?|steps?|searched)$/i.test(t)) continue;
+        if (t === cur.name) continue;
+        if (!cur.subQueries.includes(t)) cur.subQueries.push(t);
+      }
+
+      // Emit the query_plan shape the adapter already understands. The
+      // sub-query is preferred when present because it is the real query the
+      // engine ran; the step NAME is the fallback, since it is confirmed
+      // markup while the sub-query rows are not.
+      const out = [];
+      const seen = new Set();
+      for (const st of steps) {
+        const queries = st.subQueries.length ? st.subQueries : (st.name ? [st.name] : []);
+        for (const q of queries) {
+          const k = q.toLowerCase();
+          if (seen.has(k)) continue;
+          seen.add(k);
+          out.push({ query: q, results: st.results, step: st.name || null });
+        }
+      }
+      return out;
     } catch (_) {
       // Fan-out is additive. Never let it cost us the capture.
+      return [];
     }
-    return out;
   };
 
   (function initDomHarvester() {
@@ -966,7 +1072,7 @@
           // which currently always reads 0.
           const sourcesTriggers = Array.from(document.querySelectorAll("button[aria-expanded]")).filter((btn) => {
             const t = (btn.textContent || "").trim().toLowerCase();
-            return t.startsWith("sources") || PPLX_STEP_LABEL_RE.test(t);
+            return t.startsWith("sources") || PPLX_STEP_LABEL_RE.test(t.replace(/\s+/g, "")) || PPLX_EXPAND_LABEL_RE.test(t);
           });
           const collapsed = sourcesTriggers.filter((btn) => btn.getAttribute("aria-expanded") === "false");
           if (collapsed.length && sourcesExpandAttempts < 3) {
@@ -1130,6 +1236,29 @@
         // selectors miss, this stays empty and fan-out reports 0 exactly as
         // it does today — it never degrades an otherwise good capture.
         queryPlan = harvestPerplexitySteps(document);
+
+        // Every source a STEP retrieved is a real source, whether or not the
+        // answer went on to cite it. On the captured answer the steps list
+        // ~14 retrieved results against just 3 inline citations, and
+        // retrieved-vs-cited is precisely the distinction this tool exists
+        // to measure — a source the engine read and then ignored is a
+        // different GEO signal from one it quoted.
+        //
+        // Added as "fetched". Anything the answer actually cites was already
+        // marked "cited" above by the data-pplx-citation-url pass, and
+        // addSource() de-dupes on URL, so a source appearing in both keeps
+        // the stronger claim rather than being downgraded here.
+        try {
+          for (const st of queryPlan) {
+            for (const r of st.results || []) {
+              addSource(r.url, r.name, r.snippet, false);
+              if (r.trusted) {
+                const rec = sources.find((x) => x.url === r.url);
+                if (rec) rec.trusted = true;
+              }
+            }
+          }
+        } catch (_) {}
       } else if (plat === "grok") {
         // LAST turn, not first — same follow-up bug as the Perplexity branch
         // above. Reported on Grok too.

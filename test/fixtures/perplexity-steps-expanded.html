@@ -1,0 +1,100 @@
+<!-- Real Perplexity STEPS panel, EXPANDED (2026-08-31).
+
+     Assembled from a user-supplied DevTools capture plus the rendered
+     screenshot it came from.
+
+     CONFIRMED from the DOM capture:
+       - the outer "Finished 2 steps" disclosure button
+       - each step's own nested disclosure button carrying the step name
+       - the result rows: <a rel="noopener" target="_blank" href="..."> with a
+         favicon <img>, a title in .text-secondary.text-xs and a domain label
+         in .text-tertiary.text-xs
+
+     MODELLED (clearly visible in the screenshot, exact markup NOT captured):
+       - the magnifier "sub-query" rows inside each step. The screenshot shows
+         them as plain non-anchor text lines, which is how they appear here.
+         Because they are not confirmed, harvestPerplexitySteps treats them as
+         best-effort and falls back to the step's own NAME when they cannot be
+         found — so a wrong guess here degrades to a coarser label rather than
+         producing junk. -->
+<div class="flow-root">
+  <div class="flex items-center gap-2 relative group/tool-wrapper z-10">
+    <button aria-expanded="true" type="button" class="reset interactable min-w-0 flex items-center gap-2 w-fit max-w-full group/tool-button cursor-pointer">
+      <div class="min-w-0 flex-1"><span class="flex min-w-0 items-center gap-1">
+        <div class="min-w-0 font-sans text-secondary text-sm select-none truncate">Finished</div>
+        <div class="shrink-0 font-sans text-tertiary text-sm select-none">2 steps</div>
+      </span></div>
+    </button>
+  </div>
+
+  <div class="relative">
+
+    <div class="pplx-step">
+      <button aria-expanded="true" type="button" class="reset interactable min-w-0 flex items-center gap-2 group/tool-button">
+        <div class="min-w-0 font-sans text-secondary text-sm select-none truncate">Searching the web</div>
+      </button>
+      <div class="relative min-w-0">
+        <div class="pplx-subquery"><div class="font-sans text-secondary text-xs truncate">Best headphone under 4000</div></div>
+        <div class="flex min-w-0 flex-col gap-2.5">
+          <div class="w-fit min-w-0 max-w-full">
+            <a rel="noopener" class="reset interactable block min-w-0 overflow-hidden" target="_blank" href="https://www.boat-lifestyle.com/collections/wireless-headphones-under-4000">
+              <span class="flex items-center gap-2 group min-w-0 overflow-hidden">
+                <div class="relative shrink-0 overflow-hidden flex items-center justify-center rounded-full"><img aria-hidden="true" class="relative block" width="14" height="14" src="https://www.google.com/s2/favicons?sz=128&amp;domain=boat-lifestyle.com"></div>
+                <span class="group-hover:underline min-w-0"><div class="font-sans text-secondary text-xs truncate">Buy boAt Wireless Headphones Under 4000 for Quality Sound</div></span>
+                <span class="flex shrink-0 items-center gap-1"><div class="font-sans text-tertiary text-xs truncate">boat-lifestyle</div><span class="inline-flex shrink-0"><span data-testid="trusted-citation-check" aria-label="Trusted domain"></span></span></span>
+              </span>
+            </a>
+          </div>
+          <div class="w-fit min-w-0 max-w-full">
+            <a rel="noopener" class="reset interactable block min-w-0 overflow-hidden" target="_blank" href="https://savedelete.com/article/headphones-under-4000/">
+              <span class="flex items-center gap-2 group min-w-0 overflow-hidden">
+                <div class="relative shrink-0 overflow-hidden flex items-center justify-center rounded-full"><img aria-hidden="true" class="relative block" width="14" height="14" src="https://www.google.com/s2/favicons?sz=128&amp;domain=savedelete.com"></div>
+                <span class="group-hover:underline min-w-0"><div class="font-sans text-secondary text-xs truncate">Best Headphones Under Rs.4000 in 2026: Ultimate Buying Guide</div></span>
+                <span class="flex shrink-0 items-center gap-1"><div class="font-sans text-tertiary text-xs truncate">savedelete</div><span class="inline-flex shrink-0"></span></span>
+              </span>
+            </a>
+          </div>
+          <div class="w-fit min-w-0 max-w-full">
+            <a rel="noopener" class="reset interactable block min-w-0 overflow-hidden" target="_blank" href="https://www.pricekeeda.com/headphones/headphones-under-4000/">
+              <span class="flex items-center gap-2 group min-w-0 overflow-hidden">
+                <div class="relative shrink-0 overflow-hidden flex items-center justify-center rounded-full"><img aria-hidden="true" class="relative block" width="14" height="14" src="https://www.google.com/s2/favicons?sz=128&amp;domain=pricekeeda.com"></div>
+                <span class="group-hover:underline min-w-0"><div class="font-sans text-secondary text-xs truncate">Best Headphones Under 4000 - Compare Prices &amp; Features ...</div></span>
+                <span class="flex shrink-0 items-center gap-1"><div class="font-sans text-tertiary text-xs truncate">pricekeeda</div><span class="inline-flex shrink-0"></span></span>
+              </span>
+            </a>
+          </div>
+        </div>
+        <div class="pplx-more"><div class="font-sans text-tertiary text-xs">+7 more</div></div>
+      </div>
+    </div>
+
+    <div class="pplx-step">
+      <button aria-expanded="true" type="button" class="reset interactable min-w-0 flex items-center gap-2 group/tool-button">
+        <div class="min-w-0 font-sans text-secondary text-sm select-none truncate">Checking headphone reviews</div>
+      </button>
+      <div class="relative min-w-0">
+        <div class="pplx-subquery"><div class="font-sans text-secondary text-xs truncate">https://savedelete.com/article/headphones-under-4000/</div></div>
+        <div class="pplx-subquery"><div class="font-sans text-secondary text-xs truncate">https://etadviser.com/electronics/headphones/best-headphones-under-4000-in-india-for-exceptional-audio-experience/</div></div>
+        <div class="flex min-w-0 flex-col gap-2.5">
+          <div class="w-fit min-w-0 max-w-full">
+            <a rel="noopener" class="reset interactable block min-w-0 overflow-hidden" target="_blank" href="https://savedelete.com/article/headphones-under-4000/">
+              <span class="flex items-center gap-2 group min-w-0 overflow-hidden">
+                <span class="group-hover:underline min-w-0"><div class="font-sans text-secondary text-xs truncate">Best Headphones Under Rs.4000 in 2026: Ultimate Buying Guide</div></span>
+                <span class="flex shrink-0 items-center gap-1"><div class="font-sans text-tertiary text-xs truncate">savedelete</div></span>
+              </span>
+            </a>
+          </div>
+          <div class="w-fit min-w-0 max-w-full">
+            <a rel="noopener" class="reset interactable block min-w-0 overflow-hidden" target="_blank" href="https://etadviser.com/electronics/headphones/best-headphones-under-4000-in-india-for-exceptional-audio-experience/">
+              <span class="flex items-center gap-2 group min-w-0 overflow-hidden">
+                <span class="group-hover:underline min-w-0"><div class="font-sans text-secondary text-xs truncate">Best Headphones under 4000 in India for Exceptional Audio Experience (2024) - ET Adviser</div></span>
+                <span class="flex shrink-0 items-center gap-1"><div class="font-sans text-tertiary text-xs truncate">etadviser</div></span>
+              </span>
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
