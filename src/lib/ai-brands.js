@@ -126,7 +126,7 @@ function mergeAiNames(base, aiNames, plainText) {
  * result is stored and shown immediately, and this upgrades it in place a
  * moment later.
  */
-export async function enrichBrandsWithAI(brands, plainText) {
+export async function enrichBrandsWithAI(brands, plainText, query) {
   const text = plainText || "";
   if (!text.trim()) return null;
 
@@ -138,7 +138,7 @@ export async function enrichBrandsWithAI(brands, plainText) {
 
   try {
     if (await isNanoAvailable()) {
-      const out = merge(await extractEntitiesWithNano(text));
+      const out = merge(await extractEntitiesWithNano(text, query));
       if (out) return out;
     }
   } catch (_) {
@@ -162,7 +162,7 @@ export async function detectBrandsAI(answerText, plainText, ctx = {}) {
 
   try {
     if (await isNanoAvailable()) {
-      const names = await extractEntitiesWithNano(text);
+      const names = await extractEntitiesWithNano(text, ctx.query);
       if (names) return mergeAiNames(base, names, text);
     }
   } catch (_) {

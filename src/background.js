@@ -214,7 +214,7 @@ async function enrichCaptureWithAI(record) {
     const plain = record.platform === "chatgpt"
       ? cleanPassage(record.answerText)
       : record.answerText;
-    const improved = await enrichBrandsWithAI(record.brandMentions || [], plain);
+    const improved = await enrichBrandsWithAI(record.brandMentions || [], plain, record.userPrompt);
     if (!improved) return;
 
     // Re-read rather than reusing the in-memory copy: a reprocess or a delete

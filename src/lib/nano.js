@@ -61,11 +61,15 @@ const ENTITY_SCHEMA = {
 };
 
 const SYSTEM_PROMPT =
-  "You extract brand, product, and company names mentioned in text. " +
+  "You extract brand, product, and company names that the text discusses IN THE CONTEXT OF the " +
+  "user's own question. " +
   'List each one exactly as it is written in the text, using its full name (e.g. "Ant Esports" ' +
   'not "Ant", "Zebronics Transformer M Plus" not just "Zebronics"). Do NOT include video games, ' +
-  "generic categories, prices, or common words. Only real commercial brand/product/company names. " +
-  "If none are mentioned, return an empty list.";
+  "generic categories, prices, or common words. Do NOT include a name that appears only as a " +
+  "citation source, publisher, or footnote marker for where the information came from -- only " +
+  "names the text is actually discussing as an answer to the question. If the text mentions a " +
+  "name that has nothing to do with what the user asked (for example, leftover from an unrelated " +
+  "past conversation), leave it out. If none are mentioned, return an empty list.";
 
 // Only these two states mean "ready to use right this instant, with zero
 // download or user prompt." Anything else (downloadable/downloading/
@@ -100,7 +104,14 @@ function withTimeout(promise, ms) {
   ]).finally(() => clearTimeout(timer));
 }
 
-export async function extractEntitiesWithNano(text) {
+// `query` is the user's own prompt for this capture, when known. Passing it
+// is what lets Nano judge RELEVANCE rather than just running blind NER over
+// the answer text — without it, Nano has no way to tell a name the answer is
+// actually discussing apart from an unrelated name that merely appears
+// somewhere in the text (a citation source, a stray leftover reference).
+// Optional and additive: omitting it falls back to the previous
+// context-free extraction, never an error.
+export async function extractEntitiesWithNano(text, query) {
   if (!text || !text.trim()) return null;
   const lm = resolveLanguageModel();
   if (!lm) return null;
@@ -115,11 +126,12 @@ export async function extractEntitiesWithNano(text) {
     // window. This cap has been enough for every real fixture in this
     // repo's test suite while staying well under typical on-device limits.
     const clipped = text.length > 6000 ? text.slice(0, 6000) : text;
+    const q = String(query || "").trim();
+    const instruction = q
+      ? `The user asked: "${q}"\n\nExtract every brand, product, and company name from this answer that is relevant to that question:\n\n${clipped}`
+      : `Extract every brand, product, and company name from this text:\n\n${clipped}`;
     const raw = await withTimeout(
-      session.prompt(
-        `Extract every brand, product, and company name from this text:\n\n${clipped}`,
-        { responseConstraint: ENTITY_SCHEMA }
-      ),
+      session.prompt(instruction, { responseConstraint: ENTITY_SCHEMA }),
       NANO_TIMEOUT_MS
     );
     const parsed = JSON.parse(raw);
