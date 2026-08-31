@@ -27,6 +27,37 @@ import { computeSearchFunnel } from "./funnel-omitted.js";
 import { analyzeFanout } from "./fanout.js";
 import { normalizeMentions } from "./mention-list.js";
 
+/* Placeholder delimiters for inline HTML spliced back in after the markdown
+ * pass (footnote links, bolded entity names).
+ *
+ * These used to be plain spaces — the token was " P0 " — which made
+ * substitution silently depend on surrounding whitespace surviving the block
+ * parser. It routinely didn't: a marker at the END of a paragraph lost its
+ * trailing space to the line trim, and a citation that was the ONLY content
+ * of a paragraph lost both. In each case the regex missed and a literal "P0"
+ * was printed into the finished document. Perplexity citations sit at the end
+ * of a sentence almost every time, and one of them was alone in its own
+ * paragraph, so both variants showed up in the very first real export.
+ *
+ * U+27E6/U+27E7 are mathematical white square brackets: they pass through
+ * esc() untouched, mean nothing to the markdown parser, and do not occur in
+ * ordinary answer text — so matching no longer depends on whitespace at all.
+ */
+const PLACEHOLDER_OPEN = "⟦P";
+const PLACEHOLDER_CLOSE = "⟧";
+const PLACEHOLDER_RE = /⟦P(\d+)⟧/g;
+
+// Display name per engine. Kept in one place so a new engine can never again
+// inherit another engine's label by default — see the note on `model` in
+// buildExportModel().
+const PLATFORM_LABELS = {
+  chatgpt: "ChatGPT",
+  gemini: "Gemini",
+  perplexity: "Perplexity",
+  grok: "Grok",
+  claude: "Claude",
+};
+
 function esc(s) {
   return String(s ?? "")
     .replace(/&/g, "&amp;")
@@ -188,7 +219,7 @@ function markdownToHtml(raw, placeholders) {
 
   let html = blocks.join("\n");
   if (placeholders && placeholders.length) {
-    html = html.replace(/ P(\d+) /g, (_, n) => placeholders[Number(n)] ?? "");
+    html = html.replace(PLACEHOLDER_RE, (_, n) => placeholders[Number(n)] ?? "");
   }
   return html;
 }
@@ -210,7 +241,7 @@ function renderChatGptAnswer(record) {
   let raw = "";
   const placeholders = [];
   const place = (html) => {
-    const tok = ` P${placeholders.length} `;
+    const tok = PLACEHOLDER_OPEN + placeholders.length + PLACEHOLDER_CLOSE;
     placeholders.push(html);
     return tok;
   };
@@ -252,6 +283,80 @@ function renderGeminiAnswer(record) {
   return { bodyHtml: markdownToHtml(record.answerText || "", []), footnotes: [], unresolvedCitations: false };
 }
 
+/* ---------- Perplexity: [[cite:URL]] markers -> numbered footnotes ----------
+ *
+ * Deliberately its own renderer rather than a reuse of the ChatGPT one.
+ * ChatGPT's path is built on that platform's `turnNkindM` marker ids and a
+ * markerIds lookup on each source; Perplexity has neither. It instead puts
+ * the EXACT source URL on the citation element in the DOM
+ * (data-pplx-citation-url), which the harvester turns into a positional
+ * [[cite:URL]] marker — so the URL itself is the key, and no id mapping is
+ * needed at all. Forcing that through ChatGPT's shape is exactly the kind
+ * of assumption-leak this codebase has been unwinding.
+ *
+ * Being URL-keyed also means a citation can never go "unresolved" the way
+ * ChatGPT's can: even if the source isn't in record.sources (an older
+ * capture, a step the panel didn't list), the marker still carries a real
+ * URL, so the footnote is emitted with the domain as its label rather than
+ * silently dropped.
+ */
+const PPLX_CITE_RE = /\[\[cite:(https?:\/\/[^\]\s]+)\]\]/g;
+
+function renderPerplexityAnswer(record) {
+  const text = record.answerText || "";
+  PPLX_CITE_RE.lastIndex = 0;
+  if (!PPLX_CITE_RE.test(text)) {
+    // No markers: a capture taken before positional citations existed, or an
+    // answer that genuinely cited nothing. Render it plainly rather than
+    // pretending otherwise.
+    return { ...renderGeminiAnswer(record), hasCitations: false };
+  }
+  PPLX_CITE_RE.lastIndex = 0;
+
+  const byUrl = new Map();
+  for (const s of record.sources || []) if (s && s.url) byUrl.set(s.url, s);
+
+  const footnotes = [];
+  const numByUrl = new Map();
+  const placeholders = [];
+  const place = (html) => {
+    const tok = PLACEHOLDER_OPEN + placeholders.length + PLACEHOLDER_CLOSE;
+    placeholders.push(html);
+    return tok;
+  };
+
+  let raw = "";
+  let cursor = 0;
+  let m;
+  while ((m = PPLX_CITE_RE.exec(text))) {
+    raw += text.slice(cursor, m.index);
+    const url = m[1];
+    let n = numByUrl.get(url);
+    if (!n) {
+      n = footnotes.length + 1;
+      numByUrl.set(url, n);
+      // Fall back to a minimal source built from the URL itself when the
+      // record doesn't carry one — see the note above on why this can't be
+      // "unresolved".
+      const src = byUrl.get(url) || { url, domain: domainFromUrl(url), title: "" };
+      footnotes.push({ n, source: src });
+    }
+    raw += place(`<sup class="fn"><a href="#fn-${record.captureId}-${n}">[${n}]</a></sup>`);
+    cursor = m.index + m[0].length;
+  }
+  raw += text.slice(cursor);
+
+  return { bodyHtml: markdownToHtml(raw, placeholders), footnotes, unresolvedCitations: false, hasCitations: true };
+}
+
+function domainFromUrl(u) {
+  try {
+    return new URL(u).hostname.replace(/^www\./, "");
+  } catch (_) {
+    return String(u || "").replace(/^https?:\/\//, "").split("/")[0] || "";
+  }
+}
+
 /* ---------- build one conversation's export model ---------- */
 export function buildExportModel(record) {
   // Defense-in-depth: light records (as returned by the "get-records" list
@@ -268,18 +373,36 @@ export function buildExportModel(record) {
     );
   }
   const isChatGpt = record.platform === "chatgpt";
-  const { bodyHtml, footnotes, unresolvedCitations } = isChatGpt ? renderChatGptAnswer(record) : renderGeminiAnswer(record);
+  const isPerplexity = record.platform === "perplexity";
+  const rendered = isChatGpt
+    ? renderChatGptAnswer(record)
+    : isPerplexity
+      ? renderPerplexityAnswer(record)
+      : renderGeminiAnswer(record);
+  const { bodyHtml, footnotes, unresolvedCitations } = rendered;
+  // Perplexity only claims inline citations when the answer ACTUALLY carried
+  // positional markers. A capture taken before those existed renders plainly
+  // and must not advertise numbered footnotes it doesn't have.
+  const hasInlineCitations = isChatGpt || (isPerplexity && rendered.hasCitations === true);
 
   return {
     captureId: record.captureId,
     platform: record.platform,
-    model: record.model || (isChatGpt ? "ChatGPT" : "Gemini"),
+    // Falls back to the ENGINE name, never another engine's. This used to
+    // be `isChatGpt ? "ChatGPT" : "Gemini"` — a two-platform assumption from
+    // when there were only two, which stamped every Perplexity, Grok and
+    // Claude export with the header "GEMINI". Same class of bug as the
+    // gpt-4o model default in the Analyze panel: a missing value filled in
+    // with a confident wrong one. Perplexity captures carry no model field
+    // at all (see adapters/perplexity.js), so this path is the common case
+    // for them, not an edge.
+    model: record.model || PLATFORM_LABELS[record.platform] || "Unknown engine",
     prompt: record.userPrompt || "(no prompt captured)",
     title: record.generatedTitle || null,
     capturedAt: record.capturedAt,
     bodyHtml,
     footnotes,
-    hasInlineCitations: isChatGpt,
+    hasInlineCitations,
     unresolvedCitations, // some cite markers pointed at a source not in this record — old capture, pre-markerIds
     truncated: (record.answerText || "").length >= ANSWER_TEXT_CAP,
     sources: record.sources || [],
@@ -362,7 +485,14 @@ function renderSourcesSection(model) {
   // the rest.
   const note = model.platform === "gemini"
     ? `<p class="muted">Gemini doesn't expose where in the answer each source was used, so citations aren't numbered inline — here's everything it drew on.</p>`
-    : `<p class="muted">Citation markers in this answer couldn't be matched to a source (capture predates citation-source linking) — sources are listed but not numbered inline.</p>`;
+    : model.platform === "perplexity"
+      // Perplexity DOES expose inline citation positions (each carries the
+      // exact source URL in the DOM), so reaching this branch means the
+      // capture simply predates that harvesting — not that the platform
+      // cannot do it. Saying "couldn't be matched" here would have been
+      // actively misleading, and re-capturing genuinely fixes it.
+      ? `<p class="muted">This capture was taken before inline citation positions were harvested for Perplexity, so sources are listed but not numbered inline. Re-run the prompt to get numbered footnotes.</p>`
+      : `<p class="muted">Citation markers in this answer couldn't be matched to a source (capture predates citation-source linking) — sources are listed but not numbered inline.</p>`;
   const cited = model.sources.filter((s) => s.outcome === "cited");
   const rest = model.sources.filter((s) => s.outcome !== "cited");
   const detailed = (s) =>

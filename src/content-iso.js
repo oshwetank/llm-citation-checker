@@ -670,6 +670,16 @@
         if (c.nodeType === 3) { out += c.nodeValue || ""; continue; }
         if (c.nodeType !== 1) continue;
         const tag = (c.tagName || "").toLowerCase();
+        // An inline citation. Perplexity puts the exact source URL on the
+        // span (data-pplx-citation-url), so instead of letting the visible
+        // badge label fall into the prose — which is how answers ended up
+        // reading "...around 2,999.boat-lifestyle" — emit a positional
+        // marker carrying the URL. The exporter turns that into a numbered
+        // footnote at exactly the point the answer cited it, which is what
+        // makes a real replica of the answer possible. Not descended into:
+        // the badge text is chrome, not part of the sentence.
+        const citeUrl = c.getAttribute && c.getAttribute("data-pplx-citation-url");
+        if (citeUrl) { out += `[[cite:${citeUrl}]]`; continue; }
         if (tag === "strong" || tag === "b") {
           const t = inline(c, d + 1).trim();
           out += t ? `**${t}**` : "";
