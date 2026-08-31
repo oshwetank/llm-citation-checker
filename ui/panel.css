@@ -385,7 +385,14 @@ body.tab .app-wrapper, body:not(.popup) .app-wrapper {
 
 body.tab .app-header, body:not(.popup) .app-header {
   padding: 12px 24px !important;
-  margin: 12px 0 24px 0 !important;
+  /* Bottom margin used to be 24px, stacking with .app-content's own
+     top padding right below it (see that rule further down) into a single
+     visual dead band between the header and whatever docks right under it
+     (most visibly the Analyze context bar) — reported twice as "too much
+     space" even after the content-side padding alone was cut from 24px to
+     10px, because this 24px was the larger, untouched half of that gap.
+     Matching the top margin here is the rest of that fix. */
+  margin: 12px 0 !important;
   display: flex !important;
   align-items: center !important;
   justify-content: space-between !important;
