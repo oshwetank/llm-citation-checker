@@ -118,7 +118,8 @@ jobs:
                    test/perplexity-export.test.mjs test/perplexity-fanout.test.mjs \
                    test/perplexity-fanout-answer-leak.test.mjs \
                    test/perplexity-markdown-harvest.test.mjs test/perplexity-real-dom.test.mjs \
-                   test/perplexity-steps.test.mjs test/perplexity-ws-contamination.test.mjs \
+                   test/perplexity-steps.test.mjs test/perplexity-table-layout-brands.test.mjs \
+                   test/perplexity-ws-contamination.test.mjs \
                    test/glossary.test.mjs test/grounding-score.test.mjs test/multi-engine.test.mjs \
                    test/pacing.test.mjs test/retention.test.mjs \
                    test/sources.test.mjs test/text-sanitize.test.mjs test/xlsxlite.test.mjs; do

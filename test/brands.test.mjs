@@ -230,6 +230,78 @@ console.log("\nparseMarkdownTables: a real table is identified by its separator 
 }
 
 /*
+ * Real bug, reported from a real capture ("best camera phone under 30000"
+ * on Perplexity): "if the layout of the answer changes the tool is not
+ * able to tell the exact brand." The table led with a USE-CASE column, not
+ * a rank or a name:
+ *
+ *   | Best For | Phone | Key Camera Highlights | Approx. Price |
+ *   | **Optical Zoom** | **Nothing Phone (3a) Pro** | ... | ... |
+ *
+ * Column 0 isn't a bare rank cell (it's prose — "Optical Zoom" — not a
+ * medal/digit/#), so the old rule ("rank in column 0? take column 1 :
+ * take column 0") confidently took column 0 every time. Brand Mentions
+ * came back as "Optical Zoom", "Versatile Triple Camera", "Balanced
+ * All-Rounder" — the use-case labels — while the real names (Nothing,
+ * Motorola, Redmi, Realme, CMF) in column 1 never became candidates at
+ * all. Fixed by preferring whichever column's HEADER says it holds the
+ * name ("Phone", "Product", "Model", ...) over guessing from position.
+ */
+console.log("\nparseMarkdownTables: a self-identifying header column wins over position");
+{
+  const useCaseLed =
+    "| Best For | Phone | Key Camera Highlights | Approx. Price |\n" +
+    "| --- | --- | --- | --- |\n" +
+    "| **Optical Zoom** | **Nothing Phone (3a) Pro** | 50MP main + 3x telephoto | ₹26,999 |\n" +
+    "| **Versatile Triple Camera** | **Motorola Edge 60 Pro** | 50MP + ultrawide + 3x | ~₹28,999 |\n" +
+    "| **Budget Zoom Option** | **CMF Phone 2 Pro** | 50MP + 2x telephoto | ₹18,999 |\n";
+  const found = parseMarkdownTables(useCaseLed);
+  // parseMarkdownTables returns raw cell text (structuralCandidates' own
+  // cleanCandidateText is what strips markdown) — these cells are bold in
+  // the real capture, so the raw candidates carry their ** markers too.
+  check(
+    "the real names (column 2, 'Phone') are returned, not the use-case labels (column 1, 'Best For')",
+    JSON.stringify(found) === JSON.stringify(["**Nothing Phone (3a) Pro**", "**Motorola Edge 60 Pro**", "**CMF Phone 2 Pro**"]),
+    JSON.stringify(found)
+  );
+  check("the use-case column never shows up at all", !found.some((f) => /optical zoom|versatile|budget zoom/i.test(f)), JSON.stringify(found));
+
+  // End to end: the use-case labels must never reach Brand Mentions, and the
+  // real brands must, exactly the shape reported.
+  const detectedFull = names(useCaseLed, {});
+  check("Nothing is detected as a brand", detectedFull.some((n) => /nothing/i.test(n)), detectedFull.join(", "));
+  check("Motorola is detected as a brand", detectedFull.some((n) => /motorola/i.test(n)), detectedFull.join(", "));
+  check("CMF is detected as a brand", detectedFull.some((n) => /^cmf$/i.test(n)), detectedFull.join(", "));
+  check(
+    "no use-case label (\"Optical Zoom\", \"Versatile...\", \"Budget Zoom...\") is reported as a brand",
+    !detectedFull.some((n) => /optical zoom|versatile|budget zoom/i.test(n)),
+    detectedFull.join(", ")
+  );
+
+  // A table that does NOT self-identify its name column must fall back to
+  // the original rank-or-first-column rule exactly as before — this feature
+  // is additive, not a replacement of the working default.
+  const noHeaderHint =
+    "| Rank | Product | Price |\n" +
+    "| --- | --- | --- |\n" +
+    "| #1 | Zebronics Transformer M Plus | ₹500 |\n";
+  check(
+    "an explicit 'Product' header still selects column 2 (same outcome the old rank-fallback gave)",
+    JSON.stringify(parseMarkdownTables(noHeaderHint)) === JSON.stringify(["Zebronics Transformer M Plus"]),
+    JSON.stringify(parseMarkdownTables(noHeaderHint))
+  );
+  const plainFirstColumn =
+    "| Mouse | Price |\n" +
+    "|---|---:|\n" +
+    "| Zebronics Transformer M Plus | ₹500 |\n";
+  check(
+    "a table with no recognized header word still uses column 1, unchanged",
+    JSON.stringify(parseMarkdownTables(plainFirstColumn)) === JSON.stringify(["Zebronics Transformer M Plus"]),
+    JSON.stringify(parseMarkdownTables(plainFirstColumn))
+  );
+}
+
+/*
  * Real bug, reported against a live capture: "there are times when a
  * platform's cited name comes under the mention section, like amazon."
  * A product card with no explicit brand field but a marketplace merchant

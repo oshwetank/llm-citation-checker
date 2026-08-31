@@ -97,6 +97,33 @@ check("candidates >= 6 chars that are a substring of the answer are dropped",
     !answer.includes(norm("best camera phone under 80000 reviews 2026").toLowerCase()));
 }
 
+console.log("\nperplexity-fanout-answer-leak: a citation chip's own label ('gadgets360+1') is rejected outright");
+
+// Reported (a second follow-up capture, "best camera phone under 30000"):
+// the fan-out list included "gadgets360+1" as its own entry — the
+// citation-chip UI element under the answer (favicon stack + primary cited
+// domain + a "+N" badge for the rest), glued together with no separator.
+// It's assembled client-side from the citation list, not written anywhere
+// in the markdown answer, so the substring-of-answer cross-check above
+// never catches it — this needs its own rejection.
+const chipLit = (src.match(/if \((\/\^\[a-z0-9\]\[a-z0-9\.-\]\*\\\+\\d\+\$\/i)\.test\(t\)\) continue;/) || [])[1];
+check("the citation-chip rejection regex literal was found", !!chipLit);
+
+if (chipLit) {
+  const re = new RegExp(chipLit.slice(1, chipLit.lastIndexOf("/")), chipLit.slice(chipLit.lastIndexOf("/") + 1));
+  // The real bad row from the capture.
+  check('"gadgets360+1" (the real leaked chip label) is rejected', re.test("gadgets360+1"));
+  // Other domain shapes the same chip renders for other captures.
+  check('"91mobiles.com+3" is rejected', re.test("91mobiles.com+3"));
+  check('"reddit+1" is rejected', re.test("reddit+1"));
+  // Real queries/sub-queries must never collide with this shape: they're
+  // multi-word, or at least never end in a bare "+digit" glued with zero
+  // separator onto a single token.
+  check('"best camera phone under 30000" is not flagged', !re.test("best camera phone under 30000"));
+  check('"OnePlus 13" is not flagged', !re.test("OnePlus 13"));
+  check('"+7 more" (already handled separately, has a space) is not flagged by this pattern', !re.test("+7 more"));
+}
+
 if (failures) {
   console.log(`\n${failures} FAILED`);
   process.exit(1);

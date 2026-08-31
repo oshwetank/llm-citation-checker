@@ -959,6 +959,17 @@
         if (/^\+\d+\s*more$/i.test(t)) continue;
         if (/^(finished|sources?|steps?|searched)$/i.test(t)) continue;
         if (/^\d{1,2}:\d{2}(\s*[·•]\s*\d+\s*s)?$/i.test(t)) continue;
+        // Reported (a follow-up capture, "best camera phone under 30000"):
+        // the fan-out list also picked up "gadgets360+1" as its own entry —
+        // the citation-chip UI element under the answer (favicon stack +
+        // primary cited domain + "+N" for the rest), rendered with zero
+        // separator between the domain and its badge exactly like the clock
+        // element glues onto adjacent text. It isn't a substring of the
+        // answer (it's assembled client-side from the citation list, not
+        // written in the markdown), so the answerText cross-check above
+        // never catches it; a real query never ends in a bare "+digit" with
+        // no space before it.
+        if (/^[a-z0-9][a-z0-9.-]*\+\d+$/i.test(t)) continue;
         if ((t.match(/[a-z][A-Z]/g) || []).length >= 2) continue;
         if (t === cur.name) continue;
         if (!cur.subQueries.includes(t)) cur.subQueries.push(t);

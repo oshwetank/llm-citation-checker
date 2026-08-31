@@ -171,6 +171,22 @@ export function splitTableRow(line) {
 // regardless of how the model happens to phrase or bold the actual cells.
 const SEPARATOR_CELL = /^:?-+:?$/;
 
+// A header cell that says, in so many words, "this column IS the name" —
+// checked before falling back to position. Reported: a table led with a
+// USE-CASE column ("Best For: Optical Zoom / Versatile Triple Camera / …")
+// and put the real product name in column 2 ("Phone: Nothing Phone (3a)
+// Pro"). Column 0 isn't a rank cell there (it's prose, not a bare number),
+// so the old rank-or-first-column rule confidently picked the wrong column
+// on every row, and the real names never got a candidate at all. The header
+// row already names its own contents in the vast majority of tables an LLM
+// generates (across verticals: "Product", "Broker", "Fund" all show up, but
+// "Phone"/"Product"/"Model"/"Item"/"Device"/"Name"/"Brand"/"Pick" alone
+// already cover most comparison tables regardless of topic) — a much
+// stronger signal than guessing from position when it's present, and
+// harmless when it isn't (falls straight back to the old rule below).
+const NAME_HEADER_RE = /^(phones?|products?|items?|models?|devices?|names?|brands?|picks?|winners?|recommendations?|options?|choices?)$/i;
+const cleanHeaderCell = (s) => String(s || "").replace(/[*_`]/g, "").trim();
+
 // Returns the first-column text of every DATA row (header/separator rows
 // excluded) in every real table found in `text`. Previously this signal was
 // a single regex hunting for "**bold** text between two pipes" anywhere in
@@ -189,11 +205,17 @@ export function parseMarkdownTables(text) {
       if (headerCells.length >= 2) {
         const sepCells = splitTableRow(lines[i + 1]);
         if (sepCells.length === headerCells.length && sepCells.every((c) => SEPARATOR_CELL.test(c))) {
+          const nameColIdx = headerCells.findIndex((h) => NAME_HEADER_RE.test(cleanHeaderCell(h)));
           let j = i + 2;
           while (j < lines.length && lines[j].trim() && lines[j].includes("|")) {
             const cells = splitTableRow(lines[j]);
-            const isRank = /^[\u{1F947}\u{1F948}\u{1F949}\d#\s.-]+$/u.test(cells[0]);
-            const target = isRank && cells[1] ? cells[1] : cells[0];
+            let target;
+            if (nameColIdx !== -1 && cells[nameColIdx]) {
+              target = cells[nameColIdx];
+            } else {
+              const isRank = /^[\u{1F947}\u{1F948}\u{1F949}\d#\s.-]+$/u.test(cells[0]);
+              target = isRank && cells[1] ? cells[1] : cells[0];
+            }
             if (target) out.push(target);
             j++;
           }
