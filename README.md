@@ -2,7 +2,7 @@
 
 _Formerly listed on the Chrome Web Store as "LLM Citation & Fan-Out Checker."_
 
-A Chrome (MV3) extension that **passively** captures what ChatGPT and Gemini actually do
+A Chrome (MV3) extension that **passively** captures what ChatGPT, Gemini, Perplexity and Grok actually do
 behind an answer — the hidden search queries they fire, every source they read, which of
 those they *cite* versus merely *fetch*, and which brands they name — then measures your
 brand's visibility against competitors over time.
@@ -18,7 +18,7 @@ of its own**; nothing leaves your device.
 
 The extension does two different jobs, and their data never mixes.
 
-**1. Ad-hoc analysis** — just browse. Every ChatGPT/Gemini answer you run is captured and
+**1. Ad-hoc analysis** — just browse. Every answer you run on a supported engine is captured and
 broken down in **Analyze** (one conversation) and **Dashboard** (aggregates across all of
 them). Nothing to configure.
 
@@ -78,7 +78,7 @@ visible gap — so the UI reports it as "not measured" and says why.
 1. Go to `chrome://extensions`
 2. Enable **Developer mode** (top right)
 3. **Load unpacked** → select this folder
-4. Pin it, then open ChatGPT or Gemini in a **new** tab — the network patch has to install
+4. Pin it, then open ChatGPT, Gemini, Perplexity or Grok in a **new** tab — the network patch has to install
    before the page loads — and run a prompt.
 
 ## Running a campaign
@@ -99,7 +99,7 @@ kept either way.
 
 ### Automation and account safety
 
-A run submits prompts through **your logged-in ChatGPT/Gemini session**. Volume is shown
+A run submits prompts through **your own logged-in sessions**. Volume is shown
 before you commit (prompts × engines), with a warning past 60 submissions in one run.
 Nothing ever fires unattended — a run needs your click; the extension only reminds you when
 a day has passed. At meaningful scale, consider a dedicated account rather than a personal

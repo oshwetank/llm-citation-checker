@@ -1261,7 +1261,7 @@ function renderAnalyze() {
       }
       root.append(
         el("div", { className: "empty" },
-          "No captures yet. Open ChatGPT or Gemini in a tab, run a prompt, then reopen this panel.")
+          "No captures yet. Open ChatGPT, Gemini, Perplexity or Grok in a tab, run a prompt, then reopen this panel.")
       );
       return;
     }
@@ -2566,7 +2566,7 @@ function renderDashboardImpl() {
   });
   currentFilteredRecs = recs;
   if (!recs.length && !RECORDS.length && !GEO_PROFILES.length) {
-    root.append(el("div", { className: "empty" }, "No data captured yet. Open ChatGPT or Gemini in a tab and run a query."));
+    root.append(el("div", { className: "empty" }, "No data captured yet. Open ChatGPT, Gemini, Perplexity or Grok in a tab and run a query."));
     return;
   }
 
@@ -3488,7 +3488,7 @@ function downloadDetailedFormat(records, format) {
       ]);
     });
   });
-  addSheet("Local Businesses", "Business listings ChatGPT/Gemini returned, with contact and rating data.",
+  addSheet("Local Businesses", "Business listings the engine returned, with contact and rating data.",
     [60, 200, 120, 220, 120, 60, 80, 120, 320, 240, 260, 260],
     ["Prompt #", "Prompt", "Captured", "Business", "Category", "Rating", "Reviews", "Phone", "Address", "Website", "Hours", "Maps link"],
     placeRows);
@@ -6094,7 +6094,7 @@ async function renderDebug() {
   const r = await send({ type: "get-debug" });
   const log = $("#dbgLog");
   log.textContent = "";
-  if (!r.ok || !r.events.length) { log.append(el("div", { className: "muted" }, "No events yet. Load ChatGPT/Gemini and run a prompt.")); return; }
+  if (!r.ok || !r.events.length) { log.append(el("div", { className: "muted" }, "No events yet. Load a supported engine and run a prompt.")); return; }
   // group counts by host+kind for a quick summary
   const summ = {};
   r.events.forEach((e) => { const k = `${e.host} · ${e.kind}`; summ[k] = (summ[k] || 0) + 1; });
@@ -6212,7 +6212,13 @@ renderErrorLog();
 /* ---------- Settings ---------- */
 async function loadSettings() {
   const r = await send({ type: "settings-get" });
-  if (!r.ok) return;
+  // Guard the PAYLOAD, not just the ok flag. An {ok:true} reply that somehow
+  // carries no settings object threw here, and because loadSettings() is
+  // called without a catch during boot that surfaced as an unhandled
+  // rejection rather than a visible failure — the class of thing that leaves
+  // a user staring at a half-rendered panel with nothing in the console they
+  // would think to look at.
+  if (!r || !r.ok || !r.settings) return;
   const s = r.settings;
   if ($("#setDebug")) $("#setDebug").checked = !!s.debugCapture;
   if ($("#setRetention")) $("#setRetention").value = s.retentionMax;

@@ -3960,3 +3960,403 @@ body.popup .pp-chip { font-size: 9.5px; }
   color: var(--red-fg);
   border: 1px solid var(--red-border);
 }
+
+@media (max-width: 720px) {
+  .about-hero { flex-direction: column; }
+  .about-hero-diag {
+    flex-basis: auto;
+    align-self: stretch;
+    padding-left: 0;
+    padding-top: 12px;
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+}
+body.popup .setting-row,
+body.popup .maint-row { flex-direction: column; gap: 8px; }
+body.popup .setting-field,
+body.popup .maint-row .btn { align-self: flex-start; }
+
+/* --- column-width overrides where a table borrows .drill-table -----------
+   .drill-table gives its FIRST column a 220px floor because that column is
+   normally the long free-text one (prompt / query / URL). These tables lead
+   with a narrow row-number column instead, so without this the "#" column
+   would claim 220px and shove everything else off the edge. */
+.prompt-perf-table td:first-child,
+.prompt-perf-table th:first-child,
+.src-table td:first-child,
+.src-table th:first-child,
+.cmp-run-table td:first-child,
+.cmp-run-table th:first-child,
+body.popup .prompt-perf-table td:first-child,
+body.popup .prompt-perf-table th:first-child,
+body.popup .src-table td:first-child,
+body.popup .src-table th:first-child,
+body.popup .cmp-run-table td:first-child,
+body.popup .cmp-run-table th:first-child {
+  min-width: 26px;
+  max-width: 44px;
+  white-space: nowrap;
+}
+/* …and hand the floor to the column that actually holds the free text. */
+.prompt-perf-table td:nth-child(2),
+.prompt-perf-table th:nth-child(2),
+.src-table td:nth-child(2),
+.src-table th:nth-child(2) {
+  white-space: normal;
+  min-width: 170px;
+  max-width: 420px;
+}
+.prompt-perf-table { min-width: 520px; }
+body.popup .prompt-perf-table { min-width: 480px; }
+
+/* ---------- Prompt Performance: popup card layout -----------------------
+   The table needs ~530px of columns; the popup offers ~444px. Rather than
+   ship a permanently sideways-scrolling table with half its columns hidden,
+   the popup gets the same data stacked. See promptPerfCards() in panel.js. */
+.pp-cards { display: flex; flex-direction: column; gap: 8px; }
+.pp-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: var(--surface-raised);
+}
+.pp-card.idle { opacity: 0.72; }
+.pp-card-title {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.pp-card-idx {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 14px;
+}
+.pp-card-engines { display: flex; flex-direction: column; gap: 5px; margin-top: 8px; }
+.pp-card-engine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.pp-card-engine-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-secondary);
+  white-space: nowrap;
+}
+.pp-card-badges { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
+.pp-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 9px;
+  padding-top: 7px;
+  border-top: 1px dashed var(--border);
+  flex-wrap: wrap;
+}
+.pp-card-history {
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+/* Two summary tiles per row reads better than four slivers at 524px. */
+body.popup .pp-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+/* ---------- Source table in the popup -----------------------------------
+   Six columns at the default 10px cell padding came to ~502px against ~450px
+   of usable width, which is what clipped the "CITATIONS" header. */
+body.popup .src-table { min-width: 0; }
+body.popup .src-table th,
+body.popup .src-table td { padding: 7px 4px; font-size: 11.5px; }
+body.popup .src-table td:nth-child(2),
+body.popup .src-table th:nth-child(2) { min-width: 108px; }
+body.popup .src-bar-cell { width: 24%; min-width: 54px; }
+body.popup .src-bar-n { font-size: 10px; margin-left: 4px; }
+body.popup .pp-badge,
+body.popup .pp-chip { font-size: 9.5px; }
+
+/* ---------- Delayed tooltip ---------- */
+.app-tooltip {
+  position: absolute;
+  z-index: 2000;
+  display: none;
+  max-width: 260px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: #1a2333;
+  color: #f1f5f9;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.45;
+  box-shadow: 0 10px 26px -6px rgba(15, 23, 42, 0.4), 0 2px 8px rgba(15, 23, 42, 0.25);
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity 0.14s ease, transform 0.14s ease;
+  pointer-events: none;
+}
+.app-tooltip.show { opacity: 1; transform: translateY(0); }
+.app-tooltip::after {
+  content: "";
+  position: absolute;
+  left: var(--tip-arrow-x, 20px);
+  width: 8px;
+  height: 8px;
+  background: #1a2333;
+  transform: translateX(-50%) rotate(45deg);
+}
+.app-tooltip[data-placement="top"]::after { bottom: -4px; }
+.app-tooltip[data-placement="bottom"]::after { top: -4px; }
+[data-tip], [data-term] { cursor: help; }
+
+/* A section being rebuilt after a filter change. beginSwap() holds the old
+   height as a floor across the swap so the page doesn't jump to zero and back
+   within one frame; this fades the new content in over that, so the card
+   resizes from its real old height to its real new one. */
+.swap-in { animation: swapIn 180ms ease-out; }
+/* Transform only, for the reason spelled out at panelFadeIn: beginSwap() is
+   called on #dashboard — a .panel — and .swap-in sits later in this file, so
+   it overrode .panel.active's animation entirely. A swapIn that faded from
+   opacity 0 therefore controlled whether the whole Dashboard was visible. */
+@keyframes swapIn {
+  from { transform: translateY(-2px); }
+  to   { transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .swap-in { animation: none; }
+}
+
+/* A glossary tooltip always renders the same four slots in the same order:
+   the term, what it measures, the formula, and the caveat that stops it being
+   misread. Consistency is the point — the same metric explained three
+   different ways on three screens is what this replaced. */
+.app-tooltip.is-term { max-width: 320px; }
+.app-tooltip .tip-term {
+  font-weight: 600;
+  font-size: 12px;
+  margin-bottom: 3px;
+  color: #fff;
+}
+.app-tooltip .tip-what { line-height: 1.45; }
+.app-tooltip .tip-formula {
+  margin-top: 6px;
+  padding: 4px 7px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.09);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: #cbd5e1;
+}
+.app-tooltip .tip-how-to-use {
+  margin-top: 6px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(16, 185, 129, 0.14);
+  border-left: 3px solid #10b981;
+  color: #a7f3d0;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.app-tooltip .tip-how-to-use-badge {
+  font-weight: 700;
+  color: #34d399;
+}
+.app-tooltip .tip-note {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  color: #b6c2d4;
+  line-height: 1.45;
+}
+
+/* ---------- glossary reference (About) ---------- */
+.glossary-group-title {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  margin: 14px 0 6px;
+}
+.glossary-group-title:first-child { margin-top: 0; }
+.glossary-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+.glossary-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--surface-raised);
+}
+.glossary-term { font-weight: 600; font-size: 12px; margin-bottom: 3px; }
+.glossary-what { font-size: 12px; line-height: 1.45; }
+.glossary-formula {
+  margin-top: 6px;
+  padding: 4px 7px;
+  border-radius: 5px;
+  background: rgba(15, 23, 42, 0.06);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+.glossary-note { margin-top: 6px; line-height: 1.45; }
+
+/* ---------- Engine badges ---------- */
+.engine-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.25);
+  vertical-align: -3px;
+}
+.engine-badge-fallback {
+  width: auto;
+  height: auto;
+  border-radius: 0;
+  box-shadow: none;
+  font-size: 12px;
+  vertical-align: -1px;
+}
+.engine-chip { display: inline-flex; align-items: center; gap: 5px; }
+
+/* Error log entries. Reuses .dbglog/.dbgline from the capture debugger so the
+   two logs read the same; .big marks a repeated failure rather than a large
+   payload here, which is the same "look at this one" signal. */
+.err-stack { margin-top: 4px; }
+.err-stack summary { cursor: pointer; }
+.err-stack pre {
+  margin: 4px 0 0; padding: 6px 8px; border-radius: 6px;
+  background: var(--bg-subtle); border: 1px solid var(--border);
+  white-space: pre-wrap; overflow-wrap: anywhere; font-size: 10px; line-height: 1.45;
+}
+
+/* Expected finish time. Given its own block rather than appended to the
+   status line: it is the answer to "when do I come back", which is a
+   different question from "how far along is it", and it gets read at a
+   glance from across a room. */
+.loader-finish {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px;
+  margin-top: 8px; padding: 9px 12px; border-radius: 8px; font-size: 13px;
+  background: var(--bg-subtle); border: 1px solid var(--border);
+}
+.loader-finish-icon { font-size: 14px; }
+.loader-finish .muted { flex-basis: 100%; margin-top: 2px; }
+
+/* The per-turn submission timeline. Monospace and wrapping, because it is a
+   sequence of tick:event pairs that gets read left to right and can be long. */
+.err-trace { margin-top: 4px; }
+.err-trace code {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px; line-height: 1.5;
+  overflow-wrap: anywhere; word-break: break-word; color: var(--fg-secondary);
+}
+
+/* ---------- Sign-in gate (pre-flight auth check before a campaign run) ---------- */
+/* Shown instead of firing prompts into a login wall — see showSignInGate()
+   in panel.js and src/lib/auth-check.js for why this gate exists. */
+.signin-gate .signin-engine-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0;
+}
+.signin-engine {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-raised);
+}
+.signin-engine-name { font-weight: 600; color: var(--fg-primary); font-size: 13px; }
+.signin-engine-state {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.signin-engine-state.is-out {
+  background: var(--red-bg);
+  color: var(--red-fg);
+  border: 1px solid var(--red-border);
+}
+.signin-engine-state.is-unknown {
+  background: var(--amber-bg);
+  color: var(--amber-fg);
+  border: 1px solid var(--amber-border);
+}
+
+/* ---------- First-run tour ---------- */
+/* Sits above the sign-in gate and the drill-down modals: it only ever runs on
+   a fresh install, where none of those can be open, but if it somehow raced
+   one it should be the thing the user is looking at. */
+.tour-backdrop { z-index: 200; }
+.tour-card { max-width: 460px; }
+.tour-footer { display: flex; align-items: center; gap: 8px; }
+.tour-dots { display: flex; align-items: center; gap: 6px; }
+.tour-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border);
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+.tour-dot.is-on { background: var(--accent); transform: scale(1.35); }
+
+/* ---------- Sample-data notice ---------- */
+/* Demo rows must never be mistakable for real captures — see the note in
+   src/lib/demo-data.js on why that property matters more than the styling. */
+.demo-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  background: var(--amber-bg);
+  color: var(--amber-fg);
+  border: 1px solid var(--amber-border);
+}
+.demo-banner .demo-banner-label {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+/* ---------- Brand stance (on-device assessment) ---------- */
+/* Only shown when Gemini Nano actually assessed it. Absence means "not
+   assessed", never "neutral" — see the note at the render site. */
+.stance-tag { font-weight: 700; font-size: 9.5px; letter-spacing: 0.03em; text-transform: uppercase; }
+.stance-recommended {
+  background: var(--green-bg);
+  color: var(--green-fg);
+  border: 1px solid var(--green-border);
+}
+.stance-negative {
+  background: var(--red-bg);
+  color: var(--red-fg);
+  border: 1px solid var(--red-border);
+}
