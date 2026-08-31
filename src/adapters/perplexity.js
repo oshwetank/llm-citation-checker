@@ -286,6 +286,24 @@ function stripCitationFootnotes(text, sources) {
   return out.join("\n");
 }
 
+// The DOM harvester (content-iso.js) writes inline citation markers as
+// [[cite:https://full/url]] — NOT the bare-footnote-token shape
+// stripCitationFootnotes above handles, and never stripped anywhere before
+// this. So the raw URL sat right there in the text detectBrands() scans for
+// mentions, and a cited-domain candidate ("mobileburn.com" -> "Mobileburn")
+// trivially "found itself" inside its own citation marker every single time
+// — reported as a real brand mention (with a bogus count matching how many
+// times that domain was cited, and a "cited for X" pulled from whatever
+// prose happened to sit nearby), for review/listicle sites the SAME
+// EDITORIAL_DOMAINS exclusion in brands.js already exists to keep out.
+// Kept OUT of stripCitationFootnotes and the stored/returned answerText —
+// exportDoc.js's PPLX_CITE_RE relies on these markers surviving there to
+// render numbered footnotes at export time. This is a detection-only copy.
+const PPLX_CITE_RE = /\[\[cite:https?:\/\/[^\]\s]+\]\]/g;
+function stripCiteMarkersForDetection(text) {
+  return text ? text.replace(PPLX_CITE_RE, "") : text;
+}
+
 function extractSources(nodes) {
   const sources = [];
   const seenUrls = new Set();
@@ -395,7 +413,12 @@ export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, op
   // same tokens showing up as visible clutter inline in the rendered answer.
   const answerText = stripCitationFootnotes(extractAnswer(nodes, userPrompt), sources);
   const fanout = extractFanout(nodes);
-  const brandRes = detectBrands(answerText, answerText, { sources, tracked: options.tracked });
+  // Detection-only text: strips [[cite:URL]] markers so a cited domain can't
+  // match itself inside its own citation marker (see stripCiteMarkersForDetection
+  // above). answerText itself keeps the markers — exportDoc.js needs them intact
+  // to render numbered footnotes.
+  const textForDetection = stripCiteMarkersForDetection(answerText);
+  const brandRes = detectBrands(textForDetection, textForDetection, { sources, tracked: options.tracked });
   const brandMentions = (brandRes && brandRes.brands) || [];
   const entities = (brandRes && brandRes.entities) || [];
 

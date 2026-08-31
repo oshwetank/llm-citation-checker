@@ -377,5 +377,25 @@ console.log("\nprocessor chipsets and cited sources are not reported as smartpho
   check("priceoye is filtered out (cited source)", !found.some((n) => /priceoye/i.test(n)), found.join(", "));
 }
 
+console.log("\na month/day name is not a brand, however it heads a line");
+{
+  // Reported: "August" reached a real campaign's brand list. A listicle-style
+  // answer bolds or heads a line with a calendar word constantly ("**August
+  // 2026 Update**", "### August Deals", a table's date column) — structurally
+  // identical to a real one-word brand heading.
+  const answer = [
+    "### August Deals",
+    "",
+    "**August** is when most flagship price drops land in India.",
+    "",
+    "**Nothing** the Phone 3a leans into its transparent design this month.",
+  ].join("\n");
+  const found = names(answer, {});
+  check("\"August\" (a month name, referred back to like a real brand would be) is not reported as a brand",
+    !found.some((n) => n.toLowerCase() === "august"), found.join(", "));
+  check("a real one-word brand (Nothing) is still detected alongside it",
+    found.some((n) => /nothing/i.test(n)), found.join(", "));
+}
+
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
 process.exit(failures ? 1 : 0);

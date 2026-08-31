@@ -916,9 +916,25 @@
         // text
         if (cur.results.length) continue;                 // trailing chrome ("+7 more")
         const t = item.text;
-        if (t.length < 3 || t.length > 300) continue;      // prose or a bare glyph
+        // Reported (same real capture as the clock-prompt bug above): the
+        // fan-out list ended up with "21:51 · 1s" as its own entry, the
+        // answer's full opening paragraph (~260 chars — under the old 300
+        // cap) as another, and a markdown table header row whose cells had
+        // been joined with no space between them ("PhoneWhy it's great for
+        // photosTrade-offsTypical price..."). None of these are a real
+        // sub-query the engine ran. Tightened the length cap to something a
+        // real query (fanout.js's own benchmark: ~12-15 words, well under
+        // 160 chars) can still clear but a full sentence can't; a bare
+        // clock/duration reading (the same UI element behind the prompt bug)
+        // is rejected outright; two or more missing-space word joins in one
+        // string is the concatenation artifact's own signature — a real
+        // query with one camelCase brand name in it (OnePlus, PhonePe)
+        // never produces more than one such transition.
+        if (t.length < 3 || t.length > 160) continue;      // prose or a bare glyph
         if (/^\+\d+\s*more$/i.test(t)) continue;
         if (/^(finished|sources?|steps?|searched)$/i.test(t)) continue;
+        if (/^\d{1,2}:\d{2}(\s*[·•]\s*\d+\s*s)?$/i.test(t)) continue;
+        if ((t.match(/[a-z][A-Z]/g) || []).length >= 2) continue;
         if (t === cur.name) continue;
         if (!cur.subQueries.includes(t)) cur.subQueries.push(t);
       }
@@ -1043,12 +1059,27 @@
           answerText = chosen.map((p) => domToMarkdown(p)).filter(Boolean).join("\n\n").trim();
         }
 
+        // Reported: the prompt was captured as "21:51" — a bare clock time.
+        // Perplexity's answer-page presentation (its fullscreen/immersive
+        // reader view, distinct from the normal threaded chat this harvester
+        // is built against) apparently shows a timestamp somewhere near
+        // where these selectors look for the query, and every fallback below
+        // (user bubble, tab title, h1) can end up reading it. Scrubbed out
+        // HERE, unconditionally, before the fallback chain even runs — a
+        // clock time must never be the "last resort, better than nothing"
+        // answer either, unlike an answer heading (below), which is at least
+        // real text the model wrote.
+        const looksLikeClock = (s) => /^\d{1,2}:\d{2}(\s*[·•]\s*\d+\s*s)?$/i.test(String(s || "").trim());
+        if (looksLikeClock(promptText)) promptText = "";
+
         // Prompt fallbacks, in order of how much they can be trusted. This
         // runs AFTER answerText is known so the heading guard below can
         // actually check against it.
-        const titleFromDoc = document.title
+        let titleFromDoc = document.title
           ? document.title.replace(/\s*-\s*Perplexity.*$/i, "").replace(/^Perplexity\s*-\s*/i, "").trim()
           : "";
+        if (looksLikeClock(titleFromDoc)) titleFromDoc = "";
+        if (looksLikeClock(generatedTitle)) generatedTitle = "";
         // A candidate that appears verbatim as its own LINE inside the answer
         // is a section heading the model wrote, not something the user typed.
         // This is the check that would have caught all four bad real captures.

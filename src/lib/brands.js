@@ -300,7 +300,12 @@ const EDITORIAL_DOMAINS = new Set([
   "timesofindia.com", "indianexpress.com", "livemint.com", "moneycontrol.com",
   "reddit.com", "quora.com", "medium.com", "wikipedia.org", "x.com", "twitter.com",
   "facebook.com", "instagram.com", "linkedin.com", "pinterest.com", "tiktok.com",
-  "cashkr.com", "reviehub.in", "priceoye.pk", "godigit.com", "godigit.in", "winnerwinnerchickendinner.com"
+  "cashkr.com", "reviehub.in", "priceoye.pk", "godigit.com", "godigit.in", "winnerwinnerchickendinner.com",
+  // "Best phone under X" listicle/comparison sites, reached via Perplexity's
+  // [[cite:URL]] inline markers (see perplexity.js's stripCiteMarkersForDetection
+  // for the deeper structural fix — that bug alone was enough to make ANY
+  // cited domain self-match, so this list is defense-in-depth, not the fix).
+  "mobileburn.com", "bhalophone.com", "goalmoneytrack.com",
 ]);
 
 function isMarketplaceDomain(domain) {
@@ -480,6 +485,15 @@ const GENERIC_SPEC_NOUNS = new Set([
   "pros", "cons", "comparison", "availability", "usb", "wifi", "bluetooth",
   "gps", "sim", "esim", "resolution", "refresh", "biometrics", "durability",
   "common", "faq", "faqs", "troubleshooting", "notes", "disclaimer", "sources",
+  // Reported: "August" reached a brand list. A month/day name is bolded or
+  // heads a line constantly in a listicle-style answer ("**August 2026
+  // Update**", "### August Deals", a table's date column), which is exactly
+  // the shape a real one-word brand heading has. Same fix as the spec-noun
+  // set above — a calendar word is never a brand on its own.
+  "january", "february", "march", "april", "may", "june", "july", "august",
+  "september", "october", "november", "december",
+  "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+  "today", "yesterday", "tomorrow", "update", "updates", "updated",
 ]);
 export function looksLikeProperName(phrase) {
   const words = String(phrase || "").trim().split(/\s+/);
