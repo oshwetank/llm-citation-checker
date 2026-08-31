@@ -830,8 +830,18 @@
    * citations. Retrieved-vs-cited is exactly the distinction this tool
    * exists to measure.
    */
-  const harvestPerplexitySteps = (doc) => {
+  // `answerText` (optional) is the ANSWER cross-check: reported live, a
+  // markdown table's own header row and a table cell reached the fan-out
+  // list ("PhoneWhy it's great for photosTrade-offsTypical price...",
+  // "OnePlus 12 (16GB+512GB)", "~69,998") the same run the clock-prompt bug
+  // came from — content that lives in the rendered ANSWER, not anything the
+  // engine searched FOR. A real sub-query is essentially never an exact
+  // verbatim substring of the answer's own prose; answer content routinely
+  // is. Optional and defaulted so the existing tests that call this with
+  // just `doc` (no answer to cross-check against) keep working unchanged.
+  const harvestPerplexitySteps = (doc, answerText = "") => {
     const norm = (t) => String(t || "").replace(/\s+/g, " ").trim();
+    const normAnswer = norm(answerText).toLowerCase();
     const steps = [];
     try {
       const buttons = Array.from(doc.querySelectorAll("button[aria-expanded]") || []);
@@ -915,21 +925,36 @@
         }
         // text
         if (cur.results.length) continue;                 // trailing chrome ("+7 more")
-        const t = item.text;
         // Reported (same real capture as the clock-prompt bug above): the
         // fan-out list ended up with "21:51 · 1s" as its own entry, the
         // answer's full opening paragraph (~260 chars — under the old 300
         // cap) as another, and a markdown table header row whose cells had
         // been joined with no space between them ("PhoneWhy it's great for
         // photosTrade-offsTypical price..."). None of these are a real
-        // sub-query the engine ran. Tightened the length cap to something a
-        // real query (fanout.js's own benchmark: ~12-15 words, well under
-        // 160 chars) can still clear but a full sentence can't; a bare
-        // clock/duration reading (the same UI element behind the prompt bug)
-        // is rejected outright; two or more missing-space word joins in one
-        // string is the concatenation artifact's own signature — a real
-        // query with one camelCase brand name in it (OnePlus, PhonePe)
-        // never produces more than one such transition.
+        // sub-query the engine ran.
+        //
+        // A follow-up real capture showed the SAME clock element can glue
+        // onto the END of an otherwise-real row with no separator at all —
+        // "best camera phone under 8000023:47" is "80000" + "23:47" with
+        // nothing between them. Rejecting the whole row (what the bare-clock
+        // check below does) would have thrown away a perfectly good query;
+        // stripped instead, salvaging the real text before it.
+        let t = item.text.replace(/(\d{1,2}:\d{2}(\s*[·•]\s*\d+\s*s)?)$/i, "").trim();
+        // Same capture: the fan-out list also picked up the answer's own
+        // heading ("Top camera phones under ₹80,000...") and several table
+        // cells verbatim (a product name, a price, a spec list) — content
+        // that lives in the rendered ANSWER, not anything searched for. A
+        // real sub-query is essentially never an exact verbatim substring
+        // of the answer's own prose; answer content routinely is.
+        if (normAnswer && t.length >= 6 && normAnswer.includes(t.toLowerCase())) continue;
+        // Tightened the length cap to something a real query (fanout.js's
+        // own benchmark: ~12-15 words, well under 160 chars) can still
+        // clear but a full sentence can't; a bare clock/duration reading
+        // (the same UI element behind the prompt bug) is rejected outright;
+        // two or more missing-space word joins in one string is the
+        // concatenation artifact's own signature — a real query with one
+        // camelCase brand name in it (OnePlus, PhonePe) never produces more
+        // than one such transition.
         if (t.length < 3 || t.length > 160) continue;      // prose or a bare glyph
         if (/^\+\d+\s*more$/i.test(t)) continue;
         if (/^(finished|sources?|steps?|searched)$/i.test(t)) continue;
@@ -1291,7 +1316,7 @@
         // Sources). Additive: when the steps panel isn't present or the
         // selectors miss, this stays empty and fan-out reports 0 exactly as
         // it does today — it never degrades an otherwise good capture.
-        queryPlan = harvestPerplexitySteps(document);
+        queryPlan = harvestPerplexitySteps(document, answerText);
 
         // Every source a STEP retrieved is a real source, whether or not the
         // answer went on to cite it. On the captured answer the steps list

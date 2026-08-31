@@ -110,11 +110,13 @@ jobs:
                    test/behaviour.test.mjs test/brands.test.mjs test/campaign-workbook.test.mjs \
                    test/concurrency.test.mjs test/dom-harvest-multiturn.test.mjs test/errorlog.test.mjs \
                    test/fanout.test.mjs test/gemini-answer.test.mjs test/geo.test.mjs \
+                   test/grok-render-citation-tags.test.mjs \
                    test/interception-endpoints.test.mjs test/dom-harvest.test.mjs test/nano-stance.test.mjs \
                    test/onboarding.test.mjs \
                    test/perplexity-citation-footnote-brands.test.mjs test/perplexity-citation-marking.test.mjs \
                    test/perplexity-cite-marker-brands.test.mjs test/perplexity-clock-contamination.test.mjs \
                    test/perplexity-export.test.mjs test/perplexity-fanout.test.mjs \
+                   test/perplexity-fanout-answer-leak.test.mjs \
                    test/perplexity-markdown-harvest.test.mjs test/perplexity-real-dom.test.mjs \
                    test/perplexity-steps.test.mjs test/perplexity-ws-contamination.test.mjs \
                    test/glossary.test.mjs test/grounding-score.test.mjs test/multi-engine.test.mjs \

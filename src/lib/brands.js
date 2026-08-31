@@ -494,6 +494,10 @@ const GENERIC_SPEC_NOUNS = new Set([
   "september", "october", "november", "december",
   "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
   "today", "yesterday", "tomorrow", "update", "updates", "updated",
+  // Reported alongside the Grok citation-marker fix: "Setup" (from
+  // "**Setup**: 200MP main...", the same spec-sheet-row-label shape as
+  // Battery/Charging above) reached a real answer's brand list.
+  "setup", "hardware",
 ]);
 export function looksLikeProperName(phrase) {
   const words = String(phrase || "").trim().split(/\s+/);
