@@ -1276,6 +1276,15 @@ function renderAnalyze() {
   // the SAME scrolling context; in the popup, .app-header is a non-scrolling
   // flex sibling of .app-content rather than part of its scrollport, so
   // top:0 there is already correct without an offset — see the CSS.
+  // Sample data must announce itself wherever it's shown. A user who forgot
+  // they loaded it should never mistake these numbers for their own — see the
+  // note in src/lib/demo-data.js.
+  if (rec.isDemo || String(rec.captureId || "").startsWith("demo-")) {
+    root.append(el("div", { className: "demo-banner" },
+      el("span", { className: "demo-banner-label" }, "Sample"),
+      el("span", {}, "This is example data showing what a captured answer looks like — not a real capture. Remove it any time from the About tab.")));
+  }
+
   {
     const promptBar = el("div", { className: "analyze-context-bar" });
 
@@ -1578,6 +1587,18 @@ function renderAnalyze() {
           shown.forEach((asp, i) => chips.append(
             el("span", { className: `tag aspect-tag${i === 0 && category ? " highlight-aspect" : ""}` }, asp)));
         }
+      }
+      // Stance, when the on-device model assessed it. Only "recommended" and
+      // "negative" are shown: a plain mention is the default reading already,
+      // and `stance: null` means NOT ASSESSED (no Gemini Nano on this device)
+      // — rendering that as "neutral" would report a verdict nobody made.
+      if (b.stance === "recommended" || b.stance === "negative") {
+        chips.append(el("span", {
+          className: `tag stance-tag stance-${b.stance}`,
+          title: b.stance === "recommended"
+            ? "This answer puts the brand forward as a good choice"
+            : "This answer advises against the brand or calls it out as a poor choice",
+        }, b.stance === "recommended" ? "Recommended" : "Advised against"));
       }
       if (chips.childNodes.length) item.append(chips);
       list.append(item);
@@ -6774,7 +6795,7 @@ loadSettings();
 // empty. That reads as "the tool is broken" with zero information to act
 // on. This is the last-resort net for whatever isn't already handled
 // upstream, so at least the failure is visible and includes the real error.
-load().catch((err) => { // also fills the Compare pickers, after projects are known
+load().then(maybeFirstRun).catch((err) => { // also fills the Compare pickers, after projects are known
   console.error("panel load() failed:", err);
   const root = $("#analyze");
   if (root) {
@@ -6788,3 +6809,177 @@ load().catch((err) => { // also fills the Compare pickers, after projects are kn
     );
   }
 });
+
+/* ==========================================================================
+ * First-run tour + sample data
+ *
+ * On a fresh install every screen renders as zeros, so there is no way to
+ * tell what the tool measures or whether it's even working. Asking someone to
+ * go run a campaign first — on an engine they may not be signed into — just
+ * to find out what the screens do is a poor first five minutes.
+ *
+ * Two halves, deliberately separable:
+ *   - SAMPLE DATA: one realistic capture (src/lib/demo-data.js) so the panels
+ *     have something to render. Clearly labelled, removable in one click, and
+ *     never mistakable for a real capture.
+ *   - THE TOUR: a short walkthrough of what each tab answers. Steps that
+ *     point at a tab actually switch to it, so the user sees the real screen
+ *     rather than a description of it.
+ *
+ * Shown once. The flag lives in localStorage rather than extension storage
+ * because it is per-view chrome, not user data, and losing it costs one
+ * dismissible dialog rather than anything real. Re-runnable from About.
+ * ========================================================================== */
+const TOUR_SEEN_KEY = "cito-tour-seen";
+
+const TOUR_STEPS = [
+  {
+    tab: null,
+    title: "Welcome to CitoSkeleton",
+    body: "This tracks how AI answer engines talk about brands — which ones they name, which sources they cite, and what they searched to get there. Everything stays on your machine.",
+  },
+  {
+    tab: "analyze",
+    title: "Analyze — one answer, in full",
+    body: "The full captured answer, plus the brands it named and the sources behind them. 'Sources cited' vs 'retrieved' is the key number: a source the engine read but never quoted is a very different signal from one it built its answer on.",
+  },
+  {
+    tab: "dashboard",
+    title: "Dashboard — everything you've captured",
+    body: "Every saved conversation, with share of voice across brands and the domains that keep getting cited. This is where patterns show up that a single answer can't tell you.",
+  },
+  {
+    tab: "loader",
+    title: "Campaigns — run prompts on a schedule",
+    body: "Give it a list of prompts and the engines to run them on, and it drives your own logged-in sessions at a human pace. It now checks you're signed in before opening anything, so a run can't quietly fail into a login page.",
+  },
+  {
+    tab: "compare",
+    title: "Compare — engines side by side",
+    body: "The same prompt across ChatGPT, Gemini, Perplexity and Grok. Each engine retrieves and cites differently, and that difference is usually the actionable part.",
+  },
+  {
+    tab: "about",
+    title: "You're set",
+    body: "Sample data is loaded so these screens have something to show. Remove it whenever you like from this tab — your real captures aren't touched. You can replay this tour from here too.",
+  },
+];
+
+function runTour(startAt = 0) {
+  document.getElementById("tour-backdrop")?.remove();
+  let i = startAt;
+
+  const backdrop = el("div", { id: "tour-backdrop", className: "modal-backdrop tour-backdrop" });
+  const card = el("div", { className: "modal-content tour-card", tabindex: "-1" });
+  backdrop.append(card);
+  document.body.append(backdrop);
+
+  const finish = () => {
+    try { localStorage.setItem(TOUR_SEEN_KEY, "1"); } catch (_) {}
+    backdrop.remove();
+    document.removeEventListener("keydown", onKey, true);
+  };
+  const onKey = (e) => {
+    if (e.key === "Escape") { e.preventDefault(); finish(); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); go(i + 1); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); go(i - 1); }
+  };
+  document.addEventListener("keydown", onKey, true);
+
+  function go(next) {
+    if (next < 0) return;
+    if (next >= TOUR_STEPS.length) return finish();
+    i = next;
+    const step = TOUR_STEPS[i];
+    // Switch to the tab the step is about, so the user is looking at the real
+    // screen while reading about it rather than at a description of one.
+    if (step.tab) { try { showTab(step.tab); } catch (_) {} }
+    render();
+  }
+
+  function render() {
+    const step = TOUR_STEPS[i];
+    card.textContent = "";
+
+    const dots = el("div", { className: "tour-dots" });
+    TOUR_STEPS.forEach((_, n) => dots.append(el("span", { className: "tour-dot" + (n === i ? " is-on" : "") })));
+
+    const header = el("div", { className: "modal-header" },
+      el("h3", { className: "modal-title" }, step.title),
+      el("button", { className: "modal-close-btn", title: "Skip tour" }, "×"));
+    header.querySelector(".modal-close-btn").onclick = finish;
+
+    const body = el("div", { className: "modal-body" },
+      el("p", {}, step.body),
+      el("p", { className: "muted small" }, `Step ${i + 1} of ${TOUR_STEPS.length}`));
+
+    const footer = el("div", { className: "modal-footer tour-footer" });
+    footer.append(dots);
+    const spacer = el("span", { style: "flex:1" });
+    footer.append(spacer);
+    if (i > 0) {
+      const back = el("button", { className: "btn ghost" }, "Back");
+      back.onclick = () => go(i - 1);
+      footer.append(back);
+    }
+    const next = el("button", { className: "btn primary" }, i === TOUR_STEPS.length - 1 ? "Done" : "Next");
+    next.onclick = () => go(i + 1);
+    footer.append(next);
+
+    card.append(header, body, footer);
+    next.focus();
+  }
+
+  render();
+}
+
+// First run: load the sample capture, then walk through what the screens mean.
+// Sample data is loaded FIRST so the tabs the tour switches to have something
+// on them — a tour of five empty screens explains nothing.
+async function maybeFirstRun() {
+  let seen = false;
+  try { seen = localStorage.getItem(TOUR_SEEN_KEY) === "1"; } catch (_) { seen = true; }
+  if (seen) return;
+  try {
+    const status = await send({ type: "demo-status" });
+    // Someone with real captures already knows what this is; don't push
+    // sample rows into a store that has genuine data in it.
+    if (status && status.ok && !status.present && status.real === 0) {
+      await send({ type: "demo-load" });
+      await load();
+    }
+  } catch (_) {
+    // Sample data is a nicety — never block the tour, or the panel, on it.
+  }
+  runTour(0);
+}
+
+/* About-tab controls for the sample data and the tour. */
+async function refreshDemoControls() {
+  const btn = $("#demoToggle");
+  const status = $("#demoStatus");
+  if (!btn) return;
+  let st = null;
+  try { st = await send({ type: "demo-status" }); } catch (_) {}
+  const present = !!(st && st.ok && st.present);
+  btn.textContent = present ? "Remove sample" : "Load sample";
+  if (status) {
+    status.textContent = present
+      ? `Sample data is loaded. You have ${st.real} real capture${st.real === 1 ? "" : "s"}.`
+      : "";
+  }
+}
+
+$("#demoToggle")?.addEventListener("click", withBusy($("#demoToggle"), "Working…", async () => {
+  let st = null;
+  try { st = await send({ type: "demo-status" }); } catch (_) {}
+  const present = !!(st && st.ok && st.present);
+  await send({ type: present ? "demo-clear" : "demo-load" });
+  FULL.clear();
+  await load();
+  await refreshDemoControls();
+}));
+
+$("#replayTour")?.addEventListener("click", () => runTour(0));
+
+refreshDemoControls();

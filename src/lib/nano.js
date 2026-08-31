@@ -143,3 +143,92 @@ export async function extractEntitiesWithNano(text, query) {
     try { session?.destroy?.(); } catch (_) {}
   }
 }
+
+/*
+ * Brand STANCE — is the answer recommending this brand, merely mentioning it,
+ * or steering the reader away from it?
+ *
+ * A share-of-voice number treats every mention identically, so "the Rockerz
+ * 512 is the best pick" and "avoid the Rockerz 512, it overheats" score the
+ * same today. For a tool whose job is telling someone how AI engines talk
+ * about their brand, those are close to opposite findings — and the
+ * distinction is genuinely hard to get from keywords, because the sentiment
+ * usually lives in a clause some distance from the brand name.
+ *
+ * That makes it a good fit for the on-device model specifically: it needs
+ * real language understanding, it is per-capture rather than per-keystroke,
+ * and it is entirely optional — every device without Gemini Nano simply gets
+ * `stance: null`, which the UI renders as "not assessed" rather than
+ * guessing. Nothing here ever invents a verdict.
+ */
+const STANCE_SCHEMA = {
+  type: "object",
+  properties: {
+    stances: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          brand: { type: "string" },
+          stance: { type: "string", enum: ["recommended", "mentioned", "negative"] },
+        },
+        required: ["brand", "stance"],
+      },
+    },
+  },
+  required: ["stances"],
+};
+
+const STANCE_SYSTEM_PROMPT =
+  "You judge how a piece of text treats each brand it names. For every brand you are given, answer with " +
+  'exactly one of: "recommended" if the text puts it forward as a good choice; "negative" if the text ' +
+  'advises against it or highlights it as a poor choice; "mentioned" if it is simply named, compared, or ' +
+  "described without a clear positive or negative recommendation. Judge only what the text actually says " +
+  "— do not use outside knowledge about the brand, and do not guess. When in doubt, answer \"mentioned\".";
+
+// Returns a Map of lowercased brand -> stance, or null when unavailable or on
+// any failure. Callers must treat null as "not assessed", never as neutral.
+export async function classifyBrandStanceWithNano(text, brands, query) {
+  if (!text || !text.trim()) return null;
+  const names = (brands || [])
+    .map((b) => (typeof b === "string" ? b : b && b.brand))
+    .filter((n) => typeof n === "string" && n.trim());
+  if (!names.length) return null;
+
+  const lm = resolveLanguageModel();
+  if (!lm) return null;
+
+  let session;
+  try {
+    session = await withTimeout(
+      lm.create({ initialPrompts: [{ role: "system", content: STANCE_SYSTEM_PROMPT }] }),
+      NANO_TIMEOUT_MS
+    );
+    const clipped = text.length > 6000 ? text.slice(0, 6000) : text;
+    const q = String(query || "").trim();
+    const raw = await withTimeout(
+      session.prompt(
+        (q ? `The user asked: "${q}"\n\n` : "") +
+          `Brands to judge: ${names.join(", ")}\n\nText:\n\n${clipped}`,
+        { responseConstraint: STANCE_SCHEMA }
+      ),
+      NANO_TIMEOUT_MS
+    );
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.stances)) return null;
+    const allowed = new Set(["recommended", "mentioned", "negative"]);
+    const out = new Map();
+    for (const s of parsed.stances) {
+      if (!s || typeof s.brand !== "string" || !allowed.has(s.stance)) continue;
+      // Only accept verdicts for brands we actually asked about — the model
+      // must not be able to introduce a brand through this path.
+      const key = s.brand.trim().toLowerCase();
+      if (names.some((n) => n.toLowerCase() === key)) out.set(key, s.stance);
+    }
+    return out.size ? out : null;
+  } catch (_) {
+    return null;
+  } finally {
+    try { session?.destroy?.(); } catch (_) {}
+  }
+}

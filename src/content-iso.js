@@ -958,6 +958,21 @@
       const plat = getPlatform();
       if (plat !== "perplexity" && plat !== "grok" && plat !== "claude") return;
 
+      // x.com maps to "grok", so without this the harvester treated the ENTIRE
+      // site as a Grok conversation — running a full document querySelectorAll
+      // sweep on the timeline, profiles and DMs, driven by a MutationObserver
+      // on a feed that never stops mutating. Grok on X lives only under
+      // /i/grok, so everywhere else there is nothing to harvest and the work
+      // was pure overhead on one of the busiest pages a user might have open.
+      //
+      // Checked HERE rather than by narrowing the manifest match pattern,
+      // because X is a single-page app: content scripts are injected from the
+      // INITIAL url, so a narrower pattern would fail to inject at all when
+      // the user navigates to Grok from within X, silently breaking capture.
+      // Re-checking per harvest is correct for client-side routing and costs
+      // one string comparison.
+      if (/(^|\.)x\.com$/i.test(location.hostname) && !/^\/i\/grok/i.test(location.pathname)) return;
+
       let promptText = "";
       let answerText = "";
       // Declared HERE, not inside the perplexity branch. It is read further

@@ -27,7 +27,7 @@
             </div>
             <div class="brand-text">
               <span class="brand-title">CitoSkeleton</span>
-              <span class="version-badge">v0.31.0</span>
+              <span class="version-badge">v0.32.0</span>
               <span class="brand-sub">ChatGPT, Gemini, Perplexity &amp; Grok</span>
             </div>
           </div>
@@ -98,10 +98,17 @@
                      title="Type any words — prompts containing every word stay in the list below, in any order" />
               <select id="cmpPrompt" class="filter cmp-prompt-select"><option value="">Choose a prompt…</option></select>
               <select id="cmpProject" class="filter"><option value="">All projects</option></select>
+              <!-- All FIVE engines, not just the two this tool launched with.
+                   Perplexity and Grok captures were being filtered against a
+                   list that didn't contain them, so "All models" was the only
+                   option that could ever show them. -->
               <select id="cmpModel" class="filter">
-                <option value="">All models</option>
+                <option value="">All engines</option>
                 <option value="chatgpt">ChatGPT</option>
                 <option value="gemini">Gemini</option>
+                <option value="perplexity">Perplexity</option>
+                <option value="grok">Grok</option>
+                <option value="claude">Claude</option>
               </select>
             </div>
             <div id="cmpHint" class="muted small" style="margin-top:8px"></div>
@@ -126,7 +133,7 @@
           <div class="card about-hero">
             <div class="about-hero-icon"><img src="../icons/icon128.png" width="40" height="40" alt="" /></div>
             <div class="about-hero-main">
-              <h2 class="about-title">CitoSkeleton <span class="version-badge">v0.31.0</span></h2>
+              <h2 class="about-title">CitoSkeleton <span class="version-badge">v0.32.0</span></h2>
               <p class="about-tagline">
                 See what ChatGPT and Gemini actually read before they answer — the
                 searches they run, the pages they fetch, the sources they cite, and
@@ -242,6 +249,21 @@
                 <div class="muted small">Re-runs the current extraction logic over everything already captured. Use this after an extension update to pick up adapter fixes — brand detection, citation links and so on — on old data.</div>
               </div>
               <button id="reprocess" class="btn sm ghost">↻ Reprocess</button>
+            </div>
+            <!-- Sample data + tour. Placed with Reprocess because both are
+                 "housekeeping on what's stored" rather than settings. The
+                 remove button is scoped to demo rows only, so a user with
+                 real captures can clear the samples without risk. -->
+            <div class="setting-row">
+              <div>
+                <b>Sample data &amp; tour</b>
+                <div class="muted small">Loads one example capture so every screen has something to show. It's clearly labelled and never mixed into your real numbers — removing it leaves your own captures untouched.</div>
+                <div id="demoStatus" class="muted small"></div>
+              </div>
+              <div style="display:flex; gap:6px; flex-shrink:0;">
+                <button id="replayTour" class="btn sm ghost">▶ Replay tour</button>
+                <button id="demoToggle" class="btn sm ghost">Load sample</button>
+              </div>
             </div>
             <!-- Error log, above the capture debugger deliberately: this is the
                  one a user needs when something has gone wrong, and unlike the

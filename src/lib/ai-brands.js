@@ -37,7 +37,7 @@
  *   C. brands.js alone. Always computed first, always the fallback.
  */
 import { detectBrands, escapeRegExp } from "./brands.js";
-import { isNanoAvailable, extractEntitiesWithNano } from "./nano.js";
+import { isNanoAvailable, extractEntitiesWithNano, classifyBrandStanceWithNano } from "./nano.js";
 
 // Tier B hook. Nothing currently registers one (see the file header) — kept
 // as tested plumbing for a future small on-device model, not active work in
@@ -179,4 +179,37 @@ export async function detectBrandsAI(answerText, plainText, ctx = {}) {
   }
 
   return base;
+}
+
+/*
+ * Attach a per-brand stance (recommended / mentioned / negative) using the
+ * on-device model. Separate from enrichBrandsWithAI() on purpose: that one
+ * decides WHICH brands exist, this one only annotates brands already found,
+ * so a failure here can never change the brand list itself.
+ *
+ * Returns a NEW array when anything was annotated, or null when the model is
+ * unavailable or produced nothing usable. `stance: null` on a brand means
+ * "not assessed" — it is never downgraded to a neutral verdict, because
+ * "we didn't look" and "we looked and it was neutral" are different claims
+ * and only one of them is true on a device without Gemini Nano.
+ */
+export async function enrichBrandStance(brands, plainText, query) {
+  const list = brands || [];
+  const text = plainText || "";
+  if (!list.length || !text.trim()) return null;
+  try {
+    if (!(await isNanoAvailable())) return null;
+    const stances = await classifyBrandStanceWithNano(text, list, query);
+    if (!stances || !stances.size) return null;
+    let changed = false;
+    const out = list.map((b) => {
+      const verdict = stances.get(String(b.brand || "").toLowerCase());
+      if (!verdict) return b;
+      changed = true;
+      return { ...b, stance: verdict };
+    });
+    return changed ? out : null;
+  } catch (_) {
+    return null;
+  }
 }

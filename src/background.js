@@ -20,10 +20,11 @@ import {
 } from "./lib/pacing.js";
 import { createErrorLog } from "./lib/errorlog.js";
 import { checkEnginesAuth, AUTH_COOKIES } from "./lib/auth-check.js";
+import { buildDemoRecords, isDemoRecord } from "./lib/demo-data.js";
 import { buildCampaignWorkbook } from "./lib/campaignWorkbook.js";
 import { gzipString, gunzipToString } from "./lib/gzip.js";
 import { adapt as adaptChatGpt, cleanPassage } from "./adapters/chatgpt.js";
-import { enrichBrandsWithAI } from "./lib/ai-brands.js";
+import { enrichBrandsWithAI, enrichBrandStance } from "./lib/ai-brands.js";
 import { adapt as adaptGemini } from "./adapters/gemini.js";
 import { adapt as adaptPerplexity } from "./adapters/perplexity.js";
 import { adapt as adaptGrok } from "./adapters/grok.js";
@@ -215,14 +216,22 @@ async function enrichCaptureWithAI(record) {
     const plain = record.platform === "chatgpt"
       ? cleanPassage(record.answerText)
       : record.answerText;
+    // Two independent on-device passes. The first decides WHICH brands are
+    // present; the second annotates how the answer treats each one. Either
+    // can come back null (no model, or nothing useful) without affecting the
+    // other, and the record is only rewritten if at least one produced
+    // something — so a device without Gemini Nano ends up byte-identical to
+    // one that never ran this at all.
     const improved = await enrichBrandsWithAI(record.brandMentions || [], plain, record.userPrompt);
-    if (!improved) return;
+    const withStance = await enrichBrandStance(improved || record.brandMentions || [], plain, record.userPrompt);
+    const finalBrands = withStance || improved;
+    if (!finalBrands) return;
 
     // Re-read rather than reusing the in-memory copy: a reprocess or a delete
     // may have landed while the model was thinking.
     const current = await db.get("derived", record.captureId);
     if (!current) return;
-    current.brandMentions = improved;
+    current.brandMentions = finalBrands;
     await db.put("derived", current);
     try {
       chrome.runtime.sendMessage(
@@ -2211,6 +2220,31 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "reprocess-all":
           sendResponse({ ok: true, ...(await reprocessAll()) });
           break;
+        // Sample data so a new install isn't a wall of zeros. Written ONLY to
+        // "derived" — there is no raw payload behind it, and inventing one
+        // would make "Reprocess all captures" re-derive a fabricated capture
+        // as though it were real.
+        case "demo-load": {
+          const recs = buildDemoRecords();
+          for (const r of recs) await db.put("derived", r);
+          sendResponse({ ok: true, added: recs.length });
+          break;
+        }
+        // Removes exactly the demo rows and nothing else, so a user who has
+        // since captured real answers can clear the samples without touching
+        // their own data.
+        case "demo-clear": {
+          const all = await db.getAll("derived");
+          const demo = all.filter(isDemoRecord);
+          for (const r of demo) await db.delete("derived", r.captureId);
+          sendResponse({ ok: true, removed: demo.length });
+          break;
+        }
+        case "demo-status": {
+          const all = await db.getAll("derived");
+          sendResponse({ ok: true, present: all.some(isDemoRecord), real: all.filter((r) => !isDemoRecord(r)).length });
+          break;
+        }
         case "delete-record":
           await db.delete("raw", msg.captureId);
           await db.delete("derived", msg.captureId);
