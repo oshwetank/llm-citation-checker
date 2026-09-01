@@ -163,6 +163,30 @@ try {
     }
   }
 
+  console.log("\nanalyze-feedback: the configured address is offered AND shown");
+  {
+    // FEEDBACK_TO is a build-time constant. When a release sets it, the
+    // dialog must both offer the draft and print the address in plain text —
+    // mailto: does nothing on a machine with no mail client registered, and
+    // the reporter still has to know where to send the file.
+    const addr = await page.evaluate(() => {
+      const back = document.getElementById("feedback-modal-backdrop");
+      const footer = back?.querySelector(".modal-footer");
+      return {
+        footerText: footer?.textContent || "",
+        buttons: [...(footer?.querySelectorAll("button") || [])].map((b) => b.textContent.trim()),
+      };
+    });
+    const configured = /@/.test(addr.footerText);
+    check("a release with an address configured shows it in the dialog", configured, addr.footerText);
+    if (configured) {
+      check("the address is a plausible contact address",
+        /[\w.+-]+@[\w-]+\.[\w.-]+/.test(addr.footerText), addr.footerText);
+      check("and an email-draft action is offered alongside save",
+        addr.buttons.some((b) => /email|draft/i.test(b)), addr.buttons.join(" | "));
+    }
+  }
+
   console.log("\nanalyze-feedback: saving produces a real file");
   {
     await page.evaluate(() => {

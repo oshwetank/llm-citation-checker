@@ -5818,7 +5818,7 @@ async function buildDiagnosticReport() {
  * with the copy you hand out — a per-user setting would only ever hold the
  * address on YOUR machine.
  */
-const FEEDBACK_TO = "";
+const FEEDBACK_TO = "contact@oshwetank.com";
 
 async function openFeedbackModal(rec) {
   const existing = document.getElementById("feedback-modal-backdrop");
@@ -5873,7 +5873,9 @@ async function openFeedbackModal(rec) {
     ? el("button", { className: "btn sm ghost" }, "✉️ Open email draft")
     : null;
   const hint = el("span", { className: "muted small", style: "margin-left:8px;" },
-    FEEDBACK_TO ? `Attach the saved file to the draft.` : "Then email the saved file to the developer.");
+    FEEDBACK_TO
+      ? `Attach the saved file, and send it to ${FEEDBACK_TO}.`
+      : "Then email the saved file to the developer.");
 
   // Built once, on demand, and reused by both buttons so the summary in the
   // mail draft always describes the file that was actually saved.
