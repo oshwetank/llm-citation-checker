@@ -378,11 +378,15 @@ export async function adapt(rawCapture, opts = {}) {
   if (!pathAnswer && heuristicAnswer) {
     diag.notes.push("answer: stable slot missing, fell back to a shape scan (payload may have drifted)");
   }
+  const userPrompt = extractPrompt(rawCapture.reqBody);
   const brandMentions = await extractBrandMentions(answer, {
     products,
     places,
     sources,
     tracked: opts.tracked,
+    // See "5. prompt context" in lib/brands.js: the question's own category
+    // words are never brands, however the answer formats them.
+    prompt: userPrompt,
   });
 
   // Categorized entities: products → Product, merchants → Retailer, places → Place,
@@ -403,7 +407,7 @@ export async function adapt(rawCapture, opts = {}) {
     capturedAt: rawCapture.capturedAt,
     pageUrl: rawCapture.pageUrl,
     rawRef: rawCapture.captureId,
-    userPrompt: extractPrompt(rawCapture.reqBody),
+    userPrompt,
     searched: sources.length > 0 || products.length > 0 || places.length > 0 || fanout.search.length > 0,
     turnUseCase: responseType,
     fanout,

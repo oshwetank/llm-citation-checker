@@ -196,6 +196,15 @@ const cleanHeaderCell = (s) => String(s || "").replace(/[*_`]/g, "").trim();
 // a table boundary, so it couldn't tell a genuine table apart from any two
 // unrelated lines that each happened to contain a pipe character.
 export function parseMarkdownTables(text) {
+  return parseTableCells(text).map((c) => c.text);
+}
+
+// The same walk, keeping WHY each cell was chosen. A cell from a column the
+// table's own header named ("Phone", "Product") is the subject by
+// construction; a cell picked by POSITION is only a guess, and on a
+// use-case-led table that guess lands on a descriptor ("Optical Zoom").
+// detectBrands holds the two to different standards — see namedInProse.
+function parseTableCells(text) {
   const out = [];
   if (!text) return out;
   const lines = String(text).split("\n");
@@ -205,7 +214,27 @@ export function parseMarkdownTables(text) {
       if (headerCells.length >= 2) {
         const sepCells = splitTableRow(lines[i + 1]);
         if (sepCells.length === headerCells.length && sepCells.every((c) => SEPARATOR_CELL.test(c))) {
-          const nameColIdx = headerCells.findIndex((h) => NAME_HEADER_RE.test(cleanHeaderCell(h)));
+          // Which column holds the names? The header is the best answer when
+          // it says so. Failing that, ask the ANSWER: the column whose cells
+          // the prose goes on to write as names is the subject column, and a
+          // use-case or spec column never is. Only when neither the header nor
+          // the prose settles it does position decide, exactly as before.
+          const rows = [];
+          for (let k = i + 2; k < lines.length && lines[k].trim() && lines[k].includes("|"); k++) {
+            rows.push(splitTableRow(lines[k]));
+          }
+          let nameColIdx = headerCells.findIndex((h) => NAME_HEADER_RE.test(cleanHeaderCell(h)));
+          if (nameColIdx === -1) {
+            let bestScore = 0;
+            for (let c = 0; c < headerCells.length; c++) {
+              let score = 0;
+              for (const cells of rows) {
+                const cell = cleanHeaderCell(cells[c] || "");
+                if (cell && namedInProse(text, cell)) score++;
+              }
+              if (score > bestScore) { bestScore = score; nameColIdx = c; }
+            }
+          }
           let j = i + 2;
           while (j < lines.length && lines[j].trim() && lines[j].includes("|")) {
             const cells = splitTableRow(lines[j]);
@@ -216,7 +245,7 @@ export function parseMarkdownTables(text) {
               const isRank = /^[\u{1F947}\u{1F948}\u{1F949}\d#\s.-]+$/u.test(cells[0]);
               target = isRank && cells[1] ? cells[1] : cells[0];
             }
-            if (target) out.push(target);
+            if (target) out.push({ text: target, headed: true });
             j++;
           }
           i = j - 1;
@@ -232,7 +261,7 @@ export function parseMarkdownTables(text) {
         const isRank = /^[\u{1F947}\u{1F948}\u{1F949}\d#\s.-]+$/u.test(parts[0]);
         const target = isRank && parts[1] ? parts[1] : parts[0];
         if (target && !/^(rank|phone|product|item|model|name|brand|device|header)$/i.test(target)) {
-          out.push(target);
+          out.push({ text: target, headed: false });
         }
       }
     }
@@ -269,9 +298,9 @@ export function structuralCandidates(answerText) {
   const out = [];
   if (!answerText) return out;
 
-  parseMarkdownTables(answerText).forEach((raw) => {
+  parseTableCells(answerText).forEach(({ text: raw, headed }) => {
     const s = cleanCandidateText(raw);
-    if (s) out.push({ text: s, source: "table" });
+    if (s) out.push({ text: s, source: headed ? "table" : "table-guess" });
   });
 
   // Bold text at the START of a line, tolerating any combination of heading
@@ -541,6 +570,271 @@ export function looksLikeProperName(phrase) {
   });
 }
 
+/* ---------- 5. prompt context ---------- */
+/*
+ * Reported: "if the layout of the answer changes the tool is not able to tell
+ * the exact brand" — Brand Mentions came back as "Optical Zoom", "Versatile
+ * Triple Camera", "Balanced All-Rounder" (a comparison table's use-case
+ * column) instead of the phones the prompt actually asked about.
+ *
+ * Fixing the column choice (parseTableCells) fixes THAT table. It does not fix
+ * the general case, because every layout invents a new place to hide a
+ * descriptor: a use-case column today, a "Why it's great" column tomorrow, a
+ * bolded benefit label after that. What has to hold regardless of layout is a
+ * property of the LANGUAGE, not of the markup:
+ *
+ *   A brand is a proper noun. An answer that is about one writes it as a name
+ *   in its own prose — capitalised, mid-sentence, outside any table cell or
+ *   heading. A descriptor never earns that: it appears only inside the
+ *   structure that generated it, or lowercase in running text.
+ *
+ * Verified against the reported capture: "Optical Zoom" occurs three times —
+ * "with optical zoom, high-resolution sensors" (lowercase prose), the table
+ * cell, and the bold bullet label "**Optical zoom matters**". Not one is the
+ * name-cased prose reference every real brand in the same answer has
+ * ("Phones like the Nothing Phone (3a) Pro and Motorola Edge 60 Pro include…",
+ * "The Redmi Note 15 Pro's 200MP sensor…").
+ *
+ * The prompt supplies the second half: the words the QUESTION was phrased in
+ * are the category being asked about, never the answer to it. "Camera Phone"
+ * is what the user asked for; it is not a brand, however the answer formats it.
+ */
+
+// Words that carry no subject information in a question ("best X under Y").
+// English question/qualifier vocabulary only — no industry nouns, so this
+// stays vertical-neutral like the rest of the file.
+const PROMPT_STOPWORDS = new Set([
+  "the", "a", "an", "is", "are", "was", "were", "be", "of", "to", "in", "on", "at",
+  "for", "with", "and", "or", "vs", "versus", "than", "then", "that", "this",
+  "under", "over", "above", "below", "between", "within", "around", "about",
+  "best", "top", "good", "great", "better", "greatest", "finest", "ideal",
+  "cheap", "cheapest", "affordable", "budget", "premium", "value", "worth",
+  "which", "what", "who", "whom", "whose", "where", "when", "why", "how",
+  "should", "could", "would", "can", "do", "does", "did", "i", "me", "my", "we",
+  "our", "you", "your", "us", "give", "show", "tell", "list", "find", "suggest",
+  "recommend", "recommendations", "compare", "buy", "buying", "get", "need",
+  "want", "looking", "help", "please", "right", "now", "currently", "available",
+  "india", "indian", "usa", "us", "uk", "global", "market", "money", "rs", "inr",
+]);
+
+/**
+ * The subject words a prompt was phrased in, minus question scaffolding and
+ * bare numbers. "best camera phone under 30000" -> {"camera","phone"}.
+ */
+export function promptContextTokens(prompt) {
+  const out = new Set();
+  for (const raw of String(prompt || "").toLowerCase().split(/[^a-z0-9]+/)) {
+    const w = raw.trim();
+    if (!w || w.length < 2) continue;
+    if (/^\d+$/.test(w)) continue;            // "30000", "2026"
+    if (PROMPT_STOPWORDS.has(w)) continue;
+    out.add(w);
+  }
+  return out;
+}
+
+const isStructuralLine = (trimmed) =>
+  !trimmed || trimmed.startsWith("|") || /^#{1,6}\s/.test(trimmed) || /^[-*_]{3,}$/.test(trimmed);
+
+// The bolded label a bullet or paragraph can open with ("- **Optical zoom
+// matters**: Phones like…"). Inside it, a phrase is still a label; after it,
+// the line is ordinary prose.
+//
+// The trailing separator is what makes it a label rather than emphasis. A
+// sentence is perfectly entitled to bold its own subject — "**Zerodha** is the
+// largest broker." is prose about Zerodha, not a "Zerodha:" heading — and
+// treating that as a label discarded the one real brand such an answer had.
+const LEADING_LABEL_RE = /^\s*(?:[-*•+]\s*|\d+[.)]\s*)?\*\*[^*\n]+\*\*\s*[:—–-]/;
+
+/** True when the answer contains running prose at all (not only tables/headings). */
+export function hasProseLines(text) {
+  for (const line of String(text || "").split("\n")) {
+    const trimmed = line.trim();
+    if (isStructuralLine(trimmed)) continue;
+    const afterLabel = trimmed.replace(LEADING_LABEL_RE, "").replace(/^[:\s]+/, "");
+    if (afterLabel.length >= 20) return true;
+  }
+  return false;
+}
+
+/**
+ * True when `name` appears in the answer's running prose, written the way a
+ * NAME is written — outside table rows, heading lines and leading bold labels,
+ * with the capitalisation the candidate itself carries.
+ *
+ * This is the layout-independent half of the context gate: "Nothing",
+ * "Motorola" and "Redmi" clear it from the same capture in which "Optical
+ * Zoom" and "Balanced All-Rounder" cannot.
+ */
+export function namedInProse(text, name) {
+  const t = String(text || "");
+  const n = String(name || "").trim();
+  if (!t || !n) return false;
+  const wanted = n.split(/\s+/);
+  const re = new RegExp(`\\b${escapeRegExp(n)}\\b`, "gi");
+  let m;
+  while ((m = re.exec(t))) {
+    const lineStart = t.lastIndexOf("\n", Math.max(0, m.index - 1)) + 1;
+    let lineEnd = t.indexOf("\n", m.index);
+    if (lineEnd === -1) lineEnd = t.length;
+    const line = t.slice(lineStart, lineEnd);
+    if (isStructuralLine(line.trim())) continue;
+    const label = line.match(LEADING_LABEL_RE);
+    if (label && m.index < lineStart + label[0].length) continue;
+    // Every sentence capitalises its first word, so that position proves
+    // nothing: "- Strong daylight detail and punchy colours" was corroborating
+    // "Strong" as a brand off a "Strong alternatives under ₹80,000" heading.
+    // Bold is the exception — an author who bolds a word mid-answer is marking
+    // it as a name ("**Zerodha** is the largest broker.").
+    const beforeRaw = line.slice(0, m.index - lineStart);
+    const boldOpen = /\*\*\s*$/.test(beforeRaw);
+    const beforeText = beforeRaw
+      .replace(/^\s*(?:[-*•+]\s+|\d+[.)]\s+)?/, "")
+      .replace(/[*_`>\s]+$/, "");
+    if (!boldOpen && (!beforeText || /[.!?:;]$/.test(beforeText))) continue;
+    // Written as a name: wherever the candidate capitalises a word, the
+    // occurrence must too. "optical zoom" and "Optical zoom" both fail
+    // against "Optical Zoom"; "Nothing Phone" passes against "Nothing".
+    const got = t.slice(m.index, m.index + n.length).split(/\s+/);
+    const casedLikeName = wanted.every((w, i) => {
+      if (!/^[A-Za-z]/.test(w)) return true;
+      if (!/^[A-Z]/.test(w)) return true;
+      return /^[A-Z]/.test(got[i] || "");
+    });
+    if (casedLikeName) return true;
+  }
+  return false;
+}
+
+/* ---------- 3c. names the prose itself writes ---------- */
+/*
+ * Structure-only detection has a mirror-image failure to the descriptor one:
+ * an answer whose brands live purely in PROSE reported nothing at all. Both
+ * of these — extremely common shapes — came back empty before this tier:
+ *
+ *   - **Best Optical Zoom**: the Nothing Phone (3a) Pro has a 3x periscope.
+ *   ### Optical Zoom
+ *   The Nothing Phone (3a) Pro leads.
+ *
+ * The only candidates structure could see there were the labels themselves
+ * ("Best Optical Zoom"), which the context gate correctly rejects — leaving
+ * zero. So prose has to be a source in its own right, not merely corroboration.
+ *
+ * Precision comes from two requirements, not from a word list: a run of
+ * capitalised tokens is a candidate when it carries a MODEL DESIGNATION
+ * ("Motorola Edge 60 Pro", "Nothing Phone (3a) Pro" — the signature of
+ * brand + model), or when the answer comes back to it AGAIN. A one-off
+ * capitalised pair with neither — "(Night Sight, HDR+)", "Prices Fluctuate" —
+ * is a feature or a phrase, and stays out.
+ *
+ * Sentence-initial runs are skipped: every sentence capitalises its first
+ * word, so that position carries no evidence of a proper noun.
+ */
+const PROSE_CONNECTORS = new Set(["of", "and", "&", "for", "the", "de", "la", "by"]);
+
+// A real camelCase brand turns over within a character or two ("boAt",
+// "iPhone", "eBay"); a long lowercase prefix before the hump is two words the
+// flattening glued together ("pickboAt", "StrengthsBest").
+const isGluedArtifact = (phrase) =>
+  String(phrase).split(/\s+/).some((w) => /[a-z][A-Z]/.test(w) && !/^[a-z]{1,2}[A-Z]/.test(w));
+
+/**
+ * Shapes this tier refuses outright. It reads raw text with no structure to
+ * lean on, and each of these showed up as a "brand" on the repo's own
+ * flattened-DOM fixture: a glue artifact, a short all-caps acronym (a spec or
+ * feature far more often than a company — ANC, OIS, HDR), and a bare
+ * geography/market qualifier ("India") that every answer repeats and none
+ * means as a brand.
+ */
+export function isPlausibleProseName(phrase) {
+  const p2 = String(phrase || "").trim();
+  if (!p2) return false;
+  if (isGluedArtifact(p2)) return false;
+  if (/^[A-Z0-9]{2,4}$/.test(p2)) return false;
+  if (PROMPT_STOPWORDS.has(p2.toLowerCase())) return false;
+  return true;
+}
+
+export function proseNameCandidates(text) {
+  const seen = new Map(); // lower -> { text, count, hasDigit }
+  const note = (phrase) => {
+    const key = phrase.toLowerCase();
+    const prev = seen.get(key);
+    if (prev) { prev.count += 1; return; }
+    seen.set(key, { text: phrase, count: 1, hasDigit: /\d/.test(phrase) });
+  };
+
+  for (const line of String(text || "").split("\n")) {
+    const trimmed = line.trim();
+    if (isStructuralLine(trimmed)) continue;
+    // Everything before/inside a leading bold label is a label, not prose.
+    const label = trimmed.match(LEADING_LABEL_RE);
+    const region = label ? trimmed.slice(label[0].length) : trimmed;
+
+    const tokens = [...region.matchAll(/\S+/g)].map((m) => ({ raw: m[0], at: m.index }));
+    let run = [];
+    let runStart = -1;
+    const flush = () => {
+      if (run.length) {
+        // Trim connectors off both ends: a run may open on the sentence's own
+        // "The" ("The Motorola Edge 60 Pro lasts longest") and close on an
+        // "and" ("Nothing Phone and ...").
+        while (run.length && PROSE_CONNECTORS.has(run[run.length - 1].replace(/[^\w&]/g, "").toLowerCase())) run.pop();
+        let trimmedLead = false;
+        while (run.length && PROSE_CONNECTORS.has(run[0].replace(/[^\w&]/g, "").toLowerCase())) { run.shift(); trimmedLead = true; }
+        const before = region.slice(0, runStart).trimEnd();
+        // Dropping a leading "The" means what follows is no longer the
+        // sentence's first word — it is a name the sentence is about.
+        const sentenceInitial = !trimmedLead && (!before || /[.!?:;]$/.test(before));
+        const phrase = run.join(" ").replace(/[.,;:!?]+$/, "").trim();
+        // A model designation is evidence wherever it sits; position only
+        // matters for a run that has nothing else going for it.
+        if (phrase && (!sentenceInitial || /\d/.test(phrase))) note(phrase);
+      }
+      run = [];
+      runStart = -1;
+    };
+
+    for (const tok of tokens) {
+      const bare = tok.raw.replace(/^[("'‘“]+/, "").replace(/[).,;:!?"'’”]+$/, "");
+      // A capitalised token, or a camelCase brand that opens lowercase
+      // ("boAt Rockerz 512", "iPhone 15") — without the second form the run
+      // started one token late and reported the product line ("Rockerz")
+      // instead of the maker.
+      const isName = bare.length > 1 &&
+        (/^[A-Z][A-Za-z0-9&'’.-]*$/.test(bare) || /^[a-z][A-Za-z0-9]*[A-Z][A-Za-z0-9]*$/.test(bare));
+      // A parenthesised or bare model designation continues a run it follows
+      // ("Nothing Phone (3a) Pro", "Realme 15 Pro").
+      const isDesignation = run.length > 0 && /^[A-Za-z]*\d[A-Za-z0-9]*$/.test(bare);
+      const isConnector = run.length > 0 && PROSE_CONNECTORS.has(bare.toLowerCase());
+      if (isName || isDesignation || isConnector) {
+        if (!run.length) runStart = tok.at;
+        run.push(bare);
+        if (run.length >= 5) flush();
+        continue;
+      }
+      flush();
+      // A sentence ending inside the line resets what counts as initial.
+      if (/[.!?]$/.test(tok.raw)) runStart = -1;
+    }
+    flush();
+  }
+
+  // A model designation is proof on its own; anything else has to recur.
+  // Then three shapes are refused outright, because this tier reads raw text
+  // with no structure to lean on and each of them showed up as a "brand" on
+  // the repo's own flattened-DOM fixture:
+  //   - a glued-word artifact of flattening ("StrengthsBest"),
+  //   - a short all-caps acronym, which is a spec or feature far more often
+  //     than a company ("ANC", "OIS", "HDR"),
+  //   - a bare geography or market qualifier ("India"), which every answer
+  //     repeats and no answer means as a brand.
+  return [...seen.values()]
+    .filter((c) => c.hasDigit || c.count >= 2)
+    .map((c) => c.text)
+    .filter(isPlausibleProseName);
+}
+
 /* ---------- main entry ---------- */
 /**
  * Detect brands automatically and count real prose mentions.
@@ -586,8 +880,31 @@ export function detectBrands(answerText, plainText, ctx = {}) {
   const { entities: markerEntities, productNames } = parseMarkers(answerText || "");
   const candidates = new Map(); // lowerName -> { name, category, description }
 
+  // What the question was about, and whether the answer even has prose to
+  // corroborate a name against (a pure table has none — see the section above).
+  const promptTokens = promptContextTokens(ctx.prompt);
+  const proseExists = hasProseLines(text);
+  // A phrase built only from the words the PROMPT was phrased in, at least one
+  // of which is a generic category noun, is the thing being asked about, not an
+  // answer to it: "Camera Phone" for "best camera phone under 30000". A brand
+  // the prompt happens to name ("best Motorola phone" -> "Motorola") carries no
+  // generic word and is never caught by this.
+  const isPromptEcho = (name) => {
+    if (!promptTokens.size) return false;
+    const words = String(name).toLowerCase().split(/\s+/)
+      .map((w) => w.replace(/[^a-z0-9]/g, "")).filter(Boolean);
+    if (!words.length) return false;
+    let sawGeneric = false;
+    for (const w of words) {
+      const generic = GENERIC_SPEC_NOUNS.has(w) || CATEGORY_PLURAL_NOUNS.has(w);
+      if (generic) sawGeneric = true;
+      if (!generic && !promptTokens.has(w) && !NOISE.has(w)) return false;
+    }
+    return sawGeneric;
+  };
+
   const MAX_LEN = { structural: 40, default: 60, trusted: 120 };
-  const addCand = (name, category, description, trust = "default", shownOnly = false, weak = false) => {
+  const addCand = (name, category, description, trust = "default", shownOnly = false, weak = false, needsProse = false) => {
     const n = String(name || "").trim().replace(/[*_`]/g, "");
     const cap = MAX_LEN[trust] ?? MAX_LEN.default;
     if (!n || n.length < 2 || n.length > cap) return;
@@ -596,11 +913,15 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     const k = n.toLowerCase();
     const prev = candidates.get(k);
     const keepWhole = trust === "trusted";
-    if (!prev) candidates.set(k, { name: n, category: category || null, description: description || null, keepWhole, shownOnly, weak });
+    if (!prev) candidates.set(k, { name: n, category: category || null, description: description || null, keepWhole, shownOnly, weak, needsProse });
     else {
       if (keepWhole) prev.keepWhole = true;
       if (shownOnly) prev.shownOnly = true;
       if (!weak) prev.weak = false;
+      // Corroboration relaxes the bar: a name a marker, product card or
+      // header-named table column also vouches for no longer has to prove
+      // itself in prose.
+      if (!needsProse) prev.needsProse = false;
       if (!prev.category && category) {
         prev.category = category;
         prev.description = prev.description || description || null;
@@ -671,7 +992,12 @@ export function detectBrands(answerText, plainText, ctx = {}) {
       // section label. Both heading kinds are therefore weak; a table's first
       // column stays strong, since that column IS the subject by construction.
       const weak = source === "section" || source === "heading";
-      if (looksLikeProperName(part)) { addCand(part, null, null, "structural", false, weak); continue; }
+      // Only headings and bold labels have to prove themselves. Table cells
+      // do not: which COLUMN they came from is already decided on evidence
+      // (see parseTableCells), and gating the cells as well cost real brands
+      // in every table whose products the prose never re-narrates.
+      const needsProse = weak;
+      if (looksLikeProperName(part)) { addCand(part, null, null, "structural", false, weak, needsProse); continue; }
       const hasDigit = /\d/.test(part);
       // vendorFromProductName only makes sense on a multi-word phrase — it
       // extracts the LEADING token of a longer name ("Vivo V70" → "Vivo"). On
@@ -681,8 +1007,8 @@ export function detectBrands(answerText, plainText, ctx = {}) {
       // / BGMI → Kreo Harpy") used to read as a brand: it has a digit, so the
       // digit-fallback fired, but there was nothing to extract a vendor FROM.
       const multiWord = part.trim().split(/\s+/).length > 1;
-      if (source === "table" || (hasDigit && multiWord)) {
-        addCand(vendorFromProductName(part), null, null, "structural", false, weak);
+      if (source === "table" || source === "table-guess" || (hasDigit && multiWord)) {
+        addCand(vendorFromProductName(part), null, null, "structural", false, weak, needsProse);
       }
     }
   });
@@ -756,7 +1082,17 @@ export function detectBrands(answerText, plainText, ctx = {}) {
   const ordered = [...candidates.values()].sort((a, b) => b.name.length - a.name.length);
   const claimed = [];
   const results = [];
-  for (const cand of ordered) {
+  const scoreCandidates = (list) => {
+  for (const cand of list) {
+    // ---- prompt-context gates (see "5. prompt context" above) ----
+    // Only text-derived candidates are held to these. A name asserted by
+    // structured data — an entity marker, a product card, a place listing, a
+    // cited domain, the user's own tracked list — has a category set and is
+    // exempt: those are facts about the capture, not readings of its layout.
+    if (cand.category === null) {
+      if (cand.needsProse && proseExists && !namedInProse(text, cand.name)) continue;
+      if (isPromptEcho(cand.name)) continue;
+    }
     // A domain-derived candidate is a squashed label ("hdfcbank"), so it is
     // matched against word runs rather than verbatim — see matchCompressedLabel.
     const isDomain = cand.category === "cited_domain";
@@ -818,6 +1154,48 @@ export function detectBrands(answerText, plainText, ctx = {}) {
       description: cand.description,
       passages: [text.slice(Math.max(0, first - 110), first + 110).replace(/\s+/g, " ").trim()],
     });
+  }
+  };
+  scoreCandidates(ordered);
+
+  // Prose fallback (see "3c. names the prose itself writes"). Deliberately a
+  // SECOND pass, not a peer tier: run alongside the others it injects long
+  // capitalised runs that win the longest-first claim and starve the real
+  // candidates — measured, on this repo's own fixtures, as model fragments
+  // ("Nord", "Pixel", "K13") displacing the brands and a six-brand table
+  // collapsing to one. Reached only when every other signal produced nothing,
+  // it can turn "no brands at all" into the right ones and can disturb
+  // nothing that already worked: `claimed` is still empty here, because a
+  // claim is only recorded for a candidate that made it into `results`.
+  if (!results.length) {
+    const proseCands = new Map();
+    for (const raw of proseNameCandidates(answerText || "")) {
+      const cleaned = cleanCandidateText(raw);
+      if (!cleaned) continue;
+      const part = looksLikeProperName(cleaned) ? cleaned : vendorFromProductName(cleaned);
+      const n = String(part || "").trim().replace(/[*_`]/g, "");
+      if (!n || n.length < 2 || n.length > MAX_LEN.structural) continue;
+      if (isNoise(n) || isNoise(n.split(/\s+/)[0])) continue;
+      if (isComponentOrChip(n) || isMarketplaceName(n)) continue;
+      // Re-checked AFTER the head reduction: "India Rockerz 512" survives the
+      // phrase-level test and then collapses to the bare qualifier "India".
+      if (!isPlausibleProseName(n)) continue;
+      if (isPromptEcho(n)) continue;
+      const k = n.toLowerCase();
+      if (candidates.has(k) || proseCands.has(k)) continue;
+      proseCands.set(k, { name: n, category: null, description: null, keepWhole: false, shownOnly: false, weak: false, needsProse: false });
+    }
+    if (proseCands.size) {
+      // Same head-collapse the primary tiers get: "Motorola Edge" must not be
+      // reported next to "Motorola".
+      for (const [k, v] of [...proseCands]) {
+        const words = v.name.split(/\s+/);
+        if (words.length < 2) continue;
+        const headKey = words[0].toLowerCase();
+        if (proseCands.has(headKey) && headKey !== k) proseCands.delete(k);
+      }
+      scoreCandidates([...proseCands.values()].sort((a, b) => b.name.length - a.name.length));
+    }
   }
 
   // Renaming a domain candidate to how the answer writes it can collide with a

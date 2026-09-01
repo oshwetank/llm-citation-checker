@@ -106,6 +106,7 @@ jobs:
         run: |
           fail=0
           for f in test/adapter.test.mjs test/ai-brands.test.mjs test/auth-check.test.mjs \
+                   test/brand-context.test.mjs \
                    test/auto-competitors.test.mjs \
                    test/behaviour.test.mjs test/brands.test.mjs test/campaign-workbook.test.mjs \
                    test/concurrency.test.mjs test/dom-harvest-multiturn.test.mjs test/errorlog.test.mjs \

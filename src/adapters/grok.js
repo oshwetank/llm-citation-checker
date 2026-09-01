@@ -334,7 +334,7 @@ export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, op
   // inside its own citation marker (the exact bug already fixed for
   // Perplexity — see perplexity.js's stripCiteMarkersForDetection).
   const textForDetection = stripCiteMarkers(answerText);
-  const brandRes = detectBrands(textForDetection, textForDetection, { sources, tracked: options.tracked });
+  const brandRes = detectBrands(textForDetection, textForDetection, { sources, tracked: options.tracked, prompt: userPrompt });
   const brandMentions = (brandRes && brandRes.brands) || [];
   const entities = (brandRes && brandRes.entities) || [];
 

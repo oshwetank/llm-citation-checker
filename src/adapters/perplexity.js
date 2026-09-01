@@ -418,7 +418,7 @@ export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, op
   // above). answerText itself keeps the markers — exportDoc.js needs them intact
   // to render numbered footnotes.
   const textForDetection = stripCiteMarkersForDetection(answerText);
-  const brandRes = detectBrands(textForDetection, textForDetection, { sources, tracked: options.tracked });
+  const brandRes = detectBrands(textForDetection, textForDetection, { sources, tracked: options.tracked, prompt: userPrompt });
   const brandMentions = (brandRes && brandRes.brands) || [];
   const entities = (brandRes && brandRes.entities) || [];
 

@@ -179,7 +179,7 @@ export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, op
   const model = extractModel(reqBody, nodes);
   const { answer, thinking, searches, sources } = extractContentAndThinking(nodes);
 
-  const brandRes = detectBrands(answer, answer, { sources, tracked: options.tracked });
+  const brandRes = detectBrands(answer, answer, { sources, tracked: options.tracked, prompt: userPrompt });
   const brandMentions = (brandRes && brandRes.brands) || [];
   const entities = (brandRes && brandRes.entities) || [];
 
