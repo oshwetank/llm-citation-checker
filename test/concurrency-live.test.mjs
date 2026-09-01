@@ -134,7 +134,14 @@ try {
   const before = await tabCount();
 
   console.log("\nStarting the run creates the right number of REAL tabs");
-  const start = await ask({ type: "geo-run-start", profileId: seeded });
+  // skipAuthCheck is the documented override behind the sign-in warning
+  // dialog (see the PRE-FLIGHT AUTH GATE note in background.js). It is passed
+  // here because this file measures TAB CONCURRENCY, not authentication: the
+  // gate landed after these assertions were written, and no CI runner — nor
+  // any sandbox — can hold a live ChatGPT/Gemini session for the cookie check
+  // to find, so without it the run is refused before a single tab is created
+  // and all three assertions below fail for a reason none of them is about.
+  const start = await ask({ type: "geo-run-start", profileId: seeded, skipAuthCheck: true });
   check("geo-run-start accepted it", start && start.ok, JSON.stringify(start).slice(0, 200));
 
   // Give loaderStart's synchronous tab-creation loop time to finish — this
