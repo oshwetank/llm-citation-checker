@@ -10,6 +10,8 @@ import {
   partitionRecords, allTags, runDue, runVolume, makeProfile,
 } from "../src/lib/geo.js";
 import { parseCsv, parseXlsx, rowsToPrompts } from "../src/lib/xlsxLite.js";
+import { makeZip } from "../src/lib/zipWrite.js";
+import { BUNDLE_PARTS, buildFeedbackFiles, bundleFilename } from "../src/lib/feedbackBundle.js";
 import { computeSearchFunnel, computeBrandMatrix } from "../src/lib/funnel-omitted.js";
 import { GLOSSARY, glossaryGroups } from "../src/lib/glossary.js";
 import { normalizeMentions } from "../src/lib/mention-list.js";
@@ -1305,6 +1307,17 @@ function renderAnalyze() {
     );
     backBtn.onclick = () => { returnTab = null; showTab(backTo); };
 
+    // Report-this-capture, in the corner of the one bar that stays on screen
+    // at every scroll position. Small and unlabelled on purpose: it is a
+    // permanent fixture next to a prompt that can be long, so it gets an icon,
+    // a title and an aria-label rather than width.
+    const feedbackBtn = el("button", {
+      className: "analyze-context-feedback",
+      title: "Report a problem with this capture",
+      "aria-label": "Report a problem with this capture",
+    }, "💬");
+    feedbackBtn.onclick = () => openFeedbackModal(rec);
+
     promptBar.append(
       backBtn,
       el("span", { className: "analyze-context-label muted small" }, "Analyzing"),
@@ -1312,7 +1325,8 @@ function renderAnalyze() {
         className: "analyze-context-prompt",
         title: rec.userPrompt || "",
       }, rec.userPrompt || "(no prompt text)"),
-      engineChip(rec.platform, ENGINES.find((e) => e.id === rec.platform)?.label || rec.platform || "Unknown")
+      engineChip(rec.platform, ENGINES.find((e) => e.id === rec.platform)?.label || rec.platform || "Unknown"),
+      feedbackBtn
     );
     root.append(promptBar);
   }
@@ -5790,6 +5804,170 @@ async function buildDiagnosticReport() {
   lines.push("");
   lines.push("This report contains no prompt text, answer content, URLs, or brand names — only counts, timing, and short failure-reason labels.");
   return lines.join("\n");
+}
+
+/*
+ * Report a problem with THIS capture — the 💬 in the Analyze top bar.
+ *
+ * Where to send it. Set FEEDBACK_TO to the address you want reports at
+ * BEFORE building a public release: with it set the dialog offers "Open email
+ * draft" (subject and body prefilled, the archive attached by the reporter);
+ * left empty it just says to send the saved file to the developer, so a build
+ * with no address configured still works and never mails anyone by accident.
+ * It is a build-time constant rather than a setting because it has to travel
+ * with the copy you hand out — a per-user setting would only ever hold the
+ * address on YOUR machine.
+ */
+const FEEDBACK_TO = "";
+
+async function openFeedbackModal(rec) {
+  const existing = document.getElementById("feedback-modal-backdrop");
+  if (existing) existing.remove();
+
+  const backdrop = el("div", { id: "feedback-modal-backdrop", className: "modal-backdrop" });
+  const modal = el("div", { className: "modal-content diag-modal" });
+  const header = el("div", { className: "modal-header" });
+  header.append(el("h3", { style: "margin:0;font-size:15px;color:var(--fg-primary);" }, "Report a problem with this capture"));
+  const closeBtn = el("button", { className: "modal-close-btn", title: "Close" }, "×");
+  header.append(closeBtn);
+  modal.append(header);
+
+  const body = el("div", { className: "modal-body" });
+  body.append(el("p", { className: "muted small" },
+    "Saves one file you can attach to an email. Nothing is sent from here — you choose what goes in, " +
+    "you save it, you send it."));
+
+  const note = el("textarea", {
+    className: "diag-report-text",
+    rows: 4,
+    id: "feedbackNote",
+    placeholder: "What looked wrong, and what you expected instead? (e.g. \"the brand list shows Optical Zoom instead of the phones\")",
+  });
+  body.append(note);
+
+  // Unlike the About tab's diagnostic report, this bundle carries real
+  // content. Say so, itemised, with a way to leave any part out.
+  body.append(el("p", { className: "small", style: "margin:12px 0 6px;font-weight:600;color:var(--fg-primary);" },
+    "What gets included"));
+  const boxes = {};
+  const list = el("div", { style: "display:flex;flex-direction:column;gap:8px;" });
+  for (const part of BUNDLE_PARTS) {
+    const row = el("label", { className: "small", style: "display:flex;gap:8px;align-items:flex-start;cursor:pointer;" });
+    const cb = el("input", { type: "checkbox", checked: true, style: "margin-top:2px;flex-shrink:0;" });
+    if (part.key === "note") { cb.checked = true; cb.disabled = true; }
+    boxes[part.key] = cb;
+    row.append(cb, el("span", {},
+      el("span", { style: "font-weight:600;color:var(--fg-primary);" }, part.label),
+      el("span", { className: "muted" }, ` — ${part.detail}`)));
+    list.append(row);
+  }
+  body.append(list);
+
+  const status = el("p", { className: "muted small", style: "margin-top:12px;min-height:18px;" }, "");
+  body.append(status);
+  modal.append(body);
+
+  const footer = el("div", { className: "modal-footer" });
+  const saveBtn = el("button", { className: "btn sm primary" }, "💾 Save feedback file");
+  const mailBtn = FEEDBACK_TO
+    ? el("button", { className: "btn sm ghost" }, "✉️ Open email draft")
+    : null;
+  const hint = el("span", { className: "muted small", style: "margin-left:8px;" },
+    FEEDBACK_TO ? `Attach the saved file to the draft.` : "Then email the saved file to the developer.");
+
+  // Built once, on demand, and reused by both buttons so the summary in the
+  // mail draft always describes the file that was actually saved.
+  let built = null;
+  const buildFiles = async () => {
+    const include = { report: boxes.report.checked, raw: boxes.raw.checked, analysis: boxes.analysis.checked };
+    status.textContent = "Collecting…";
+    // The record in hand may be a LIGHT row; the report and the analysis are
+    // both worthless without answerText, so hydrate exactly as the export
+    // path does.
+    let full = rec;
+    try { full = (await hydrate(rec.captureId)) || rec; } catch (_) { /* keep what we have */ }
+
+    let reportHtml = "";
+    if (include.report) {
+      try {
+        reportHtml = renderStandaloneHtml([buildExportModel(full)], {
+          docTitle: full.userPrompt || "CitoSkeleton capture",
+        });
+      } catch (err) {
+        reportHtml = "";
+        include.report = false;
+      }
+    }
+
+    let raw = "";
+    if (include.raw) {
+      try {
+        const r = await send({ type: "get-raw", captureId: full.captureId });
+        if (r && r.ok && r.raw != null) {
+          raw = `# CitoSkeleton raw capture ${full.captureId}\n` +
+                `# url: ${(r.meta && r.meta.url) || ""}\n` +
+                `# reqBody: ${(r.meta && r.meta.reqBody) || ""}\n\n` + r.raw;
+        }
+      } catch (_) { /* a capture whose raw was pruned still sends the rest */ }
+      if (!raw) include.raw = false;
+    }
+
+    const manifest = chrome.runtime.getManifest();
+    built = {
+      files: buildFeedbackFiles({
+        note: note.value,
+        record: full,
+        raw,
+        reportHtml,
+        env: { version: manifest.version, userAgent: navigator.userAgent },
+        include,
+      }),
+      name: bundleFilename(full),
+      record: full,
+    };
+    return built;
+  };
+
+  saveBtn.onclick = async () => {
+    saveBtn.disabled = true;
+    try {
+      const b = await buildFiles();
+      const blob = await makeZip(b.files);
+      const url = URL.createObjectURL(blob);
+      const a = el("a", { href: url, download: b.name });
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      status.textContent = `Saved ${b.name} — ${b.files.length} file${b.files.length === 1 ? "" : "s"} inside.`;
+    } catch (err) {
+      status.textContent = `Couldn't build the file: ${(err && err.message) || err}`;
+    } finally {
+      saveBtn.disabled = false;
+    }
+  };
+
+  if (mailBtn) {
+    mailBtn.onclick = async () => {
+      const b = built || await buildFiles();
+      const subject = `CitoSkeleton feedback — ${b.record.platform || "capture"}`;
+      // Only the note and the identifying lines go in the body: a mailto URL
+      // has a length limit, and the evidence is in the attachment.
+      const bodyText = (b.files.find((f) => f.name === "feedback.txt") || {}).text || "";
+      const href = `mailto:${encodeURIComponent(FEEDBACK_TO)}?subject=${encodeURIComponent(subject)}` +
+                   `&body=${encodeURIComponent(bodyText.slice(0, 1500))}`;
+      window.open(href, "_blank");
+      status.textContent = "Draft opened — attach the saved file before sending.";
+    };
+  }
+
+  footer.append(saveBtn);
+  if (mailBtn) footer.append(mailBtn);
+  footer.append(hint);
+  modal.append(footer);
+
+  backdrop.append(modal);
+  document.body.append(backdrop);
+  closeBtn.onclick = wireModalDismiss(backdrop, modal);
+  note.focus();
 }
 
 async function openDiagnosticReportModal() {
