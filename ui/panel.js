@@ -5834,8 +5834,9 @@ async function openFeedbackModal(rec) {
 
   const body = el("div", { className: "modal-body" });
   body.append(el("p", { className: "muted small" },
-    "Saves one file you can attach to an email. Nothing is sent from here — you choose what goes in, " +
-    "you save it, you send it."));
+    "One click bundles everything needed and hands it to your email. On some systems your mail app opens " +
+    "with the file already attached; otherwise the file is saved and the draft tells you to attach it. " +
+    "Nothing is sent from here — you choose what goes in, and you send it."));
 
   const note = el("textarea", {
     className: "diag-report-text",
@@ -5868,14 +5869,10 @@ async function openFeedbackModal(rec) {
   modal.append(body);
 
   const footer = el("div", { className: "modal-footer" });
-  const saveBtn = el("button", { className: "btn sm primary" }, "💾 Save feedback file");
-  const mailBtn = FEEDBACK_TO
-    ? el("button", { className: "btn sm ghost" }, "✉️ Open email draft")
-    : null;
+  const sendBtn = el("button", { className: "btn sm primary" }, "📎 Send with everything attached");
+  const saveBtn = el("button", { className: "btn sm ghost" }, "💾 Just save the file");
   const hint = el("span", { className: "muted small", style: "margin-left:8px;" },
-    FEEDBACK_TO
-      ? `Attach the saved file, and send it to ${FEEDBACK_TO}.`
-      : "Then email the saved file to the developer.");
+    FEEDBACK_TO ? `Goes to ${FEEDBACK_TO}.` : "");
 
   // Built once, on demand, and reused by both buttons so the summary in the
   // mail draft always describes the file that was actually saved.
@@ -5930,15 +5927,18 @@ async function openFeedbackModal(rec) {
     return built;
   };
 
+  const saveZip = (blob, name) => {
+    const url = URL.createObjectURL(blob);
+    const a = el("a", { href: url, download: name });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
   saveBtn.onclick = async () => {
     saveBtn.disabled = true;
     try {
       const b = await buildFiles();
-      const blob = await makeZip(b.files);
-      const url = URL.createObjectURL(blob);
-      const a = el("a", { href: url, download: b.name });
-      document.body.append(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      saveZip(await makeZip(b.files), b.name);
       status.textContent = `Saved ${b.name} — ${b.files.length} file${b.files.length === 1 ? "" : "s"} inside.`;
     } catch (err) {
       status.textContent = `Couldn't build the file: ${(err && err.message) || err}`;
@@ -5947,23 +5947,84 @@ async function openFeedbackModal(rec) {
     }
   };
 
-  if (mailBtn) {
-    mailBtn.onclick = async () => {
-      const b = built || await buildFiles();
+  /*
+   * One button that does the whole job, because the reporter should not have
+   * to know WHAT to attach — that was the point of bundling in the first place.
+   *
+   * mailto: cannot carry an attachment. That is the URI scheme itself
+   * (RFC 6068 defines no attachment field, and browsers drop unknown
+   * headers), not a gap in this code, so "open a draft with the files on it"
+   * is not available anywhere. What IS available is the OS share sheet:
+   * navigator.share() accepts real File objects, and Mail is one of its
+   * targets — that route hands the archive over already attached, no
+   * attaching step for the reporter at all. It is not on every platform, so
+   * it is asked for and used when the answer is yes.
+   *
+   * Where it is not, the fallback does everything except the one action a
+   * page is not allowed to perform for you: it builds the archive, saves it,
+   * opens the addressed draft with the note already in the body, and then
+   * says in plain words which file to attach and where it is. That is one
+   * click and one drag, and nothing to understand.
+   */
+  sendBtn.onclick = async () => {
+    sendBtn.disabled = true;
+    const restore = () => { sendBtn.disabled = false; };
+    try {
+      const b = await buildFiles();
+      const blob = await makeZip(b.files);
       const subject = `CitoSkeleton feedback — ${b.record.platform || "capture"}`;
-      // Only the note and the identifying lines go in the body: a mailto URL
-      // has a length limit, and the evidence is in the attachment.
       const bodyText = (b.files.find((f) => f.name === "feedback.txt") || {}).text || "";
-      const href = `mailto:${encodeURIComponent(FEEDBACK_TO)}?subject=${encodeURIComponent(subject)}` +
-                   `&body=${encodeURIComponent(bodyText.slice(0, 1500))}`;
-      window.open(href, "_blank");
-      status.textContent = "Draft opened — attach the saved file before sending.";
-    };
-  }
 
-  footer.append(saveBtn);
-  if (mailBtn) footer.append(mailBtn);
-  footer.append(hint);
+      const file = new File([blob], b.name, { type: "application/zip" });
+      const canShareFile = typeof navigator.canShare === "function" &&
+        typeof navigator.share === "function" &&
+        navigator.canShare({ files: [file] });
+
+      if (canShareFile) {
+        try {
+          await navigator.share({ files: [file], title: subject, text: bodyText.slice(0, 1500) });
+          status.textContent = "Handed to your share sheet with the file attached — pick Mail and send.";
+          restore();
+          return;
+        } catch (err) {
+          // A cancelled share sheet is not a failure; anything else falls
+          // through to the save-and-draft route rather than dead-ending.
+          if (err && err.name === "AbortError") { status.textContent = "Cancelled."; restore(); return; }
+        }
+      }
+
+      saveZip(blob, b.name);
+      if (FEEDBACK_TO) {
+        // The instruction goes at the TOP OF THE DRAFT, not only in the
+        // dialog behind it. By the time the reporter is looking at their mail
+        // client this panel is out of sight, and the one thing still left for
+        // them to do lives here — named file, named folder, and why it
+        // matters, so it does not read as an optional extra.
+        const attachLine =
+          `[ Please attach the file "${b.name}" from your Downloads folder before sending. ]
+` +
+          `[ It was just saved there, and it holds everything needed to diagnose this — ]
+` +
+          `[ without it this report cannot be investigated.                              ]
+
+`;
+        const href = `mailto:${encodeURIComponent(FEEDBACK_TO)}?subject=${encodeURIComponent(subject)}` +
+                     `&body=${encodeURIComponent(attachLine + bodyText.slice(0, 1200))}`;
+        window.open(href, "_blank");
+        status.textContent = `Draft opened to ${FEEDBACK_TO}. A browser is not allowed to attach a file to an email ` +
+          `for you, so one step is left: attach “${b.name}” from your Downloads folder, then send. ` +
+          `The draft says the same thing at the top.`;
+      } else {
+        status.textContent = `Saved “${b.name}” to your Downloads folder. Email that one file to the developer.`;
+      }
+    } catch (err) {
+      status.textContent = `Couldn't build the file: ${(err && err.message) || err}`;
+    } finally {
+      restore();
+    }
+  };
+
+  footer.append(sendBtn, saveBtn, hint);
   modal.append(footer);
 
   backdrop.append(modal);

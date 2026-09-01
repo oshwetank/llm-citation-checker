@@ -159,7 +159,9 @@ try {
         /raw engine payload/i.test(dlg.bodyText) && /source URL/i.test(dlg.bodyText), "");
       check("it states nothing is sent from here",
         /nothing is sent/i.test(dlg.bodyText), "");
-      check("there is a save action", dlg.buttons.some((b) => /save/i.test(b)), dlg.buttons.join(" | "));
+      check("the primary action sends with everything attached",
+        /attach/i.test(dlg.buttons[0] || ""), dlg.buttons.join(" | "));
+      check("a save-only action is still offered", dlg.buttons.some((b) => /save/i.test(b)), dlg.buttons.join(" | "));
     }
   }
 
@@ -182,8 +184,8 @@ try {
     if (configured) {
       check("the address is a plausible contact address",
         /[\w.+-]+@[\w-]+\.[\w.-]+/.test(addr.footerText), addr.footerText);
-      check("and an email-draft action is offered alongside save",
-        addr.buttons.some((b) => /email|draft/i.test(b)), addr.buttons.join(" | "));
+      check("the send action is the first thing offered",
+        /attach/i.test(addr.buttons[0] || ""), addr.buttons.join(" | "));
     }
   }
 
@@ -197,7 +199,7 @@ try {
       page.waitForEvent("download", { timeout: 20000 }).catch(() => null),
       page.evaluate(() => {
         const btn = [...document.querySelectorAll("#feedback-modal-backdrop .modal-footer button")]
-          .find((b) => /save/i.test(b.textContent));
+          .find((b) => /just save/i.test(b.textContent));
         btn?.click();
       }),
     ]);
@@ -223,6 +225,63 @@ try {
     const status = await page.evaluate(() =>
       document.querySelector("#feedback-modal-backdrop .modal-body p:last-of-type")?.textContent || "");
     check("the dialog confirms what it saved", /saved|file/i.test(status), status);
+  }
+
+  console.log("\nanalyze-feedback: the no-share-sheet fallback still delivers everything");
+  {
+    // The path every macOS/Linux reporter takes. Web Share with files is
+    // forced off and window.open captured, so the draft this actually opens
+    // can be inspected instead of guessed at.
+    await page.evaluate(() => {
+      window.__opened = [];
+      window.open = (href) => { window.__opened.push(String(href)); return null; };
+      // Deny file sharing the way an unsupported platform does.
+      try {
+        Object.defineProperty(navigator, "canShare", { configurable: true, value: () => false });
+      } catch (_) { /* already non-configurable — the check below reports it */ }
+      document.getElementById("feedback-modal-backdrop")?.remove();
+      document.querySelector(".analyze-context-feedback")?.click();
+    });
+    await page.waitForTimeout(400);
+    await page.evaluate(() => {
+      const t = document.getElementById("feedbackNote");
+      if (t) t.value = "brands are wrong on this capture";
+    });
+    const [dl] = await Promise.all([
+      page.waitForEvent("download", { timeout: 20000 }).catch(() => null),
+      page.evaluate(() => {
+        const btn = [...document.querySelectorAll("#feedback-modal-backdrop .modal-footer button")]
+          .find((b) => /attach/i.test(b.textContent));
+        btn?.click();
+      }),
+    ]);
+    await page.waitForTimeout(600);
+    const out = await page.evaluate(() => ({
+      opened: window.__opened || [],
+      status: document.querySelector("#feedback-modal-backdrop .modal-body p:last-of-type")?.textContent || "",
+    }));
+
+    check("the bundle is still saved when there is no share sheet", !!dl, "no download fired");
+    const name = dl ? dl.suggestedFilename() : "";
+    check("a mail draft was opened", out.opened.length === 1, JSON.stringify(out.opened).slice(0, 120));
+
+    const href = decodeURIComponent(out.opened[0] || "");
+    check("the draft is addressed to the configured address",
+      href.startsWith("mailto:contact@oshwetank.com"), href.slice(0, 80));
+    check("it carries a subject naming the engine", /subject=CitoSkeleton feedback/.test(href), href.slice(0, 160));
+    // The whole point: the one remaining manual step is spelled out IN the
+    // draft, because the dialog is out of sight by then.
+    check("the draft body opens by asking for the attachment",
+      /Please attach the file/i.test(href), href.slice(0, 400));
+    check("it names the exact file that was just saved",
+      name && href.includes(name), `${name} vs draft body`);
+    check("it says where to find it", /Downloads folder/i.test(href), "");
+    check("it says why it matters, so it does not read as optional",
+      /cannot be investigated/i.test(href), "");
+    check("the reporter's own words are still in the draft",
+      /brands are wrong on this capture/.test(href), "");
+    check("the dialog repeats the same instruction",
+      /attach/i.test(out.status) && out.status.includes(name), out.status);
   }
 
   console.log("\nanalyze-feedback: the dialog closes and leaves no errors behind");
