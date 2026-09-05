@@ -830,8 +830,18 @@
    * citations. Retrieved-vs-cited is exactly the distinction this tool
    * exists to measure.
    */
-  const harvestPerplexitySteps = (doc) => {
+  // `answerText` (optional) is the ANSWER cross-check: reported live, a
+  // markdown table's own header row and a table cell reached the fan-out
+  // list ("PhoneWhy it's great for photosTrade-offsTypical price...",
+  // "OnePlus 12 (16GB+512GB)", "~69,998") the same run the clock-prompt bug
+  // came from — content that lives in the rendered ANSWER, not anything the
+  // engine searched FOR. A real sub-query is essentially never an exact
+  // verbatim substring of the answer's own prose; answer content routinely
+  // is. Optional and defaulted so the existing tests that call this with
+  // just `doc` (no answer to cross-check against) keep working unchanged.
+  const harvestPerplexitySteps = (doc, answerText = "") => {
     const norm = (t) => String(t || "").replace(/\s+/g, " ").trim();
+    const normAnswer = norm(answerText).toLowerCase();
     const steps = [];
     try {
       const buttons = Array.from(doc.querySelectorAll("button[aria-expanded]") || []);
@@ -915,10 +925,52 @@
         }
         // text
         if (cur.results.length) continue;                 // trailing chrome ("+7 more")
-        const t = item.text;
-        if (t.length < 3 || t.length > 300) continue;      // prose or a bare glyph
+        // Reported (same real capture as the clock-prompt bug above): the
+        // fan-out list ended up with "21:51 · 1s" as its own entry, the
+        // answer's full opening paragraph (~260 chars — under the old 300
+        // cap) as another, and a markdown table header row whose cells had
+        // been joined with no space between them ("PhoneWhy it's great for
+        // photosTrade-offsTypical price..."). None of these are a real
+        // sub-query the engine ran.
+        //
+        // A follow-up real capture showed the SAME clock element can glue
+        // onto the END of an otherwise-real row with no separator at all —
+        // "best camera phone under 8000023:47" is "80000" + "23:47" with
+        // nothing between them. Rejecting the whole row (what the bare-clock
+        // check below does) would have thrown away a perfectly good query;
+        // stripped instead, salvaging the real text before it.
+        let t = item.text.replace(/(\d{1,2}:\d{2}(\s*[·•]\s*\d+\s*s)?)$/i, "").trim();
+        // Same capture: the fan-out list also picked up the answer's own
+        // heading ("Top camera phones under ₹80,000...") and several table
+        // cells verbatim (a product name, a price, a spec list) — content
+        // that lives in the rendered ANSWER, not anything searched for. A
+        // real sub-query is essentially never an exact verbatim substring
+        // of the answer's own prose; answer content routinely is.
+        if (normAnswer && t.length >= 6 && normAnswer.includes(t.toLowerCase())) continue;
+        // Tightened the length cap to something a real query (fanout.js's
+        // own benchmark: ~12-15 words, well under 160 chars) can still
+        // clear but a full sentence can't; a bare clock/duration reading
+        // (the same UI element behind the prompt bug) is rejected outright;
+        // two or more missing-space word joins in one string is the
+        // concatenation artifact's own signature — a real query with one
+        // camelCase brand name in it (OnePlus, PhonePe) never produces more
+        // than one such transition.
+        if (t.length < 3 || t.length > 160) continue;      // prose or a bare glyph
         if (/^\+\d+\s*more$/i.test(t)) continue;
         if (/^(finished|sources?|steps?|searched)$/i.test(t)) continue;
+        if (/^\d{1,2}:\d{2}(\s*[·•]\s*\d+\s*s)?$/i.test(t)) continue;
+        // Reported (a follow-up capture, "best camera phone under 30000"):
+        // the fan-out list also picked up "gadgets360+1" as its own entry —
+        // the citation-chip UI element under the answer (favicon stack +
+        // primary cited domain + "+N" for the rest), rendered with zero
+        // separator between the domain and its badge exactly like the clock
+        // element glues onto adjacent text. It isn't a substring of the
+        // answer (it's assembled client-side from the citation list, not
+        // written in the markdown), so the answerText cross-check above
+        // never catches it; a real query never ends in a bare "+digit" with
+        // no space before it.
+        if (/^[a-z0-9][a-z0-9.-]*\+\d+$/i.test(t)) continue;
+        if ((t.match(/[a-z][A-Z]/g) || []).length >= 2) continue;
         if (t === cur.name) continue;
         if (!cur.subQueries.includes(t)) cur.subQueries.push(t);
       }
@@ -1043,12 +1095,27 @@
           answerText = chosen.map((p) => domToMarkdown(p)).filter(Boolean).join("\n\n").trim();
         }
 
+        // Reported: the prompt was captured as "21:51" — a bare clock time.
+        // Perplexity's answer-page presentation (its fullscreen/immersive
+        // reader view, distinct from the normal threaded chat this harvester
+        // is built against) apparently shows a timestamp somewhere near
+        // where these selectors look for the query, and every fallback below
+        // (user bubble, tab title, h1) can end up reading it. Scrubbed out
+        // HERE, unconditionally, before the fallback chain even runs — a
+        // clock time must never be the "last resort, better than nothing"
+        // answer either, unlike an answer heading (below), which is at least
+        // real text the model wrote.
+        const looksLikeClock = (s) => /^\d{1,2}:\d{2}(\s*[·•]\s*\d+\s*s)?$/i.test(String(s || "").trim());
+        if (looksLikeClock(promptText)) promptText = "";
+
         // Prompt fallbacks, in order of how much they can be trusted. This
         // runs AFTER answerText is known so the heading guard below can
         // actually check against it.
-        const titleFromDoc = document.title
+        let titleFromDoc = document.title
           ? document.title.replace(/\s*-\s*Perplexity.*$/i, "").replace(/^Perplexity\s*-\s*/i, "").trim()
           : "";
+        if (looksLikeClock(titleFromDoc)) titleFromDoc = "";
+        if (looksLikeClock(generatedTitle)) generatedTitle = "";
         // A candidate that appears verbatim as its own LINE inside the answer
         // is a section heading the model wrote, not something the user typed.
         // This is the check that would have caught all four bad real captures.
@@ -1260,7 +1327,7 @@
         // Sources). Additive: when the steps panel isn't present or the
         // selectors miss, this stays empty and fan-out reports 0 exactly as
         // it does today — it never degrades an otherwise good capture.
-        queryPlan = harvestPerplexitySteps(document);
+        queryPlan = harvestPerplexitySteps(document, answerText);
 
         // Every source a STEP retrieved is a real source, whether or not the
         // answer went on to cite it. On the captured answer the steps list

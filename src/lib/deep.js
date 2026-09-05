@@ -70,3 +70,22 @@ export function domainOf(url) {
     return "";
   }
 }
+
+/* ---------- shared inline-citation marker: [[cite:URL]] ----------
+ *
+ * A URL-keyed inline citation marker, positioned in the answer text exactly
+ * where the platform's own citation sat. First introduced for Perplexity's
+ * DOM harvester (content-iso.js writes it directly from
+ * data-pplx-citation-url), and now the same shape Grok's adapter converts
+ * its own <grok:render card_id="…">…</grok:render> tags into (see grok.js).
+ * A single shared shape means one export renderer (exportDoc.js's
+ * renderPerplexityAnswer) can turn it into numbered footnotes for both
+ * platforms, and one strip function keeps it out of whatever text brand
+ * detection scans — a citation marker that survives into detection input
+ * lets a cited domain match its own URL inside its own marker (see
+ * perplexity.js's stripCiteMarkersForDetection, the bug this closes).
+ */
+export const CITE_MARKER_RE = /\[\[cite:https?:\/\/[^\]\s]+\]\]/g;
+export function stripCiteMarkers(text) {
+  return text ? text.replace(CITE_MARKER_RE, "") : text;
+}

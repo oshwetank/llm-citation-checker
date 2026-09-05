@@ -106,7 +106,7 @@ console.log("\nperplexity-fanout: wiring");
   check("the steps disclosure is expanded alongside Sources",
     /PPLX_EXPAND_LABEL_RE\.test\(t\)/.test(src),
     "the steps panel must be opened or its content is never in the DOM to read");
-  check("the harvester calls harvestPerplexitySteps", /queryPlan\s*=\s*harvestPerplexitySteps\(document\)/.test(src));
+  check("the harvester calls harvestPerplexitySteps", /queryPlan\s*=\s*harvestPerplexitySteps\(document,\s*answerText\)/.test(src));
   check("query_plan is emitted in the captured payload", /query_plan:\s*queryPlan\.length\s*\?\s*queryPlan\s*:\s*undefined/.test(src));
   // The label net must actually match what Perplexity writes on that button.
   const m = src.match(/const PPLX_STEP_LABEL_RE = (\/.*\/[a-z]*);/);

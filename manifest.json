@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "CitoSkeleton",
   "version": "0.35.0",
-  "description": "Capture ChatGPT, Gemini, Perplexity, Grok & Claude fan-out, citations & brand mentions. Local-only \u2014 nothing leaves your device.",
+  "description": "See what ChatGPT, Gemini, Perplexity and Grok search, fetch and cite \u2014 and which brands they name. Local-only, no account.",
   "permissions": [
     "storage",
     "unlimitedStorage",
