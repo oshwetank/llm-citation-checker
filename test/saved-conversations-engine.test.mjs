@@ -57,6 +57,15 @@ async function seedFixtures(context, extId) {
   const page = await context.newPage();
   await page.goto(`chrome-extension://${extId}/ui/panel.html`);
   await page.waitForTimeout(600);
+  // That first navigation, on a genuinely empty store, is exactly the
+  // condition maybeFirstRun() (panel.js) auto-loads one sample/demo capture
+  // under — it isn't seeded by this test but shows up as a real row in
+  // Saved Conversations regardless, inflating the count by one. Clear it
+  // before seeding the real fixtures so what this test counts is only what
+  // it itself put there.
+  await page.evaluate(
+    () => new Promise((resolve) => chrome.runtime.sendMessage({ type: "demo-clear" }, resolve))
+  );
   for (const f of FILES) {
     const raw = readFileSync(path.join(FIXDIR, f), "utf8");
     const isGemini = f.startsWith("gemini");
