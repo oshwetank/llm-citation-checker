@@ -39,7 +39,11 @@ a brand's Visibility — and the numbers would stop being reproducible.
 - **Sources**, split into `cited` / `fetched` / `mentioned`. The gap between what a model
   *read* and what it *credited* is usually where the optimisation opportunity is.
 - **Brand mentions** — automatic and industry-agnostic. No word list to maintain; it works
-  the same for banking, jewellery, hospitals or phones.
+  the same for banking, jewellery, hospitals or phones. Detection is tied to how a name is
+  *written* — a capitalized proper noun in prose, not a category word from the prompt — so it
+  holds up whichever way an answer happens to be laid out: a table with a use-case column
+  instead of a name column, plain prose, headings, or bullet lists all report the same
+  brands.
 - **Products, prices, ratings, merchants** from shopping carousels.
 - **Local businesses** — name, rating, review count, address, phone, hours, Place ID.
 - **Entities**, reference-type breakdown, carousel flags, and the reconstructed answer text.
@@ -108,16 +112,45 @@ one. This is real automation of a service whose terms discourage it; treat it ac
 
 ## Exports
 
-- **Conversation → HTML / PDF** — a clean, readable document with ChatGPT's inline citations
-  rendered as numbered footnotes linked to the right source, plus product images, sources,
-  fan-out queries and brand mentions. PDF uses the browser's own print engine, so the text
-  stays selectable. One conversation, or many composed into a single document with a
-  contents page.
+- **Conversation → HTML / PDF** — a clean, readable document with inline citations
+  rendered as numbered footnotes linked to the right source (ChatGPT, Perplexity and Grok
+  alike — a raw `<grok:render>` citation tag or a `[[cite:URL]]` marker never leaks into the
+  page as garbled text), plus product images, sources, fan-out queries and brand mentions.
+  PDF uses the browser's own print engine, so the text stays selectable. One conversation, or
+  many composed into a single document with a contents page.
 - **Excel (.xls)** — 11 worksheets covering every captured field: summary, audit log, source
   analysis, domains, full sources, fan-out queries, brand mentions, products, local
   businesses, entities and full answer text.
 - **Detailed CSV**, **bulk JSON**, and a per-drill-down CSV from any Dashboard metric.
 - **Campaign metrics CSV** from the Campaigns tab.
+
+## Reporting a problem
+
+A small icon in the Analyze context bar opens a report dialog that builds one archive from
+the four things a real bug is actually diagnosed from: your note, the same HTML report
+**Save as PDF** produces, the raw captured payload, and the derived record. Unlike the About
+tab's diagnostic report, this bundle *does* contain prompt/answer/URL text — the dialog says
+so before anything is written, and each part can be unticked. Nothing is transmitted by the
+extension itself: the archive is built in the page and handed to you (via the OS share sheet
+where available, or a downloaded file) to send however you choose.
+
+## Reliability & safety
+
+A Campaign run is real automation sitting on your own logged-in session, so it's held to a
+higher bar than a normal feature:
+
+- **A tab you've reclaimed for your own use is never silently driven.** Every navigation a
+  run makes to a Loader-owned tab is checked first — the tab must still exist and still be on
+  the expected engine — before it's touched. Click a source link, check something else, or
+  come back after a browser restart (which reassigns tab IDs) and the run parks itself with an
+  honest reason instead of navigating whatever page now holds that ID.
+- **A stuck run no longer fails silently forever.** Recovery after a worker restart or a
+  browser restart is logged, not swallowed, and a degraded database read no longer turns into
+  a repeating, invisible failure on every heartbeat tick.
+- **Brand tracking survives being renamed mid-answer.** The on-device enrichment layer can
+  upgrade a detected brand to a fuller form ("Ant" → "Ant Esports"), including more than once
+  in the same answer — a brand tracked under any of those forms (original, current, or a form
+  in between) still counts, in both the live metrics and the Excel export.
 
 ## Tests
 
@@ -125,14 +158,18 @@ one. This is real automation of a service whose terms discourage it; treat it ac
 for t in test/*.test.mjs; do node "$t"; done
 ```
 
-282 assertions across five suites, all fixture-backed by real captured payloads:
+55 test files, 1,500+ assertions, all fixture-backed by real captured payloads. A CI job
+(`every test file is wired into CI`) fails the build if a test file exists but isn't wired
+into the suite, so this can't quietly drift. Representative suites:
 
 | Suite | Covers |
 |---|---|
-| `adapter.test.mjs` | Both adapters against real capture fixtures |
+| `adapter.test.mjs` | All four adapters against real capture fixtures |
+| `brand-context.test.mjs` | Brand detection that survives the answer's layout changing (table columns, prose, headings, bullet lists) |
 | `behaviour.test.mjs` | Regressions that once broke silently — answer-text persistence, marker parsing, export rendering |
 | `brands.test.mjs` | Industry-agnostic brand detection across many verticals |
 | `geo.test.mjs` | Campaign metrics, worked examples for each formula, and the ad-hoc/campaign isolation |
+| `feedback-bundle.test.mjs` | The problem-report archive, unpacked and verified with an independent zip reader |
 | `xlsxlite.test.mjs` | The dependency-free XLSX reader |
 
 Because raw payloads are kept, **↻ Reprocess all captures** (About tab) re-derives every
@@ -142,27 +179,49 @@ so a parser fix means a new store submission, and your history has to survive th
 ## Project layout
 
 ```
-manifest.json            MV3 manifest (chatgpt.com, chat.openai.com, gemini.google.com)
+manifest.json           MV3 manifest — chatgpt.com, chat.openai.com, gemini.google.com,
+                        perplexity.ai, grok.com/x.com
 src/
-  content-main.js        MAIN world: patches fetch + XHR, tees the response (no parsing)
-  content-iso.js         ISOLATED world: relays raw captures, drives campaign runs
-  background.js          service worker: storage, adapter dispatch, campaign
-                         orchestration, metrics computation, message API
-  schema.js              the normalized cross-engine record
-  adapters/chatgpt.js    ChatGPT extraction (SSE delta reconstruction, marker parsing)
-  adapters/gemini.js     Gemini extraction (batchexecute / StreamGenerate)
-  lib/geo.js             campaign shapes + the metrics engine
-  lib/brands.js          industry-agnostic brand/entity detection
-  lib/exportDoc.js       conversation → HTML/PDF renderer
-  lib/xlsxLite.js        dependency-free XLSX reader for prompt import
-  lib/db.js              IndexedDB wrapper (v4: raw, derived, projects, runs,
-                         profiles, trackedPrompts, geoRuns)
-  lib/gzip.js            CompressionStreams helpers
-  lib/deep.js            deep-walk / shape-search utilities
+  content-main.js       MAIN world: patches fetch + XHR, tees the response (no parsing)
+  content-iso.js        ISOLATED world: relays raw captures, drives campaign runs
+  background.js         service worker: storage, adapter dispatch, campaign
+                        orchestration (tab ownership, heartbeat recovery),
+                        metrics computation, message API
+  schema.js             the normalized cross-engine record
+  adapters/
+    chatgpt.js          SSE delta reconstruction, marker parsing
+    gemini.js           batchexecute / StreamGenerate
+    perplexity.js       network + DOM-harvest capture, citation markers
+    grok.js             network + DOM-harvest capture, <grok:render> tags
+  lib/
+    geo.js              campaign shapes + the metrics engine
+    brands.js           industry-agnostic brand/entity detection (Tier C, always on)
+    ai-brands.js        on-device AI enrichment layered on top of brands.js
+    funnel-omitted.js   "retrieved but never written" — brands/models a source
+                        named that the answer dropped
+    mention-list.js     SKU → parent-brand collapsing for the mention list
+    fanout.js           fan-out query classification
+    grounding-score.js  verbatim grounding score
+    campaignWorkbook.js the multi-sheet campaign Excel export
+    exportDoc.js        conversation → HTML/PDF renderer
+    feedbackBundle.js   builds the problem-report archive
+    zipWrite.js         dependency-free zip writer (CompressionStream, STORED fallback)
+    xlsxLite.js         dependency-free XLSX reader for prompt import
+    errorlog.js         the durable, privacy-scrubbed error log
+    auth-check.js       pre-flight session check before a Campaign run submits
+    pacing.js           human-paced submission timing
+    glossary.js         the one definition per metric the UI's tooltips read from
+    demo-data.js        first-run sample data
+    db.js               IndexedDB wrapper (raw, derived, projects, runs,
+                        profiles, trackedPrompts, geoRuns, errors)
+    nano.js             Chrome's on-device Gemini Nano hook
+    gzip.js             CompressionStreams helpers
+    deep.js             deep-walk / shape-search utilities
+    sources.js, text-sanitize.js   shared source/text helpers
 ui/
-  panel.html/.css/.js    Analyze · Dashboard · Campaigns · Compare · About
-  export.html/.js        the print-to-PDF page
-test/                    five suites + real capture fixtures
+  panel.html/.css/.js   Analyze · Dashboard · Campaigns · Compare · About
+  export.html/.js       the print-to-PDF page
+test/                   55 suites + real capture fixtures
 ```
 
 ## Privacy
