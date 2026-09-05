@@ -28,7 +28,6 @@ import { enrichBrandsWithAI, enrichBrandStance } from "./lib/ai-brands.js";
 import { adapt as adaptGemini } from "./adapters/gemini.js";
 import { adapt as adaptPerplexity } from "./adapters/perplexity.js";
 import { adapt as adaptGrok } from "./adapters/grok.js";
-import { adapt as adaptClaude } from "./adapters/claude.js";
 import {
   MAX_PROFILES, TRASH_RETENTION_DAYS, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
   selectTracked, computeMetrics, computeSeries, brandPresence, normName,
@@ -50,7 +49,6 @@ const ADAPTERS = {
   gemini: adaptGemini,
   perplexity: adaptPerplexity,
   grok: adaptGrok,
-  claude: adaptClaude,
 };
 
 const AI_TAB_MATCHES = [
@@ -62,7 +60,6 @@ const AI_TAB_MATCHES = [
   "https://grok.com/*",
   "https://x.com/i/grok/*",
   "https://x.com/i/grok",
-  "https://claude.ai/*",
 ];
 
 /* ---------- Settings ---------- */
@@ -129,7 +126,6 @@ function platformFromUrl(url) {
   if (/gemini\.google\.com|BardChatUi|StreamGenerate/i.test(u)) return "gemini";
   if (/perplexity\.ai|\/api\/sse\/query|\/api\/thread|\/rest\/queries/i.test(u)) return "perplexity";
   if (/grok\.com|x\.com\/i\/grok|app-chat\/conversations/i.test(u)) return "grok";
-  if (/claude\.ai|chat_conversations/i.test(u)) return "claude";
   if (/chatgpt\.com|chat\.openai\.com|backend-api/i.test(u)) return "chatgpt";
   return "chatgpt";
 }
@@ -366,6 +362,39 @@ const LOADER_STATE_KEY = "lcfcLoaderState";
 const HEARTBEAT_ALARM = "lcfcHeartbeat";
 const DURATION_WINDOW = 10; // per-platform rolling window of turn durations, for Phase 2's ETA
 
+// A value that exists only for the CURRENT browser session — chrome.storage
+// .session is wiped by Chrome on every browser restart, unlike storage.local
+// (which the loader snapshot itself uses, deliberately, so a run can survive
+// one — see persistLoaderState below). Comparing a persisted snapshot's nonce
+// against this one is how resumeFromSnapshot tells "the service worker
+// restarted within the same browser session" (safe — the snapshot's tabIds
+// are still valid) from "the browser itself restarted" (unsafe — Chrome
+// reassigns tab ids from scratch, and a persisted id can silently resolve to
+// a completely unrelated tab that happens to inherit it; chrome.tabs.get
+// resolving without throwing is not proof the tab is still ours).
+const SESSION_NONCE_KEY = "lcfcSessionNonce";
+let sessionNonceCache = null;
+async function ensureSessionNonce() {
+  if (sessionNonceCache) return sessionNonceCache;
+  try {
+    const got = await chrome.storage.session.get(SESSION_NONCE_KEY);
+    if (got[SESSION_NONCE_KEY]) {
+      sessionNonceCache = got[SESSION_NONCE_KEY];
+      return sessionNonceCache;
+    }
+    const fresh = crypto.randomUUID();
+    await chrome.storage.session.set({ [SESSION_NONCE_KEY]: fresh });
+    sessionNonceCache = fresh;
+    return fresh;
+  } catch (err) {
+    logErr("ensureSessionNonce", err);
+    // Fail toward treating this as a new session: a null returned here never
+    // equals a real stored nonce, so a mismatch is assumed and the run parks
+    // rather than silently trusting tabIds it can no longer vouch for.
+    return null;
+  }
+}
+
 let loader = newLoaderState();
 function newLoaderState() {
   return { running: false, paused: false, options: {}, done: 0, errors: 0, total: 0, platforms: {}, runId: null, interrupted: null };
@@ -391,6 +420,10 @@ async function persistLoaderState() {
       errors: loader.errors,
       total: loader.total,
       runId: loader.runId,
+      // Stamped fresh on every write so a resume always compares against the
+      // CURRENT session's nonce, not a stale one cached from before this
+      // worker instance's own restart.
+      sessionNonce: await ensureSessionNonce(),
       platforms: Object.fromEntries(
         Object.entries(loader.platforms).map(([plat, pd]) => [
           plat,
@@ -468,7 +501,14 @@ async function loadPersistedLoaderState() {
 // unconditionally on every worker startup would keep resetting the 1-minute
 // schedule — check first so a worker that restarts often doesn't keep
 // pushing the heartbeat further into the future.
-(async () => {
+//
+// Chrome's own docs are explicit that alarms are NOT guaranteed to survive
+// an extension update or a browser restart, and recommend re-creating them
+// on every worker start rather than assuming a prior registration still
+// exists — this top-level IIFE already runs on every fresh worker
+// evaluation, and ensureHeartbeatAlarm is also called explicitly from
+// onStartup below, so a missing alarm gets caught from either direction.
+async function ensureHeartbeatAlarm() {
   try {
     const existing = await chrome.alarms.get(HEARTBEAT_ALARM);
     if (!existing) await chrome.alarms.create(HEARTBEAT_ALARM, { periodInMinutes: 1 });
@@ -478,10 +518,33 @@ async function loadPersistedLoaderState() {
     // log line even though it only happens in unusual environments.
     logErr("alarms.create(heartbeat)", err);
   }
-})();
+}
+ensureHeartbeatAlarm();
+
+// Fires once, as soon as the browser itself starts (not just this worker) —
+// the earliest possible chance to notice a run left mid-flight by the
+// previous browser session, rather than waiting up to a minute for the next
+// periodic alarm tick. Re-arming the alarm here too closes the specific gap
+// Chrome's docs warn about: an alarm can be dropped across a restart, and
+// onStartup is the one guaranteed signal that a restart just happened.
+chrome.runtime.onStartup?.addListener(() => {
+  ensureHeartbeatAlarm();
+  heartbeatTick().catch((err) => logErr("heartbeatTick:onStartup", err));
+});
 
 chrome.alarms?.onAlarm?.addListener((alarm) => {
-  if (alarm.name === HEARTBEAT_ALARM) heartbeatTick().catch(() => {});
+  if (alarm.name === HEARTBEAT_ALARM) {
+    // Previously `.catch(() => {})` — a resume that throws once (a null
+    // tabId reaching chrome.tabs.get unguarded, a corrupted snapshot, a
+    // schema mismatch after an update) repeated that same silent failure
+    // every single minute forever, with zero trace anywhere: this is the
+    // best-evidenced explanation for a run that stops for good with no
+    // visible error. Routing it through logErr doesn't fix the underlying
+    // throw, but it turns "silently stuck forever" into "visible in the
+    // error log," which is the difference between an unfixable mystery and
+    // a reportable bug.
+    heartbeatTick().catch((err) => logErr("heartbeatTick", err));
+  }
 });
 
 async function heartbeatTick() {
@@ -581,6 +644,65 @@ function legsOf(pd) {
   return [];
 }
 
+// One place for "what is this platform's home URL" — shared by loaderRunLeg
+// (the URL it navigates to), checkTabOwnership (the hostnames a tab must be
+// on to still count as ours) and loader-resume's tab recreation. Previously
+// loader-resume had its own, separate, incomplete copy of this ladder
+// (gemini vs. a chatgpt.com fallback for everything else), so recreating a
+// dead Perplexity or Grok tab after a park silently sent it to chatgpt.com
+// instead — fixed here by giving both call sites one source of truth.
+function engineBaseUrl(plat) {
+  if (plat === "gemini") return "https://gemini.google.com/app";
+  if (plat === "perplexity") return "https://www.perplexity.ai/";
+  if (plat === "grok") return "https://grok.com/";
+  return "https://chatgpt.com/";
+}
+
+// Hostnames each platform's Loader-owned tab is expected to be on.
+// about:blank (a tab's state before its first-ever navigation) always
+// passes — there is nothing to have navigated away from yet.
+const ENGINE_HOSTS = {
+  chatgpt: ["chatgpt.com", "chat.openai.com"],
+  gemini: ["gemini.google.com"],
+  perplexity: ["perplexity.ai", "www.perplexity.ai"],
+  grok: ["grok.com", "x.com"],
+};
+
+/**
+ * The single seam every leg-owning tab navigation goes through before
+ * touching that tab. Confirms the tab still exists AND is still showing
+ * this leg's engine — or hasn't navigated yet — before the caller may act.
+ *
+ * Without this, a user who clicks a source link or a related question, or
+ * just switches to something else in a Loader tab, has that tab silently
+ * navigated back to the engine (with the next prompt auto-submitted into
+ * it) the moment the Loader schedules its next turn or a stale run
+ * resumes — the extension acting on a page the user has reclaimed for
+ * their own use. That's a trust-boundary problem, not a data-quality one:
+ * `loader-verify` (see that message handler) only stops a THIRD PARTY page
+ * from spoofing a submit; it does nothing here, because the Loader's own
+ * fresh token for this leg is exactly what would pass it.
+ */
+async function checkTabOwnership(plat, leg) {
+  let tab;
+  try {
+    tab = await chrome.tabs.get(leg.tabId);
+  } catch (_) {
+    return { ok: false, reason: "tab_closed" };
+  }
+  const url = tab && tab.url;
+  if (!url || url === "about:blank") return { ok: true };
+  let host;
+  try {
+    host = new URL(url).hostname;
+  } catch (_) {
+    return { ok: false, reason: "user_navigated" };
+  }
+  const allowed = ENGINE_HOSTS[plat] || [];
+  if (allowed.some((h) => host === h || host.endsWith(`.${h}`))) return { ok: true };
+  return { ok: false, reason: "user_navigated" };
+}
+
 /**
  * Rebuild `loader` from a persisted snapshot after this worker instance
  * turns out to have no memory of an active run — i.e. a previous instance
@@ -591,13 +713,23 @@ function legsOf(pd) {
  * have more than one concurrent tab.
  */
 async function resumeFromSnapshot(snap) {
+  // Compared BEFORE anything else touches a tab. A mismatch means this is a
+  // different browser session than the one that wrote the snapshot — tab ids
+  // may have been reassigned to unrelated tabs — so every leg is treated as
+  // if its tab were gone (see checkTabOwnership's header) without a single
+  // chrome.tabs.get call spent finding that out the hard way.
+  const liveNonce = await ensureSessionNonce();
+  const restarted = !!(snap.sessionNonce && snap.sessionNonce !== liveNonce);
+
   const platEntries = Object.entries(snap.platforms || {});
   const all = platEntries.length ? await db.getAll("derived") : [];
 
   loader = {
     running: true,
-    paused: !!snap.paused,
-    interrupted: snap.interrupted || null,
+    paused: restarted ? true : !!snap.paused,
+    interrupted: restarted
+      ? { at: Date.now(), reason: "browser restarted" }
+      : (snap.interrupted || null),
     options: snap.options || {},
     done: 0,
     errors: snap.errors || 0,
@@ -621,7 +753,11 @@ async function resumeFromSnapshot(snap) {
         if (!outcomes[i]) outcomes[i] = { status: "done", reason: null, at: Date.now() };
       }
       return {
-        tabId: sl.tabId,
+        // A restarted browser session may have reassigned this id to an
+        // unrelated tab — null it out so nothing (including a later Resume
+        // click) mistakes it for still being ours; Resume already creates a
+        // fresh tab whenever tabId is null.
+        tabId: restarted ? null : sl.tabId,
         startOffset: sl.startOffset || 0,
         prompts: legPrompts,
         idx,
@@ -653,33 +789,34 @@ async function resumeFromSnapshot(snap) {
       // treat its silence as a crash; loader-resume clears this explicitly.
       if (leg.paused) continue;
 
-      let tabAlive = true;
-      try {
-        await chrome.tabs.get(leg.tabId);
-      } catch (_) {
-        tabAlive = false;
-      }
-
-      if (!tabAlive) {
-        // The tab is gone. It still must not be silently recreated — a
-        // surprise tab navigating itself is exactly what the original code
-        // was right to avoid — but marking every remaining prompt FAILED is
-        // worse, and after a browser restart the tabs are ALWAYS gone, so a
-        // long run would lose its whole remainder the moment it was
-        // reloaded. That made runs longer than one browsing session
-        // impossible.
+      const ownership = await checkTabOwnership(plat, leg);
+      if (!ownership.ok) {
+        // The tab is gone, OR it exists but has been navigated away from the
+        // engine (the user reclaimed it for their own browsing) — either way
+        // it must not be silently recreated or renavigated. Marking every
+        // remaining prompt FAILED is worse, and after a browser restart the
+        // tabs are ALWAYS gone, so a long run would lose its whole remainder
+        // the moment it was reloaded. That made runs longer than one
+        // browsing session impossible.
         //
         // Instead the run is parked: still running, paused, flagged
         // resumable, nothing failed. The UI surfaces "interrupted — N left,
         // Resume?" and the user's explicit Resume recreates the tab (see
         // loader-resume). Deliberate, reversible, and no tab appears without
-        // a click. Any ONE leg being gone parks the WHOLE run, same as
-        // before concurrency — a partial resume (some tabs alive, some not)
-        // would need its own "which legs are still going" UI, and simply
-        // parking everything keeps one predictable recovery path.
+        // a click, and no page the user is using gets navigated out from
+        // under them. Any ONE leg being gone or reclaimed parks the WHOLE
+        // run, same as before concurrency — a partial resume (some tabs
+        // alive, some not) would need its own "which legs are still going"
+        // UI, and simply parking everything keeps one predictable recovery
+        // path.
         leg.tabId = null;
         loader.paused = true;
-        loader.interrupted = { at: Date.now(), reason: "browser or tab closed mid-run" };
+        loader.interrupted = {
+          at: Date.now(),
+          reason: ownership.reason === "tab_closed"
+            ? "browser or tab closed mid-run"
+            : "a Loader tab was navigated away from the engine",
+        };
         continue;
       }
 
@@ -996,6 +1133,23 @@ async function loaderRunLeg(plat, leg) {
     return;
   }
 
+  // Confirmed BEFORE this turn's state is committed — a user who has
+  // reclaimed this tab for their own browsing must not have their page
+  // silently replaced by the next scheduled prompt. See checkTabOwnership's
+  // header for why loader-verify alone doesn't cover this.
+  const ownership = await checkTabOwnership(plat, leg);
+  if (!ownership.ok) {
+    if (ownership.reason === "tab_closed") {
+      failTurnAndAdvance(plat, leg, "tab closed", 500);
+    } else {
+      leg.tabId = null;
+      loader.paused = true;
+      loader.interrupted = { at: Date.now(), reason: "a Loader tab was navigated away from the engine" };
+      await persistLoaderState();
+    }
+    return;
+  }
+
   const prompt = leg.prompts[leg.idx];
   const q = encodeURIComponent(prompt);
   // A one-time token proves to the content script that THIS navigation came from
@@ -1006,12 +1160,7 @@ async function loaderRunLeg(plat, leg) {
   await persistLoaderState();
 
   const search = plat === "chatgpt" && loader.options.forceSearch ? "&lcfcsearch=1" : "";
-  let base = "https://chatgpt.com/";
-  if (plat === "gemini") base = "https://gemini.google.com/app";
-  else if (plat === "perplexity") base = "https://www.perplexity.ai/";
-  else if (plat === "grok") base = "https://grok.com/";
-  else if (plat === "claude") base = "https://claude.ai/new";
-  const url = `${base}?q=${q}&lcfc=1&lcfctok=${leg.token}${search}`;
+  const url = `${engineBaseUrl(plat)}?q=${q}&lcfc=1&lcfctok=${leg.token}${search}`;
 
   try {
     await chrome.tabs.update(leg.tabId, { url });
@@ -2113,8 +2262,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 }
                 if (!alive) {
                   try {
-                    const base = plat === "gemini" ? "https://gemini.google.com/app" : "https://chatgpt.com/";
-                    const tab = await chrome.tabs.create({ url: base, active: false });
+                    const tab = await chrome.tabs.create({ url: engineBaseUrl(plat), active: false });
                     leg.tabId = tab.id;
                   } catch (_) {
                     // Couldn't open a tab — leave the run paused rather than

@@ -10,7 +10,7 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.31.0** — ChatGPT, Gemini, Perplexity, Grok and Claude. See
+> **v0.36.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research.
 
@@ -71,7 +71,8 @@ visible gap — so the UI reports it as "not measured" and says why.
 |---|---|
 | **ChatGPT** | Full — fan-out, cited/fetched split, products, places, brands, answer text |
 | **Gemini** | Full except fan-out — citations, shopping, local/places, answer text |
-| Perplexity · Claude · Grok | Not built. Shown disabled in the UI rather than hidden, so a metric can never silently under-count because a checkbox did nothing |
+| **Perplexity** | Fan-out, query plan, sources, brands, answer text (network + DOM-harvest capture) |
+| **Grok** | Fan-out, sources, brands, answer text (network + DOM-harvest capture) |
 
 ## Install (unpacked)
 
@@ -167,13 +168,13 @@ test/                    five suites + real capture fixtures
 ## Privacy
 
 Everything stays in your browser's IndexedDB. The extension makes no network requests and
-asks for host access to the supported engines only (ChatGPT, Gemini, Perplexity, Grok and
-Claude). Raw payloads are gzipped; storage is capped
+asks for host access to the supported engines only (ChatGPT, Gemini, Perplexity and
+Grok). Raw payloads are gzipped; storage is capped
 (default 2,000 captures, 8 MB per payload) with oldest-first pruning. Clear everything from
 the Dashboard at any time.
 
 ## Not built yet
 
-Perplexity / Claude / Grok adapters · Google AI Mode (the other real fan-out surface) ·
+Google AI Mode (the other real fan-out surface) ·
 sentiment · trend charts (the series is computed and tested, just not drawn) · per-prompt
 drill-down showing which prompts a brand is losing on.

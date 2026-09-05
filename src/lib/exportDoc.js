@@ -55,7 +55,6 @@ const PLATFORM_LABELS = {
   gemini: "Gemini",
   perplexity: "Perplexity",
   grok: "Grok",
-  claude: "Claude",
 };
 
 function esc(s) {

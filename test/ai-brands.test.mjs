@@ -56,6 +56,13 @@ console.log("\ndetectBrandsAI: Tier B upgrades a truncated name to its full form
   check("Tier B upgrades it to the full 'Ant Esports'", after.brands.some((b) => b.brand === "Ant Esports"), JSON.stringify(after.brands));
   check("no leftover truncated 'Ant' entry after the upgrade", !after.brands.some((b) => b.brand === "Ant"), JSON.stringify(after.brands));
   check("the same number of brand entries — an upgrade, not an addition", after.brands.length === before.brands.length, `${before.brands.length} -> ${after.brands.length}`);
+  // The pre-upgrade name must survive the rename — geo.js's brandPresence()
+  // matches a tracked brand against it too, so a brand tracked under its
+  // original short name ("Ant") isn't silently lost the moment this upgrades
+  // the stored entry to "Ant Esports".
+  const upgraded = after.brands.find((b) => b.brand === "Ant Esports");
+  check("originalName preserves the pre-upgrade name", upgraded && upgraded.originalName === "Ant", upgraded && upgraded.originalName);
+  check("aliases records the pre-upgrade form too", upgraded && upgraded.aliases.includes("Ant"), upgraded && JSON.stringify(upgraded.aliases));
   registerTierB(null);
 }
 

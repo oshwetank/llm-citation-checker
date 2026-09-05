@@ -118,13 +118,6 @@
       userTurn: '.user-message, [data-message-author="user"]',
       turns: ".message-row, [data-message-author]",
     },
-    claude: {
-      composer: ['div[contenteditable="true"]', "div.ProseMirror", "textarea"],
-      send: ['button[aria-label*="Send" i]', 'button[aria-label*="Send Message" i]'],
-      streaming: ['button[aria-label*="Stop" i]'],
-      userTurn: '[data-testid="user-message"], .font-user-message',
-      turns: '[data-testid="chat-message"], .font-claude-message',
-    },
   };
 
   const pick = (list) => {
@@ -141,7 +134,6 @@
     if (h.includes("gemini")) return "gemini";
     if (h.includes("perplexity")) return "perplexity";
     if (h.includes("grok") || h.includes("x.com")) return "grok";
-    if (h.includes("claude")) return "claude";
     return "chatgpt";
   };
 
@@ -634,7 +626,7 @@
     }
   })();
 
-  /* ---------- Live DOM Harvester (Fall-safe capture layer for Perplexity / Claude / Grok) ---------- */
+  /* ---------- Live DOM Harvester (Fall-safe capture layer for Perplexity / Grok) ---------- */
   /*
    * domToMarkdown — serialize an answer element to MARKDOWN, not flat text.
    *
@@ -956,7 +948,7 @@
 
     const tryHarvest = () => {
       const plat = getPlatform();
-      if (plat !== "perplexity" && plat !== "grok" && plat !== "claude") return;
+      if (plat !== "perplexity" && plat !== "grok") return;
 
       // x.com maps to "grok", so without this the harvester treated the ENTIRE
       // site as a Grok conversation — running a full document querySelectorAll
@@ -980,7 +972,7 @@
       // platform — a `let` inside `if (plat === "perplexity")` is scoped to
       // that block, so reading it below threw
       // "ReferenceError: generatedTitle is not defined" on EVERY successful
-      // harvest, for Perplexity, Grok and Claude alike. The throw escaped
+      // harvest, for Perplexity and Grok alike. The throw escaped
       // from a setTimeout callback (the try/catch further down only wraps
       // sendMessage, not the payload construction), so the harvest failed
       // silently with no capture and nothing in the page console to notice.
@@ -1300,23 +1292,6 @@
           // are present in the DOM and destroyed by innerText.
           answerText = chosen.map((p) => domToMarkdown(p)).filter(Boolean).join("\n\n").trim();
         }
-      } else if (plat === "claude") {
-        // Same last-turn handling as the other two. Claude is currently
-        // blocked as an engine (see lib/geo.js), but this harvester branch
-        // stays correct so it isn't a landmine whenever Claude is enabled.
-        const userEls = document.querySelectorAll('[data-testid="user-message"], .font-user-message');
-        if (userEls.length) promptText = (userEls[userEls.length - 1].textContent || "").trim();
-
-        const msgEls = document.querySelectorAll('[data-testid="chat-message"], .font-claude-message');
-        if (msgEls.length) {
-          const els = Array.from(msgEls);
-          const perTurn = userEls.length > 0 && els.length === userEls.length;
-          const chosen = perTurn ? [els[els.length - 1]] : els;
-          // Markdown, not innerText — see domToMarkdown's header. The structural
-          // signals brand detection depends on (bold, headings, table columns)
-          // are present in the DOM and destroyed by innerText.
-          answerText = chosen.map((p) => domToMarkdown(p)).filter(Boolean).join("\n\n").trim();
-        }
       }
 
       if (promptText && answerText && answerText.length > 50) {
@@ -1329,7 +1304,7 @@
         // no matter how many turns get appended after it. So every follow-up
         // in an existing chat produced a byte-identical sig to the turn
         // before it and was thrown away — reported on both Perplexity and
-        // Grok, and it would have behaved the same on Claude.
+        // Grok.
         //
         // Length plus the answer's TAIL both move on every new turn, which
         // is what makes each follow-up its own capture.

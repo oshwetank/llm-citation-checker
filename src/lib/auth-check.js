@@ -68,12 +68,6 @@ export const AUTH_COOKIES = {
     domains: ["grok.com", "x.com"],
     names: ["sso", "sso-rw", "auth_token"],
   },
-  claude: {
-    label: "Claude",
-    loginUrl: "https://claude.ai/login",
-    domains: ["claude.ai"],
-    names: ["sessionKey", "__Secure-next-auth.session-token"],
-  },
 };
 
 /**

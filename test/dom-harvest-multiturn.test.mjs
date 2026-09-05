@@ -6,8 +6,8 @@
  * Two real, user-reported bugs, both in the DOM harvester's per-platform
  * extraction, both confirmed against real captured data:
  *
- * 1. FOLLOW-UPS WERE SILENTLY DROPPED (reported on Perplexity and Grok;
- *    Claude's branch had the identical shape). Three compounding causes:
+ * 1. FOLLOW-UPS WERE SILENTLY DROPPED (reported on Perplexity and Grok).
+ *    Three compounding causes:
  *      - `document.querySelector(...)` for the user's prompt returns the
  *        FIRST match, and these threads keep every turn mounted — so the
  *        prompt was always turn 1's, forever.
@@ -105,14 +105,13 @@ check("tryHarvest() found in content-iso.js", !!body, "function renamed or remov
 const node = (text, extra = {}) => ({ textContent: text, innerText: text, getAttribute: () => null, ...extra });
 
 // A stub thread with `turns` Q&A pairs, each turn its own block — the real
-// shape of a Perplexity/Grok/Claude conversation.
+// shape of a Perplexity/Grok conversation.
 function makeThread(plat, turns, { docTitle, h1 } = {}) {
   const userSel = {
     perplexity: '[data-testid="user-query"]',
     grok: ".user-message",
-    claude: '[data-testid="user-message"]',
   }[plat];
-  const answerSel = { perplexity: ".prose", grok: ".message-row", claude: '[data-testid="chat-message"]' }[plat];
+  const answerSel = { perplexity: ".prose", grok: ".message-row" }[plat];
 
   const users = turns.map((t) => node(t.q));
   const answers = turns.map((t) => node(t.a));
@@ -158,7 +157,7 @@ ${STEPS}\nlet lastHarvestedSig = __sigBox.sig;\nlet sourcesExpandAttempts = 99;\
 if (body) {
   console.log("\ndom-harvest-multiturn: follow-up turns are captured, not deduped away");
 
-  for (const plat of ["perplexity", "grok", "claude"]) {
+  for (const plat of ["perplexity", "grok"]) {
     const t1 = { q: "best gaming phone under 50000", a: "A".repeat(200) + " first answer about phones" };
     const t2 = { q: "what about under 30000", a: "B".repeat(200) + " second answer about cheaper phones" };
     const t3 = { q: "which has the best battery", a: "C".repeat(200) + " third answer about battery life" };

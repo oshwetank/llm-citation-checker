@@ -107,7 +107,7 @@ const pct = (n, d) => (d ? Math.round((n / d) * 1000) / 10 : 0);
 const round1 = (n) => (isNum(n) ? Math.round(n * 10) / 10 : null);
 
 /* Engine ids are stored lowercase; nobody wants a column of "chatgpt". */
-const ENGINE_LABEL = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", claude: "Claude", grok: "Grok" };
+const ENGINE_LABEL = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok" };
 const engineName = (id) => ENGINE_LABEL[id] || id || "Unknown";
 
 /* Every fan-out query a capture ran, flattened across the three buckets the

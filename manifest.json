@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "CitoSkeleton",
-  "version": "0.35.0",
-  "description": "Capture ChatGPT, Gemini, Perplexity, Grok & Claude fan-out, citations & brand mentions. Local-only \u2014 nothing leaves your device.",
+  "version": "0.36.0",
+  "description": "Capture ChatGPT, Gemini, Perplexity & Grok fan-out, citations & brand mentions. Local-only \u2014 nothing leaves your device.",
   "permissions": [
     "storage",
     "unlimitedStorage",
@@ -19,8 +19,7 @@
     "https://www.perplexity.ai/*",
     "https://perplexity.ai/*",
     "https://grok.com/*",
-    "https://x.com/*",
-    "https://claude.ai/*"
+    "https://x.com/*"
   ],
   "background": {
     "service_worker": "src/background.js",
@@ -35,8 +34,7 @@
         "https://www.perplexity.ai/*",
         "https://perplexity.ai/*",
         "https://grok.com/*",
-        "https://x.com/*",
-        "https://claude.ai/*"
+        "https://x.com/*"
       ],
       "js": [
         "src/content-main.js"
@@ -52,8 +50,7 @@
         "https://www.perplexity.ai/*",
         "https://perplexity.ai/*",
         "https://grok.com/*",
-        "https://x.com/*",
-        "https://claude.ai/*"
+        "https://x.com/*"
       ],
       "js": [
         "src/content-iso.js"
