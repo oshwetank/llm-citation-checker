@@ -66,6 +66,28 @@ console.log("\ndetectBrandsAI: Tier B upgrades a truncated name to its full form
   registerTierB(null);
 }
 
+console.log("\ndetectBrandsAI: a SHORTER AI-reported name doesn't create a spurious duplicate once a fuller form already landed");
+{
+  // Real shape: one entity pass reports the brand at two specificities from
+  // two different spots in the same answer — a fuller form and, elsewhere,
+  // the bare brand. Before this was fixed, whichever name mergeAiNames saw
+  // AFTER the upgrade already landed only ever checked against the CURRENT
+  // (already-upgraded) brand string, so a shorter name arriving second fell
+  // through to "genuinely new" and became a second, disconnected entry for
+  // what is really the same brand.
+  const answer = "The Ant gaming mouse is popular. Ant Esports India also makes keyboards.";
+  registerTierB(async () => ["Ant Esports India", "Ant"]);
+  const r = await detectBrandsAI(answer, answer, {});
+  const antEntries = r.brands.filter((b) => b.brand === "Ant" || b.brand === "Ant Esports India");
+  check("exactly one entry survives, not two", antEntries.length === 1, JSON.stringify(r.brands));
+  check("it's the fuller form, not regressed back to the short one",
+    antEntries[0] && antEntries[0].brand === "Ant Esports India", antEntries[0] && antEntries[0].brand);
+  check("the shorter form is recorded as an alias, so brandPresence() can still find it",
+    antEntries[0] && (antEntries[0].aliases || []).includes("Ant"),
+    antEntries[0] && JSON.stringify(antEntries[0].aliases));
+  registerTierB(null);
+}
+
 console.log("\ndetectBrandsAI: a name the AI reports that ISN'T actually in the text is not trusted blindly");
 {
   const answer = "**EvoFox Blaze Ultra** is the best pick.";

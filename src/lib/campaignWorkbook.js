@@ -26,7 +26,7 @@
  * mention rates, cited-vs-fetched) is the product, not decoration.
  */
 
-import { normName, domainOfUrl } from "./geo.js";
+import { normName, domainOfUrl, mentionMatchesBrand } from "./geo.js";
 import { parseQueryOperators, classifyQuery } from "./fanout.js";
 
 /* ---------------------------------------------------------------- XML bits */
@@ -260,12 +260,16 @@ function sheetPrompts(bundle, idx) {
 
     let mentioned = 0, positions = [], citedOwn = 0;
     for (const r of recs) {
-      const hit = (r.brandMentions || []).find((m) => normName(m.brand) === ownName);
+      // mentionMatchesBrand, not a bare name compare — see its header in
+      // geo.js: mergeAiNames() can rename a brand mid-answer (Ant -> Ant
+      // Esports), and a plain === here would silently stop finding the own
+      // brand's own mentions the moment that happens.
+      const hit = (r.brandMentions || []).find((m) => mentionMatchesBrand(m, ownName));
       if (hit) {
         mentioned++;
         const i = (r.brandMentions || [])
           .slice().sort((a, b) => (a.firstIndex ?? 1e15) - (b.firstIndex ?? 1e15))
-          .findIndex((m) => normName(m.brand) === ownName);
+          .findIndex((m) => mentionMatchesBrand(m, ownName));
         if (i >= 0) positions.push(i + 1);
       }
       const dom = (bundle.profile && bundle.profile.brand && bundle.profile.brand.url) || "";
@@ -318,7 +322,7 @@ function sheetPromptResults(bundle, idx) {
     .map((r) => {
       const ordered = (r.brandMentions || []).slice()
         .sort((a, b) => (a.firstIndex ?? 1e15) - (b.firstIndex ?? 1e15));
-      const pos = ordered.findIndex((m) => normName(m.brand) === ownName);
+      const pos = ordered.findIndex((m) => mentionMatchesBrand(m, ownName));
       const srcs = sourcesOf(r);
       return [
         idx.runNo.get(r.geo && r.geo.runId) || "",
@@ -357,13 +361,26 @@ function sheetPromptResults(bundle, idx) {
 function sheetBrands(bundle, idx) {
   const recs = bundle.records || [];
   const agg = new Map();
+  // Computed BEFORE the aggregation loop, not after: deciding "is this
+  // bucket the own brand / a tracked competitor" needs each individual
+  // mention (`m`, which still carries originalName/aliases) while it's in
+  // scope, not the bucket's own display name afterwards. The bucket's
+  // `name` is just whichever renamed form happened to be current at
+  // first-seen — comparing THAT against ownName/tracked the way this used
+  // to would miss a brand entirely once mergeAiNames renamed it (same class
+  // of bug mentionMatchesBrand exists to close — see its header in geo.js).
+  const tracked = new Set((bundle.brands || []).map((b) => normName(b.name || b)));
+  const ownName = normName((bundle.profile && bundle.profile.brand && bundle.profile.brand.name) || "");
   for (const r of recs) {
     const ordered = (r.brandMentions || []).slice()
       .sort((a, b) => (a.firstIndex ?? 1e15) - (b.firstIndex ?? 1e15));
     ordered.forEach((m, i) => {
       const key = normName(m.brand);
       if (!key) return;
-      const a = agg.get(key) || { name: m.brand, mentions: 0, responses: 0, positions: [], engines: new Set(), prompts: new Set(), first: Infinity, last: 0 };
+      const a = agg.get(key) || {
+        name: m.brand, mentions: 0, responses: 0, positions: [], engines: new Set(), prompts: new Set(),
+        first: Infinity, last: 0, isOwn: false, matchedTracked: null,
+      };
       a.mentions += Number(m.count) || 1;
       a.responses++;
       a.positions.push(i + 1);
@@ -371,18 +388,22 @@ function sheetBrands(bundle, idx) {
       if (r.geo && r.geo.promptId) a.prompts.add(r.geo.promptId);
       a.first = Math.min(a.first, r.capturedAt || 0);
       a.last = Math.max(a.last, r.capturedAt || 0);
+      if (ownName && mentionMatchesBrand(m, ownName)) a.isOwn = true;
+      if (!a.matchedTracked) {
+        for (const t of tracked) {
+          if (mentionMatchesBrand(m, t)) { a.matchedTracked = t; break; }
+        }
+      }
       agg.set(key, a);
     });
   }
   const pool = [...agg.values()].reduce((n, a) => n + a.mentions, 0);
-  const tracked = new Set((bundle.brands || []).map((b) => normName(b.name || b)));
-  const ownName = normName((bundle.profile && bundle.profile.brand && bundle.profile.brand.name) || "");
 
   const rows = [...agg.values()]
     .sort((a, b) => b.responses - a.responses || b.mentions - a.mentions)
     .map((a) => [
       a.name,
-      normName(a.name) === ownName ? "Own brand" : tracked.has(normName(a.name)) ? "Tracked competitor" : "Discovered",
+      a.isOwn ? "Own brand" : a.matchedTracked ? "Tracked competitor" : "Discovered",
       a.responses,
       pct(a.responses, recs.length),
       a.mentions,

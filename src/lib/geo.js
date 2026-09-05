@@ -206,6 +206,33 @@ export function selectTracked(records, { profileId, engines, tags, since, until,
  * genuinely saw) even though it contributes 0 to the mention total. Those two
  * metrics answer different questions and must not be collapsed.
  */
+/**
+ * Does one brandMentions[] entry identify the tracked brand named by `key`
+ * (an already-normName()'d string)? A plain `normName(m.brand) === key`
+ * check is only correct as long as `m.brand` never changes after Tier C
+ * first detects it — but mergeAiNames() (ai-brands.js) upgrades a short
+ * deterministic name to a fuller AI-expanded one ("Ant" -> "Ant Esports"),
+ * possibly more than once in the same answer ("Ant" -> "Ant Esports" ->
+ * "Ant Esports India") — IN PLACE. A brand tracked under any form other
+ * than whichever one happens to be current — the original name, or a
+ * middle form from a second upgrade — must still match, or its count
+ * silently drops to 0 even though it's genuinely mentioned. `originalName`
+ * covers the first form ever seen; `aliases` covers every form seen since,
+ * including middle ones neither original nor current.
+ *
+ * Every place that identifies a mention as a SPECIFIC known brand (own
+ * brand, a tracked competitor) by name equality needs this, not just
+ * brandPresence() below — see callers in campaignWorkbook.js.
+ */
+export function mentionMatchesBrand(m, key) {
+  if (!key || !m) return false;
+  return (
+    normName(m.brand) === key ||
+    (m.originalName && normName(m.originalName) === key) ||
+    (Array.isArray(m.aliases) && m.aliases.some((a) => normName(a) === key))
+  );
+}
+
 export function brandPresence(rec, trackedBrands) {
   const text = rec.answerText || "";
   const mentions = rec.brandMentions || [];
@@ -213,15 +240,7 @@ export function brandPresence(rec, trackedBrands) {
 
   return trackedBrands.map((b) => {
     const key = normName(b.name);
-    // Also matches against `originalName` — mergeAiNames() (ai-brands.js)
-    // upgrades a short deterministic name to a fuller AI-expanded one
-    // ("Ant" -> "Ant Esports") IN PLACE, and without this a brand tracked
-    // under its original, shorter name would stop being found the moment
-    // it's upgraded — count silently drops to 0 even though the brand is
-    // genuinely mentioned, because `hit` below no longer matches.
-    const hit = mentions.find(
-      (m) => normName(m.brand) === key || (m.originalName && normName(m.originalName) === key)
-    );
+    const hit = mentions.find((m) => mentionMatchesBrand(m, key));
     const count = hit ? Number(hit.count) || 0 : 0;
     // Where the brand first appears in the prose, which sets its rank.
     //

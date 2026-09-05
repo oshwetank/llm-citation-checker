@@ -400,6 +400,20 @@ console.log("\nbrand presence still finds a brand after mergeAiNames upgrades it
   )[0];
   check("tracked as 'Ant' still matches the upgraded 'Ant Esports' entry", upgraded.present === true, JSON.stringify(upgraded));
   check("count is the real 1, not silently 0", upgraded.mentions === 1, upgraded.mentions);
+
+  // A brand can be upgraded MORE than once in the same answer ("Ant" ->
+  // "Ant Esports" -> "Ant Esports India") — originalName only ever holds
+  // the very first form, so a brand tracked under that MIDDLE form is
+  // neither the original nor the current name. It survives only in
+  // aliases[], which mergeAiNames accumulates on every rename.
+  const middleForm = brandPresence(
+    mk("Ant Esports India also makes keyboards.", [
+      { brand: "Ant Esports India", originalName: "Ant", aliases: ["Ant", "Ant Esports"], count: 1, firstIndex: 0, passages: [] },
+    ]),
+    [{ name: "Ant Esports", url: "antesports.com" }]
+  )[0];
+  check("tracked under the MIDDLE form 'Ant Esports' still matches via aliases", middleForm.present === true, JSON.stringify(middleForm));
+  check("count is the real 1, not silently 0", middleForm.mentions === 1, middleForm.mentions);
 }
 
 {

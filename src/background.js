@@ -109,6 +109,15 @@ chrome.storage.onChanged.addListener((changes, area) => {
 // Reloading the extension orphans content scripts already running in open tabs
 // (they can no longer reach the new service worker — capture goes silent).
 // Auto-refresh the AI tabs on install/update so their scripts re-inject.
+//
+// Also re-arms the heartbeat alarm here. The top-level ensureHeartbeatAlarm()
+// call further down already runs on every fresh worker evaluation, which
+// install/update always trigger — so in practice this is redundant with
+// that call. It's kept anyway because onInstalled is the exact event
+// Chrome's own docs point to for "an update may have cleared alarms,
+// re-create them," and calling ensureHeartbeatAlarm() is itself idempotent
+// (checks before creating), so there's no cost to being explicit here
+// rather than relying on load-order coincidence.
 chrome.runtime.onInstalled.addListener(() => {
   chrome.tabs.query({ url: AI_TAB_MATCHES }, (tabs) => {
     for (const t of tabs || []) {
@@ -119,6 +128,7 @@ chrome.runtime.onInstalled.addListener(() => {
       }
     }
   });
+  ensureHeartbeatAlarm();
 });
 
 function platformFromUrl(url) {
@@ -722,7 +732,26 @@ async function resumeFromSnapshot(snap) {
   const restarted = !!(snap.sessionNonce && snap.sessionNonce !== liveNonce);
 
   const platEntries = Object.entries(snap.platforms || {});
-  const all = platEntries.length ? await db.getAll("derived") : [];
+  let all = [];
+  if (platEntries.length) {
+    try {
+      all = await db.getAll("derived");
+    } catch (err) {
+      // A read failing here must never become a permanent throw-loop: this
+      // function runs from the heartbeat alarm every single minute for as
+      // long as `loader.running` stays false in memory, so an uncaught
+      // throw at this exact line would repeat identically forever — the
+      // run stays "running" in storage but never actually resumes, and
+      // nothing about that is visible beyond the same error-log entry
+      // repeating every tick. Degrade instead of aborting: proceed without
+      // reconciliation, trusting each leg's own persisted `idx` as-is.
+      // Under-reconciled is recoverable (worst case one duplicate capture,
+      // or a prompt that did complete showing as still pending); stuck
+      // invisibly forever is not.
+      logErr("resumeFromSnapshot:getAll", err);
+      all = [];
+    }
+  }
 
   loader = {
     running: true,

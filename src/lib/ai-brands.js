@@ -93,6 +93,28 @@ function mergeAiNames(base, aiNames, plainText) {
       continue;
     }
 
+    // The reverse shape: this AI name is a SHORTER form of a brand already
+    // upgraded to a fuller one above (e.g. one entity pass reports both
+    // "Ant Esports India" and, elsewhere in the same answer, plain "Ant").
+    // Without this check the case above only ever finds a match by looking
+    // at the CURRENT brand string, so a shorter name arriving after a
+    // longer one has already landed falls through to "genuinely new" below
+    // and creates a second, disconnected entry for the same brand — visible
+    // as a spurious duplicate row, and exactly the shape a tracked brand
+    // keyed on that intermediate name would silently stop matching. Record
+    // it as an alias instead so brandPresence() below still finds it, and
+    // leave the fuller display name in place rather than regressing it.
+    const existingFuller = brands.find(
+      (b) => b.brand.toLowerCase().startsWith(lower + " ") && b.brand.length > name.length
+    );
+    if (existingFuller) {
+      const aliases = new Set(existingFuller.aliases || []);
+      aliases.add(name);
+      existingFuller.aliases = [...aliases];
+      byLower.set(lower, existingFuller);
+      continue;
+    }
+
     // A genuinely new name — count its real occurrences the same way
     // brands.js itself does. If it doesn't actually appear in the text,
     // the AI hallucinated or paraphrased it — skip rather than trust
