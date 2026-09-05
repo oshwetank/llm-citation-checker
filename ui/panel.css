@@ -385,7 +385,14 @@ body.tab .app-wrapper, body:not(.popup) .app-wrapper {
 
 body.tab .app-header, body:not(.popup) .app-header {
   padding: 12px 24px !important;
-  margin: 12px 0 24px 0 !important;
+  /* Bottom margin used to be 24px, stacking with .app-content's own
+     top padding right below it (see that rule further down) into a single
+     visual dead band between the header and whatever docks right under it
+     (most visibly the Analyze context bar) — reported twice as "too much
+     space" even after the content-side padding alone was cut from 24px to
+     10px, because this 24px was the larger, untouched half of that gap.
+     Matching the top margin here is the rest of that fix. */
+  margin: 12px 0 !important;
   display: flex !important;
   align-items: center !important;
   justify-content: space-between !important;
@@ -1361,6 +1368,42 @@ select.filter {
   box-shadow: var(--glass-shadow);
 }
 body.tab .analyze-context-bar { top: var(--analyze-bar-top, 64px); }
+/* Report-this-capture, in the corner of the Analyze bar. Deliberately the
+   quietest thing in that bar until hovered: it sits beside a prompt that can
+   run the full width, and a permanent fixture should not compete with the
+   content it is about. Same square footprint as an icon button elsewhere, so
+   it never shifts the bar's height. */
+.analyze-context-feedback {
+  flex-shrink: 0;
+  margin-left: 2px;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--fg-secondary);
+  font-size: 13px;
+  line-height: 1;
+  font-family: inherit;
+  cursor: pointer;
+  opacity: 0.65;
+  transition: opacity 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+.analyze-context-feedback:hover {
+  opacity: 1;
+  background: var(--hover-bg, rgba(127, 127, 127, 0.12));
+  border-color: var(--border);
+}
+.analyze-context-feedback:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--accent, #6366f1);
+  outline-offset: 1px;
+}
+
 .analyze-context-label {
   flex-shrink: 0;
   text-transform: uppercase;

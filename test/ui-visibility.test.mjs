@@ -292,7 +292,12 @@ async function runMode(reducedMotion) {
       await wide.setViewportSize({ width: 1200, height: 700 });
       await wide.goto(`chrome-extension://${extId}/ui/panel.html?mode=tab`);
       await wide.waitForTimeout(900);
-      await wide.click('[data-tab="about"]').catch(() => {});
+      // Driven through the page, not Playwright's own click: on a fresh
+      // profile the first-run tour's #tour-backdrop covers the header, so an
+      // actionability-checked click silently times out into the catch below
+      // and every measurement then runs against a still-hidden #about panel
+      // (all-zero rects). The narrow block above already clicks this way.
+      await wide.evaluate(() => document.querySelector('[data-tab="about"]')?.click());
       await wide.waitForTimeout(500);
       const wgeo = await wide.evaluate(() => {
         const hero = document.querySelector(".about-hero");

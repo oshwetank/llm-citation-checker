@@ -53,14 +53,17 @@ function extractArrow(name, arg) {
 }
 
 const labelLit = (src.match(/const PPLX_STEP_LABEL_RE = (\/.*\/[a-z]*);/) || [])[1];
-const stepsBody = extractArrow("harvestPerplexitySteps", "doc");
+// answerText is now an optional second param (the fan-out/answer-content
+// cross-check — see perplexity-fanout-answer-leak.test.mjs) — extractArrow
+// needs the exact literal signature to find the function.
+const stepsBody = extractArrow("harvestPerplexitySteps", 'doc, answerText = ""');
 check("PPLX_STEP_LABEL_RE found", !!labelLit);
 check("harvestPerplexitySteps() found", !!stepsBody);
 
 let harvest = null;
 if (labelLit && stepsBody) {
   const re = new RegExp(labelLit.slice(1, labelLit.lastIndexOf("/")), labelLit.slice(labelLit.lastIndexOf("/") + 1));
-  harvest = new Function("PPLX_STEP_LABEL_RE", `return (doc) => ${stepsBody};`)(re);
+  harvest = new Function("PPLX_STEP_LABEL_RE", `return (doc, answerText = "") => ${stepsBody};`)(re);
 }
 
 console.log("\nperplexity-steps: fan-out extracted from the real expanded panel");
@@ -154,7 +157,7 @@ if (plan.length) {
 console.log("\nperplexity-steps: wiring");
 
 {
-  check("the harvester calls harvestPerplexitySteps", /queryPlan\s*=\s*harvestPerplexitySteps\(document\)/.test(src));
+  check("the harvester calls harvestPerplexitySteps", /queryPlan\s*=\s*harvestPerplexitySteps\(document,\s*answerText\)/.test(src));
   check("step results are added to sources", /for \(const r of st\.results \|\| \[\]\)/.test(src));
   check("query_plan is emitted only when non-empty",
     /query_plan:\s*queryPlan\.length\s*\?\s*queryPlan\s*:\s*undefined/.test(src));

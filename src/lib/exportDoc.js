@@ -372,17 +372,23 @@ export function buildExportModel(record) {
     );
   }
   const isChatGpt = record.platform === "chatgpt";
-  const isPerplexity = record.platform === "perplexity";
+  // Grok's adapter converts its own <grok:render card_id="…">…</grok:render>
+  // tags into the same [[cite:URL]] marker Perplexity's DOM harvester
+  // writes (see grok.js's convertGrokCitationMarkers) specifically so it
+  // could reuse this renderer rather than needing its own — the underlying
+  // shape (a URL-keyed positional marker) is identical for both.
+  const usesCiteMarker = record.platform === "perplexity" || record.platform === "grok";
   const rendered = isChatGpt
     ? renderChatGptAnswer(record)
-    : isPerplexity
+    : usesCiteMarker
       ? renderPerplexityAnswer(record)
       : renderGeminiAnswer(record);
   const { bodyHtml, footnotes, unresolvedCitations } = rendered;
-  // Perplexity only claims inline citations when the answer ACTUALLY carried
-  // positional markers. A capture taken before those existed renders plainly
-  // and must not advertise numbered footnotes it doesn't have.
-  const hasInlineCitations = isChatGpt || (isPerplexity && rendered.hasCitations === true);
+  // Only claims inline citations when the answer ACTUALLY carried positional
+  // markers. A capture taken before those existed (or converted from none
+  // found) renders plainly and must not advertise numbered footnotes it
+  // doesn't have.
+  const hasInlineCitations = isChatGpt || (usesCiteMarker && rendered.hasCitations === true);
 
   return {
     captureId: record.captureId,

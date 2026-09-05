@@ -12,7 +12,7 @@
  */
 
 import { makeRecord, makeSource } from "../schema.js";
-import { isHttpUrl, domainOf } from "../lib/deep.js";
+import { isHttpUrl, domainOf, stripCiteMarkers } from "../lib/deep.js";
 import { detectBrands } from "../lib/brands.js";
 
 export const ADAPTER_VERSION = "grok@0.2.0";
@@ -213,6 +213,60 @@ function extractSources(nodes) {
   return { sources, socialCitations };
 }
 
+// Grok's own message text carries its inline citations as literal markup:
+//   <grok:render card_id="3a8177" card_type="citation_card"
+//     type="render_inline_citation"><argument name="citation_id">4</argument>
+//   </grok:render>
+// Nothing converted or stripped this before it reached answerText, so it
+// rendered as visible "code" in the exported PDF/HTML — text the user never
+// actually saw in the real answer (the real UI turns this into a small
+// citation pill). card_id is the reliable key into cardAttachmentsJson
+// (present on every node that carries one, same objects extractSources
+// already parses for the sources list); citation_id is a 0-based index into
+// webSearchResults, kept only as a fallback for the rarer case where a
+// card_id has no matching attachment. Converts to the SAME [[cite:URL]]
+// marker Perplexity's harvester writes, so one export renderer
+// (exportDoc.js's renderPerplexityAnswer) and one detection-time strip
+// (stripCiteMarkers, lib/deep.js) cover both platforms.
+const GROK_RENDER_RE = /<grok:render\b([^>]*)>([\s\S]*?)<\/grok:render>/g;
+
+function convertGrokCitationMarkers(text, nodes) {
+  if (!text || !GROK_RENDER_RE.test(text)) return text;
+  GROK_RENDER_RE.lastIndex = 0;
+
+  const cardIdToUrl = new Map();
+  const flatResults = [];
+  for (const n of nodes) {
+    if (!n || typeof n !== "object") continue;
+    if (Array.isArray(n.cardAttachmentsJson)) {
+      for (const cardStr of n.cardAttachmentsJson) {
+        try {
+          const card = typeof cardStr === "string" ? JSON.parse(cardStr) : cardStr;
+          if (card && card.id && card.url) cardIdToUrl.set(card.id, card.url);
+        } catch (_) { /* not parseable — skip */ }
+      }
+    }
+    if (Array.isArray(n.webSearchResults)) flatResults.push(...n.webSearchResults);
+    if (Array.isArray(n.steps)) {
+      for (const st of n.steps) {
+        if (st && Array.isArray(st.webSearchResults)) flatResults.push(...st.webSearchResults);
+      }
+    }
+  }
+
+  return text.replace(GROK_RENDER_RE, (whole, attrs, inner) => {
+    const cardId = (attrs.match(/\bcard_id="([^"]*)"/) || [])[1];
+    const citationIdx = (inner.match(/name="citation_id">(\d+)</) || [])[1];
+    const url =
+      (cardId && cardIdToUrl.get(cardId)) ||
+      (citationIdx != null && flatResults[Number(citationIdx)]?.url) ||
+      null;
+    // Unresolvable: drop the raw tag rather than leave broken markup or
+    // fabricate a URL this codebase can't back with a real source.
+    return url ? `[[cite:${url}]]` : "";
+  });
+}
+
 function extractFanoutAndThoughts(nodes) {
   const search = [];
   const thoughts = [];
@@ -263,12 +317,24 @@ function extractFanoutAndThoughts(nodes) {
 export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, options = {}) {
   const nodes = parseFrames(raw);
   const userPrompt = extractPrompt(reqBody, nodes);
-  const answerText = extractAnswer(nodes);
+  // Converted to [[cite:URL]] here, in the STORED answerText — not just a
+  // detection-only copy — matching how Perplexity's own <grok:render>
+  // equivalent already works: content-iso.js's DOM harvester writes
+  // [[cite:URL]] directly during capture, so by the time either adapter's
+  // answerText exists, the marker shape is already uniform. See
+  // convertGrokCitationMarkers above for why the raw tag needs converting
+  // rather than just stripping (a citation genuinely belongs at that
+  // position in the text, exportDoc.js just needs it in the shared shape).
+  const answerText = convertGrokCitationMarkers(extractAnswer(nodes), nodes);
   const model = extractModel(nodes);
   const { sources, socialCitations } = extractSources(nodes);
   const { search, thoughts } = extractFanoutAndThoughts(nodes);
 
-  const brandRes = detectBrands(answerText, answerText, { sources, tracked: options.tracked });
+  // Detection-only copy: a cited domain must not be able to match itself
+  // inside its own citation marker (the exact bug already fixed for
+  // Perplexity — see perplexity.js's stripCiteMarkersForDetection).
+  const textForDetection = stripCiteMarkers(answerText);
+  const brandRes = detectBrands(textForDetection, textForDetection, { sources, tracked: options.tracked, prompt: userPrompt });
   const brandMentions = (brandRes && brandRes.brands) || [];
   const entities = (brandRes && brandRes.entities) || [];
 

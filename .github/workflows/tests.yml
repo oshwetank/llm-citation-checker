@@ -105,17 +105,22 @@ jobs:
       - name: Run unit tests
         run: |
           fail=0
-          for f in test/adapter.test.mjs test/ai-brands.test.mjs test/auto-competitors.test.mjs \
-                   test/auth-check.test.mjs \
+          for f in test/adapter.test.mjs test/ai-brands.test.mjs test/auth-check.test.mjs \
+                   test/brand-context.test.mjs \
+                   test/auto-competitors.test.mjs \
                    test/behaviour.test.mjs test/brands.test.mjs test/campaign-workbook.test.mjs \
                    test/concurrency.test.mjs test/dom-harvest-multiturn.test.mjs test/errorlog.test.mjs \
-                   test/fanout.test.mjs test/gemini-answer.test.mjs test/geo.test.mjs \
-                   test/interception-endpoints.test.mjs test/dom-harvest.test.mjs \
-                   test/nano-stance.test.mjs test/onboarding.test.mjs \
-                   test/perplexity-citation-footnote-brands.test.mjs \
-                   test/perplexity-citation-marking.test.mjs test/perplexity-export.test.mjs \
-                   test/perplexity-fanout.test.mjs test/perplexity-markdown-harvest.test.mjs \
-                   test/perplexity-real-dom.test.mjs test/perplexity-steps.test.mjs \
+                   test/fanout.test.mjs test/feedback-bundle.test.mjs \
+                   test/gemini-answer.test.mjs test/geo.test.mjs \
+                   test/grok-render-citation-tags.test.mjs \
+                   test/interception-endpoints.test.mjs test/dom-harvest.test.mjs test/nano-stance.test.mjs \
+                   test/onboarding.test.mjs \
+                   test/perplexity-citation-footnote-brands.test.mjs test/perplexity-citation-marking.test.mjs \
+                   test/perplexity-cite-marker-brands.test.mjs test/perplexity-clock-contamination.test.mjs \
+                   test/perplexity-export.test.mjs test/perplexity-fanout.test.mjs \
+                   test/perplexity-fanout-answer-leak.test.mjs \
+                   test/perplexity-markdown-harvest.test.mjs test/perplexity-real-dom.test.mjs \
+                   test/perplexity-steps.test.mjs test/perplexity-table-layout-brands.test.mjs \
                    test/perplexity-ws-contamination.test.mjs \
                    test/glossary.test.mjs test/grounding-score.test.mjs test/multi-engine.test.mjs \
                    test/pacing.test.mjs test/retention.test.mjs \
@@ -155,7 +160,8 @@ jobs:
       - name: Run browser tests
         run: |
           fail=0
-          for f in test/analyze-layout.test.mjs test/brand-detail.test.mjs \
+          for f in test/analyze-feedback.test.mjs test/analyze-header-gap.test.mjs \
+                   test/analyze-layout.test.mjs test/brand-detail.test.mjs \
                    test/campaign-drilldown.test.mjs test/capture-latency.test.mjs \
                    test/compare-tab.test.mjs test/concurrency-live.test.mjs test/full-audit.test.mjs \
                    test/funnel-omitted.test.mjs test/mention-list.test.mjs \

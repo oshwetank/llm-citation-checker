@@ -115,6 +115,20 @@ const context = await chromium.launchPersistentContext(PROFILE_BASE, {
   ],
 });
 
+// Mark the first-run tour as already seen, for every page in this context,
+// before any of the panel's own scripts get to run.
+//
+// Two reasons, both real. The panel loads SAMPLE DATA on first run (see
+// maybeFirstRun in ui/panel.js) whenever the store holds no real captures —
+// and this harness opens the panel before it seeds, so that condition is met
+// and the sample capture lands in the list, making the row count one higher
+// than the fixtures seeded here. It also draws #tour-backdrop over the whole
+// UI, which swallows clicks. Neither is a product bug; both are first-run
+// behaviour this test does not mean to exercise.
+await context.addInitScript(() => {
+  try { localStorage.setItem("cito-tour-seen", "1"); } catch (_) { /* private mode */ }
+});
+
 try {
   let sw = context.serviceWorkers()[0];
   if (!sw) sw = await context.waitForEvent("serviceworker", { timeout: 20000 });

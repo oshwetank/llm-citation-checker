@@ -227,7 +227,7 @@ export function tokenizeAnswerMarkup(text) {
 // calls with nearly identical arguments, which was mildly wasteful even
 // synchronously and would have doubled the cost of the AI tier for no
 // reason now that this call is async.
-async function detectBrandsForCapture(answerText, products, tracked, sources, places) {
+async function detectBrandsForCapture(answerText, products, tracked, sources, places, prompt) {
   if (!answerText) return { brands: [], entities: [] };
   // Deliberately the synchronous, non-AI detector. The optional on-device AI
   // tier runs AFTER the capture is stored (see background.js's
@@ -238,6 +238,10 @@ async function detectBrandsForCapture(answerText, products, tracked, sources, pl
     places,
     sources,
     tracked,
+    // What the user actually asked for. Detection uses it to keep the
+    // question's own category words ("camera phone") out of Brand Mentions —
+    // see "5. prompt context" in lib/brands.js.
+    prompt,
   });
 }
 
@@ -589,7 +593,8 @@ export async function adapt(rawCapture, opts = {}) {
 
   const answerText = reconstructAnswer(nodes);
   const referenceTypes = extractReferenceTypes(nodes, answerText);
-  const { brands: brandMentions, entities: baseEntities } = await detectBrandsForCapture(answerText, products, opts.tracked, sources, places);
+  const userPrompt = extractPrompt(rawCapture.reqBody);
+  const { brands: brandMentions, entities: baseEntities } = await detectBrandsForCapture(answerText, products, opts.tracked, sources, places, userPrompt);
   const entities = extractEntities(baseEntities, products, brandMentions, sources, places);
   const images = extractImages(nodes, products);
 
@@ -637,7 +642,7 @@ export async function adapt(rawCapture, opts = {}) {
     conversationId,
     generatedTitle,
     turnUseCase,
-    userPrompt: extractPrompt(rawCapture.reqBody),
+    userPrompt,
     searched,
     fanout,
     sources,

@@ -128,9 +128,18 @@ if (body) {
     ]);
     const md = domToMarkdown(root);
     const flat = "Noise Airwave Max XR 120 has great battery."; // what innerText gave
-    const fromMd = detectBrands(md, md, {}).brands.length;
-    const fromFlat = detectBrands(flat, flat, {}).brands.length;
-    check("markdown yields brands where flattened text yielded none", fromMd > 0 && fromFlat === 0, `md=${fromMd} flat=${fromFlat}`);
+    const fromMd = detectBrands(md, md, {}).brands.map((b) => b.brand);
+    const fromFlat = detectBrands(flat, flat, {}).brands.map((b) => b.brand);
+    check("markdown preserves the bolded product as a brand", fromMd.includes("Noise"), fromMd.join(", ") || "(none)");
+    // This used to also assert the FLAT text yielded zero brands — i.e. it
+    // pinned the detector's blind spot in place as a requirement. The prose
+    // fallback (see "3c. names the prose itself writes" in lib/brands.js) now
+    // recovers "Noise" from the flattened sentence too, which is the right
+    // answer: a real brand is named there. What this file exists to guard is
+    // that markdown harvesting does not LOSE it, so that is what is asserted.
+    check("flattened text is no worse than the markdown it came from",
+      fromFlat.length >= 1 && fromMd.every((b) => fromFlat.includes(b)),
+      `md=[${fromMd}] flat=[${fromFlat}]`);
   }
 
   // Serialization must never cost us the capture.
