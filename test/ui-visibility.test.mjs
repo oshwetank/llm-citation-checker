@@ -155,6 +155,22 @@ async function runMode(reducedMotion) {
     ],
   });
 
+  // The first-run tour (panel.js's maybeFirstRun/runTour) starts on any page
+  // that hasn't seen it, and its #tour-backdrop overlay intercepts pointer
+  // events across the whole panel — including clicks this file makes to
+  // switch tabs. A blocked click's own .catch(() => {}) swallows the
+  // failure silently, and most of this file's assertions read declared
+  // computed-style values (opacity, display, flex-direction) that stay
+  // correct even on a panel that's never actually the ACTIVE one, so a
+  // silently-blocked tab switch mostly hides itself — until a check reads
+  // real rendered geometry (getBoundingClientRect) on a panel that was
+  // never switched to, which is genuinely 0. Setting the "seen" flag before
+  // the extension's own scripts ever run, for every page this context
+  // opens, removes the backdrop as a variable entirely.
+  await context.addInitScript(() => {
+    try { localStorage.setItem("cito-tour-seen", "1"); } catch (_) {}
+  });
+
   try {
     let sw = context.serviceWorkers()[0];
     if (!sw) sw = await context.waitForEvent("serviceworker", { timeout: 20000 });

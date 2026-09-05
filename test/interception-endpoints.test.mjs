@@ -135,13 +135,6 @@ const ENGINES = {
     ],
     ignore: ["https://x.com/i/api/graphql/xyz/HomeTimeline"],
   },
-  CLAUDE_RE: {
-    capture: [
-      "https://claude.ai/api/organizations/org-1/chat_conversations/c-1/completion",
-      "https://claude.ai/api/append_message",
-    ],
-    ignore: ["https://claude.ai/api/bootstrap"],
-  },
 };
 
 for (const [name, cases] of Object.entries(ENGINES)) {

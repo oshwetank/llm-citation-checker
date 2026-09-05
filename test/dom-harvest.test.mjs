@@ -130,7 +130,7 @@ if (body) {
     };
   }
 
-  for (const plat of ["perplexity", "grok", "claude"]) {
+  for (const plat of ["perplexity", "grok"]) {
     const { sent, scope } = makeEnv(plat);
     const names = Object.keys(scope);
     const fn = new Function(...names, `${DOM2MD}

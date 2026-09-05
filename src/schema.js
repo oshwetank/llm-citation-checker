@@ -1,7 +1,7 @@
 /*
  * schema.js — the normalized, cross-engine record.
  *
- * Every adapter (ChatGPT now; Perplexity/Gemini/Grok/Claude later) must emit this
+ * Every adapter (ChatGPT, Perplexity, Gemini, Grok) must emit this
  * shape. Engine-only fields that don't generalize go in `platformSpecific` bags so
  * nothing is lost, but the top-level fields stay comparable across engines.
  *

@@ -506,8 +506,8 @@ document.addEventListener("scroll", hideTooltip, true);
 
 // NOTE: engine badges (chatgpt/gemini/etc icon rendering) are handled by
 // engineIconEl()/engineChip() further down this file — real brand marks
-// (not abstract placeholders), covering all five engines including
-// perplexity/claude/grok, added in the fan-out/blank-UI-fix work. The
+// (not abstract placeholders), covering all four engines including
+// perplexity/grok, added in the fan-out/blank-UI-fix work. The
 // original local-work-backup ENGINE_BADGE/engineIcon() here only covered
 // chatgpt+gemini with deliberately generic shapes and referenced the old
 // ENGINE_ICONS emoji map, which no longer exists — superseded, not merged.
@@ -1437,7 +1437,6 @@ function renderAnalyze() {
     "chatgpt": "ChatGPT Web Search Engine (SonicBrowserTool)",
     "gemini": "Google Search Tool (Gemini)",
     "perplexity": "Perplexity Search Engine",
-    "claude": "Claude Search Tool",
     "grok": "Grok X Search Engine"
   };
   addTechKv("Tool Name", rec.searched ? (tools[rec.platform] || "Web Search Tool") : "—");
@@ -1802,7 +1801,7 @@ function renderAnalyze() {
   // Column 2: Main Area (Fan-outs, Top Domains, Top URLs, Places, Products)
   const mainCol = el("div", { className: "analyze-main" });
 
-  // Extended Thinking & Reasoning Trace (Claude 3.7 / Gemini / Grok)
+  // Extended Thinking & Reasoning Trace (Gemini / Grok)
   if (ps.thinkingTrace || (ps.thoughts && ps.thoughts.length)) {
     const traceText = ps.thinkingTrace || (Array.isArray(ps.thoughts) ? ps.thoughts.join("\n\n") : String(ps.thoughts));
     const thinkCard = el("div", { className: "card", id: "card-thinking" },
@@ -3867,7 +3866,7 @@ function renderCampaignSetup(profile, dis) {
 
    OpenAI's and xAI's marks are monochrome by design, so they use
    currentColor and follow the surrounding text in both light and dark
-   themes. Gemini, Claude and Perplexity are drawn in their own brand
+   themes. Gemini and Perplexity are drawn in their own brand
    colours, which hold up against both themes' backgrounds.
 
    These identify which engine a row or pill refers to — the marks are used
@@ -3878,7 +3877,6 @@ const ENGINE_ICON_SVG = {
   // gradient is referenced by document-wide id, so a fixed one would be
   // duplicated by every copy of this icon — see the note there.
   gemini: `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><defs><linearGradient id="__UID__" x1="0" y1="24" x2="24" y2="0" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#1C7DFF"/><stop offset=".52" stop-color="#8E6FF7"/><stop offset="1" stop-color="#D96570"/></linearGradient></defs><path fill="url(#__UID__)" d="M12 24A14.304 14.304 0 0 0 0 12A14.304 14.304 0 0 0 12 0a14.305 14.305 0 0 0 12 12a14.305 14.305 0 0 0-12 12"/></svg>`,
-  claude: `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><g fill="#D97757"><path d="M11.1 1.6h1.8v20.8h-1.8z"/><path d="M1.6 11.1h20.8v1.8H1.6z"/><path d="M4.08 2.81l1.27-1.27 14.7 14.7-1.27 1.28z" opacity=".92"/><path d="M19.92 2.81l1.27 1.28-14.7 14.7-1.27-1.28z" opacity=".92"/></g></svg>`,
   // Was a hand-drawn hourglass/compass shape that doesn't read as Perplexity
   // to anyone who knows the product — the other four marks here are each the
   // real logo, so this was the odd one out. Replaced with the actual mark,
@@ -3895,7 +3893,7 @@ const ENGINE_ICON_SVG = {
   // entry yet (open feature request, simple-icons/simple-icons#13853) at time
   // of writing. currentColor, like chatgpt above: this mark is genuinely
   // monochrome in Grok's own branding (no distinct brand color the way
-  // Perplexity/Claude have), so it should track theme/text color rather than
+  // Perplexity has), so it should track theme/text color rather than
   // carry a fixed hex that could go invisible in dark mode.
   grok: `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" fill-rule="evenodd" aria-hidden="true"><path d="M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.542 5.215-1.41 7.169-1.951 1.954-4.667 2.382-7.149 1.406l-2.711 1.257c3.889 2.661 8.611 2.003 11.562-.953 2.341-2.344 3.066-5.539 2.388-8.42l.006.007c-.983-4.232.242-5.924 2.75-9.383.06-.082.12-.164.179-.248l-3.301 3.305v-.01L9.267 15.292M7.623 16.723c-2.792-2.67-2.31-6.801.071-9.184 1.761-1.763 4.647-2.483 7.166-1.425l2.705-1.25a7.808 7.808 0 00-1.829-1A8.975 8.975 0 005.984 5.83c-2.533 2.536-3.33 6.436-1.962 9.764 1.022 2.487-.653 4.246-2.34 6.022-.599.63-1.199 1.259-1.682 1.925l7.62-6.815"/></svg>`,
 };
@@ -5720,7 +5718,6 @@ $("#exportExcel")?.addEventListener("click", () => {
     chatgpt: "#e0f2fe",
     gemini: "#fce7f3",
     perplexity: "#fef3c7",
-    claude: "#ffedd5",
     grok: "#d1fae5"
   };
 

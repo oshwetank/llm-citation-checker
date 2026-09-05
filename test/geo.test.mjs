@@ -61,28 +61,23 @@ console.log("normalisation helpers");
 console.log("\nengine registry reflects what can actually run");
 {
   const avail = availableEngines().map((e) => e.id);
-  // Claude is blocked pending a real-capture calibration pass (the same bar
-  // Perplexity and Grok had to clear first — see geo.js's own comment on the
-  // registry entry). This is a "coming soon" gate, not a removal: the
-  // registry still lists it (available:false + a note), which is what keeps
-  // it visible-but-disabled in the campaign engine picker instead of
-  // silently vanishing — see the ENGINES module comment above.
-  check("chatgpt, gemini, perplexity and grok are available; claude is not",
-    ["chatgpt", "gemini", "perplexity", "grok"].every((id) => avail.includes(id)) && !avail.includes("claude"),
+  // Claude tracking was removed entirely (manifest host permission, content
+  // scripts, and adapter all gone) rather than gated — it is not in ENGINES
+  // at all, not even as a disabled/"coming soon" entry.
+  check("chatgpt, gemini, perplexity and grok are all available",
+    ["chatgpt", "gemini", "perplexity", "grok"].every((id) => avail.includes(id)),
     avail.join(",")
   );
-  check("claude is still registered, just blocked with a note",
-    ENGINES.some((e) => e.id === "claude" && e.available === false && !!e.note));
-  check("exactly 4 of 5 registered engines are available",
-    ENGINES.filter((e) => e.available).length === 4 && ENGINES.length === 5);
-  // A profile requesting claude alongside available engines must have it
-  // silently dropped, not silently kept — this is what actually enforces
-  // "blocked" rather than merely hiding it in one UI. (The picker itself
-  // already can't select it; this is the save-time backstop for a value
-  // that reached makeProfile some other way — a hand-built message, a
-  // profile object carried over from before the block.)
+  check("claude is not registered at all", !ENGINES.some((e) => e.id === "claude"));
+  check("all 4 registered engines are available",
+    ENGINES.filter((e) => e.available).length === 4 && ENGINES.length === 4);
+  // A profile requesting an engine that isn't registered must have it
+  // silently dropped, not silently kept — this is the save-time backstop
+  // for a value that reached makeProfile some other way (a hand-built
+  // message, a profile object carried over from an older build that still
+  // had claude in it).
   const saved = makeProfile({ engines: ["chatgpt", "perplexity", "claude", "grok"] });
-  check("a profile requesting claude has it dropped on save",
+  check("an unregistered engine (claude) has it dropped on save",
     !saved.engines.includes("claude"), saved.engines.join(","));
   check("the other three requested engines all survive",
     ["chatgpt", "perplexity", "grok"].every((id) => saved.engines.includes(id)));
@@ -381,6 +376,44 @@ console.log("\nbrand presence does not fire on substrings or ordinary words");
   )[0];
   check("carousel-only brand is present", shown.present === true);
   check("carousel-only brand has no position", shown.firstIndex === null, String(shown.firstIndex));
+}
+
+/*
+ * mergeAiNames() (ai-brands.js) upgrades a truncated deterministic name to a
+ * fuller AI-expanded one IN PLACE ("Ant" -> "Ant Esports"), storing the
+ * pre-upgrade name as `originalName`. Before this, a brand tracked under its
+ * original short name silently stopped being found the moment it was
+ * upgraded: the exact match here compared against the NEW name only, count
+ * dropped to 0, and only presence recovered via the raw-text fallback.
+ */
+console.log("\nbrand presence still finds a brand after mergeAiNames upgrades its name");
+{
+  const mk = (answerText, brandMentions = []) => ({
+    geo: { profileId: "p" }, platform: "chatgpt", capturedAt: Date.now(),
+    answerText, brandMentions, sources: [],
+  });
+  const upgraded = brandPresence(
+    mk("The Ant Esports GM100 V2 is the cheapest decent option.", [
+      { brand: "Ant Esports", originalName: "Ant", count: 1, firstIndex: 4, passages: [] },
+    ]),
+    [{ name: "Ant", url: "antesports.com" }]
+  )[0];
+  check("tracked as 'Ant' still matches the upgraded 'Ant Esports' entry", upgraded.present === true, JSON.stringify(upgraded));
+  check("count is the real 1, not silently 0", upgraded.mentions === 1, upgraded.mentions);
+
+  // A brand can be upgraded MORE than once in the same answer ("Ant" ->
+  // "Ant Esports" -> "Ant Esports India") — originalName only ever holds
+  // the very first form, so a brand tracked under that MIDDLE form is
+  // neither the original nor the current name. It survives only in
+  // aliases[], which mergeAiNames accumulates on every rename.
+  const middleForm = brandPresence(
+    mk("Ant Esports India also makes keyboards.", [
+      { brand: "Ant Esports India", originalName: "Ant", aliases: ["Ant", "Ant Esports"], count: 1, firstIndex: 0, passages: [] },
+    ]),
+    [{ name: "Ant Esports", url: "antesports.com" }]
+  )[0];
+  check("tracked under the MIDDLE form 'Ant Esports' still matches via aliases", middleForm.present === true, JSON.stringify(middleForm));
+  check("count is the real 1, not silently 0", middleForm.mentions === 1, middleForm.mentions);
 }
 
 {

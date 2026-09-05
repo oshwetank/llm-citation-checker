@@ -1,16 +1,14 @@
 /*
- * multi-engine.test.mjs — verify Perplexity, Grok, and Claude adapters.
+ * multi-engine.test.mjs — verify Perplexity and Grok adapters.
  *
- * Tests that all 3 new adapters normalize synthetic and real-world network
+ * Tests that both adapters normalize synthetic and real-world network
  * payloads into the standard CitoSkeleton schema:
  *   - Perplexity: SSE stream, query plan, sub-searches, cited sources.
  *   - Grok: Social X/Twitter posts, like metrics, web sources, DeepSearch thinking.
- *   - Claude: Web search tool use/results, citations, extended thinking trace.
  */
 
 import { adapt as adaptPerplexity } from "../src/adapters/perplexity.js";
 import { adapt as adaptGrok } from "../src/adapters/grok.js";
-import { adapt as adaptClaude } from "../src/adapters/claude.js";
 import { ENGINES, availableEngines } from "../src/lib/geo.js";
 
 let failures = 0;
@@ -25,17 +23,13 @@ const check = (label, cond, detail) => {
 console.log("\n--- Engine Registry & URL Attribution ---");
 {
   const available = availableEngines();
-  // Claude is blocked pending a real-capture calibration pass — the same bar
-  // Perplexity and Grok had to clear before flipping to available:true (see
-  // the comment on the ENGINES entry in geo.js). It stays REGISTERED
-  // (available:false + a "coming soon" note) rather than removed, so it's
-  // still visible-but-disabled in the campaign picker instead of vanishing.
-  check("4 of 5 engines are available in ENGINES registry", available.length === 4, `count=${available.length}`);
+  // Claude tracking was removed entirely (no manifest host permission, no
+  // content-script injection, no adapter) rather than gated — it's not
+  // present in ENGINES at all, not even as a disabled/"coming soon" entry.
+  check("all 4 engines are available in ENGINES registry", available.length === 4, `count=${available.length}`);
   check("perplexity is registered and available", available.some((e) => e.id === "perplexity"));
   check("grok is registered and available", available.some((e) => e.id === "grok"));
-  check("claude is registered but NOT available", !available.some((e) => e.id === "claude"));
-  check("claude is still listed in ENGINES itself, with a note explaining why",
-    ENGINES.some((e) => e.id === "claude" && e.available === false && !!e.note));
+  check("claude is not present in ENGINES at all", !ENGINES.some((e) => e.id === "claude"));
 
   // Check URL attribution
   const platformFromUrl = (url) => {
@@ -43,7 +37,6 @@ console.log("\n--- Engine Registry & URL Attribution ---");
     if (/gemini\.google\.com|BardChatUi|StreamGenerate/i.test(u)) return "gemini";
     if (/perplexity\.ai|\/api\/sse\/query|\/api\/thread|\/rest\/queries/i.test(u)) return "perplexity";
     if (/grok\.com|x\.com\/i\/grok|app-chat\/conversations/i.test(u)) return "grok";
-    if (/claude\.ai|chat_conversations/i.test(u)) return "claude";
     if (/chatgpt\.com|chat\.openai\.com|backend-api/i.test(u)) return "chatgpt";
     return "chatgpt";
   };
@@ -51,7 +44,6 @@ console.log("\n--- Engine Registry & URL Attribution ---");
   check("perplexity url correctly resolved", platformFromUrl("https://www.perplexity.ai/search/123") === "perplexity");
   check("grok url correctly resolved", platformFromUrl("https://grok.com/chat/abc") === "grok");
   check("x.com grok url correctly resolved", platformFromUrl("https://x.com/i/grok") === "grok");
-  check("claude url correctly resolved", platformFromUrl("https://claude.ai/chat/xyz") === "claude");
   check("chatgpt url correctly resolved", platformFromUrl("https://chatgpt.com/c/123") === "chatgpt");
   check("gemini url correctly resolved", platformFromUrl("https://gemini.google.com/app/456") === "gemini");
 }
@@ -234,51 +226,6 @@ console.log("\n--- xAI Grok Adapter ---");
   check("real grok payload source extracted with preview", realRec.sources.length === 1);
   check("real grok payload inline citation marked cited", realRec.sources[0].outcome === "cited");
   check("real grok payload sub-query extracted into fanout", realRec.fanout.search.some((s) => s.query.includes("best camera phone under 40000")));
-}
-
-console.log("\n--- Anthropic Claude Adapter ---");
-{
-  const claudeRaw = [
-    'data: {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "First let us check market share for cloud providers AWS, Azure, and Google Cloud."}}',
-    'data: {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "In enterprise cloud infrastructure, Amazon AWS and Microsoft Azure hold the largest market share."}}',
-    JSON.stringify({
-      content: [
-        {
-          type: "tool_use",
-          name: "web_search",
-          input: { query: "cloud market share Q1 2026" },
-        },
-        {
-          type: "tool_result",
-          content: [
-            {
-              url: "https://synergyrg.com/cloud-market-share",
-              title: "Cloud Ecosystem Report 2026",
-              snippet: "AWS holds 31%, Microsoft Azure 25%, Google Cloud 11%.",
-            },
-          ],
-        },
-      ],
-    }),
-  ].join("\n");
-
-  const rec = await adaptClaude({
-    captureId: "claude-1",
-    raw: claudeRaw,
-    reqBody: JSON.stringify({ prompt: "Who leads the enterprise cloud market?" }),
-    capturedAt: Date.now(),
-    pageUrl: "https://claude.ai/chat/123",
-  }, {
-    tracked: [{ name: "Amazon" }, { name: "Microsoft" }],
-  });
-
-  check("platform is claude", rec.platform === "claude");
-  check("userPrompt extracted", rec.userPrompt.includes("enterprise cloud market"));
-  check("answerText normalized from text_delta", rec.answerText.includes("Amazon AWS"));
-  check("thinking trace extracted from thinking_delta", Boolean(rec.platformSpecific?.thinkingTrace && rec.platformSpecific.thinkingTrace.includes("cloud providers")));
-  check("tool_use search query extracted into fanout", rec.fanout.search.some((s) => (s.query || s) === "cloud market share Q1 2026"));
-  check("tool_result sources extracted", rec.sources.some((s) => s.domain === "synergyrg.com"));
-  check("brands detected in Claude answer", rec.brandMentions.some((b) => b.brand.toLowerCase() === "amazon" || b.brand.toLowerCase() === "microsoft"));
 }
 
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");

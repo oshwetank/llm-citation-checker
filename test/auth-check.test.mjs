@@ -100,7 +100,7 @@ console.log("\nauth-check: registry sanity");
 
 {
   const ids = Object.keys(AUTH_COOKIES);
-  check("every supported engine has an auth spec", ["chatgpt", "gemini", "perplexity", "grok", "claude"].every((e) => ids.includes(e)), ids.join(","));
+  check("every supported engine has an auth spec", ["chatgpt", "gemini", "perplexity", "grok"].every((e) => ids.includes(e)), ids.join(","));
   const bad = ids.filter((k) => {
     const s = AUTH_COOKIES[k];
     return !s.label || !s.loginUrl || !Array.isArray(s.domains) || !s.domains.length || !Array.isArray(s.names) || !s.names.length;

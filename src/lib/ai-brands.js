@@ -74,8 +74,44 @@ function mergeAiNames(base, aiNames, plainText) {
       (b) => lower.startsWith(b.brand.toLowerCase() + " ") && name.length > b.brand.length
     );
     if (existingHead) {
+      // Keep the deterministic name Tier C actually found, not just the AI's
+      // expanded one. Without this, an exact-match consumer keyed on the
+      // ORIGINAL name (brandPresence() in geo.js matches a tracked brand
+      // against normName(m.brand) === normName(trackedBrand.name)) silently
+      // stops finding this entry the moment it's renamed — "Ant" tracked as
+      // a brand no longer matches once this upgrades it to "Ant Esports",
+      // undercounting Share of Voice for exactly the brand this layer was
+      // supposed to find MORE of. aliases accumulates every form seen, in
+      // case more than one upgrade ever lands on the same entry.
+      const original = existingHead.originalName || existingHead.brand;
+      const aliases = new Set(existingHead.aliases || []);
+      aliases.add(existingHead.brand);
+      existingHead.originalName = original;
       existingHead.brand = name;
+      existingHead.aliases = [...aliases];
       byLower.set(lower, existingHead);
+      continue;
+    }
+
+    // The reverse shape: this AI name is a SHORTER form of a brand already
+    // upgraded to a fuller one above (e.g. one entity pass reports both
+    // "Ant Esports India" and, elsewhere in the same answer, plain "Ant").
+    // Without this check the case above only ever finds a match by looking
+    // at the CURRENT brand string, so a shorter name arriving after a
+    // longer one has already landed falls through to "genuinely new" below
+    // and creates a second, disconnected entry for the same brand — visible
+    // as a spurious duplicate row, and exactly the shape a tracked brand
+    // keyed on that intermediate name would silently stop matching. Record
+    // it as an alias instead so brandPresence() below still finds it, and
+    // leave the fuller display name in place rather than regressing it.
+    const existingFuller = brands.find(
+      (b) => b.brand.toLowerCase().startsWith(lower + " ") && b.brand.length > name.length
+    );
+    if (existingFuller) {
+      const aliases = new Set(existingFuller.aliases || []);
+      aliases.add(name);
+      existingFuller.aliases = [...aliases];
+      byLower.set(lower, existingFuller);
       continue;
     }
 

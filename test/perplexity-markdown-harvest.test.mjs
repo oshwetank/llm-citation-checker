@@ -191,7 +191,7 @@ console.log("\nperplexity-markdown-harvest: the harvester actually USES it");
 // the real source so the call sites can't silently revert.
 {
   const answerLines = src.split("\n").filter((l) => /answerText\s*=\s*chosen\.map/.test(l));
-  check("all three platform branches extract the answer", answerLines.length === 3, `found ${answerLines.length}`);
+  check("both platform branches extract the answer", answerLines.length === 2, `found ${answerLines.length}`);
   check(
     "every one of them serializes to markdown, none fall back to innerText",
     answerLines.length > 0 && answerLines.every((l) => l.includes("domToMarkdown") && !l.includes("innerText")),

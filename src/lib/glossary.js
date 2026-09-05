@@ -170,7 +170,7 @@ export const GLOSSARY = {
     what: "The internal reasoning and synthesis steps executed by the model before generating its final answer.",
     formula: "reasoning tokens / thinking block character length",
     howToUse: "Analyze thinking traces to understand WHY the model chose a competitor over your brand and what trade-offs it weighed.",
-    note: "Extracted from Claude 3.7 Sonnet thinking deltas and Grok DeepSearch reasoning blocks.",
+    note: "Extracted from Grok DeepSearch reasoning blocks.",
   },
   domainExclusivity: {
     group: "Engine Intelligence",

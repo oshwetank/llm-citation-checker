@@ -18,7 +18,6 @@
   const IS_CHATGPT = /(^|\.)chatgpt\.com$|(^|\.)chat\.openai\.com$/i.test(location.hostname);
   const IS_PERPLEXITY = /(^|\.)perplexity\.ai$/i.test(location.hostname);
   const IS_GROK = /(^|\.)grok\.com$|(^|\.)x\.com$/i.test(location.hostname);
-  const IS_CLAUDE = /(^|\.)claude\.ai$/i.test(location.hostname);
 
   const isThirdParty = (url) => {
     try {
@@ -28,8 +27,7 @@
              !u.hostname.includes("openai.com") &&
              !u.hostname.includes("google.com") &&
              !u.hostname.includes("grok.com") &&
-             !u.hostname.includes("x.com") &&
-             !u.hostname.includes("claude.ai");
+             !u.hostname.includes("x.com");
     } catch (_) {
       return false;
     }
@@ -74,7 +72,6 @@
   // perplexity.ai URLs. The NOISE_RE filter just below still applies first.
   const PERPLEXITY_RE = /\/p\/api\/|\/api\/sse\/|\/rest\/(?:sse|threads|queries|answers|conversations)|perplexity_ask|\/api\/thread|\/socket\.io\//i;
   const GROK_RE = /\/api\/rpc|\/rest\/app-chat\/conversations|\/i\/api\/(?:graphql\/[^\/]+\/)?(?:Create)?Grok|\/2\/grok/i;
-  const CLAUDE_RE = /\/api\/organizations\/[^\/]+\/(?:chat_conversations|messages|retry|completion)|\/api\/append_message/i;
 
   // Endpoints that are never an answer, regardless of which engine matches
   // above — autocomplete/typeahead, navigation prediction, and auth pings.
@@ -101,12 +98,11 @@
       if (IS_CHATGPT) return CHATGPT_RE.test(u);
       if (IS_PERPLEXITY) return PERPLEXITY_RE.test(u);
       if (IS_GROK) return GROK_RE.test(u);
-      if (IS_CLAUDE) return CLAUDE_RE.test(u);
       return false;
     },
   };
 
-  const IS_TARGET = IS_GEMINI || IS_CHATGPT || IS_PERPLEXITY || IS_GROK || IS_CLAUDE;
+  const IS_TARGET = IS_GEMINI || IS_CHATGPT || IS_PERPLEXITY || IS_GROK;
 
   const CHANNEL = (crypto.randomUUID && crypto.randomUUID()) || String(Math.random()).slice(2);
   try {
@@ -162,7 +158,7 @@
     }
   }
 
-  // --- fetch patch (ChatGPT, Claude, Perplexity REST stream via fetch) ---
+  // --- fetch patch (ChatGPT, Perplexity REST stream via fetch) ---
   const origFetch = window.fetch;
   window.fetch = async function (...args) {
     const input = args[0];
