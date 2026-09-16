@@ -668,7 +668,14 @@ function renderBrandsSection(model) {
       return `<li><span class="ord">${esc(ord)}</span><strong>${escText(b.brand)}</strong> <span class="muted">— ${badge}</span>${models}</li>`;
     })
     .join("\n");
-  return `<h3>Brand mentions <span class="muted">(in order of first appearance)</span></h3><ul class="brand-list">${rows}</ul>`;
+  // Explicitly scoped: this is every brand the engine named, ranked by where
+  // each first appears — NOT the campaign's own "avg position" metric, which
+  // ranks only the brands you're actually tracking against each other. The
+  // same brand can legitimately read #4 here (fourth brand named overall)
+  // and #1 on a Dashboard campaign card (first among just your tracked
+  // competitors) — two different, both-correct questions, easy to conflate
+  // without this line making the scope explicit.
+  return `<h3>Brand mentions <span class="muted">(every brand named, in order of first appearance)</span></h3><p class="muted small">Ranked against every brand the engine named in this answer — not just the brands you track. See Campaign metrics for your rank among your own tracked competitors.</p><ul class="brand-list">${rows}</ul>`;
 }
 
 // A broken/expired external image degrades to just hiding the <img> (via

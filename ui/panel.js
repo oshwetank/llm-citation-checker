@@ -4356,8 +4356,18 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
     const runSel = el("select", { className: "filter", id: "geoRunPick",
       title: "Show results from every run of this campaign, or just one" });
     runSel.append(el("option", { value: "" }, "All runs (combined)"));
+    // Raw toLocaleString() renders as "16/09/2026, 15:50:29" on an en-GB/
+    // en-IN locale — ambiguous day/month order, second-level precision
+    // nobody needs, and a comma-separated run-on that reads as unformatted
+    // debug output rather than a product's own UI. Explicit month name and
+    // no seconds reads the same regardless of the browser's locale, and
+    // matches the timestamp style already used in every exported report
+    // (see exportDoc.js's fmtDate).
+    const fmtRunWhen = (ts) => new Date(ts).toLocaleString(undefined, {
+      year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+    });
     for (const run of geoRunsCache) {
-      const when = new Date(run.startedAt).toLocaleString();
+      const when = fmtRunWhen(run.startedAt);
       const outcome = run.failed ? `${run.captured || 0} ok, ${run.failed} failed` : `${run.captured || 0} captured`;
       runSel.append(el("option", { value: run.id }, `${when} — ${outcome}`));
     }

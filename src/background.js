@@ -610,6 +610,10 @@ function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "") {
   leg.idx++;
   leg.lastAdvanceAt = Date.now();
   leg.lastFailReason = reason;
+  // This leg is genuinely moving to a new prompt now — see the
+  // chrome.tabs.onUpdated listener below for what these count.
+  leg.reloadRetries = 0;
+  leg.loadCount = 0;
   /* A failed prompt is the breakage the user actually cares about — "prompts
    * missing from the results" is how it gets reported. The reason already
    * lands in the run's own histogram, but that is per-campaign and gets
@@ -1191,6 +1195,13 @@ async function loaderRunLeg(plat, leg) {
   const search = plat === "chatgpt" && loader.options.forceSearch ? "&lcfcsearch=1" : "";
   const url = `${engineBaseUrl(plat)}?q=${q}&lcfc=1&lcfctok=${leg.token}${search}`;
 
+  // Counts navigations of this tab while this turn is in flight — see the
+  // chrome.tabs.onUpdated listener below. Reset immediately before the
+  // navigation THIS call is about to cause, so that load (however many
+  // onUpdated ticks Chrome reports for it) is the one "expected" one; any
+  // further navigation before the turn resolves is somebody/something
+  // else moving this tab, not us.
+  leg.loadCount = 0;
   try {
     await chrome.tabs.update(leg.tabId, { url });
   } catch (_) {
@@ -1203,6 +1214,58 @@ async function loaderRunLeg(plat, leg) {
   // continue. Without this a rate-limited or errored turn stalls the whole run.
   armWatchdog(plat, leg, turnBudgetMs(leg));
 }
+
+// Reported: Gemini (and, less predictably, other engines) prompts start
+// failing specifically when the user opens/looks at the tab a run is using.
+// Best-evidenced explanation: Chrome auto-discards long-backgrounded tabs
+// under memory pressure — exactly what a multi-engine Campaign run creates,
+// since only one tab can be foreground at a time and the rest sit
+// backgrounded for the run's whole duration — and switching back to a
+// discarded tab reloads it from scratch. A reload wipes the ?q=/lcfc
+// querystring loaderAutoSubmit depends on (already stripped from history
+// the moment it was first read) and all in-page state, so the turn was
+// silently dead from that instant — previously undetectable until the full
+// 90s watchdog gave up on it, indistinguishable from any other timeout.
+//
+// This turns that ~90s dead wait into a same-second retry: a SECOND
+// navigation of an in-flight leg's own tab (the FIRST is the one
+// loaderRunLeg/checkTabOwnership-driven resume just issued) means the tab
+// left and came back on its own, so re-submit the same prompt right away
+// rather than waiting out a watchdog that can no longer resolve.
+//
+// checkTabOwnership (inside loaderRunLeg) still runs on the retry, so this
+// composes safely with the existing trust-boundary protections: if what
+// actually happened is the user navigating this tab to something else
+// entirely (not a reload back to the same engine), that still parks the
+// run instead of resubmitting into a page the user is using.
+const MAX_RELOAD_RETRIES = 2;
+chrome.tabs.onUpdated?.addListener((tabId, changeInfo) => {
+  if (changeInfo.status !== "loading") return;
+  const found = legForTab(tabId);
+  if (!found) return;
+  const { plat, leg } = found;
+  if (!loader.running || loader.paused || leg.paused) return;
+  if (!leg.startedAt || leg.idx >= leg.prompts.length) return; // no turn in flight on this leg
+
+  leg.loadCount = (leg.loadCount || 0) + 1;
+  if (leg.loadCount <= 1) return; // the navigation loaderRunLeg itself just issued
+
+  leg.reloadRetries = (leg.reloadRetries || 0) + 1;
+  if (leg.reloadRetries > MAX_RELOAD_RETRIES) {
+    // Reloading repeatedly without ever completing isn't a one-off
+    // discard-and-reactivate — stop retrying and let it fail normally
+    // rather than looping on a tab that will apparently never hold still.
+    failTurnAndAdvance(plat, leg, "tab reloaded repeatedly", 500);
+    return;
+  }
+  logErr(`run:tab-reloaded:${plat}`, "Loader tab reloaded mid-turn — retrying", {
+    platform: plat,
+    promptIndex: (leg.startOffset || 0) + leg.idx,
+    totalPrompts: platformTotal(plat),
+    attempt: leg.reloadRetries,
+  });
+  loaderRunLeg(plat, leg);
+});
 
 async function loaderStart(prompts, options) {
   // Guard against a second run stomping the first: `loader` is one shared
@@ -1486,6 +1549,10 @@ function loaderOnCapture(tabId, record) {
   leg.lastAdvanceAt = Date.now();
   loader.done++;
   leg.idx++;
+  // This leg is genuinely moving to a new prompt now — see the
+  // chrome.tabs.onUpdated listener below for what these count.
+  leg.reloadRetries = 0;
+  leg.loadCount = 0;
   // Persisted synchronously, before scheduling the next turn — this is the
   // step that closes the restart-duplicate window: if the worker dies
   // between here and the next capture, a resume will see this completion

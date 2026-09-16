@@ -2306,6 +2306,11 @@ body.popup .drill-table th:first-child { min-width: 180px; }
   margin-left: auto;
 }
 .campaign-controls .filter { max-width: 240px; }
+/* The run picker's own options carry a full timestamp + outcome
+   ("Sep 16, 2026, 3:50 PM — 3 captured"), which the shared 240px cap
+   clips mid-word ("— 3 captu"). Wider, and specific to this one control
+   rather than loosening the cap for every other filter in the row. */
+#geoRunPick { max-width: 320px; }
 /* States the filter this card is under, since the control itself lives in the
    Dashboard's filter row above. */
 .scope-note {
