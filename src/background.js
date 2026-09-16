@@ -610,10 +610,11 @@ function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "") {
   leg.idx++;
   leg.lastAdvanceAt = Date.now();
   leg.lastFailReason = reason;
-  // This leg is genuinely moving to a new prompt now — see the
-  // chrome.tabs.onUpdated listener below for what these count.
+  // This leg is genuinely moving to a new prompt now — the reload-retry
+  // budget (chrome.tabs.onUpdated listener below) is per-prompt, not
+  // per-leg, so it resets here rather than carrying over to whatever comes
+  // next.
   leg.reloadRetries = 0;
-  leg.loadCount = 0;
   /* A failed prompt is the breakage the user actually cares about — "prompts
    * missing from the results" is how it gets reported. The reason already
    * lands in the run's own histogram, but that is per-campaign and gets
@@ -1195,13 +1196,11 @@ async function loaderRunLeg(plat, leg) {
   const search = plat === "chatgpt" && loader.options.forceSearch ? "&lcfcsearch=1" : "";
   const url = `${engineBaseUrl(plat)}?q=${q}&lcfc=1&lcfctok=${leg.token}${search}`;
 
-  // Counts navigations of this tab while this turn is in flight — see the
-  // chrome.tabs.onUpdated listener below. Reset immediately before the
-  // navigation THIS call is about to cause, so that load (however many
-  // onUpdated ticks Chrome reports for it) is the one "expected" one; any
-  // further navigation before the turn resolves is somebody/something
-  // else moving this tab, not us.
-  leg.loadCount = 0;
+  // Marks how long to IGNORE this tab's own navigation events for — see the
+  // chrome.tabs.onUpdated listener below for why this has to be time-based
+  // rather than counting discrete "loading" ticks. Set immediately before
+  // the navigation THIS call is about to cause.
+  leg.navGraceUntil = Date.now() + RELOAD_DETECT_GRACE_MS;
   try {
     await chrome.tabs.update(leg.tabId, { url });
   } catch (_) {
@@ -1227,12 +1226,27 @@ async function loaderRunLeg(plat, leg) {
 // silently dead from that instant — previously undetectable until the full
 // 90s watchdog gave up on it, indistinguishable from any other timeout.
 //
-// This turns that ~90s dead wait into a same-second retry: a SECOND
-// navigation of an in-flight leg's own tab (the FIRST is the one
-// loaderRunLeg/checkTabOwnership-driven resume just issued) means the tab
-// left and came back on its own, so re-submit the same prompt right away
-// rather than waiting out a watchdog that can no longer resolve.
+// This turns that ~90s dead wait into a fast retry: a "loading" event on an
+// in-flight leg's own tab, arriving well after the navigation loaderRunLeg
+// itself just issued, means the tab left and came back on its own — so
+// re-submit the same prompt right away rather than waiting out a watchdog
+// that can no longer resolve.
 //
+// Why time-based rather than counting "this is the Nth loading event since
+// we navigated": measured directly against a real Chromium instance
+// (launchPersistentContext + the real extension, see the PR discussion) —
+// ONE chrome.tabs.update() call reliably produces TWO separate
+// loading-then-complete cycles back to back, roughly 10-50ms apart, not
+// one. Counting ticks (even "the first loading after a complete") reads the
+// second, entirely expected cycle as a reload and fires a spurious retry —
+// confirmed as a real regression this way: a live run advanced two prompts
+// deep within milliseconds, `failTurnAndAdvance` racking up "tab reloaded
+// repeatedly" almost instantly. A grace window sidesteps the question of
+// how many ticks one real navigation produces entirely: nothing inside it
+// is ever treated as a reload, however noisy. 3s is enormous headroom over
+// the ~50ms of measured noise while remaining a ~30x improvement over the
+// 90s watchdog it replaces.
+const RELOAD_DETECT_GRACE_MS = 3000;
 // checkTabOwnership (inside loaderRunLeg) still runs on the retry, so this
 // composes safely with the existing trust-boundary protections: if what
 // actually happened is the user navigating this tab to something else
@@ -1246,9 +1260,7 @@ chrome.tabs.onUpdated?.addListener((tabId, changeInfo) => {
   const { plat, leg } = found;
   if (!loader.running || loader.paused || leg.paused) return;
   if (!leg.startedAt || leg.idx >= leg.prompts.length) return; // no turn in flight on this leg
-
-  leg.loadCount = (leg.loadCount || 0) + 1;
-  if (leg.loadCount <= 1) return; // the navigation loaderRunLeg itself just issued
+  if (Date.now() < (leg.navGraceUntil || 0)) return; // still settling our own navigation
 
   leg.reloadRetries = (leg.reloadRetries || 0) + 1;
   if (leg.reloadRetries > MAX_RELOAD_RETRIES) {
@@ -1549,10 +1561,11 @@ function loaderOnCapture(tabId, record) {
   leg.lastAdvanceAt = Date.now();
   loader.done++;
   leg.idx++;
-  // This leg is genuinely moving to a new prompt now — see the
-  // chrome.tabs.onUpdated listener below for what these count.
+  // This leg is genuinely moving to a new prompt now — the reload-retry
+  // budget (chrome.tabs.onUpdated listener below) is per-prompt, not
+  // per-leg, so it resets here rather than carrying over to whatever comes
+  // next.
   leg.reloadRetries = 0;
-  leg.loadCount = 0;
   // Persisted synchronously, before scheduling the next turn — this is the
   // step that closes the restart-duplicate window: if the worker dies
   // between here and the next capture, a resume will see this completion
