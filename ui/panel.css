@@ -740,7 +740,7 @@ body.tab .app-content {
        spans both rows down the left. */
     grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
     grid-template-rows: auto auto;
-    gap: 24px;
+    gap: 16px;
     align-items: start;
   }
 
