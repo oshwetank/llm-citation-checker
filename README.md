@@ -10,7 +10,7 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.36.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.37.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research.
 
