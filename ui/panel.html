@@ -264,34 +264,39 @@
                 <button id="demoToggle" class="btn sm ghost">Load sample</button>
               </div>
             </div>
-            <!-- Error log, above the capture debugger deliberately: this is the
-                 one a user needs when something has gone wrong, and unlike the
-                 debugger it is always recording and survives a browser
-                 restart. Open by default when it has entries (set in JS). -->
-            <details class="about-details" id="errLogBox">
-              <summary>Error log <span id="errLogCount" class="muted small"></span></summary>
+            <!-- One diagnostics log, replacing what used to be two separate,
+                 disconnected mechanisms (an error log and a "Capture debugger
+                 log"): errors, network-capture breadcrumbs and per-turn
+                 outcomes, all recorded durably here. Open by default when it
+                 has an error in it (set in JS). -->
+            <details class="about-details" id="diagBox">
+              <summary>Diagnostics <span id="diagCount" class="muted small"></span></summary>
               <p class="muted small">
-                Everything that has failed, newest first, grouped so one repeating problem
-                reads as one line. Recorded on this device only, and deliberately free of
-                prompt text, answers, URLs and brand names — so it is safe to copy and share
-                when reporting a problem.
+                Errors, capture events and per-turn outcomes, newest first. Recorded on
+                this device only, and deliberately free of prompt text, answers, URLs and
+                brand names — so it is safe to copy and share when reporting a problem.
               </p>
-              <div class="ft-actions" style="margin-bottom: 10px;">
-                <button id="errLogRefresh" class="btn sm ghost">Refresh</button>
-                <button id="errLogCopy" class="btn sm ghost">Copy log</button>
-                <button id="errLogClear" class="btn sm ghost danger">Clear log</button>
+              <div class="ft-actions" style="margin-bottom: 10px; flex-wrap: wrap;">
+                <select id="diagCatFilter" class="filter">
+                  <option value="">All</option>
+                  <option value="error">Errors</option>
+                  <option value="turn">Turns</option>
+                  <option value="capture">Capture events</option>
+                </select>
+                <button id="diagRefresh" class="btn sm ghost">Refresh</button>
+                <button id="diagCopy" class="btn sm ghost">Copy log</button>
+                <button id="diagClear" class="btn sm ghost danger">Clear log</button>
               </div>
-              <div id="errLog" class="dbglog"></div>
-            </details>
-
-            <details class="about-details">
-              <summary>Capture debugger log</summary>
-              <p class="muted small">Observed network events and payloads across the supported engines. Only useful when the debugger above is enabled.</p>
-              <div class="ft-actions" style="margin-bottom: 10px;">
-                <button id="dbgRefresh" class="btn sm ghost">Refresh log</button>
-                <button id="dbgClear" class="btn sm ghost danger">Clear log</button>
+              <!-- "Share all the issues and data of a campaign in one go":
+                   one zip with the full diagnostic log, every raw capture and
+                   derived record for the chosen campaign, and the run-by-run
+                   completeness numbers — everything an engineer needs to
+                   root-cause a problem, gathered in one place. -->
+              <div class="ft-actions" style="margin-bottom: 10px; flex-wrap: wrap;">
+                <select id="diagExportProfile" class="filter"></select>
+                <button id="diagExportBtn" class="btn sm ghost">Export campaign diagnostics</button>
               </div>
-              <div id="dbgLog" class="dbglog"></div>
+              <div id="diagLog" class="dbglog"></div>
             </details>
           </div>
         </section>

@@ -207,7 +207,10 @@ src/
     feedbackBundle.js   builds the problem-report archive
     zipWrite.js         dependency-free zip writer (CompressionStream, STORED fallback)
     xlsxLite.js         dependency-free XLSX reader for prompt import
-    errorlog.js         the durable, privacy-scrubbed error log
+    errorlog.js         the one durable diagnostics log — errors, capture
+                        breadcrumbs and per-turn outcomes, privacy-scrubbed
+    diagnosticsSummary.js  per-run expected/stored/missing/failed counts,
+                        shared by the workbook and the campaign export
     auth-check.js       pre-flight session check before a Campaign run submits
     pacing.js           human-paced submission timing
     glossary.js         the one definition per metric the UI's tooltips read from

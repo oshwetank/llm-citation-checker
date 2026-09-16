@@ -28,6 +28,7 @@
 
 import { normName, domainOfUrl, mentionMatchesBrand } from "./geo.js";
 import { parseQueryOperators, classifyQuery } from "./fanout.js";
+import { summarizeRunDiagnostics } from "./diagnosticsSummary.js";
 
 /* ---------------------------------------------------------------- XML bits */
 
@@ -597,19 +598,18 @@ function sheetFanout(bundle, idx) {
 }
 
 function sheetDiagnostics(bundle, idx) {
+  const { perRun, errors } = summarizeRunDiagnostics(bundle, idx.runNo);
   const rows = [];
-  for (const r of idx.orderedRuns) {
-    const stored = (bundle.records || []).filter((x) => x.geo && x.geo.runId === r.id).length;
-    const missing = Math.max(0, (r.expected || 0) - stored);
+  for (const r of perRun) {
     rows.push([
-      idx.runNo.get(r.id), fmtDate(r.startedAt), r.status || "",
-      r.expected || 0, stored, missing, r.failed || 0,
-      Object.entries(r.reasons || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} (${v})`).join("; "),
+      r.runNo, fmtDate(r.startedAt), r.status,
+      r.expected, r.stored, r.missing, r.failed,
+      Object.entries(r.reasons).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} (${v})`).join("; "),
     ]);
   }
   // The error log's own grouped view, so a run that went wrong and the reason
   // it went wrong sit in the same file.
-  for (const e of bundle.errors || []) {
+  for (const e of errors) {
     rows.push(["", fmtDate(e.lastAt), "error", "", "", "", e.count || 1,
       `[${e.where}] ${e.message}${e.trace ? ` — timeline: ${e.trace}` : ""}`]);
   }

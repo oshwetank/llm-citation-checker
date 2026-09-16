@@ -3528,14 +3528,23 @@ function downloadDetailedFormat(records, format) {
   download(`citoskeleton-audit-${Date.now()}.xls`, xml, "application/vnd.ms-excel");
 }
 
+// One raw-capture header format, used everywhere a raw payload is handed
+// over (the standalone "Download raw payload" button, the feedback bundle,
+// and the campaign diagnostics export) — this used to be built inline in
+// two separate places with the same three lines, which is exactly how the
+// two copies would eventually drift.
+function formatRawCapture(captureId, meta, rawText) {
+  return (
+    `# CitoSkeleton raw capture ${captureId}\n` +
+    `# url: ${(meta && meta.url) || ""}\n` +
+    `# reqBody: ${(meta && meta.reqBody) || ""}\n\n` + rawText
+  );
+}
+
 async function downloadRaw(captureId, label) {
   const r = await send({ type: "get-raw", captureId });
   if (!r.ok || r.raw == null) { showToast("No raw payload stored for this capture.", "error"); return; }
-  const header =
-    `# CitoSkeleton raw capture ${captureId}\n` +
-    `# url: ${r.meta?.url || ""}\n` +
-    `# reqBody: ${r.meta?.reqBody || ""}\n\n`;
-  download(`citoskeleton-raw-${label || captureId}.txt`, header + r.raw, "text/plain");
+  download(`citoskeleton-raw-${label || captureId}.txt`, formatRawCapture(captureId, r.meta, r.raw), "text/plain");
 }
 function toCsv(records) {
   const rows = [["capturedAt", "platform", "model", "prompt", "searched", "fanoutCount", "sourceCount"]];
@@ -5909,11 +5918,7 @@ async function openFeedbackModal(rec) {
     if (include.raw) {
       try {
         const r = await send({ type: "get-raw", captureId: full.captureId });
-        if (r && r.ok && r.raw != null) {
-          raw = `# CitoSkeleton raw capture ${full.captureId}\n` +
-                `# url: ${(r.meta && r.meta.url) || ""}\n` +
-                `# reqBody: ${(r.meta && r.meta.reqBody) || ""}\n\n` + r.raw;
-        }
+        if (r && r.ok && r.raw != null) raw = formatRawCapture(full.captureId, r.meta, r.raw);
       } catch (_) { /* a capture whose raw was pruned still sends the rest */ }
       if (!raw) include.raw = false;
     }
@@ -6337,85 +6342,59 @@ setInterval(async () => {
   if (s.ok) withScrollPreserved(() => renderLoaderStatus(s));
 }, 1500);
 
-/* ---------- Capture debug ---------- */
-async function renderDebug() {
-  const r = await send({ type: "get-debug" });
-  const log = $("#dbgLog");
-  log.textContent = "";
-  if (!r.ok || !r.events.length) { log.append(el("div", { className: "muted" }, "No events yet. Load a supported engine and run a prompt.")); return; }
-  // group counts by host+kind for a quick summary
-  const summ = {};
-  r.events.forEach((e) => { const k = `${e.host} · ${e.kind}`; summ[k] = (summ[k] || 0) + 1; });
-  log.append(el("div", { className: "muted", style: "margin:4px 0" }, Object.entries(summ).map(([k, n]) => `${k}: ${n}`).join("  |  ")));
-  r.events.slice().reverse().forEach((e) => {
-    const time = new Date(e.t).toLocaleTimeString();
-    const d = e.data || {};
-    let line = `${time}  [${e.kind}]`;
-    if (e.kind === "fetch") line += `  ${d.status} ${d.matched ? "CAP" : "—"}  ${d.url}`;
-    else if (e.kind === "xhr") line += `  ${d.matched ? "CAP" : "—"}  ${d.url}`;
-    else if (e.kind === "xhr-done") line += `  len=${d.len}${d.rt && d.rt !== "text" ? " " + d.rt : ""}  ${d.url}`;
-    else if (e.kind === "worker") line += `  WORKER  ${d.url}`;
-    else if (e.kind === "installed") line += `  ${e.host}  ${d.href || ""}`;
-    else line += `  ${e.host}`;
-    // highlight big matched responses (candidate answer payloads)
-    const cls = e.kind === "xhr-done" && d.len > 2000 ? "dbgline big" : "dbgline";
-    log.append(el("div", { className: cls }, line));
-  });
-}
-$("#dbgRefresh").addEventListener("click", renderDebug);
-$("#dbgClear").addEventListener("click", async () => { await send({ type: "clear-debug" }); renderDebug(); });
-
-/* ---------- Error log ---------- */
+/* ---------- Diagnostics log ----------
+ * One merged log — replaces what used to be two disconnected mechanisms:
+ * an error log (durable) and a "Capture debugger log" (in-memory, wiped on
+ * every service-worker restart). Entries carry a `cat` — "error", "turn" (a
+ * per-prompt outcome) or "capture" (a network-capture breadcrumb) — see
+ * lib/errorlog.js's header for why these were folded into one store rather
+ * than staying three separate things a user had to know to check.
+ */
+const DIAG_CAT_LABEL = { error: "Error", turn: "Turn", capture: "Capture" };
 
 // Kept as plain text so "Copy log" produces something a person can paste into
 // a message without any of the surrounding UI coming with it.
-function errorLogText(grouped) {
-  if (!grouped.length) return "No errors recorded.";
-  return grouped.map((g) => {
-    const when = new Date(g.lastAt).toLocaleString();
-    const rep = g.count > 1 ? ` (x${g.count}, first ${new Date(g.firstAt).toLocaleString()})` : "";
-    const ctx = g.context && Object.keys(g.context).length
-      ? `\n    context: ${Object.entries(g.context).map(([k, v]) => `${k}=${v}`).join(", ")}` : "";
-    const trace = g.trace ? `\n    trace: ${g.trace}` : "";
-    const stack = g.stack ? `\n    ${g.stack.slice(0, 300)}` : "";
-    return `${when}${rep}\n  [${g.where}] ${g.kind}: ${g.message}${ctx}${trace}${stack}`;
+function diagLogText(entries) {
+  if (!entries.length) return "Nothing recorded.";
+  return entries.map((e) => {
+    const when = new Date(e.at).toLocaleString();
+    const cat = DIAG_CAT_LABEL[e.cat] || "Error";
+    const ctx = e.context && Object.keys(e.context).length
+      ? `\n    context: ${Object.entries(e.context).map(([k, v]) => `${k}=${v}`).join(", ")}` : "";
+    const trace = e.trace ? `\n    trace: ${e.trace}` : "";
+    const stack = e.stack ? `\n    ${e.stack.slice(0, 300)}` : "";
+    return `${when}\n  [${cat}] [${e.where}] ${e.message}${ctx}${trace}${stack}`;
   }).join("\n\n");
 }
 
-async function renderErrorLog() {
-  const box = $("#errLog");
+async function renderDiagLog() {
+  const box = $("#diagLog");
   if (!box) return;
   box.textContent = "Loading…";
-  const r = await send({ type: "error-log" });
-  const grouped = (r && r.ok && r.grouped) || [];
-  const countEl = $("#errLogCount");
-  if (countEl) {
-    countEl.textContent = grouped.length
-      ? `— ${grouped.reduce((n, g) => n + g.count, 0)} recorded, ${grouped.length} distinct`
-      : "— nothing recorded";
-  }
-  // Open itself when there is something to see, so a user who has hit a
-  // problem doesn't have to know this disclosure exists to find it.
-  const details = $("#errLogBox");
-  if (details && grouped.length) details.open = true;
+  const cat = $("#diagCatFilter")?.value || undefined;
+  const r = await send({ type: "error-log", cat, limit: 300 });
+  const entries = (r && r.ok && r.entries) || [];
+  const countEl = $("#diagCount");
+  if (countEl) countEl.textContent = entries.length ? `— ${entries.length} recorded` : "— nothing recorded";
+  // Open itself when there is a real error to see, so a user who has hit a
+  // problem doesn't have to know this disclosure exists to find it — but
+  // not for every routine "turn ok" breadcrumb, which would defeat the
+  // point of starting closed.
+  const details = $("#diagBox");
+  if (details && !cat && entries.some((e) => (e.cat || "error") === "error")) details.open = true;
 
   box.textContent = "";
-  if (!grouped.length) {
-    box.append(el("div", { className: "muted small" },
-      "Nothing has failed since the log was last cleared."));
+  if (!entries.length) {
+    box.append(el("div", { className: "muted small" }, "Nothing recorded yet."));
     return;
   }
-  grouped.forEach((g) => {
-    const head = `${new Date(g.lastAt).toLocaleString()}  [${g.where}]  ${g.kind}: ${g.message}`;
-    const line = el("div", { className: g.count > 1 ? "dbgline big" : "dbgline" },
-      el("div", {}, head));
-    if (g.count > 1) {
+  entries.forEach((e) => {
+    const catKey = e.cat || "error";
+    const head = `${new Date(e.at).toLocaleString()}  [${DIAG_CAT_LABEL[catKey] || "Error"}]  [${e.where}]  ${e.message}`;
+    const line = el("div", { className: "dbgline" }, el("div", {}, head));
+    if (e.context && Object.keys(e.context).length) {
       line.append(el("div", { className: "muted small" },
-        `repeated ${g.count} times — first at ${new Date(g.firstAt).toLocaleString()}`));
-    }
-    if (g.context && Object.keys(g.context).length) {
-      line.append(el("div", { className: "muted small" },
-        Object.entries(g.context).map(([k, v]) => `${k}=${v}`).join("  ·  ")));
+        Object.entries(e.context).map(([k, v]) => `${k}=${v}`).join("  ·  ")));
     }
     /* The turn timeline, spelled out.
      *
@@ -6423,39 +6402,131 @@ async function renderErrorLog() {
      * the composer was ever found, whether the text landed, whether the send
      * control was usable, and how far the sequence got before it stopped —
      * which is the difference between a fixable report and a shrug. */
-    if (g.trace) {
+    if (e.trace) {
       line.append(el("div", { className: "err-trace" },
         el("span", { className: "muted small" }, "turn timeline: "),
-        el("code", {}, g.trace)));
+        el("code", {}, e.trace)));
     }
-    if (g.stack) {
+    if (e.stack) {
       const st = el("details", { className: "err-stack" },
         el("summary", { className: "muted small" }, "stack"),
-        el("pre", { className: "muted small" }, g.stack));
+        el("pre", { className: "muted small" }, e.stack));
       line.append(st);
+    }
+    // Raw capture data reachable straight from the diagnostics view, not
+    // only via a separate one-off button elsewhere.
+    if (e.context && e.context.captureId) {
+      const viewRaw = el("button", { className: "btn sm ghost", style: "margin-top:4px;" }, "View raw capture");
+      viewRaw.onclick = () => downloadRaw(e.context.captureId, "diag");
+      line.append(viewRaw);
     }
     box.append(line);
   });
 }
 
-$("#errLogRefresh")?.addEventListener("click", renderErrorLog);
-$("#errLogClear")?.addEventListener("click", async () => {
+$("#diagCatFilter")?.addEventListener("change", renderDiagLog);
+$("#diagRefresh")?.addEventListener("click", renderDiagLog);
+$("#diagClear")?.addEventListener("click", async () => {
   await send({ type: "error-log-clear" });
-  renderErrorLog();
+  renderDiagLog();
 });
-$("#errLogCopy")?.addEventListener("click", async () => {
-  const r = await send({ type: "error-log" });
-  const text = errorLogText((r && r.ok && r.grouped) || []);
+$("#diagCopy")?.addEventListener("click", async () => {
+  const cat = $("#diagCatFilter")?.value || undefined;
+  const r = await send({ type: "error-log", cat, limit: 300 });
+  const text = diagLogText((r && r.ok && r.entries) || []);
   try {
     await navigator.clipboard.writeText(text);
-    showToast("Error log copied.");
+    showToast("Diagnostics log copied.");
   } catch (_) {
     showToast("Couldn't copy — select the log text and copy manually.", "error");
   }
 });
+
+/* ---------- Export campaign diagnostics ----------
+ * "Share all the issues and data of a campaign with you in one go" — one
+ * zip with the full diagnostic log, every raw capture and derived record
+ * for the chosen campaign, and the run-by-run completeness numbers.
+ */
+async function populateDiagExportProfiles() {
+  const sel = $("#diagExportProfile");
+  if (!sel) return;
+  const r = await send({ type: "geo-profile-list" });
+  const profiles = (r && r.ok && r.profiles) || [];
+  sel.textContent = "";
+  if (!profiles.length) {
+    sel.append(el("option", { value: "" }, "No campaigns yet"));
+    return;
+  }
+  for (const p of profiles) sel.append(el("option", { value: p.id }, p.name || p.id));
+}
+
+$("#diagExportBtn")?.addEventListener("click", async () => {
+  const profileId = $("#diagExportProfile")?.value;
+  if (!profileId) { showToast("No campaign selected.", "error"); return; }
+  const btn = $("#diagExportBtn");
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Building…";
+  try {
+    const r = await send({ type: "get-campaign-diagnostics", profileId });
+    if (!r || !r.ok) { showToast((r && r.error) || "Couldn't build the export.", "error"); return; }
+    const files = [
+      { name: "summary.txt", text: buildCampaignDiagSummaryText(r) },
+      { name: "campaign.json", text: JSON.stringify({ campaign: r.campaign, perRun: r.perRun, env: r.env, generatedAt: r.generatedAt }, null, 2) },
+      { name: "diagnostics.json", text: JSON.stringify(r.errors, null, 2) },
+      { name: "turns.json", text: JSON.stringify(r.turns, null, 2) },
+      { name: "captures.json", text: JSON.stringify(r.captures, null, 2) },
+    ];
+    for (const rec of r.records || []) {
+      files.push({ name: `captures/${rec.captureId}.json`, text: JSON.stringify(rec, null, 2) });
+      const raw = r.raw && r.raw[rec.captureId];
+      if (raw) files.push({ name: `captures/${rec.captureId}-raw.txt`, text: formatRawCapture(rec.captureId, raw, raw.text) });
+    }
+    const zip = await makeZip(files);
+    const slug = String(r.campaign?.name || "campaign").replace(/[^\w]+/g, "-").replace(/^-|-$/g, "").toLowerCase();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(zip);
+    a.download = `citoskeleton-diagnostics-${slug || "campaign"}-${Date.now()}.zip`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    showToast("Diagnostics export saved.");
+  } catch (err) {
+    showToast("Couldn't build the export.", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+});
+
+function buildCampaignDiagSummaryText(r) {
+  const lines = [];
+  lines.push("CitoSkeleton campaign diagnostics");
+  lines.push("=================================");
+  lines.push("");
+  lines.push(`Campaign  : ${r.campaign?.name || "—"} (${r.campaign?.profileId || "—"})`);
+  lines.push(`Engines   : ${(r.campaign?.engines || []).join(", ") || "—"}`);
+  lines.push(`Runs      : ${r.campaign?.runCount ?? "—"}`);
+  lines.push(`Prompts   : ${r.campaign?.promptCount ?? "—"}`);
+  lines.push(`Generated : ${new Date(r.generatedAt).toISOString()}`);
+  lines.push(`Extension : ${r.env?.version || "—"}`);
+  lines.push(`Browser   : ${r.env?.userAgent || "—"}`);
+  lines.push("");
+  lines.push("Per run");
+  for (const run of r.perRun || []) {
+    lines.push(`  Run ${run.runNo ?? "?"}  ${new Date(run.startedAt).toLocaleString()}  ${run.status}`);
+    lines.push(`    expected ${run.expected}  stored ${run.stored}  missing ${run.missing}  failed ${run.failed}`);
+    const reasons = Object.entries(run.reasons || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} (${v})`).join("; ");
+    if (reasons) lines.push(`    reasons: ${reasons}`);
+  }
+  lines.push("");
+  lines.push(`Errors: ${(r.errors || []).length}   Turns: ${(r.turns || []).length}   Capture events: ${(r.captures || []).length}`);
+  return lines.join("\n");
+}
+
 // Painted on load rather than only on demand, so the count in the summary is
 // accurate the first time the About tab is opened.
-renderErrorLog();
+renderDiagLog();
+populateDiagExportProfiles();
 
 /* ---------- Settings ---------- */
 async function loadSettings() {

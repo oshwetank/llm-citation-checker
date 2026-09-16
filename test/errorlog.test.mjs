@@ -19,7 +19,7 @@
  * — prompts, answers, URLs in context, URLs inside the error MESSAGE itself,
  * brand names in long strings.
  */
-import { makeErrorEntry, createErrorLog } from "../src/lib/errorlog.js";
+import { makeErrorEntry, makeEventEntry, createErrorLog } from "../src/lib/errorlog.js";
 
 let failures = 0;
 const check = (label, cond, detail) => {
@@ -199,6 +199,78 @@ console.log("\nLogging can never break the thing it is logging");
   check("a completely broken database does not make the logger throw", !threw);
   check("list() degrades to empty rather than exploding", (await log.list()).length === 0);
   check("clear() reports failure instead of throwing", (await log.clear()) === false);
+}
+
+console.log("\nOne log now carries three categories, not three mechanisms");
+{
+  /* Requested: "I need ONE error/problem detection tool" — the error log,
+   * the old in-memory Capture debugger ring buffer, and per-turn outcome
+   * history (previously only visible in the live progress view) are now
+   * one store, discriminated by `cat`. This section is what proves the
+   * merge actually happened rather than just adding fields nothing uses. */
+  const e = makeErrorEntry("run:turn-failed:chatgpt", "timeout", { platform: "chatgpt" });
+  check("an entry defaults to cat:error when none is given", e.cat === "error", e.cat);
+
+  const capture = makeEventEntry("capture:fetch", "capture", "chatgpt.com", { status: 200, matched: true });
+  check("makeEventEntry stamps the category given", capture.cat === "capture", capture.cat);
+  check("makeEventEntry needs no exception object", capture.stack === "" && capture.trace === "");
+  check("its context still goes through the same privacy filter",
+    capture.context.status === 200 && capture.context.matched === true, JSON.stringify(capture.context));
+
+  const turn = makeEventEntry("run:turn:gemini", "turn", "ok", { platform: "gemini", promptIndex: 3, status: "ok" });
+  check("a turn entry records its own category", turn.cat === "turn", turn.cat);
+}
+
+console.log("\nrunId threading: a campaign export can find its own entries");
+{
+  const db = fakeDb();
+  const log = createErrorLog(db);
+  await log.record("run:turn-failed:chatgpt", "timeout", { platform: "chatgpt", runId: "run-A" });
+  await log.recordEvent("run:turn:chatgpt", "turn", "ok", { platform: "chatgpt", runId: "run-A" });
+  await log.recordEvent("capture:fetch", "capture", "chatgpt.com", { runId: "run-B" });
+  await log.record("unrelated", new Error("no runId at all"));
+
+  const forA = await log.listByRunIds(["run-A"]);
+  check("only entries tagged with a wanted runId come back", forA.length === 2, String(forA.length));
+  check("an entry from a different run is excluded",
+    !forA.some((x) => x.context.runId === "run-B"));
+
+  const forNeither = await log.listByRunIds(["run-does-not-exist"]);
+  check("an unmatched runId returns nothing rather than everything", forNeither.length === 0, String(forNeither.length));
+}
+
+console.log("\nCategory-aware trim: a noisy capture stream cannot evict real errors");
+{
+  const db = fakeDb();
+  const log = createErrorLog(db);
+
+  // Real failures, well under any cap.
+  for (let i = 0; i < 10; i++) await log.record("run:turn-failed:chatgpt", `fail ${i}`, { platform: "chatgpt" });
+  // A flood of capture breadcrumbs, well over the capture cap (200).
+  for (let i = 0; i < 500; i++) await log.recordEvent("capture:fetch", "capture", `event ${i}`, {});
+  await log.trim();
+
+  const errors = await log.list(5000, "error");
+  const captures = await log.list(5000, "capture");
+  check("every real error survives a capture flood that dwarfs it",
+    errors.length === 10, String(errors.length));
+  check("the capture category is trimmed to its own cap, independently",
+    captures.length > 0 && captures.length <= 200, String(captures.length));
+  check("list(cat) never leaks entries from another category into the count",
+    errors.every((e) => (e.cat || "error") === "error") && captures.every((e) => e.cat === "capture"));
+}
+
+console.log("\nsummary() stays scoped to real failures by default");
+{
+  const db = fakeDb();
+  const log = createErrorLog(db);
+  await log.record("run:turn-failed:chatgpt", "timeout", { platform: "chatgpt" });
+  await log.recordEvent("run:turn:chatgpt", "turn", "ok", { platform: "chatgpt" });
+  await log.recordEvent("capture:fetch", "capture", "chatgpt.com", {});
+
+  const grouped = await log.summary();
+  check("summary() with no cat argument groups only cat:error entries",
+    grouped.length === 1 && grouped[0].message === "timeout", JSON.stringify(grouped));
 }
 
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");

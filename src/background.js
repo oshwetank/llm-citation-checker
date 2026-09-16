@@ -22,6 +22,7 @@ import { createErrorLog } from "./lib/errorlog.js";
 import { checkEnginesAuth, AUTH_COOKIES } from "./lib/auth-check.js";
 import { buildDemoRecords, isDemoRecord } from "./lib/demo-data.js";
 import { buildCampaignWorkbook } from "./lib/campaignWorkbook.js";
+import { summarizeRunDiagnostics } from "./lib/diagnosticsSummary.js";
 import { gzipString, gunzipToString } from "./lib/gzip.js";
 import { adapt as adaptChatGpt, cleanPassage } from "./adapters/chatgpt.js";
 import { enrichBrandsWithAI, enrichBrandStance } from "./lib/ai-brands.js";
@@ -367,6 +368,12 @@ const MIN_ADVANCE_GAP_MS = 2500; // ignore a second "done" arriving right after 
  * logging. */
 const errorLog = createErrorLog(db);
 const logErr = (where, err, ctx, trace) => { try { errorLog.record(where, err, ctx, trace); } catch (_) {} };
+// The "capture" (network-trace breadcrumbs, replacing the old in-memory
+// DEBUG ring buffer) and "turn" (per-prompt outcome history, previously
+// only visible in the live progress view) categories of the same durable
+// log — see lib/errorlog.js's header for why these were folded in here
+// instead of staying three disconnected mechanisms.
+const logEvent = (where, cat, message, ctx) => { try { errorLog.recordEvent(where, cat, message, ctx); } catch (_) {} };
 
 const LOADER_STATE_KEY = "lcfcLoaderState";
 const HEARTBEAT_ALARM = "lcfcHeartbeat";
@@ -470,7 +477,7 @@ async function persistLoaderState() {
     // Still best-effort — a persistence failure must not break a run in
     // flight — but no longer silent: this is exactly the failure that makes a
     // run unresumable later, and it used to leave no trace at all.
-    logErr("persistLoaderState", err, { running: loader.running, total: loader.total });
+    logErr("persistLoaderState", err, { running: loader.running, total: loader.total, runId: loader.runId });
   }
 }
 /* Moving to storage.local bought resumability across a browser restart, but
@@ -610,6 +617,7 @@ function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "") {
   leg.idx++;
   leg.lastAdvanceAt = Date.now();
   leg.lastFailReason = reason;
+  const reloadRetriesAtFailure = leg.reloadRetries || 0;
   // This leg is genuinely moving to a new prompt now — the reload-retry
   // budget (chrome.tabs.onUpdated listener below) is per-prompt, not
   // per-leg, so it resets here rather than carrying over to whatever comes
@@ -627,17 +635,28 @@ function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "") {
    * it across tabs) is enough to find it, and the log is deliberately free
    * of user content (see lib/errorlog.js).
    */
+  const promptIndex = (leg.startOffset || 0) + leg.idx - 1;
+  const elapsedMs = leg.startedAt ? Date.now() - leg.startedAt : 0;
   logErr(`run:turn-failed:${plat}`, reason, {
     platform: plat,
-    promptIndex: (leg.startOffset || 0) + leg.idx - 1,
+    promptIndex,
     totalPrompts: platformTotal(plat),
     failedSoFar: leg.failed,
     // Whether the content script ever reported anything for this turn. A
     // timeout with reported=false means the page-side script went quiet,
     // which is a different bug from one that tried and failed.
     reported: !!trace,
-    elapsedMs: leg.startedAt ? Date.now() - leg.startedAt : 0,
+    elapsedMs,
+    runId: loader.runId,
   }, trace);
+  // A durable per-turn outcome, alongside the error entry above — this is
+  // what lets a campaign export show a full turn-by-turn timeline (status,
+  // timing, retries) after the run view is long closed, not just the
+  // aggregated "N failed" count the live progress view already had.
+  logEvent(`run:turn:${plat}`, "turn", reason, {
+    platform: plat, promptIndex, status: "failed", elapsedMs,
+    retries: reloadRetriesAtFailure, runId: loader.runId,
+  });
   persistLoaderState();
   syncGeoRun(undefined, reason);
   if (retryDelayMs > 0) setTimeout(() => loaderRunLeg(plat, leg), retryDelayMs);
@@ -753,7 +772,7 @@ async function resumeFromSnapshot(snap) {
       // Under-reconciled is recoverable (worst case one duplicate capture,
       // or a prompt that did complete showing as still pending); stuck
       // invisibly forever is not.
-      logErr("resumeFromSnapshot:getAll", err);
+      logErr("resumeFromSnapshot:getAll", err, { runId: snap.runId });
       all = [];
     }
   }
@@ -999,13 +1018,6 @@ function turnEta(p) {
   // on the one number whose job is telling the user when to come back.
   const e = legEta(p);
   return e ? { avgMs: e.avgTurnMs, remainingMs: e.remainingMs } : null;
-}
-
-// Diagnostic ring buffer (in-memory) for the Debug view.
-const DEBUG = [];
-function pushDebug(event) {
-  DEBUG.push(event);
-  if (DEBUG.length > 200) DEBUG.shift();
 }
 
 function loaderStatus() {
@@ -1275,6 +1287,7 @@ chrome.tabs.onUpdated?.addListener((tabId, changeInfo) => {
     promptIndex: (leg.startOffset || 0) + leg.idx,
     totalPrompts: platformTotal(plat),
     attempt: leg.reloadRetries,
+    runId: loader.runId,
   });
   loaderRunLeg(plat, leg);
 });
@@ -1549,23 +1562,34 @@ function loaderOnCapture(tabId, record) {
         platform: plat,
         promptIndex: (leg.startOffset || 0) + leg.idx,
         totalPrompts: platformTotal(plat),
+        runId: loader.runId,
       });
       return;
     }
   }
 
   clearWatchdog(leg);
-  if (leg.startedAt) leg.durations = [...(leg.durations || []), Date.now() - leg.startedAt].slice(-DURATION_WINDOW);
+  const turnElapsedMs = leg.startedAt ? Date.now() - leg.startedAt : 0;
+  if (leg.startedAt) leg.durations = [...(leg.durations || []), turnElapsedMs].slice(-DURATION_WINDOW);
   leg.outcomes = leg.outcomes || [];
   leg.outcomes[leg.idx] = { status: "done", reason: null, at: Date.now() };
   leg.lastAdvanceAt = Date.now();
   loader.done++;
+  const donePromptIndex = (leg.startOffset || 0) + leg.idx;
+  const reloadRetriesAtSuccess = leg.reloadRetries || 0;
   leg.idx++;
   // This leg is genuinely moving to a new prompt now — the reload-retry
   // budget (chrome.tabs.onUpdated listener below) is per-prompt, not
   // per-leg, so it resets here rather than carrying over to whatever comes
   // next.
   leg.reloadRetries = 0;
+  // The success half of the durable per-turn timeline — see the matching
+  // "turn" event in failTurnAndAdvance for why this exists as its own
+  // category rather than living only in the live progress view.
+  logEvent(`run:turn:${plat}`, "turn", "ok", {
+    platform: plat, promptIndex: donePromptIndex, status: "ok", elapsedMs: turnElapsedMs,
+    retries: reloadRetriesAtSuccess, runId: loader.runId, captureId: record.captureId,
+  });
   // Persisted synchronously, before scheduling the next turn — this is the
   // step that closes the restart-duplicate window: if the worker dies
   // between here and the next capture, a resume will see this completion
@@ -1685,7 +1709,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 for (const leg of p.legs || []) {
                   leg.paused = false;
                 }
-                logErr(`run:auto-resume:${matched}`, "Cooldown expired, auto-resuming platform queue", { platform: matched });
+                logErr(`run:auto-resume:${matched}`, "Cooldown expired, auto-resuming platform queue", { platform: matched, runId: loader.runId });
                 (p.legs || []).forEach((l) => loaderAdvanceLeg(p, l));
                 persistLoaderState();
                 syncGeoRun();
@@ -1978,6 +2002,75 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           });
           const slug = String(profile.name || "campaign").replace(/[^\w]+/g, "-").replace(/^-|-$/g, "").toLowerCase();
           sendResponse({ ok: true, xml, filename: `citoskeleton-${slug || "campaign"}-${Date.now()}.xls` });
+          break;
+        }
+
+        /* Everything about one campaign, in one message — "share all the
+         * issues and data of a campaign with you in one go." Built here
+         * rather than the panel fetching pieces one at a time (as the old
+         * per-capture "Download raw payload" button did): a campaign can
+         * have hundreds of captures, and gunzipping each raw payload in the
+         * service worker and returning them all at once avoids hundreds of
+         * round trips. The panel turns this into a zip (see
+         * ui/panel.js's Export Diagnostics action) — the same makeZip()
+         * the feedback bundle already uses, just fed more files.
+         */
+        case "get-campaign-diagnostics": {
+          const profile = await db.get("profiles", msg.profileId);
+          if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
+          const runs = (await db.getAll("geoRuns")).filter((r) => r.profileId === msg.profileId);
+          const runIds = runs.map((r) => r.id);
+          const all = await db.getAll("derived");
+          const records = selectTracked(all, { profileId: msg.profileId });
+          const prompts = (await db.getAll("trackedPrompts")).filter((t) => t.profileId === msg.profileId);
+
+          const runNo = new Map([...runs].sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0)).map((r, i) => [r.id, i + 1]));
+          const { perRun } = summarizeRunDiagnostics({ runs, records }, runNo);
+
+          // The diagnostic log, split back into its three categories for the
+          // zip's separate files — see lib/errorlog.js's header for why one
+          // store carries all three.
+          const diagEntries = await errorLog.listByRunIds(runIds, 5000);
+          const errorEntries = diagEntries.filter((e) => (e.cat || "error") === "error");
+          const turnEntries = diagEntries.filter((e) => e.cat === "turn");
+          const captureEntries = diagEntries.filter((e) => e.cat === "capture");
+
+          // answerText is large and already fully present in each capture's
+          // own JSON below — dropped from the summary list the same way the
+          // workbook export drops it (see geo-export-workbook above).
+          const lite = records.map(({ answerText, platformSpecific, _extraction, ...rest }) => rest);
+
+          // One raw payload per capture, gunzipped once here rather than N
+          // round trips from the panel — see this case's header comment.
+          const raw = {};
+          for (const rec of records) {
+            try {
+              const row = await db.get("raw", rec.captureId);
+              if (row) raw[rec.captureId] = { text: await gunzipToString(row.gz), url: row.url, reqBody: row.reqBody };
+            } catch (_) { /* a pruned or missing raw payload just isn't included */ }
+          }
+
+          const manifest = chrome.runtime.getManifest();
+          sendResponse({
+            ok: true,
+            campaign: {
+              profileId: profile.id,
+              name: profile.name,
+              brand: profile.brand,
+              competitors: profile.competitors,
+              engines: profile.engines,
+              promptCount: prompts.length,
+              runCount: runs.length,
+            },
+            perRun,
+            errors: errorEntries,
+            turns: turnEntries,
+            captures: captureEntries,
+            records: lite,
+            raw,
+            env: { version: manifest.version, userAgent: navigator.userAgent },
+            generatedAt: Date.now(),
+          });
           break;
         }
 
@@ -2412,8 +2505,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
          * 400 times in one run is one problem, and a flat list of identical
          * lines is what makes a log unreadable exactly when it matters. */
         case "error-log": {
+          // cat lets the unified Diagnostics view filter to one category
+          // (error/capture/turn) — omitted, it returns everything, newest
+          // first, same as before this became a merged log.
           const [entries, grouped] = await Promise.all([
-            errorLog.list(msg.limit || 200),
+            errorLog.list(msg.limit || 200, msg.cat),
             errorLog.summary(msg.groupLimit || 40),
           ]);
           sendResponse({ ok: true, entries, grouped, cap: errorLog.MAX_ENTRIES });
@@ -2444,17 +2540,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true });
           break;
 
-        case "debug":
-          pushDebug(msg.event);
+        // Network-capture breadcrumbs — used to live in an in-memory ring
+        // buffer the MV3 service worker wiped every ~30s idle (see
+        // lib/errorlog.js's header). Now durable, folded into the one
+        // diagnostics log as cat:"capture" entries instead of a second,
+        // disconnected mechanism. `data.url` is deliberately never
+        // forwarded — it can carry `?q=<the prompt>` — only the small
+        // scalar fields the content script already separates it into.
+        case "debug": {
+          const event = msg.event || {};
+          const data = event.data || {};
+          logEvent(`capture:${event.kind || "event"}`, "capture", event.host || event.kind || "capture", {
+            status: typeof data.status === "number" ? data.status : undefined,
+            matched: typeof data.matched === "boolean" ? data.matched : undefined,
+            len: typeof data.len === "number" ? data.len : undefined,
+            rt: typeof data.rt === "string" ? data.rt : undefined,
+            runId: loader.runId,
+          });
           sendResponse({ ok: true });
           break;
-        case "get-debug":
-          sendResponse({ ok: true, events: DEBUG.slice(-120) });
-          break;
-        case "clear-debug":
-          DEBUG.length = 0;
-          sendResponse({ ok: true });
-          break;
+        }
 
         case "get-records": {
           const records = await db.getAll("derived");
