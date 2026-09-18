@@ -2781,12 +2781,31 @@ function renderDashboardImpl() {
     const gc = el("div", { className: "card", id: "geoMetrics" });
     gc.append(el("div", { className: "card-header" }, el("h3", {}, "Campaign Performance")), el("div", { className: "muted small" }, "loading…"));
     root.append(gc);
-    refreshGeoMetrics(selectedCampaign, dashboardGeoPrompts, geoSince, geoUntil);
 
     const pp = el("div", { className: "card", id: "geoPromptTable" });
     pp.append(el("div", { className: "card-header" }, el("h3", {}, "Prompt Performance")), el("div", { className: "muted small" }, "loading…"));
     root.append(pp);
-    refreshPromptPerformance(selectedCampaign, dashboardGeoPrompts, geoSince, geoUntil);
+
+    // Reported: scrolled down into a campaign's Source Domains/URLs table
+    // (which lives inside #geoPromptTable, filled in below), the page kept
+    // jumping back to the top. beginSwap()'s minHeight hold on #dashboard
+    // (above) only lasts two animation frames, but these two panels start
+    // out as a one-line "loading…" placeholder and only reach their real,
+    // tall size after their own chrome.runtime.sendMessage round trip
+    // resolves — which routinely outlasts those two frames, especially
+    // during a live run competing for the service worker's attention. In
+    // that gap #dashboard is genuinely shorter than it was, so the browser
+    // clamps scrollTop back up on its own — the same class of bug already
+    // named and fixed below for the loader-status poll, just triggered here
+    // by every "new-capture" broadcast during a run instead of a timer.
+    // Re-apply the pre-rebuild position once both panels have actually
+    // finished filling back in, undoing that clamp.
+    const scroller = activeScroller();
+    const y = scroller ? scroller.scrollTop : 0;
+    Promise.all([
+      refreshGeoMetrics(selectedCampaign, dashboardGeoPrompts, geoSince, geoUntil),
+      refreshPromptPerformance(selectedCampaign, dashboardGeoPrompts, geoSince, geoUntil),
+    ]).then(() => { if (scroller) scroller.scrollTop = y; });
   }
 
   // Saved Conversations + Top Domains are ad-hoc-only (per the isolation rule
