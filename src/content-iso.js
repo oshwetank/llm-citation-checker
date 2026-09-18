@@ -237,6 +237,18 @@
         trace.push(detail === undefined ? `${ticks}:${ev}` : `${ticks}:${ev}:${detail}`);
       };
 
+      /* Does the tab being backgrounded/foregrounded break submission? A user
+       * report ("prompts fail when I open and look at the tab") is not
+       * provable from a bare "send control never accepted the prompt" —
+       * that string alone doesn't say whether the tab was hidden, visible, or
+       * flipping between the two while the send button went missing. Record
+       * every visibilitychange during this turn, tagged with the tick it
+       * happened on, so a future failure either lines up with a flip or
+       * clearly doesn't — evidence instead of another guess. Page Visibility
+       * API state only (visible/hidden + a blurred flag); never anything
+       * about page content. */
+      document.addEventListener("visibilitychange", () => T("vis", document.visibilityState));
+
       /* The path this tab started on, for the submit detector below. */
       const startPath = location.pathname;
 
@@ -504,7 +516,11 @@
           return;
         }
 
-        if (ticks === 1) T("run", plat);
+        if (ticks === 1) {
+          T("run", plat);
+          T("vis", document.visibilityState);
+          if (!document.hasFocus()) T("blurred");
+        }
 
         // An upstream limit outranks everything else: stop, and tell the run
         // to pause rather than letting this turn time out as a failure.
