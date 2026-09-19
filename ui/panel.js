@@ -1207,16 +1207,42 @@ function showToast(text, variant = "success", ms = variant === "error" ? 7000 : 
 }
 
 // Listen for captured items broadcasted from background worker
+/* Reported: during a run the panel "glitches" and the prompt list keeps
+ * jumping back to the top, so there is no way to scroll down and watch the
+ * prompts that are still to come.
+ *
+ * These broadcasts arrive once per captured prompt, plus again when the
+ * on-device enrichment pass improves that same record — so a long run fires
+ * hundreds of them. Each one called load(), which refetches everything and
+ * rebuilds every tab's DOM from scratch; that rebuild resets scrollTop, so
+ * any attempt to scroll was undone by the next captured prompt. Two things
+ * are needed, and withScrollPreserved supplies neither: load() is async, so
+ * a synchronous save/restore around it would restore before the DOM it is
+ * meant to hold steady has even been built; and a burst of broadcasts has to
+ * collapse into one rebuild rather than several back-to-back.
+ */
+let refreshPending = null;
+function refreshFromBroadcast() {
+  if (refreshPending) return; // a refresh is already queued — it will pick this up too
+  refreshPending = setTimeout(async () => {
+    refreshPending = null;
+    const scroller = activeScroller();
+    const y = scroller ? scroller.scrollTop : 0;
+    await load(); // awaits geoP, so the Campaigns tab has rendered before we restore
+    if (scroller) scroller.scrollTop = y;
+  }, 400);
+}
+
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type === "new-capture") {
-    load();
-    showToast("New LLM citation captured!");
+    refreshFromBroadcast();
+    if (!msg.duringRun) showToast("New LLM citation captured!");
   }
   // The optional on-device AI pass finished and improved a record that is
   // already on screen. Refresh silently: the capture was announced moments
   // ago, and a second toast for the same prompt reads like a second capture.
   if (msg?.type === "capture-updated") {
-    load();
+    refreshFromBroadcast();
   }
 });
 

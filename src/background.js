@@ -1754,7 +1754,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             // Notify the popup if it's open. Use a callback so a missing receiver
             // doesn't surface as an unhandled promise rejection.
             try {
-              chrome.runtime.sendMessage({ type: "new-capture", captureId: res.captureId }, () => void chrome.runtime.lastError);
+              // duringRun lets the panel tell an expected campaign capture
+              // from an ad-hoc browsing one. For a browsing capture the toast
+              // IS the notification; during a run the progress card already
+              // counts every prompt, so one toast per prompt is noise layered
+              // over the thing the user is trying to read.
+              chrome.runtime.sendMessage(
+                { type: "new-capture", captureId: res.captureId, duringRun: !!loader.running },
+                () => void chrome.runtime.lastError);
             } catch (_) {}
             // Deliberately NOT awaited: the capture is already saved and shown.
             enrichCaptureWithAI(res.record);

@@ -166,7 +166,8 @@ jobs:
                    test/campaign-diagnostics-export.test.mjs \
                    test/campaign-drilldown.test.mjs test/capture-latency.test.mjs \
                    test/compare-tab.test.mjs test/concurrency-live.test.mjs test/full-audit.test.mjs \
-                   test/funnel-omitted.test.mjs test/mention-list.test.mjs \
+                   test/funnel-omitted.test.mjs test/live-run-toast.test.mjs \
+                   test/mention-list.test.mjs \
                    test/prompt-manual-add.test.mjs \
                    test/prompt-submit.test.mjs test/reload-false-positive.test.mjs \
                    test/run-interrupted.test.mjs \
