@@ -301,7 +301,28 @@
         } catch (_) { /* best effort */ }
       };
 
+      // A programmatic .focus() alone is not what a lot of composer UIs are
+      // actually gated on — several of the send-button implementations
+      // across these four engines only render/enable it once the textarea
+      // has registered a REAL pointer interaction, not just DOM focus (this
+      // is a common pattern for a floating action button whose visibility
+      // is driven by a hover/press state, not the focus state alone). A
+      // synthetic pointerdown/mousedown/mouseup/click sequence right before
+      // focusing gets far closer to what an actual click produces than
+      // .focus() does by itself, and costs nothing when it isn't needed.
+      const clickBox = (box) => {
+        const at = { bubbles: true, cancelable: true, view: window, buttons: 1 };
+        try {
+          box.dispatchEvent(new PointerEvent("pointerdown", at));
+          box.dispatchEvent(new MouseEvent("mousedown", at));
+          box.dispatchEvent(new PointerEvent("pointerup", at));
+          box.dispatchEvent(new MouseEvent("mouseup", at));
+          box.dispatchEvent(new MouseEvent("click", at));
+        } catch (_) { /* PointerEvent unsupported in some contexts — mouse events alone still help */ }
+      };
+
       const insertText = (box, text) => {
+        clickBox(box);
         box.focus();
         let ok = false;
         try { ok = document.execCommand("insertText", false, text); } catch (_) { ok = false; }
@@ -452,7 +473,17 @@
        */
       const GRACE_AFTER_COMPOSER = plat === "gemini" ? 2 : 8;  // ~0.8s / ~3.2s
       const MAX_WAIT_TICKS = 75;       // ~30s for the composer to appear
-      const MAX_SEND_TICKS = 20;       // ~8s of submit attempts once text is in
+      // Was 20 (~8s). Real failures traced to "send control never accepted
+      // the prompt" showed the button simply never found within that window
+      // on Gemini, Grok and ChatGPT alike, then giving up while the rest of
+      // a 45s+ per-turn budget sat unused. Widened rather than left as a
+      // guess: it costs nothing on a turn that WOULD have succeeded (this
+      // only extends a retry loop that is currently failing anyway), and it
+      // gives a composer that's slow to render its send control — a real
+      // possibility on a backgrounded tab a run doesn't bring to the
+      // foreground — meaningfully more chances before this turn is recorded
+      // as a failure.
+      const MAX_SEND_TICKS = 45;       // ~18s of submit attempts once text is in
       // After the prompt goes out, keep watching for a limit notice — on
       // ChatGPT the model cap typically appears INSTEAD of the answer, i.e.
       // strictly after submission. Stopping at submit (what the code did)
@@ -631,6 +662,16 @@
           giveUp("send control never accepted the prompt");
           return;
         }
+        // Still no send control at all, several ticks in: periodically
+        // re-engage the composer itself, not just re-click a button that
+        // isn't there or re-press Enter. Some composer UIs only mount/enable
+        // their send control after a fresh pointer interaction — one that
+        // may have been lost if the tab was backgrounded right as this turn
+        // started (see clickBox's own note above) — so repeating that
+        // interaction mid-retry gives a stuck composer another chance to
+        // wake up instead of only ever retrying the two things that were
+        // already failing.
+        if (!send && sendTicks % 5 === 0) { clickBox(box); T("recomposer"); return; }
         if (sendTicks % 2 === 0) {
           const s3 = pick(sel.send);
           if (isUsable(s3)) { (s3.closest ? s3.closest("button") || s3 : s3).click(); T("reclick"); }

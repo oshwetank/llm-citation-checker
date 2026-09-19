@@ -149,6 +149,51 @@ console.log("\nChatGPT: send button present but inert via aria-disabled (Enter m
   check("the prompt text is correct", r.text === PROMPT, JSON.stringify(r.text));
 }
 
+console.log("\nChatGPT: send button only mounts after a real pointer interaction with the composer");
+{
+  // Reported: "send control never accepted the prompt" on Gemini, Grok and
+  // ChatGPT alike, traced to pick(sel.send) finding nothing at all — not an
+  // inert button, an ABSENT one. Some composer UIs only render their send
+  // control once the textarea has registered a genuine pointer interaction,
+  // not just programmatic .focus(). This mimics that: the button doesn't
+  // exist in the DOM until a real mousedown fires on the composer.
+  const r = await run(`
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <div id="btn-host"></div><div id="convo"></div>
+    <script>${RECORD_CHATGPT}
+      const box=document.getElementById('prompt-textarea');
+      box.addEventListener('mousedown',()=>{
+        if(document.getElementById('composer-submit-button')) return;
+        const b=document.createElement('button'); b.id='composer-submit-button'; b.textContent='send';
+        b.addEventListener('click',()=>{ if(!box.innerText.trim()) return;
+          const t=box.innerText; box.innerHTML=''; window.__record(t); });
+        document.getElementById('btn-host').appendChild(b);
+      });
+    </script>`);
+  check("submitted exactly once — the pointer interaction woke the send control up", r.submits === 1, `submits=${r.submits}`);
+  check("no failure reported", r.gaveUp.length === 0, r.gaveUp.join(","));
+}
+
+console.log("\nChatGPT: send button stays inert for 12s before becoming usable");
+{
+  // Pins the widened retry window (MAX_SEND_TICKS 20 -> 45, ~8s -> ~18s):
+  // a button that takes this long to become usable used to be abandoned as
+  // "send control never accepted the prompt" well before it ever had a
+  // chance to work.
+  const r = await run(`
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <button id="composer-submit-button" aria-disabled="true">send</button><div id="convo"></div>
+    <script>${RECORD_CHATGPT}
+      const box=document.getElementById('prompt-textarea');
+      const btn=document.getElementById('composer-submit-button');
+      btn.addEventListener('click',()=>{ if(btn.getAttribute('aria-disabled')==='true') return;
+        if(!box.innerText.trim()) return; const t=box.innerText; box.innerHTML=''; window.__record(t); });
+      setTimeout(()=>btn.removeAttribute('aria-disabled'), 12000);
+    </script>`, { waitMs: 20000 });
+  check("submitted exactly once once the button finally became usable", r.submits === 1, `submits=${r.submits}`);
+  check("no failure reported", r.gaveUp.length === 0, r.gaveUp.join(","));
+}
+
 console.log("\nChatGPT: composer mounts late (a cold SPA boot)");
 {
   const r = await run(`

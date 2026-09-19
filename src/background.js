@@ -889,6 +889,7 @@ async function resumeFromSnapshot(snap) {
     loader.running = false;
     syncGeoRun("done");
     notifyRunComplete();
+    closeRunTabs();
   }
   await persistLoaderState();
 }
@@ -1005,6 +1006,33 @@ async function notifyRunComplete() {
   } catch (_) {
     /* notifications permission not yet granted on this build, or unavailable in test contexts */
   }
+}
+
+// Every engine tab this run opened, closed once every prompt across every
+// platform has actually finished — never on an explicit user-initiated stop
+// (see notifyRunComplete above), since the user stopping a run is usually
+// them wanting to go look at one of those tabs, not have it vanish under
+// them. Unlike a bare chrome.tabs.remove, this reuses checkTabOwnership —
+// the same "is this still our tab, on the expected engine, not navigated
+// away" check the run's own navigation path is gated on — so a tab the user
+// has reclaimed mid-run for their own browsing gets left alone instead of
+// silently destroyed out from under them; only a tab still genuinely idle on
+// the engine (or never navigated past about:blank) is closed. Best-effort
+// per tab either way: a tab already closed by the user just rejects.
+async function closeRunTabs() {
+  const closes = [];
+  for (const [plat, pd] of Object.entries(loader.platforms || {})) {
+    for (const leg of pd.legs) {
+      if (leg.tabId == null) continue;
+      closes.push(
+        checkTabOwnership(plat, leg).then((ownership) => {
+          if (!ownership.ok) return;
+          return chrome.tabs.remove(leg.tabId).catch(() => {});
+        })
+      );
+    }
+  }
+  await Promise.all(closes);
 }
 
 // Average completed-turn duration and remaining-time estimate for one
@@ -1174,6 +1202,7 @@ async function loaderRunLeg(plat, leg) {
       loader.running = false;
       syncGeoRun("done");
       notifyRunComplete();
+      closeRunTabs();
     }
     await persistLoaderState();
     return;
@@ -1391,6 +1420,7 @@ async function loaderStart(prompts, options) {
   // requested for 1 prompt), and an empty shard gets no tab at all: opening
   // a second automated tab with nothing to do would be pure extra footprint
   // on the account for zero benefit.
+  const runTabIds = [];
   for (const plat of supported) {
     const shards = shardPrompts(clean, CONCURRENT_TABS_PER_ENGINE).filter((s) => s.prompts.length > 0);
     const legs = [];
@@ -1398,6 +1428,7 @@ async function loaderStart(prompts, options) {
       const created = windowId
         ? await chrome.tabs.create({ windowId, url: "about:blank" })
         : await chrome.tabs.create({ url: "about:blank", active: false });
+      runTabIds.push(created.id);
       legs.push({
         tabId: created.id, startOffset: shard.startOffset, prompts: shard.prompts,
         idx: 0, failed: 0, lastAdvanceAt: 0, durations: [], outcomes: [],
@@ -1405,6 +1436,20 @@ async function loaderStart(prompts, options) {
     }
     loader.platforms[plat] = { legs };
   }
+  // Every engine tab this run owns, grouped and collapsed so they don't take
+  // over the window — one shared group for the whole run rather than one per
+  // engine, since the point is minimizing footprint, not organizing by
+  // platform. Best-effort: a browser too old for chrome.tabGroups, or a
+  // grouping call that races a tab the user already closed, must never fail
+  // the run over a footprint nicety.
+  try {
+    if (runTabIds.length && chrome.tabs.group) {
+      const groupId = await chrome.tabs.group({ tabIds: runTabIds });
+      if (chrome.tabGroups && chrome.tabGroups.update) {
+        await chrome.tabGroups.update(groupId, { title: "CitoSkeleton", collapsed: true });
+      }
+    }
+  } catch (_) { /* footprint nicety only — never block the run over it */ }
   await persistLoaderState();
   // Staggered rather than all at once: the first submission across tabs
   // landing in the exact same instant is a much stronger automation signal

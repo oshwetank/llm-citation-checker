@@ -4017,14 +4017,22 @@ function renderPromptManager(profile, dis, persistDetails) {
     const manualBox = el("div", { style: "display:none; margin-top:8px" });
     const ta = el("textarea", {
       rows: 4,
-      placeholder: "One prompt per line — add tags after a comma…\nbest trading app in India, finance, beginner\nbest broker for beginners, finance",
+      placeholder: "One prompt per line — add tags after a | (pipe)…\nbest trading app in India | finance, beginner\nbest broker for beginners | finance",
     });
     const addBtn = el("button", { className: "btn sm" }, "➕ Add prompts");
     addBtn.onclick = async () => {
+      // Reported: a long prompt's own commas were being read as tag
+      // separators, turning most of the sentence into tags — splitting on
+      // EVERY comma in the line assumed a short "prompt, tag, tag" shape,
+      // but a real prompt ("best phones under 20k, with a good camera and
+      // battery") uses commas as ordinary punctuation just as often. A pipe
+      // never appears in normal prose, so only an explicit `| tag, tag`
+      // suffix is treated as tags now — a comma in the prompt itself is
+      // just a comma, however long the prompt runs.
       const rows = ta.value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((line) => {
-        const parts = line.split(",");
-        const text = (parts.shift() || "").trim();
-        const tags = parts.map((t) => t.trim()).filter(Boolean);
+        const bar = line.indexOf("|");
+        const text = (bar === -1 ? line : line.slice(0, bar)).trim();
+        const tags = bar === -1 ? [] : line.slice(bar + 1).split(",").map((t) => t.trim()).filter(Boolean);
         return { text, tags };
       }).filter((r) => r.text);
       if (!rows.length) return;

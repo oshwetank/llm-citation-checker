@@ -10,7 +10,7 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.37.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.38.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research.
 
@@ -98,6 +98,10 @@ visible gap — so the UI reports it as "not measured" and says why.
    changing either mid-stream changes what the metrics are measured *against*, and the
    time series stops being comparable.
 5. Run it. The run fires prompts at a human pace and can be paused, resumed or stopped.
+   Its engine tabs open grouped and collapsed under one "CitoSkeleton" tab group instead of
+   spreading across the window, and close on their own once every prompt has finished — unless
+   you've reclaimed one for your own browsing mid-run, or you stop the run yourself (Stop leaves
+   the tabs open, since you're probably reaching for one of them).
 
 Deleted campaigns go to a trash with a 7-day restore window; their captured responses are
 kept either way.
