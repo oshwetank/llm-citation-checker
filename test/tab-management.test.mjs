@@ -127,7 +127,11 @@ try {
     const pre = new Set(preRunIds);
     const ours = tabs.filter((t) => !pre.has(t.id));
     const groups = await new Promise((res) => chrome.tabGroups.query({}, res));
-    return { tabCount: tabs.length, ours: ours.map((t) => ({ id: t.id, groupId: t.groupId, url: t.url })), groups };
+    return {
+      tabCount: tabs.length,
+      ours: ours.map((t) => ({ id: t.id, groupId: t.groupId, url: t.url, autoDiscardable: t.autoDiscardable })),
+      groups,
+    };
   }, preRunIds);
 
   // 3 prompts, 1 tab per engine (below CONCURRENT_TABS_PER_ENGINE's shard
@@ -142,6 +146,16 @@ try {
   const group = runTabs.groups.find((g) => g.id === groupedIds[0]);
   check("the group is collapsed, so it doesn't fill the window", group && group.collapsed === true, JSON.stringify(group));
   check("the group is titled so it's identifiable", group && group.title === "CitoSkeleton", group && group.title);
+
+  console.log("\nRun tabs are opted out of Chrome's automatic discarder");
+  // A discarded background tab reloads itself the instant the run touches
+  // it again, which the reload-retry watchdog reads as "tab reloaded
+  // repeatedly" and fails the turn — a real, reported failure mode with 4
+  // heavy engine tabs sitting backgrounded for an entire run. Without this,
+  // Chrome's own Memory Saver — not a bug in the run logic — was silently
+  // destroying the majority of a campaign's prompts.
+  check("every run tab has autoDiscardable explicitly turned off",
+    runTabs.ours.every((t) => t.autoDiscardable === false), JSON.stringify(runTabs.ours));
 
   console.log("\nStopping the run leaves the tabs open — the user is likely reaching for one of them");
   const beforeStopCount = (await page.evaluate(() => new Promise((res) => chrome.tabs.query({}, (t) => res(t.length)))));

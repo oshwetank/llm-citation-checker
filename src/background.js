@@ -1429,6 +1429,17 @@ async function loaderStart(prompts, options) {
         ? await chrome.tabs.create({ windowId, url: "about:blank" })
         : await chrome.tabs.create({ url: "about:blank", active: false });
       runTabIds.push(created.id);
+      // Loader tabs sit backgrounded for the whole run — 4 heavy engine SPAs
+      // at once is exactly what Chrome's Memory Saver targets for automatic
+      // discarding, and a discarded tab reloads itself the instant anything
+      // touches it, which the chrome.tabs.onUpdated listener below reads as
+      // "Loader tab reloaded mid-turn" and retries, then fails after
+      // MAX_RELOAD_RETRIES. Opting each tab out up front is what stops the
+      // browser from ever unloading it mid-run in the first place — this is
+      // a real, observed failure mode (a run losing the large majority of
+      // its prompts to "tab reloaded repeatedly" across every engine within
+      // minutes of starting), not a defensive guess.
+      chrome.tabs.update(created.id, { autoDiscardable: false }).catch(() => {});
       legs.push({
         tabId: created.id, startOffset: shard.startOffset, prompts: shard.prompts,
         idx: 0, failed: 0, lastAdvanceAt: 0, durations: [], outcomes: [],
@@ -2511,6 +2522,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                   try {
                     const tab = await chrome.tabs.create({ url: engineBaseUrl(plat), active: false });
                     leg.tabId = tab.id;
+                    chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
                   } catch (_) {
                     // Couldn't open a tab — leave the run paused rather than
                     // spinning; the user can retry Resume.
