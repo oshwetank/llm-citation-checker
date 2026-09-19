@@ -10,7 +10,7 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.39.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.40.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research.
 
@@ -148,6 +148,16 @@ higher bar than a normal feature:
   the expected engine — before it's touched. Click a source link, check something else, or
   come back after a browser restart (which reassigns tab IDs) and the run parks itself with an
   honest reason instead of navigating whatever page now holds that ID.
+- **An engine opening the conversation it just created is success, not a reload.**
+  Every supported engine moves the tab to a new URL once it accepts a prompt —
+  which is exactly how the content script knows the submit worked. The run's
+  mid-turn reload detector was reading that same navigation as a tab that had
+  come back without its prompt, re-navigating (killing the answer already on
+  its way), and failing the turn after a few rounds; because each retry
+  re-issued the navigation, the retry produced the next detection. A turn is
+  now only treated as lost when nothing ever claims it — evidence, not a
+  stopwatch, since how long an engine takes to open a conversation isn't a
+  constant this extension gets to pick.
 - **A run's engine tabs can't be silently unloaded by Chrome's Memory Saver.**
   Four heavy chat SPAs sitting backgrounded for an entire run is exactly what
   automatic tab discarding targets to save memory — and a discarded tab

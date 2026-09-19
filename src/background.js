@@ -1294,6 +1294,13 @@ const RELOAD_DETECT_GRACE_MS = 3000;
 // entirely (not a reload back to the same engine), that still parks the
 // run instead of resubmitting into a page the user is using.
 const MAX_RELOAD_RETRIES = 2;
+// How long a load event gets to prove itself before it counts as a lost
+// prompt. This is NOT "how long an engine takes to answer" — that is
+// unknowable and is what the 90s watchdog is for. It is only how long the
+// content script needs to run at document_start and call `loader-verify`,
+// which is bounded by extension injection rather than by the site, so it
+// stays stable across engines, machines and network conditions.
+const RELOAD_VERIFY_WAIT_MS = 8000;
 chrome.tabs.onUpdated?.addListener((tabId, changeInfo) => {
   if (changeInfo.status !== "loading") return;
   const found = legForTab(tabId);
@@ -1303,22 +1310,58 @@ chrome.tabs.onUpdated?.addListener((tabId, changeInfo) => {
   if (!leg.startedAt || leg.idx >= leg.prompts.length) return; // no turn in flight on this leg
   if (Date.now() < (leg.navGraceUntil || 0)) return; // still settling our own navigation
 
-  leg.reloadRetries = (leg.reloadRetries || 0) + 1;
-  if (leg.reloadRetries > MAX_RELOAD_RETRIES) {
-    // Reloading repeatedly without ever completing isn't a one-off
-    // discard-and-reactivate — stop retrying and let it fail normally
-    // rather than looping on a tab that will apparently never hold still.
-    failTurnAndAdvance(plat, leg, "tab reloaded repeatedly", 500);
-    return;
-  }
-  logErr(`run:tab-reloaded:${plat}`, "Loader tab reloaded mid-turn — retrying", {
-    platform: plat,
-    promptIndex: (leg.startOffset || 0) + leg.idx,
-    totalPrompts: platformTotal(plat),
-    attempt: leg.reloadRetries,
-    runId: loader.runId,
-  });
-  loaderRunLeg(plat, leg);
+  /* Positive evidence beats elapsed time.
+   *
+   * `loader-verify` fires from the content script on every real document
+   * load carrying this turn's token — so once it has matched, the prompt is
+   * demonstrably in the content script's hands and this turn is under way.
+   * Every navigation after that point is the engine doing its normal job:
+   * accepting the prompt and moving the tab to the conversation it just
+   * created. Treating those as a spontaneous reload is what made two
+   * consecutive real runs lose the large majority of their prompts to "tab
+   * reloaded repeatedly" across all four engines at once — and because each
+   * retry re-issues the navigation, which produces the next late load event,
+   * the retry caused the next detection and the turn burned its whole budget
+   * in seconds. A verified turn that then genuinely dies is still covered:
+   * the content script reports its own submit failures, and the watchdog
+   * closes out anything that goes quiet.
+   */
+  if (leg.verifiedToken && leg.verifiedToken === leg.token) return;
+
+  // Not yet verified. This is still far more likely to be our own navigation
+  // (slow engine, or the second load cycle one chrome.tabs.update produces)
+  // than a lost prompt, so give the content script its window to claim the
+  // turn rather than retrying into the same cycle. One pending check per
+  // turn: a slow load emits several loading events, and letting each arm its
+  // own timer would spend the whole retry budget in a single burst.
+  if (leg.reloadCheckPending) return;
+  leg.reloadCheckPending = true;
+  const token = leg.token;
+  setTimeout(() => {
+    leg.reloadCheckPending = false;
+    if (!loader.running || loader.paused || leg.paused) return;
+    if (leg.token !== token) return; // this turn is already over
+    if (leg.verifiedToken === token) return; // the content script claimed it
+
+    // Nothing ever claimed this turn: the tab really did land somewhere
+    // without the prompt, which is the case this recovery path exists for.
+    leg.reloadRetries = (leg.reloadRetries || 0) + 1;
+    if (leg.reloadRetries > MAX_RELOAD_RETRIES) {
+      // Reloading repeatedly without ever completing isn't a one-off
+      // discard-and-reactivate — stop retrying and let it fail normally
+      // rather than looping on a tab that will apparently never hold still.
+      failTurnAndAdvance(plat, leg, "tab reloaded repeatedly", 500);
+      return;
+    }
+    logErr(`run:tab-reloaded:${plat}`, "Loader tab reloaded mid-turn — retrying", {
+      platform: plat,
+      promptIndex: (leg.startOffset || 0) + leg.idx,
+      totalPrompts: platformTotal(plat),
+      attempt: leg.reloadRetries,
+      runId: loader.runId,
+    });
+    loaderRunLeg(plat, leg);
+  }, RELOAD_VERIFY_WAIT_MS);
 });
 
 async function loaderStart(prompts, options) {
@@ -1728,6 +1771,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (loader.running && tabId != null) {
             const found = legForTab(tabId);
             ok = !!(found && found.leg.token && found.leg.token === msg.token);
+            // Doubles as the run's proof that this turn's prompt reached the
+            // page and the content script has taken it on — which is what
+            // the reload detector (chrome.tabs.onUpdated, above) reads to
+            // tell the engine's own post-submit navigation apart from a tab
+            // that genuinely came back without the prompt. Recorded against
+            // the token, so it can never carry over to a later turn.
+            if (ok) found.leg.verifiedToken = msg.token;
           }
           sendResponse({ ok });
           break;
