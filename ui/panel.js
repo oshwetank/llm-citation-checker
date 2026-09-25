@@ -18,6 +18,7 @@ import { normalizeMentions } from "../src/lib/mention-list.js";
 import { aggregateSources, aggregateSourcesFromCaptures } from "../src/lib/sources.js";
 import { analyzeFanout, FANOUT_BENCHMARK } from "../src/lib/fanout.js";
 import { sanitizeText, trimLabel } from "../src/lib/text-sanitize.js";
+import { pipelineOf, typeLabel, supplierOf, retrievalMix } from "../src/lib/retrieval.js";
 import { formatCooldown } from "../src/lib/pacing.js";
 import { BUILD } from "../src/lib/build.js";
 import {
@@ -1445,7 +1446,10 @@ function renderAnalyze() {
 
   const fanCount =
     ((rec.fanout?.search?.length || 0) + (rec.fanout?.shopping?.length || 0) + (rec.fanout?.image?.length || 0));
-  const newsCount = rec.sources.filter((s) => s.type === "news").length;
+  // News by either signal: a publication date, or the engine calling the
+  // result news (ref_type) — the kind chip and this count must agree.
+  const isNews = (s) => s.type === "news" || typeLabel((s.platformSpecific || {}).refType || (s.platformSpecific || {}).resultSource) === "News";
+  const newsCount = rec.sources.filter(isNews).length;
   const citedN = rec.sources.filter((s) => s.outcome === "cited").length;
   const fetchedN = rec.sources.filter((s) => s.outcome === "fetched").length;
 
@@ -2153,7 +2157,10 @@ function renderAnalyze() {
         if (activeSrcFilter === "all") return true;
         if (activeSrcFilter === "cited") return s.outcome === "cited";
         if (activeSrcFilter === "fetched") return s.outcome === "fetched";
-        if (activeSrcFilter === "news") return s.type === "news";
+        if (activeSrcFilter === "news") return isNews(s);
+        const pipe = pipelineOf(s.platformSpecific && s.platformSpecific.pipeline);
+        if (activeSrcFilter === "labrador") return !!pipe && pipe.kind === "openai";
+        if (activeSrcFilter === "external") return !!pipe && pipe.kind !== "openai";
         return true;
       });
 
@@ -2170,10 +2177,21 @@ function renderAnalyze() {
         
         header.append(el("span", { className: "url-rank-badge" }, `#${idx + 1}`));
         header.append(el("span", { className: `tag ${s.outcome}` }, s.outcome));
-        
-        if (s.type === "news") {
-          header.append(el("span", { className: "tag news" }, "news"));
+
+        // Where it came from (lib/retrieval.js): the pipeline, when ChatGPT
+        // named one, then the kind of result. The kind replaces the old
+        // "news" tag wherever the engine states it.
+        const sps = s.platformSpecific || {};
+        const pipe = pipelineOf(sps.pipeline);
+        if (pipe) {
+          header.append(el("span", {
+            className: `tag ${pipe.kind === "openai" ? "pipe-openai" : "pipe-external"}`,
+            title: pipe.note,
+          }, pipe.kind === "openai" ? pipe.label : `Web · ${pipe.label}`));
         }
+        const kind = typeLabel(sps.refType || sps.resultSource);
+        if (kind) header.append(el("span", { className: "tag src-type", title: "The kind of result, as the engine labelled it" }, kind));
+        else if (s.type === "news") header.append(el("span", { className: "tag news" }, "news"));
         
         const titleLink = el("a", { href: s.url, target: "_blank", rel: "noreferrer", className: "src-title" }, s.title || s.url);
         header.append(titleLink);
@@ -2205,15 +2223,10 @@ function renderAnalyze() {
         const d = s.platformSpecific && s.platformSpecific.pubDate;
         const dMs = d ? (d > 1e12 ? d : d * 1000) : null; // auto-detect seconds vs milliseconds
         const dateStr = dMs ? new Date(dMs).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : null;
-        const rs = s.platformSpecific && s.platformSpecific.resultSource;
-        
         const meta = el("div", { className: "src-meta" });
         meta.append(el("span", { className: "src-domain" }, s.domain || "—"));
         if (dateStr) {
           meta.append(el("span", { className: "src-dot" }, "·"), el("span", {}, dateStr));
-        }
-        if (rs) {
-          meta.append(el("span", { className: "src-dot" }, "·"), el("span", {}, `src: ${rs}`));
         }
         li.append(meta);
 
@@ -2267,12 +2280,53 @@ function renderAnalyze() {
       renderSrcList();
     };
 
+    const mix = retrievalMix(rec.sources);
     const filters = [
       { id: "all", label: `All (${rec.sources.length})` },
       { id: "cited", label: `Cited (${citedN})` },
       { id: "fetched", label: `Fetched (${fetchedN})` },
       { id: "news", label: `News (${newsCount})` },
+      ...(mix.openai ? [{ id: "labrador", label: `Labrador (${mix.openai})` }] : []),
+      ...(mix.external ? [{ id: "external", label: `External web (${mix.external})` }] : []),
     ];
+
+    // Where this answer's sources came from. The pipeline is shown only when
+    // ChatGPT named it; see lib/retrieval.js for why nothing is inferred.
+    if (rec.platform === "chatgpt" && rec.sources.length) {
+      const line = el("div", { className: "retrieval-mix" });
+      line.append(el("span", { className: "mix-label" }, "Pipeline"));
+      if (mix.pipelines.length) {
+        mix.pipelines.forEach(({ label, kind, count }) => {
+          line.append(el("span", { className: `tag ${kind === "openai" ? "pipe-openai" : "pipe-external"}` }, `${label} ${count}`));
+        });
+        if (mix.unlabelled) line.append(el("span", {}, `${mix.unlabelled} not labelled`));
+      } else {
+        line.append(el("span", { title: "ChatGPT sent result_source, naming the index behind each result, only from 21 May to 21 July 2026." },
+          "not labelled — ChatGPT only named it from 21 May to 21 July 2026"));
+      }
+      if (mix.types.length) {
+        line.append(el("span", { className: "mix-label", style: "margin-left:8px" }, "Types"));
+        line.append(el("span", {}, mix.types.map(({ label, count }) => `${label} ${count}`).join(" · ")));
+      }
+      sc.append(line);
+
+      // Which of ChatGPT's retrieval engines this answer's stream names —
+      // OpenAI's own (Labrador) apart from external ones. Only present when
+      // the stream carries the engine data (see lib/retrieval.js).
+      const engines = (rec.platformSpecific && rec.platformSpecific.enginesNamed) || [];
+      if (engines.length) {
+        const eline = el("div", { className: "retrieval-mix engines-named" });
+        eline.append(el("span", { className: "mix-label" }, "Engines in stream"));
+        engines.forEach(({ name, count }) => {
+          const p = pipelineOf(name);
+          eline.append(el("span", {
+            className: `tag ${p && p.kind === "openai" ? "pipe-openai" : "pipe-external"}`,
+            title: p ? p.note : name,
+          }, count > 1 ? `${name} ×${count}` : name));
+        });
+        sc.append(eline);
+      }
+    }
 
     filters.forEach((f) => {
       const p = el("button", { className: `filter-pill ${f.id === "all" ? "active" : ""}` }, f.label);
@@ -2316,6 +2370,8 @@ function renderAnalyze() {
       if (p.phone) links.append(el("span", { className: "chip" }, `📞 ${p.phone}`));
       if (p.website) links.append(el("a", { className: "chip", href: p.website, target: "_blank", rel: "noreferrer" }, "🌐 Website"));
       if (p.mapsUrl) links.append(el("a", { className: "chip", href: p.mapsUrl, target: "_blank", rel: "noreferrer" }, "📍 Maps"));
+      const sup = supplierOf(p.supplier);
+      if (sup) links.append(el("span", { className: "tag src-type", title: sup.note || "The feed ChatGPT names for this listing" }, `via ${sup.code}`));
       if (links.childNodes.length) li.append(links);
       ul.append(li);
     });
@@ -3522,13 +3578,14 @@ function downloadDetailedFormat(records, format) {
         i + 1, r.userPrompt || "", stamp(r), s.outcome || "", s.type || "",
         s.domain || "", s.title || "", s.url || "",
         (s.platformSpecific && s.platformSpecific.resultSource) || "",
+        (pipelineOf(s.platformSpecific && s.platformSpecific.pipeline) || {}).label || "",
         (s.snippet || "").slice(0, 400),
       ]);
     });
   });
-  addSheet("Sources (full)", "Every cited and fetched source with its page title, URL and snippet.",
-    [60, 200, 120, 70, 70, 140, 240, 300, 90, 400],
-    ["Prompt #", "Prompt", "Captured", "Outcome", "Type", "Domain", "Page title", "URL", "Retrieval", "Snippet"],
+  addSheet("Sources (full)", "Every cited and fetched source with its page title, URL and snippet. Pipeline is the index ChatGPT named for it (only sent 21 May to 21 July 2026).",
+    [60, 200, 120, 70, 70, 140, 240, 300, 90, 90, 400],
+    ["Prompt #", "Prompt", "Captured", "Outcome", "Type", "Domain", "Page title", "URL", "Retrieval", "Pipeline", "Snippet"],
     sourceRows);
 
   // Fan-out queries, one row each.

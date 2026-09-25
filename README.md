@@ -10,7 +10,7 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.44.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.45.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research.
 
@@ -181,6 +181,24 @@ higher bar than a normal feature:
   *engine replied, but the reply couldn't be read*, and the diagnostics export includes the
   payload itself under `unreadable/`. The next format change will show up in
   the first export.
+- **See which index each ChatGPT source came from.** ChatGPT runs its own
+  search index, internally called Labrador (a family of vertical indexes:
+  web, news, arXiv, Wikipedia, Reddit, YouTube, PDF, local, finance, legal,
+  medical, images), alongside external providers: Bing, SerpAPI (Google
+  results), Microsoft's grounding service, Bright Data, Oxylabs, Yelp and
+  Foursquare. Each source in a capture now shows its pipeline when ChatGPT
+  names it: **Labrador** in teal, external ones as *Web · provider*. There
+  are filters for each, and a summary line. The tool recognises all 69
+  engines in the leaked retrieval registry, and lists any the answer's
+  stream names, OpenAI's own apart from external ones. ChatGPT sent
+  `result_source` only from 21 May to 21 July 2026, so for other captures
+  the pipeline is shown as not labelled rather than guessed. Every source
+  also shows its type (web, news, scientific, forum, video, local,
+  product), and local listings show their supplier code (b1, b3, serp…).
+  The workbook's *Sources (full)* sheet gains a Pipeline column. Research:
+  Peec AI, "ChatGPT built its own search index" and "The Complete List:
+  Every Search Engine Hidden Inside ChatGPT's Retrieval Leak"; RESONEO,
+  "What ChatGPT pulls, what it shows, what it cites".
 - **One prompt is sent once.** In a background tab an engine can take seconds
   to act on a click, while the run retried every 0.4 seconds. Every retry
   the page later accepted became another submission: one real run sent the

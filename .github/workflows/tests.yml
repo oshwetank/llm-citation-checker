@@ -106,7 +106,7 @@ jobs:
         run: |
           fail=0
           for f in test/adapter.test.mjs test/ai-brands.test.mjs test/auth-check.test.mjs \
-                   test/brand-context.test.mjs test/build-id.test.mjs \
+                   test/brand-context.test.mjs test/build-id.test.mjs test/chatgpt-retrieval.test.mjs \
                    test/auto-competitors.test.mjs \
                    test/behaviour.test.mjs test/brands.test.mjs test/campaign-workbook.test.mjs \
                    test/concurrency.test.mjs test/diagnostics-summary.test.mjs \
@@ -173,7 +173,7 @@ jobs:
                    test/perplexity-campaign-preview.test.mjs test/prompt-manual-add.test.mjs \
                    test/prompt-submit.test.mjs test/reload-false-positive.test.mjs \
                    test/run-interrupted.test.mjs \
-                   test/saved-conversations-engine.test.mjs test/tab-management.test.mjs \
+                   test/saved-conversations-engine.test.mjs test/source-pipeline-ui.test.mjs test/tab-management.test.mjs \
                    test/timeout-diagnostics.test.mjs \
                    test/ui-visibility.test.mjs; do
             echo "── $f"

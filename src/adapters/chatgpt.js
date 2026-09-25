@@ -19,10 +19,11 @@
  */
 
 import { makeRecord, makeSource } from "../schema.js";
+import { isKnownRetrievalName, enginesNamedIn } from "../lib/retrieval.js";
 import { walk, collectByKey, collectObjects, firstPath, isHttpUrl, domainOf } from "../lib/deep.js";
 import { detectBrands } from "../lib/brands.js";
 
-export const ADAPTER_VERSION = "chatgpt@0.2.0";
+export const ADAPTER_VERSION = "chatgpt@0.3.0";
 
 function parseSse(raw) {
   const nodes = [];
@@ -383,14 +384,30 @@ function extractSources(nodes, diag) {
     // ("Gadgets 360"), so it must not drive grouping.
     const attribution = typeof value.attribution === "string" ? value.attribution : null;
 
-    // resultSource / pipeline: current ChatGPT tags each source's retrieval
-    // channel via ref_type (search | reddit | news | product | youtube …) on
-    // ref_id (search_results) or refs[] (grouped/cited items). This is the real
-    // "result source" — Labrador/Bright/Oxylabs no longer appear in the payload.
+    // Two different things, see lib/retrieval.js. ref_type (search | news |
+    // academia | reddit | youtube | product …, on ref_id or refs[]) is the
+    // KIND of result, present on every one. result_source is the PIPELINE
+    // that supplied it — labrador (OpenAI's own index), bright, oxylabs or
+    // serp — and ChatGPT only sent it from 21 May to 21 July 2026. Kept
+    // exactly as sent; nothing is inferred when it's missing.
+    // (`resultSource` has always held the ref_type — the name predates the
+    // pipeline field — so it stays, for the screens and exports that read it.)
     const refType =
       (value.ref_id && value.ref_id.ref_type) ||
       (Array.isArray(value.refs) && value.refs[0] && value.refs[0].ref_type) ||
       null;
+    // result_source as sent; otherwise an engine or source field on the
+    // same result, but only if it is EXACTLY a name from the leaked engine
+    // registry — a field called "source" holding anything else is not one.
+    const pipeline =
+      (typeof value.result_source === "string" && value.result_source) ||
+      (value.metadata && typeof value.metadata.result_source === "string" && value.metadata.result_source) ||
+      ["engine", "engine_name", "search_engine", "retrieval_engine", "source"].map((k) => value[k]).find(isKnownRetrievalName) ||
+      null;
+    const retrieval = {
+      ...(refType ? { resultSource: refType, refType } : {}),
+      ...(pipeline ? { pipeline: pipeline.toLowerCase() } : {}),
+    };
 
     const markerIds = [
       markerId(value.ref_id),
@@ -411,7 +428,7 @@ function extractSources(nodes, diag) {
         markerIds,
         platformSpecific: {
           ...(attribution ? { attribution } : {}),
-          ...(refType ? { resultSource: refType } : {}),
+          ...retrieval,
           ...(pubDate ? { pubDate } : {}),
         },
       });
@@ -427,7 +444,7 @@ function extractSources(nodes, diag) {
         markerIds,
         outcome: "cited",
         type: pubDate ? "news" : "citation",
-        platformSpecific: { attribution, ...(refType ? { resultSource: refType } : {}), ...(pubDate ? { pubDate } : {}) },
+        platformSpecific: { attribution, ...retrieval, ...(pubDate ? { pubDate } : {}) },
       });
     }
   });
@@ -468,6 +485,9 @@ function extractProducts(nodes) {
       image: (p.image_urls && p.image_urls[0]) || prev.image || null,
       cite: p.cite || prev.cite || null,
       renderAs,
+      // The feed behind the listing (see lib/retrieval.js): `provider` is
+      // "deprecated" on current payloads, the codes live in providers[].
+      supplier: (Array.isArray(p.providers) && p.providers[0]) || (p.provider !== "deprecated" && p.provider) || prev.supplier || null,
     });
   });
   return [...byId.values()];
@@ -524,6 +544,8 @@ function extractPlaces(nodes) {
       hours: formatHours(ed.hours) || prev.hours || null,
       isOpen: typeof ed.is_open === "boolean" ? ed.is_open : prev.isOpen ?? null,
       placeId,
+      // The feed behind the listing (b1, b3, serp, yelp…) — lib/retrieval.js.
+      supplier: (typeof ed.provider === "string" && ed.provider) || (typeof value.provider === "string" && value.provider) || prev.supplier || null,
     });
   });
   return [...byKey.values()];
@@ -631,6 +653,11 @@ export async function adapt(rawCapture, opts = {}) {
     abExperiment,
     wordCount,
   };
+  // Engines from the leaked retrieval registry that this stream names, if any
+  // (see lib/retrieval.js): which of OpenAI's own and external engines the
+  // answer's search touched.
+  const enginesNamed = enginesNamedIn(rawCapture.raw);
+  if (enginesNamed.length) platformSpecific.enginesNamed = enginesNamed;
 
   return makeRecord({
     captureId: rawCapture.captureId,
