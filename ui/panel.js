@@ -6528,7 +6528,11 @@ $("#diagExportBtn")?.addEventListener("click", async () => {
       { name: "campaign.json", text: JSON.stringify({ campaign: r.campaign, perRun: r.perRun, env: r.env, generatedAt: r.generatedAt }, null, 2) },
       { name: "diagnostics.json", text: JSON.stringify(r.errors, null, 2) },
       { name: "turns.json", text: JSON.stringify(r.turns, null, 2) },
-      { name: "captures.json", text: JSON.stringify(r.captures, null, 2) },
+      // Named for what it holds: the log's network-capture breadcrumbs, NOT
+      // the captured answers (those are the captures/ folder). As
+      // "captures.json" it sat empty beside 22 capture files and read as a
+      // second failure.
+      { name: "capture-events.json", text: JSON.stringify(r.captures, null, 2) },
     ];
     for (const rec of r.records || []) {
       files.push({ name: `captures/${rec.captureId}.json`, text: JSON.stringify(rec, null, 2) });

@@ -194,6 +194,38 @@ async function storeCapture(payload, meta) {
   await db.put("raw", rawRow);
 
   const record = await deriveAndStore(rawRow, rawText, settings);
+
+  // Some campaign captures can only be judged once the adapter has read them
+  // (see isUnusableCampaignPreview). A rejected one is removed outright and
+  // the reason logged, so the diagnostics export shows what was dropped and
+  // why rather than it silently never having existed.
+  if (record && meta && typeof meta.rejectCapture === "function") {
+    const reason = meta.rejectCapture(record);
+    if (reason) {
+      await db.delete("derived", captureId);
+      await db.delete("raw", captureId);
+      logEvent(`capture:discarded:${record.platform}`, "capture", reason, {
+        platform: record.platform, runId: (meta && meta.runId) || null,
+      });
+      return null;
+    }
+  }
+
+  // Which prompt a campaign capture answers can only be read off the capture
+  // itself, and its question text doesn't exist until the adapter has run —
+  // so meta.geo arrives as a guess from the tab's position and is corrected
+  // here. The raw row is rewritten too: reprocessing rebuilds geo from it,
+  // and would otherwise quietly restore the wrong prompt.
+  if (record && record.geo && meta && typeof meta.attributeGeo === "function") {
+    const fixed = meta.attributeGeo(record);
+    if (fixed && fixed.promptId !== record.geo.promptId) {
+      record.geo = { ...record.geo, promptId: fixed.promptId, tags: fixed.tags };
+      rawRow.geo = record.geo;
+      await db.put("raw", rawRow);
+      await db.put("derived", record);
+    }
+  }
+
   await enforceRetention(settings);
   return { captureId, record };
 }
@@ -437,6 +469,10 @@ async function persistLoaderState() {
       errors: loader.errors,
       total: loader.total,
       runId: loader.runId,
+      // What "during this run" means when judging whether a Perplexity
+      // thread-list preview is this run's answer or an older run's — see
+      // isUnusableCampaignPreview. Has to survive a restart like the rest.
+      startedAt: loader.startedAt || null,
       // Stamped fresh on every write so a resume always compares against the
       // CURRENT session's nonce, not a stale one cached from before this
       // worker instance's own restart.
@@ -788,6 +824,7 @@ async function resumeFromSnapshot(snap) {
     errors: snap.errors || 0,
     total: snap.total || 0,
     runId: snap.runId,
+    startedAt: snap.startedAt || null,
     platforms: {},
   };
 
@@ -1424,7 +1461,13 @@ async function loaderStart(prompts, options) {
   loader.running = true;
   loader.options = options || {};
   loader.total = clean.length * supported.length;
-  loader.runId = crypto.randomUUID();
+  // A campaign run passes its geo run id through so the run is known by ONE
+  // id everywhere. It used to mint a second, unrelated one here — every log
+  // entry and capture got this one, the campaign's run record got the other,
+  // and nothing linked them, so the campaign diagnostics export (which looks
+  // runs up by the campaign's id) could never find a single log entry.
+  loader.runId = (options && options.geo && options.geo.runId) || crypto.randomUUID();
+  loader.startedAt = Date.now();
   // Clear any badge left over from a previous run's completion so it never
   // reads as this run's status by mistake.
   try {
@@ -1617,6 +1660,89 @@ function platformTotal(plat) {
 }
 
 // Called after each capture; advances the loader only for a real, completed turn.
+// One comparison, shared by the two places that ask "is this capture's
+// question this prompt?" — crediting a capture to the run (loaderOnCapture)
+// and deciding which prompt it's filed under (attributeCaptureToPrompt) —
+// so they can never disagree. Loose on purpose: adapters normalise
+// whitespace differently from the string the run navigated with.
+function normPrompt(t) {
+  return String(t || "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+function promptTextMatches(a, b) {
+  const x = normPrompt(a), y = normPrompt(b);
+  if (!x || !y) return false;
+  return y.includes(x.slice(0, 60)) || x.includes(y.slice(0, 60));
+}
+
+/* Which of this leg's prompts a campaign capture actually answers.
+ *
+ * The capture handler files each capture under the prompt the tab is on WHEN
+ * THE ANSWER ARRIVES. That's right for an answer that lands in time, and
+ * wrong for every one that doesn't: a turn that times out often finishes
+ * afterwards, by which point the leg has moved on, so its answer was stored
+ * under the NEXT prompt — and once a leg had finished its batch, under the
+ * first prompt of another batch entirely. A real 40-prompt run showed several
+ * of these, silently feeding one prompt's answer into another's metrics.
+ * The run itself already refused to COUNT such captures (loaderOnCapture);
+ * it just filed them wrong.
+ *
+ * Returns null to keep the position-based guess, which it does whenever it
+ * can't be sure: no usable question text, the text agrees with the position
+ * anyway, or it matches no prompt (or several) in this tab's batch. Only
+ * this leg's own prompts are searched — the answer came from this tab, and
+ * this tab only ever ran this batch.
+ */
+function attributeCaptureToPrompt(leg, record) {
+  const got = record && record.userPrompt;
+  // Too short to outweigh the tab's position — a scraped clock ("2:16 PM")
+  // or a stray fragment would otherwise match whatever happened to contain it.
+  if (normPrompt(got).length < 12) return null;
+  const geoPrompts = loader.options.geoPrompts || [];
+  const atPosition = leg.prompts[leg.idx];
+  if (atPosition && promptTextMatches(atPosition, got)) return null;
+  const hits = [];
+  leg.prompts.forEach((text, i) => { if (promptTextMatches(text, got)) hits.push((leg.startOffset || 0) + i); });
+  if (hits.length === 1) {
+    const tp = geoPrompts[hits[0]] || {};
+    return tp.id ? { promptId: tp.id, tags: tp.tags || [] } : null;
+  }
+  // Past the end of its batch, the position guess names another batch's
+  // prompt — certainly wrong — so leave the capture unattributed instead.
+  if (leg.idx >= leg.prompts.length) return { promptId: null, tags: [] };
+  return null;
+}
+
+/* Whether a campaign capture built from Perplexity's thread LIST should be
+ * thrown away rather than stored. Returns the reason, or null to keep it.
+ *
+ * Perplexity pushes the account's recent-threads list over its GraphQL
+ * socket, and when no real answer stream is intercepted that list is all a
+ * capture holds: the adapter takes the newest thread's title as the question
+ * and that thread's truncated preview as the answer. In a real 40-prompt run
+ * every network capture from Perplexity was this, and it goes wrong in three
+ * ways a campaign can't afford:
+ *   - the list is ACCOUNT-WIDE, so with two Perplexity tabs running, one
+ *     tab's capture is usually the OTHER tab's newest thread;
+ *   - campaigns re-ask identical prompts every run, so last week's thread
+ *     with the same title is indistinguishable by title alone;
+ *   - with no preview for the thread it names, the "capture" is empty.
+ * Only a preview for one of this tab's own prompts, from a thread updated
+ * during this run, is kept. Ad-hoc browsing captures never reach this.
+ */
+const PREVIEW_CLOCK_SLACK_MS = 60 * 1000; // thread times are Perplexity's clock, not this machine's
+function isUnusableCampaignPreview(leg, record) {
+  const ps = record && record.platformSpecific;
+  const src = ps && ps.answerSource;
+  if (!src || src === "real") return null;
+  if (src === "none") return record.sources && record.sources.length ? null : "thread list only, no answer for the thread it names";
+  if (!leg.prompts.some((t) => promptTextMatches(t, record.userPrompt))) return "thread list names another tab's prompt";
+  const at = Date.parse(ps.previewUpdatedAt || "");
+  if (Number.isFinite(at) && loader.startedAt && at < loader.startedAt - PREVIEW_CLOCK_SLACK_MS) {
+    return "thread list preview is from before this run";
+  }
+  return null;
+}
+
 function loaderOnCapture(tabId, record) {
   if (!loader.running) return;
   const found = legForTab(tabId);
@@ -1651,12 +1777,10 @@ function loaderOnCapture(tabId, record) {
    * either side is missing the old behaviour stands, so this can only ever
    * reject a capture it is certain does not belong.
    */
-  const norm = (t) => String(t || "").replace(/\s+/g, " ").trim().toLowerCase();
-  const wantPrompt = norm(leg.expectedPrompt);
-  const gotPrompt = norm(record && record.userPrompt);
+  const wantPrompt = normPrompt(leg.expectedPrompt);
+  const gotPrompt = normPrompt(record && record.userPrompt);
   if (wantPrompt && gotPrompt) {
-    const head = wantPrompt.slice(0, 60);
-    if (!gotPrompt.includes(head) && !wantPrompt.includes(gotPrompt.slice(0, 60))) {
+    if (!promptTextMatches(wantPrompt, gotPrompt)) {
       logErr(`run:late-capture:${plat}`, "capture did not match the prompt in flight", {
         platform: plat,
         promptIndex: (leg.startOffset || 0) + leg.idx,
@@ -1745,6 +1869,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                   promptId: tp.id || null,
                   tags: tp.tags || [],
                 };
+                // The position above is only a first guess — storeCapture
+                // corrects it once the adapter has read the capture's question.
+                meta.attributeGeo = (record) => attributeCaptureToPrompt(leg, record);
+                meta.rejectCapture = (record) => isUnusableCampaignPreview(leg, record);
               }
             }
           }
@@ -2143,15 +2271,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // The diagnostic log, split back into its three categories for the
           // zip's separate files — see lib/errorlog.js's header for why one
           // store carries all three.
-          const diagEntries = await errorLog.listByRunIds(runIds, 5000);
+          //
+          // Runs started before the loader adopted the geo run's id (see
+          // loaderStart) are known to the log only by the loader's own id,
+          // which the campaign's run records never stored. Every capture still
+          // carries both, so that id is recovered from this campaign's own
+          // captures — without it the log section of this export was empty
+          // for every run, which is most of what the export is for. A run
+          // that captured nothing at all can't be recovered this way.
+          const logRunIds = new Set(runIds);
+          for (const r of records) if (r.runId) logRunIds.add(r.runId);
+          const diagEntries = await errorLog.listByRunIds([...logRunIds], 5000);
           const errorEntries = diagEntries.filter((e) => (e.cat || "error") === "error");
           const turnEntries = diagEntries.filter((e) => e.cat === "turn");
           const captureEntries = diagEntries.filter((e) => e.cat === "capture");
 
-          // answerText is large and already fully present in each capture's
-          // own JSON below — dropped from the summary list the same way the
-          // workbook export drops it (see geo-export-workbook above).
-          const lite = records.map(({ answerText, platformSpecific, _extraction, ...rest }) => rest);
+          // Each capture's file carries the WHOLE record, answer text
+          // included. It used to be written from a stripped copy (answerText,
+          // platformSpecific and _extraction removed) on the assumption that
+          // the full text lived elsewhere in the zip — it didn't, so the
+          // "everything, raw payload included" export was missing the one
+          // field most often needed to see what an engine actually said.
 
           // One raw payload per capture, gunzipped once here rather than N
           // round trips from the panel — see this case's header comment.
@@ -2179,7 +2319,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             errors: errorEntries,
             turns: turnEntries,
             captures: captureEntries,
-            records: lite,
+            records,
             raw,
             env: { version: manifest.version, userAgent: navigator.userAgent },
             generatedAt: Date.now(),

@@ -22,7 +22,10 @@ import { detectBrands } from "../lib/brands.js";
 // from answerText before brand detection and display, so cited-source
 // domains stop being reported as brand mentions. Re-run "Reprocess all
 // captures" to apply this to existing captures.
-export const ADAPTER_VERSION = "perplexity@0.4.0";
+// 0.4.1: records say where their answer came from (platformSpecific.
+// answerSource / previewUpdatedAt), so a campaign run can refuse a thread-
+// list preview that belongs to another tab's prompt or to an earlier run.
+export const ADAPTER_VERSION = "perplexity@0.4.1";
 
 function extractJsonPayload(line) {
   const t = line.trim();
@@ -190,7 +193,14 @@ const REAL_ANSWER_FIELDS = ["text", "answer", "output", "completion", "response"
 // brittle for what should be "obviously the same query".
 const normTitle = (s) => String(s || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
-function extractAnswer(nodes, userPrompt) {
+// `info`, when passed, is told where the answer came from — "real" (a live
+// answer field), "preview" (a thread-list entry's answerPreview, with that
+// thread's updatedAt), or "none". A preview is a truncated summary of some
+// thread in the user's ACCOUNT-WIDE history, so whoever consumes the record
+// may need to judge whether that thread is really the one being captured —
+// see isUnusableCampaignPreview in background.js.
+function extractAnswer(nodes, userPrompt, info = {}) {
+  info.source = "none";
   let longest = "";
   for (const n of nodes) {
     if (!n || typeof n !== "object") continue;
@@ -209,7 +219,7 @@ function extractAnswer(nodes, userPrompt) {
       }
     }
   }
-  if (longest) return longest;
+  if (longest) { info.source = "real"; return longest; }
 
   // Fallback tier: `answerPreview`-only nodes, most often the entries of a
   // sidebarRecentThreads push — the user's thread history, which can
@@ -228,13 +238,16 @@ function extractAnswer(nodes, userPrompt) {
   const promptNorm = normTitle(userPrompt);
   if (!promptNorm) return "";
   let matched = "";
+  let matchedAt = null;
   for (const n of nodes) {
     if (!n || typeof n !== "object") continue;
     const title = normTitle(n.name || n.query || n.user_query);
     if (title && title === promptNorm && typeof n.answerPreview === "string" && n.answerPreview.length > matched.length) {
       matched = n.answerPreview;
+      matchedAt = typeof n.updatedAt === "string" ? n.updatedAt : null;
     }
   }
+  if (matched) { info.source = "preview"; info.updatedAt = matchedAt; }
   return matched;
 }
 
@@ -411,7 +424,8 @@ export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, op
   // see stripCitationFootnotes above. Cleaning it out of the returned
   // answerText too (not just a brand-detection-only copy) also fixes the
   // same tokens showing up as visible clutter inline in the rendered answer.
-  const answerText = stripCitationFootnotes(extractAnswer(nodes, userPrompt), sources);
+  const answerInfo = {};
+  const answerText = stripCitationFootnotes(extractAnswer(nodes, userPrompt, answerInfo), sources);
   const fanout = extractFanout(nodes);
   // Detection-only text: strips [[cite:URL]] markers so a cited domain can't
   // match itself inside its own citation marker (see stripCiteMarkersForDetection
@@ -440,6 +454,8 @@ export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, op
     platformSpecific: {
       adapterVersion: ADAPTER_VERSION,
       nodeCount: nodes.length,
+      answerSource: answerInfo.source,
+      previewUpdatedAt: answerInfo.updatedAt || null,
     },
   });
 }

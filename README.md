@@ -10,7 +10,7 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.40.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.41.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research.
 
@@ -148,6 +148,16 @@ higher bar than a normal feature:
   the expected engine — before it's touched. Click a source link, check something else, or
   come back after a browser restart (which reassigns tab IDs) and the run parks itself with an
   honest reason instead of navigating whatever page now holds that ID.
+- **Every campaign capture is filed under the prompt it actually answers.** A slow
+  answer used to be labelled with whatever prompt its tab had moved on to by the
+  time it arrived — so one prompt's answer was quietly counted in another's
+  Visibility and Position. The label now comes from the question the capture
+  itself carries.
+- **Perplexity's thread history can't pose as this run's answer.** When no live
+  answer stream is caught, Perplexity's recent-threads list is often all a
+  capture holds — and that list is account-wide and full of earlier runs of the
+  very same prompts. A campaign now keeps a thread's preview only when it is that
+  tab's own prompt, updated during this run, and logs every one it refuses.
 - **An engine opening the conversation it just created is success, not a reload.**
   Every supported engine moves the tab to a new URL once it accepts a prompt —
   which is exactly how the content script knows the submit worked. The run's

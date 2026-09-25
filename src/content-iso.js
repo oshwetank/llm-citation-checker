@@ -988,7 +988,7 @@
         // nothing between them. Rejecting the whole row (what the bare-clock
         // check below does) would have thrown away a perfectly good query;
         // stripped instead, salvaging the real text before it.
-        let t = item.text.replace(/(\d{1,2}:\d{2}(\s*[·•]\s*\d+\s*s)?)$/i, "").trim();
+        let t = item.text.replace(/(\d{1,2}:\d{2}(?:\s*[ap]\.?\s?m\.?)?(\s*[·•]\s*\d+\s*s)?)$/i, "").trim();
         // Same capture: the fan-out list also picked up the answer's own
         // heading ("Top camera phones under ₹80,000...") and several table
         // cells verbatim (a product name, a price, a spec list) — content
@@ -1007,7 +1007,7 @@
         if (t.length < 3 || t.length > 160) continue;      // prose or a bare glyph
         if (/^\+\d+\s*more$/i.test(t)) continue;
         if (/^(finished|sources?|steps?|searched)$/i.test(t)) continue;
-        if (/^\d{1,2}:\d{2}(\s*[·•]\s*\d+\s*s)?$/i.test(t)) continue;
+        if (/^\d{1,2}:\d{2}(?:\s*[ap]\.?\s?m\.?)?(\s*[·•]\s*\d+\s*s)?$/i.test(t)) continue;
         // Reported (a follow-up capture, "best camera phone under 30000"):
         // the fan-out list also picked up "gadgets360+1" as its own entry —
         // the citation-chip UI element under the answer (favicon stack +
@@ -1154,7 +1154,10 @@
         // clock time must never be the "last resort, better than nothing"
         // answer either, unlike an answer heading (below), which is at least
         // real text the model wrote.
-        const looksLikeClock = (s) => /^\d{1,2}:\d{2}(\s*[·•]\s*\d+\s*s)?$/i.test(String(s || "").trim());
+        // 12-hour form too: a real campaign capture on a Windows machine with
+        // an en-IN locale recorded its question as "2:16 PM", which the
+        // original 24-hour-only pattern ("21:51") let straight through.
+        const looksLikeClock = (s) => /^\d{1,2}:\d{2}(?:\s*[ap]\.?\s?m\.?)?(\s*[·•]\s*\d+\s*s)?$/i.test(String(s || "").trim());
         if (looksLikeClock(promptText)) promptText = "";
 
         // Prompt fallbacks, in order of how much they can be trusted. This

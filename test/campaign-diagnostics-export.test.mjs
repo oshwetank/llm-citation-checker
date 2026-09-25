@@ -77,6 +77,13 @@ try {
 
     const profileId = crypto.randomUUID();
     const runId = crypto.randomUUID();
+    // What a real run made before the loader adopted the geo run's id looks
+    // like: the campaign's run record under one id, every log entry under the
+    // loader's OWN id, and nothing linking the two except the captures, which
+    // carry both. This test used to seed the log under the geo id — a link the
+    // real code never made — which is how an export whose log section was
+    // empty for every real run passed here for its whole life.
+    const loaderRunId = crypto.randomUUID();
     const captureId = crypto.randomUUID();
     const now = Date.now();
 
@@ -94,6 +101,7 @@ try {
     await put("derived", {
       captureId, platform: "chatgpt", model: "gpt-5", capturedAt: now,
       userPrompt: "prompt one", answerText: "the answer", brandMentions: [], sources: [], fanout: {},
+      runId: loaderRunId,
       geo: { profileId, runId },
     });
     await put("raw", {
@@ -106,15 +114,15 @@ try {
     // reads across all three rather than just the ones it wrote itself.
     await put("errors", {
       id: `${now}-e1`, at: now, cat: "error", where: "run:turn-failed:chatgpt", kind: "Error",
-      message: "timeout", stack: "", context: { platform: "chatgpt", runId }, trace: "1:run 5:composer 38:giveup",
+      message: "timeout", stack: "", context: { platform: "chatgpt", runId: loaderRunId }, trace: "1:run 5:composer 38:giveup",
     });
     await put("errors", {
       id: `${now}-e2`, at: now, cat: "turn", where: "run:turn:chatgpt", kind: "turn",
-      message: "ok", stack: "", context: { platform: "chatgpt", runId, captureId, status: "ok" }, trace: "",
+      message: "ok", stack: "", context: { platform: "chatgpt", runId: loaderRunId, captureId, status: "ok" }, trace: "",
     });
     await put("errors", {
       id: `${now}-e3`, at: now, cat: "capture", where: "capture:fetch", kind: "capture",
-      message: "chatgpt.com", stack: "", context: { runId, status: 200 }, trace: "",
+      message: "chatgpt.com", stack: "", context: { runId: loaderRunId, status: 200 }, trace: "",
     });
     // A decoy entry from an unrelated run — must NOT show up in the export.
     await put("errors", {
@@ -143,6 +151,9 @@ try {
   check("exactly one capture-breadcrumb entry comes back", (r.captures || []).length === 1, JSON.stringify(r.captures));
 
   check("the capture's derived record is included", (r.records || []).some((x) => x.captureId === seeded.captureId));
+  check("the capture's record keeps its answer text — the export promises everything",
+    (r.records || []).some((x) => x.captureId === seeded.captureId && x.answerText === "the answer"),
+    JSON.stringify((r.records || []).map((x) => Object.keys(x))));
   const raw = r.raw && r.raw[seeded.captureId];
   check("the raw payload round-trips through gzip intact",
     !!raw && raw.text.includes("RAW-PAYLOAD-MARKER"), JSON.stringify(raw && raw.text));
