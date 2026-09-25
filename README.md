@@ -10,7 +10,7 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.43.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.44.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research.
 
@@ -181,6 +181,23 @@ higher bar than a normal feature:
   *engine replied, but the reply couldn't be read*, and the diagnostics export includes the
   payload itself under `unreadable/`. The next format change will show up in
   the first export.
+- **One prompt is sent once.** In a background tab an engine can take seconds
+  to act on a click, while the run retried every 0.4 seconds. Every retry
+  the page later accepted became another submission: one real run sent the
+  same prompt to Gemini up to nine times. Retries are now at least 3 seconds
+  apart, with at most five per prompt, and stop as soon as the engine's own
+  request is seen.
+- **Each prompt counts once in the results.** An engine can deliver several
+  captures of one answer: Gemini streams it in parts, and Perplexity is read
+  from both its stream and its page. Every copy used to count as a separate
+  response, so 7 answered Gemini prompts counted as 30. The campaign numbers
+  now use the most complete capture of each prompt, per engine, per run. The
+  diagnostics export still includes every copy.
+- **A tab that stops responding is described from outside.** When an engine's
+  page doesn't answer at all, the timeout reports what Chrome says about
+  the tab: frozen, discarded, still loading, on a verification page, or
+  where it ended up. It also includes a log of the tab's loads during that
+  prompt. Only the host and path are recorded, never the prompt.
 - **A prompt is never skipped by a duplicate answer.** Gemini sends several
   captures per answer. A second one arriving during the pause before the next
   prompt was counted as that next prompt's answer, so the prompt was marked

@@ -85,5 +85,18 @@ console.log("\nDegenerate input never throws");
   })());
 }
 
+// A real export read "expected 40 stored 67 missing 0": Gemini and
+// Perplexity deliver several captures per prompt, and every one was counted.
+console.log("\nSeveral captures of one prompt are one answered prompt");
+{
+  const cap = (platform, promptId) => ({ platform, geo: { runId: "r1", promptId } });
+  const { perRun } = summarizeRunDiagnostics({
+    runs: [{ id: "r1", expected: 4, reasons: {} }],
+    records: [cap("gemini", "a"), cap("gemini", "a"), cap("gemini", "a"), cap("gemini", "b"), cap("perplexity", "a"), cap("perplexity", "a")],
+  });
+  check("three prompt-engine pairs answered, from six captures", perRun[0].stored === 3 && perRun[0].captures === 6, JSON.stringify(perRun[0]));
+  check("so one is missing, not a surplus", perRun[0].missing === 1, perRun[0].missing);
+}
+
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
 process.exit(failures ? 1 : 0);

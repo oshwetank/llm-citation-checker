@@ -609,6 +609,19 @@
       // foreground — meaningfully more chances before this turn is recorded
       // as a failure.
       const MAX_SEND_TICKS = 45;       // ~18s of submit attempts once text is in
+      /* Space the send attempts out, and cap them. Each click or Enter the
+       * page accepts is a SUBMISSION, and a hidden tab can take seconds to
+       * act on one — Chrome runs a background page's work slowly — while
+       * this loop ticks every 400ms off the service-worker clock. In a real
+       * run the loop clicked or pressed Enter 8-10 times before Gemini's
+       * first request left, and Gemini answered up to nine new
+       * conversations for one prompt (identical request bodies), filling the
+       * user's history with duplicates and the campaign with 30 records for
+       * 7 prompts. One attempt at a time, at least RETRY_GAP_MS apart. */
+      const RETRY_GAP_MS = 3000;
+      const MAX_SEND_ATTEMPTS = 5;
+      let lastAttemptAt = 0;
+      let attempts = 0;
       // After the prompt goes out, keep watching for a limit notice — on
       // ChatGPT the model cap typically appears INSTEAD of the answer, i.e.
       // strictly after submission. Stopping at submit (what the code did)
@@ -779,15 +792,20 @@
         // is present but inert" are different bugs with different fixes, and a
         // generic failure conflates them.
         if (sendTicks === 1) T(send ? (isUsable(send) ? "send-ready" : "send-inert") : "send-missing");
+        const mayAttempt = Date.now() - lastAttemptAt >= RETRY_GAP_MS && attempts < MAX_SEND_ATTEMPTS;
+        const attempted = () => { lastAttemptAt = Date.now(); attempts++; };
         if (isUsable(send) && submitTried === 0) {
           (send.closest ? send.closest("button") || send : send).click();
           submitTried = 1;
+          attempted();
           T("click");
           return; // verify on the next tick instead of assuming it worked
         }
         if (submitTried <= 1) {
+          if (!mayAttempt) return; // give the page time to act on the click
           pressEnter(box);
           submitTried = 2;
+          attempted();
           T("enter");
           return;
         }
@@ -807,13 +825,10 @@
         // wake up instead of only ever retrying the two things that were
         // already failing.
         if (!send && sendTicks % 5 === 0) { clickBox(box); T("recomposer"); return; }
-        if (sendTicks % 2 === 0) {
-          const s3 = pick(sel.send);
-          if (isUsable(s3)) { (s3.closest ? s3.closest("button") || s3 : s3).click(); T("reclick"); }
-        } else {
-          pressEnter(box);
-          T("reenter");
-        }
+        if (!mayAttempt) return;
+        const s3 = pick(sel.send);
+        if (attempts % 2 === 0 && isUsable(s3)) { (s3.closest ? s3.closest("button") || s3 : s3).click(); attempted(); T("reclick"); }
+        else { pressEnter(box); attempted(); T("reenter"); }
       };
       const stopClock = startClock(TICK_MS);
       const unsubscribeLoop = onClockTick(loopTick);

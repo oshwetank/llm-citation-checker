@@ -42,6 +42,29 @@ function rec({ answerText = "", brands = [], sources = [], geo = null, at = Date
 }
 const G = (extra = {}) => ({ profileId: "p1", runId: "r1", promptId: "q1", tags: [], ...extra });
 
+/* ---------------- one capture per prompt ---------------- */
+console.log("one capture per prompt, per engine, per run");
+{
+  const src = (n) => Array.from({ length: n }, (_, i) => ({ url: `https://s${i}.example/` }));
+  const a = { ...rec({ geo: G(), sources: src(1), at: 1 }), answerChars: 900 };
+  const b = { ...rec({ geo: G(), sources: src(3), at: 2 }), answerChars: 400 };
+  const c = { ...rec({ geo: G(), sources: src(3), at: 3 }), answerChars: 800 };
+  const other = { ...rec({ geo: G({ promptId: "q2" }), at: 4 }), answerChars: 10 };
+  const gem = { ...rec({ geo: G(), platform: "gemini", at: 5 }), answerChars: 10 };
+  const run2 = { ...rec({ geo: G({ runId: "r2" }), at: 6 }), answerChars: 10 };
+  const old = { ...rec({ geo: { profileId: "p1" }, at: 7 }), answerChars: 10 };
+  const picked = selectTracked([a, b, c, other, gem, run2, old], { profileId: "p1" });
+  const same = picked.filter((r) => r.platform === "chatgpt" && r.geo.runId === "r1" && r.geo.promptId === "q1");
+  check("three captures of one prompt count once", same.length === 1, same.length);
+  check("the kept one has the most sources, then the longest answer", same[0] === c, same[0] && same[0].capturedAt);
+  check("another prompt, engine or run is its own capture", picked.includes(other) && picked.includes(gem) && picked.includes(run2));
+  check("a capture with no run or prompt is kept as it is", picked.includes(old));
+  check("allCaptures keeps every copy, for diagnostics",
+    selectTracked([a, b, c], { profileId: "p1", allCaptures: true }).length === 3);
+  const m = computeMetrics(picked, { brand: { name: "Acme" }, competitors: [] });
+  check("metrics count the prompt once", m.totalResponses === picked.length && picked.length === 5, `${m.totalResponses}/${picked.length}`);
+}
+
 /* ---------------- normalisation ---------------- */
 console.log("normalisation helpers");
 {
@@ -102,9 +125,11 @@ console.log("\nisolation: tracking data and ad-hoc browsing data never mix");
     selectTracked(mixed, {}).every(isTracked));
 
   const tagged = [
-    rec({ geo: G({ tags: ["brand", "top-funnel"] }) }),
-    rec({ geo: G({ tags: ["competitor"] }) }),
-    rec({ geo: G({ tags: [] }) }),
+    // Tags belong to tracked prompts, so differently tagged records are
+    // different prompts.
+    rec({ geo: G({ promptId: "q-brand", tags: ["brand", "top-funnel"] }) }),
+    rec({ geo: G({ promptId: "q-comp", tags: ["competitor"] }) }),
+    rec({ geo: G({ promptId: "q-none", tags: [] }) }),
   ];
   check("selectTracked filters by tag", selectTracked(tagged, { tags: ["competitor"] }).length === 1);
   check("selectTracked matches ANY supplied tag",

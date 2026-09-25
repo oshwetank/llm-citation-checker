@@ -569,6 +569,37 @@ console.log("\nA send confirmed only by the engine's own submit request");
     JSON.stringify(r.probe && { stage: r.probe.stage, why: r.probe.sentWhy }));
 }
 
+// Gemini in a real run, in a hidden tab: a click or Enter was accepted but
+// acted on seconds later, and the loop — ticking every 400ms — clicked and
+// pressed Enter 8-10 times before the first request left. Every one of them
+// was a submission: up to nine new conversations for one prompt. This page
+// takes each click/Enter and submits what was in the composer 2.5s later,
+// showing nothing until then.
+console.log("\nA page that acts on a send seconds later gets one send, not a burst");
+{
+  const r = await run(`
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <button id="composer-submit-button">send</button><div id="convo"></div>
+    <script>
+      document.documentElement.setAttribute('data-lcfc-ch', 'CH-SLOW');
+      window.__submits = 0;
+      const box = document.getElementById('prompt-textarea');
+      const accept = () => {
+        const t = box.innerText.trim(); if (!t) return;
+        setTimeout(() => {
+          window.__submits++; window.__lastText = t;
+          if (window.__submitAt === undefined) window.__submitAt = Date.now() - (window.__t0 || Date.now());
+          box.innerHTML = '';
+          window.postMessage({ __LCFC__: 'CH-SLOW', type: 'engine-submit', via: 'xhr' }, location.origin);
+        }, 2500);
+      };
+      document.getElementById('composer-submit-button').addEventListener('click', accept);
+      box.addEventListener('keydown', (e) => { if (e.key === 'Enter') accept(); });
+    </script>`, { waitMs: 12000 });
+  check("the prompt was submitted once", r.submits === 1, `submits=${r.submits}`);
+  check("and reads as sent", !!r.probe && r.probe.stage === "sent", JSON.stringify(r.probe && r.probe.stage));
+}
+
 await browser.close();
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
 process.exit(failures ? 1 : 0);

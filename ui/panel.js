@@ -6661,7 +6661,7 @@ function buildCampaignDiagSummaryText(r) {
   lines.push("Per run");
   for (const run of r.perRun || []) {
     lines.push(`  Run ${run.runNo ?? "?"}  ${new Date(run.startedAt).toLocaleString()}  ${run.status}`);
-    lines.push(`    expected ${run.expected}  stored ${run.stored}  missing ${run.missing}  failed ${run.failed}`);
+    lines.push(`    expected ${run.expected}  answered ${run.stored}${run.captures != null && run.captures !== run.stored ? ` (${run.captures} captures)` : ""}  missing ${run.missing}  failed ${run.failed}`);
     const reasons = Object.entries(run.reasons || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} (${v})`).join("; ");
     if (reasons) lines.push(`    reasons: ${reasons}`);
   }

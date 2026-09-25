@@ -100,12 +100,18 @@ try {
     });
   });
 
-  // A grok.com page that reloads itself once, 1.5s after load — after the
-  // content script has taken the run's markers off its URL.
+  // grok.com pages. The first prompt's reloads itself once, 1.5s after load
+  // — after the content script has taken the run's markers off its URL. The
+  // second's hangs its renderer 2s after load: in a real v0.43 run no Grok
+  // page answered the probe at all, and only what the tab itself shows from
+  // outside can say anything about that.
   await context.route(/^https:\/\/grok\.com\//, (route) => route.fulfill({
     status: 200, contentType: "text/html",
     body: `<body>grok stub<script>
-      if (!sessionStorage.getItem('reloaded')) {
+      var q = new URLSearchParams(location.search).get('q') || '';
+      if (q.indexOf('UNREADABLE-CASE') >= 0) {
+        setTimeout(function () { for (;;) {} }, 2000);
+      } else if (!sessionStorage.getItem('reloaded')) {
         sessionStorage.setItem('reloaded', '1');
         setTimeout(function () { location.reload(); }, 1500);
       }
@@ -155,14 +161,17 @@ try {
   let entry = null;
   let unreadableEntry = null;
   let grokEntry = null;
+  let hungEntry = null;
   const deadline = Date.now() + 150000;
-  while ((!entry || !unreadableEntry || !grokEntry) && Date.now() < deadline) {
+  while ((!entry || !unreadableEntry || !grokEntry || !hungEntry) && Date.now() < deadline) {
     await page.waitForTimeout(5000);
     const log = await ask({ type: "error-log", limit: 100 });
     const failed = ((log && log.entries) || []).filter((e) => e.where === "run:turn-failed:chatgpt");
     entry = failed.find((e) => e.message === "timeout: sent, no answer captured") || entry;
     unreadableEntry = failed.find((e) => /couldn't be read/.test(e.message)) || unreadableEntry;
-    grokEntry = ((log && log.entries) || []).find((e) => e.where === "run:turn-failed:grok") || grokEntry;
+    const grokFailed = ((log && log.entries) || []).filter((e) => e.where === "run:turn-failed:grok");
+    grokEntry = grokFailed.find((e) => e.context && e.context.stage === "no-turn") || grokEntry;
+    hungEntry = grokFailed.find((e) => e.context && e.context.stage === "no answer") || hungEntry;
   }
   const diag = await ask({ type: "get-campaign-diagnostics", profileId });
   await ask({ type: "loader-stop" });
@@ -204,6 +213,17 @@ try {
     JSON.stringify(gctx));
   check("and where the page is", gctx.path === "/", JSON.stringify(gctx.path));
   check("in its trace too", !!grokEntry && /nav=reload markers=no/.test(grokEntry.trace || ""), grokEntry && grokEntry.trace);
+  check("with the tab's own record of the reload", !!grokEntry && /\| tab: .*L.*C.*L/.test(grokEntry.trace || ""), grokEntry && grokEntry.trace);
+
+  console.log("\nA page that stops answering is described from outside");
+  const hctx = (hungEntry && hungEntry.context) || {};
+  check("the hung page's turn failed", !!hungEntry, "no failure with stage 'no answer'");
+  check("after waiting the full probe window", hctx.probeMs >= 3900, hctx.probeMs);
+  check("with the tab's state: loaded, not frozen or discarded", hctx.tabStatus === "complete" && hctx.frozen === false && hctx.discarded === false,
+    JSON.stringify(hctx));
+  check("and where it is — host and path, no query", hctx.where === "grok.com/", JSON.stringify(hctx.where));
+  check("the trace carries the tab's load log", !!hungEntry && /tab=complete at=grok\.com\/ .*\| tab: \S+:L/.test(hungEntry.trace || ""), hungEntry && hungEntry.trace);
+  check("and never the prompt", !!hungEntry && !/UNREADABLE|laptop/i.test(JSON.stringify(hungEntry)), hungEntry && hungEntry.trace);
 
   const turns = await ask({ type: "error-log", limit: 100, cat: "turn" });
   const turn = ((turns && turns.entries) || []).find((e) => e.where === "run:turn:chatgpt" && e.context && e.context.stage === "sent" && !e.context.unreadableShape);

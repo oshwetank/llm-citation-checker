@@ -20,7 +20,11 @@ export function summarizeRunDiagnostics(bundle, runNo = new Map()) {
   const runs = bundle.runs || [];
   const orderedRuns = [...runs].sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
   const perRun = orderedRuns.map((r) => {
-    const stored = (bundle.records || []).filter((x) => x.geo && x.geo.runId === r.id).length;
+    // Prompts answered, not captures: one prompt can arrive as several
+    // captures (see oneCapturePerPrompt in geo.js), and counting those read
+    // "stored 67" against 40 expected in a real export.
+    const runRecords = (bundle.records || []).filter((x) => x.geo && x.geo.runId === r.id);
+    const stored = new Set(runRecords.map((x) => (x.geo.promptId ? `${x.platform}|${x.geo.promptId}` : x))).size;
     const missing = Math.max(0, (r.expected || 0) - stored);
     return {
       runId: r.id,
@@ -29,6 +33,7 @@ export function summarizeRunDiagnostics(bundle, runNo = new Map()) {
       status: r.status || "",
       expected: r.expected || 0,
       stored,
+      captures: runRecords.length,
       missing,
       failed: r.failed || 0,
       reasons: r.reasons || {},

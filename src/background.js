@@ -718,7 +718,9 @@ function armWatchdog(plat, leg, ms) {
       return;
     }
     const unreadable = leg.unreadable && leg.unreadable.token === leg.token ? leg.unreadable : null;
-    const { reason, trace, ctx } = describeTimeout(probe, unreadable);
+    const tab = probe && probe.ok ? null : await tabFacts(leg.tabId);
+    const nav = leg.navLogToken === leg.token ? leg.navLog || [] : [];
+    const { reason, trace, ctx } = describeTimeout(probe, unreadable, tab, nav);
     if (leg.streamExtensions) {
       ctx.streamExtensions = leg.streamExtensions;
     }
@@ -763,15 +765,33 @@ function probeLoaderTab(leg) {
 // the prompt went out and an answer came back; the reader is what failed.
 // It is exactly how every Grok turn failed once grok.com changed transport,
 // while the log said only "timeout".
-function describeTimeout(probe, unreadable = null) {
+function describeTimeout(probe, unreadable = null, tab = null, nav = []) {
   const unreadableCtx = unreadable ? { unreadableShape: unreadable.shape } : {};
   const unreadableReason = "timeout: engine replied, but the reply couldn't be read";
+  const navTrace = nav.length ? ` | tab: ${nav.join(" ")}` : "";
   if (!probe || !probe.ok) {
+    const t = tab || {};
+    const reason = unreadable ? unreadableReason
+      : t.frozen ? "timeout: Chrome froze the tab"
+      : t.discarded ? "timeout: Chrome discarded the tab"
+      : t.challenge ? "timeout: blocked by a verification page"
+      : t.status === "loading" ? "timeout: page never finished loading"
+      : t.status === "gone" ? "timeout: the tab was closed"
+      : "timeout: page script not responding";
     return {
-      reason: unreadable ? unreadableReason : "timeout: page script not responding",
+      reason,
       trace: `probe:${(probe && probe.error) || "none"}${probe && probe.probeMs != null ? ` after ${probe.probeMs}ms` : ""}`
-        + `${unreadable ? ` unreadable=${unreadable.shape}` : ""}`,
-      ctx: { stage: (probe && probe.error) || "none", probeMs: probe && probe.probeMs, ...unreadableCtx },
+        + ` tab=${t.status || "?"}${t.frozen ? " frozen" : ""}${t.discarded ? " discarded" : ""}${t.challenge ? " challenge" : ""} at=${t.where || "?"}`
+        + `${unreadable ? ` unreadable=${unreadable.shape}` : ""}${navTrace}`,
+      ctx: {
+        stage: (probe && probe.error) || "none",
+        probeMs: probe && probe.probeMs,
+        tabStatus: t.status,
+        frozen: !!t.frozen,
+        discarded: !!t.discarded,
+        where: t.where,
+        ...unreadableCtx,
+      },
     };
   }
   // No turn is running in the page that answered (see pageFacts in
@@ -785,7 +805,7 @@ function describeTimeout(probe, unreadable = null) {
     return {
       reason,
       trace: `probe stage=no-turn nav=${probe.navType} markers=${probe.hadMarkers ? "yes" : "no"} verify=${probe.verify}`
-        + ` path=${probe.path} age=${probe.docAgeMs}ms ready=${probe.readyState}${probe.challenge ? " challenge" : ""} vis=${probe.visibility}`,
+        + ` path=${probe.path} age=${probe.docAgeMs}ms ready=${probe.readyState}${probe.challenge ? " challenge" : ""} vis=${probe.visibility}${navTrace}`,
       ctx: {
         stage: "no-turn",
         navType: probe.navType,
@@ -814,7 +834,7 @@ function describeTimeout(probe, unreadable = null) {
     + `${probe.streaming ? " streaming" : ""}${unreadable ? ` unreadable=${unreadable.shape}` : ""}`;
   return {
     reason,
-    trace: `${head} | ${probe.trace || ""}`,
+    trace: `${head} | ${probe.trace || ""}${navTrace}`,
     ctx: {
       stage: probe.stage,
       ticks: probe.ticks,
@@ -1563,6 +1583,54 @@ const MAX_RELOAD_RETRIES = 2;
 // which is bounded by extension injection rather than by the site, so it
 // stays stable across engines, machines and network conditions.
 const RELOAD_VERIFY_WAIT_MS = 8000;
+/* What a loader tab did during its turn, seen from outside the page: each
+ * load start (L) and finish (C), where it went, and whether Chrome froze or
+ * discarded it. Every Grok turn in a real v0.43 run timed out with the page
+ * not answering at all — no page-side report can explain a page that isn't
+ * running — so the timeout carries this instead. Host and path only (ids
+ * folded): the query string holds the prompt.
+ */
+function tabPlace(url) {
+  try {
+    const u = new URL(url);
+    if (!/^https?:$/.test(u.protocol)) return u.protocol.replace(":", "");
+    return (u.hostname.replace(/^www\./, "") + u.pathname.replace(/[0-9a-f][0-9a-f-]{15,}/gi, ":id")).slice(0, 60);
+  } catch (_) { return "?"; }
+}
+chrome.tabs.onUpdated?.addListener((tabId, changeInfo) => {
+  if (!loader.running) return;
+  const found = legForTab(tabId);
+  if (!found || !found.leg.startedAt) return;
+  const { leg } = found;
+  const bits = [];
+  if (changeInfo.status === "loading") bits.push("L");
+  if (changeInfo.status === "complete") bits.push("C");
+  if (changeInfo.url) bits.push(tabPlace(changeInfo.url));
+  if (changeInfo.discarded) bits.push("discarded");
+  if (changeInfo.frozen !== undefined) bits.push(changeInfo.frozen ? "frozen" : "unfrozen");
+  if (!bits.length) return;
+  if (leg.navLogToken !== leg.token) { leg.navLog = []; leg.navLogToken = leg.token; }
+  if (leg.navLog.length < 24) leg.navLog.push(`${((Date.now() - leg.startedAt) / 1000).toFixed(1)}s:${bits.join(",")}`);
+});
+
+// The tab itself, when its page doesn't answer: frozen, discarded, still
+// loading, a verification page (judged from the title, which is not kept),
+// or where it ended up.
+async function tabFacts(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    return {
+      status: tab.status || "?",
+      frozen: !!tab.frozen,
+      discarded: !!tab.discarded,
+      where: tabPlace(tab.url || tab.pendingUrl || ""),
+      challenge: /just a moment|attention required|verify you are human|checking your browser|are you a robot/i.test(tab.title || ""),
+    };
+  } catch (_) {
+    return { status: "gone", frozen: false, discarded: false, where: "?", challenge: false };
+  }
+}
+
 chrome.tabs.onUpdated?.addListener((tabId, changeInfo) => {
   if (changeInfo.status !== "loading") return;
   const found = legForTab(tabId);
@@ -2506,7 +2574,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const runs = (await db.getAll("geoRuns")).filter((r) => r.profileId === msg.profileId);
           const runIds = runs.map((r) => r.id);
           const all = await db.getAll("derived");
-          const records = selectTracked(all, { profileId: msg.profileId });
+          // Every capture, duplicates included: they are evidence here.
+          const records = selectTracked(all, { profileId: msg.profileId, allCaptures: true });
           const prompts = (await db.getAll("trackedPrompts")).filter((t) => t.profileId === msg.profileId);
 
           const runNo = new Map([...runs].sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0)).map((r, i) => [r.id, i + 1]));
