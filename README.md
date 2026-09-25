@@ -12,7 +12,8 @@ of its own**; nothing leaves your device.
 
 > **v0.45.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
-> for the original feasibility research.
+> for the original feasibility research. Taking over development? Start with
+> [HANDOFF.md](HANDOFF.md).
 
 ## Two modes, deliberately kept apart
 
