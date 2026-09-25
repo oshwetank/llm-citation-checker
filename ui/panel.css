@@ -2547,6 +2547,15 @@ body.popup .drill-table th:first-child { min-width: 180px; }
   background: var(--amber-bg); color: var(--amber-fg); border: 1px solid var(--amber-border);
   border-radius: 8px; padding: 9px 12px; font-size: 12px; margin: 8px 0;
 }
+/* A half-updated install — see src/lib/build.js. Same warning palette as a
+   paused run, since it means the same thing to the user: don't trust a run
+   until this is dealt with. */
+.build-mismatch {
+  background: var(--amber-bg); color: var(--amber-fg); border: 1px solid var(--amber-border);
+  border-radius: 8px; padding: 10px 12px; font-size: 12px; line-height: 1.45; margin: 0 0 12px;
+}
+.build-mismatch b { display: block; margin-bottom: 3px; }
+.build-mismatch ol { margin: 6px 0 0 18px; padding: 0; }
 .loader-interrupted .small { margin-top: 3px; overflow-wrap: anywhere; }
 .loader-interrupted .muted { opacity: 0.75; margin-top: 3px; }
 

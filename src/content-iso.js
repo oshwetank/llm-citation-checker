@@ -24,6 +24,59 @@
     return CHANNEL;
   }
 
+  /* A clock that survives Chrome throttling this tab.
+   *
+   * A campaign's engine tabs are never the visible tab, and Chrome throttles
+   * timers in hidden pages: setTimeout/setInterval run at most once a second
+   * from the moment a tab is hidden, and once a MINUTE after five minutes
+   * hidden ("intensive wake-up throttling", Chrome 88+). The submit loop
+   * counts 400ms ticks, so in a hidden tab it ran 2.5x slow from the start —
+   * its budget outlasted the 90s watchdog, which killed the turn before the
+   * loop could report where it stood — and after five minutes it barely ran
+   * at all. Real runs in two browsers stopped succeeding at 4.96 and 4.97
+   * minutes, on every engine at once, and not one failure carried a trace.
+   *
+   * Message delivery isn't throttled, so while a turn runs here the service
+   * worker — whose own timers aren't throttled — drives the clock over a
+   * port. The page timer is only the fallback for when no port can be opened
+   * or the worker goes away mid-turn. Anything on a run's critical path that
+   * waits on time should hang off this rather than off setTimeout.
+   */
+  const clockSubscribers = new Set();
+  const clockState = { source: "none" };
+  function onClockTick(fn) {
+    clockSubscribers.add(fn);
+    return () => clockSubscribers.delete(fn);
+  }
+  function startClock(ms) {
+    let stopped = false;
+    let port = null;
+    let fallback = null;
+    const fire = () => {
+      if (stopped) return;
+      for (const fn of [...clockSubscribers]) { try { fn(); } catch (_) {} }
+    };
+    const usePageTimer = () => {
+      if (stopped || fallback) return;
+      clockState.source = "page";
+      fallback = setInterval(fire, ms);
+    };
+    try {
+      port = chrome.runtime.connect({ name: "lcfc-clock" });
+      port.onMessage.addListener(fire);
+      port.onDisconnect.addListener(() => { void chrome.runtime.lastError; port = null; usePageTimer(); });
+      port.postMessage({ everyMs: ms });
+      clockState.source = "worker";
+    } catch (_) {
+      usePageTimer();
+    }
+    return () => {
+      stopped = true;
+      if (fallback) clearInterval(fallback);
+      try { if (port) port.disconnect(); } catch (_) {}
+    };
+  }
+
   // Turn the MAIN-world diagnostic channel on only if the user enabled it.
   chrome.storage.local.get("lcfcSettings", (got) => {
     if (got && got.lcfcSettings && got.lcfcSettings.debugCapture) {
@@ -493,11 +546,18 @@
       const POST_SUBMIT_WATCH_TICKS = 150;  // ~60s
       const POST_SUBMIT_EVERY = 5;          // scan every ~2s, not every tick
       let ticks = 0;
+      // Real time between ticks. A hidden tab on the page clock shows ~1000ms
+      // gaps (and ~60000ms after five minutes) instead of TICK_MS — reported
+      // with every outcome, so a throttled turn says so instead of just
+      // "timeout".
+      let lastTickAt = 0;
+      let maxTickGap = 0;
       let sendTicks = 0;
       let searchDone = false;
       let injected = false;
       let submitTried = 0;
       let sentOk = false;
+      let sentWhy = "";
       let watchTicks = 0;
       let composerSeenTick = 0;   // tick the composer first existed; 0 = not yet
       let clearedTick = 0;        // tick the composer emptied after a send attempt
@@ -524,7 +584,7 @@
       };
 
       const reportLimit = (detail) => {
-        clearInterval(timer);
+        stopLoop();
         dismissLimitModals();
         dropQ();
         try {
@@ -533,14 +593,17 @@
         } catch (_) { /* worker gone; the watchdog still covers us */ }
       };
 
-      const timer = setInterval(() => {
+      const loopTick = () => {
+        const tickAt = Date.now();
+        if (lastTickAt) maxTickGap = Math.max(maxTickGap, tickAt - lastTickAt);
+        lastTickAt = tickAt;
         ticks++;
 
         // Prompt already sent: nothing left to do but watch for a cap notice
         // landing in place of the answer.
         if (sentOk) {
           watchTicks++;
-          if (watchTicks > POST_SUBMIT_WATCH_TICKS) { clearInterval(timer); return; }
+          if (watchTicks > POST_SUBMIT_WATCH_TICKS) { stopLoop(); return; }
           if (watchTicks % POST_SUBMIT_EVERY !== 0) return;
           const late = limitHit();
           if (late) reportLimit(late);
@@ -562,7 +625,7 @@
         // otherwise sit out the full timeout and report "composer never
         // appeared" — true, but it hides the actual cause.
         if (signedOut()) {
-          clearInterval(timer);
+          stopLoop();
           giveUp("not signed in to this engine — the tab was redirected to a login page");
           return;
         }
@@ -570,10 +633,10 @@
         // Positive proof the turn went out — native auto-submit landed, or our
         // own send did. Nothing left for this script but the limit watch.
         const why = submittedWhy();
-        if (why) { T("sent", why); sentOk = true; dropQ(); return; }
+        if (why) { T("sent", why); sentOk = true; sentWhy = why; dropQ(); return; }
 
         if (ticks > MAX_WAIT_TICKS) {
-          clearInterval(timer);
+          stopLoop();
           giveUp(injected ? "prompt typed but never submitted" : "composer never appeared");
           return;
         }
@@ -628,7 +691,7 @@
            */
           if (!clearedTick) { clearedTick = ticks; T("cleared"); }
           if (ticks - clearedTick > CONFIRM_TICKS) {
-            clearInterval(timer);
+            stopLoop();
             giveUp("send emptied the composer but the prompt never reached the conversation");
           }
           return;
@@ -658,7 +721,7 @@
         }
 
         if (sendTicks > MAX_SEND_TICKS) {
-          clearInterval(timer);
+          stopLoop();
           giveUp("send control never accepted the prompt");
           return;
         }
@@ -679,7 +742,57 @@
           pressEnter(box);
           T("reenter");
         }
-      }, TICK_MS);
+      };
+      const stopClock = startClock(TICK_MS);
+      const unsubscribeLoop = onClockTick(loopTick);
+      /* Freezing is the throttle's harsher sibling: with Energy Saver on,
+       * Chrome 133+ FREEZES a CPU-busy tab hidden for five minutes, and a
+       * frozen page runs nothing at all — not even the messages the worker
+       * clock sends. Holding a Web Lock is one of the exemptions Chrome
+       * documents, so one is held for exactly this turn: released when the
+       * loop stops, or by the browser when the page goes away. Scoped by
+       * token, so it can never collide with anything the site itself locks.
+       */
+      let releaseTurnLock = null;
+      try {
+        if (navigator.locks && navigator.locks.request) {
+          navigator.locks.request(`citoskeleton-turn-${token}`, () => new Promise((resolve) => { releaseTurnLock = resolve; }))
+            .catch(() => {});
+        }
+      } catch (_) {}
+      const stopLoop = () => {
+        unsubscribeLoop();
+        stopClock();
+        if (releaseTurnLock) { releaseTurnLock(); releaseTurnLock = null; }
+      };
+
+      /* Answers the run's "where did this turn get to?" when its watchdog
+       * fires. Every timeout in real runs used to arrive with nothing
+       * attached — a turn that never submitted and one whose answer simply
+       * wasn't captured were indistinguishable, and 57 of 57 failures in one
+       * pair of runs said only "timeout". Stage, timing and event codes only:
+       * no prompt or answer text crosses this. Scoped to this turn's token so
+       * a stale page can't answer for a newer turn.
+       */
+      chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
+        if (!msg || msg.type !== "loader-probe" || msg.token !== token) return;
+        let streaming = false;
+        try { streaming = !!pick(sel.streaming); } catch (_) {}
+        reply({
+          ok: true,
+          stage: sentOk ? "sent" : submitTried ? "send-attempted" : injected ? "typed"
+            : composerSeenTick ? "composer-found" : "no-composer",
+          sentWhy,
+          ticks,
+          maxTickGap,
+          clock: clockState.source,
+          visibility: document.visibilityState,
+          focused: document.hasFocus(),
+          streaming,
+          signedOut: signedOut(),
+          trace: trace.join(" "),
+        });
+      });
     }
   })();
 
@@ -1049,6 +1162,24 @@
   (function initDomHarvester() {
     let lastHarvestedSig = "";
     let harvestTimer = null;
+    // A due time as well as a page timer. In a campaign tab the page timer is
+    // throttled (see startClock) and a harvest waiting on it can land up to a
+    // minute late — after the turn's watchdog has already given up — so the
+    // run's own clock also checks the due time on every tick. Whichever gets
+    // there first runs it, once.
+    let harvestDueAt = 0;
+    const runDueHarvest = () => {
+      if (!harvestDueAt) return;
+      harvestDueAt = 0;
+      if (harvestTimer) { clearTimeout(harvestTimer); harvestTimer = null; }
+      tryHarvest();
+    };
+    const scheduleHarvest = (ms) => {
+      if (harvestTimer) clearTimeout(harvestTimer);
+      harvestDueAt = Date.now() + ms;
+      harvestTimer = setTimeout(runDueHarvest, ms);
+    };
+    onClockTick(() => { if (harvestDueAt && Date.now() >= harvestDueAt) runDueHarvest(); });
     // Capped retry budget for expanding Perplexity's collapsible "Sources"
     // panel (see the perplexity branch below) — reset once a harvest
     // actually succeeds, so every new answer gets a fresh budget, but a
@@ -1230,7 +1361,7 @@
             // lastHarvestedSig for this answer yet, so it won't be blocked
             // by the dedup guard below the way a MutationObserver-triggered
             // re-run of THIS same signature would be.
-            setTimeout(tryHarvest, 400);
+            scheduleHarvest(400);
             return;
           }
         } catch (_) {}
@@ -1476,8 +1607,7 @@
     };
 
     const observer = new MutationObserver(() => {
-      if (harvestTimer) clearTimeout(harvestTimer);
-      harvestTimer = setTimeout(tryHarvest, 1200);
+      scheduleHarvest(1200);
     });
 
     try {

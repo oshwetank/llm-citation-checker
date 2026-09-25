@@ -19,6 +19,7 @@ import { aggregateSources, aggregateSourcesFromCaptures } from "../src/lib/sourc
 import { analyzeFanout, FANOUT_BENCHMARK } from "../src/lib/fanout.js";
 import { sanitizeText, trimLabel } from "../src/lib/text-sanitize.js";
 import { formatCooldown } from "../src/lib/pacing.js";
+import { BUILD } from "../src/lib/build.js";
 import {
   computeVerbatimGrounding,
   computeAuthoritySplit,
@@ -46,6 +47,44 @@ const send = (msg) =>
       resolve({ ok: false, error: String(err && err.message ? err.message : err) });
     }
   });
+
+/* A half-updated install: these screens, and the background that actually
+ * runs campaigns, loaded from different builds. The manifest can't reveal it
+ * (see src/lib/build.js) — a real browser reported 0.41.0 everywhere while
+ * its runs failed with a bug two versions gone. Said up front, on every tab,
+ * before a run is wasted on the old code. Only a genuine mismatch shows it: a
+ * background that reports another build, or one too old to know the question
+ * ("unknown message type"). A broken connection is load()'s to explain.
+ *
+ * Reproduced, not guessed: a Chrome profile that had loaded the extension
+ * before kept running the old background across relaunches after the files
+ * (and manifest version) on disk changed — its Preferences still recorded the
+ * old service-worker version. Only the chrome://extensions reload button
+ * replaced it, and the fix then held across relaunches. Hence the wording.
+ */
+async function checkBuildMatch() {
+  const r = await send({ type: "build-info" });
+  const stale = (r && r.ok && r.build !== BUILD) || (r && r.error === "unknown message type");
+  if (!stale) return;
+  const host = document.querySelector(".app-content");
+  if (!host || host.querySelector(".build-mismatch")) return;
+  const running = r.ok ? `version ${r.build}` : "an older version";
+  const li = (text) => { const n = document.createElement("li"); n.textContent = text; return n; };
+  const list = document.createElement("ol");
+  list.append(
+    li("Open chrome://extensions and click the reload ↻ icon on CitoSkeleton. Restarting Chrome is not enough — Chrome keeps the old background running until this button is pressed."),
+    li("If this message is still here after that, some files were not replaced: close Chrome, extract the update over the folder again (replacing every file), reopen Chrome and press reload ↻ once more."));
+  const note = document.createElement("div");
+  note.className = "build-mismatch";
+  note.setAttribute("role", "alert");
+  const title = document.createElement("b");
+  title.textContent = "Part of CitoSkeleton is out of date";
+  note.append(title,
+    `These screens are version ${BUILD}, but the part that runs campaigns is still ${running}. Campaign runs will use the old code until this is fixed.`,
+    list);
+  host.prepend(note);
+}
+checkBuildMatch();
 
 // Synchronize full-tab vs popup mode in DOM for responsive layout and zoom stability
 function syncViewportMode() {
@@ -5835,15 +5874,22 @@ function fmtBytes(n) {
  */
 async function buildDiagnosticReport() {
   const manifest = chrome.runtime.getManifest();
-  const [statsRes, runsRes] = await Promise.all([
+  const [statsRes, runsRes, buildRes] = await Promise.all([
     send({ type: "stats" }),
     send({ type: "geo-run-list" }), // no profileId = every campaign's runs
+    send({ type: "build-info" }),
   ]);
 
   const lines = [];
   lines.push(`${manifest.name} diagnostic report`);
   lines.push(`Generated: ${new Date().toISOString()}`);
   lines.push(`Extension version: ${manifest.version}`);
+  // The manifest can say one version while older code actually runs — see
+  // lib/build.js. Both builds are printed so a half-updated install is plain
+  // from the first lines of any report, instead of being inferred from
+  // capture fingerprints after a wasted run.
+  const bgBuild = buildRes && buildRes.ok ? buildRes.build : "older than 0.42.0 (doesn't report a build)";
+  lines.push(`Code builds: interface ${BUILD} · background ${bgBuild}${bgBuild === BUILD ? "" : "  ← MISMATCH: reload the extension"}`);
   lines.push(`Browser: ${navigator.userAgent}`);
   lines.push("");
   lines.push("Storage");
@@ -6206,6 +6252,19 @@ let loaderAckedRunId = null;
 function renderLoaderStatus(s) {
   const box = $("#loaderStatus");
   if (!box) return;
+  // Each engine's prompt list is its own scroll box (.loader-prompt-rows,
+  // max-height 180px), and this whole status block is rebuilt on every 1.5s
+  // poll — so each list came back as a new element scrolled to the top.
+  // Reported as "if i scroll down they automatically scroll up after 2 sec".
+  // withScrollPreserved around the poll only holds the PAGE's scroller, not
+  // these; they're carried across the rebuild here, keyed by engine.
+  const listScroll = {};
+  box.querySelectorAll(".loader-prompt-rows[data-plat]").forEach((r) => { listScroll[r.dataset.plat] = r.scrollTop; });
+  // The cooldown banner has a slide-in entrance (panelFadeIn: 4px down, then
+  // up). Rebuilt every poll, it replayed that slide every 1.5s — reported as
+  // "the box which shows the time is going up and down". It animates when it
+  // first appears; a refresh of one already showing keeps it still.
+  const hadCooldownBanner = !!box.querySelector(".cooldown-banner");
   box.textContent = "";
   if (!s || !s.total) { loaderWasRunning = false; return; }
 
@@ -6307,6 +6366,7 @@ function renderLoaderStatus(s) {
         el("button", { className: "btn primary small", style: "flex-shrink:0" }, "Resume Now")
       );
       banner.querySelector("button").onclick = () => send({ type: "loader-resume" }).then(refresh);
+      if (hadCooldownBanner) banner.style.animation = "none";
       box.append(banner);
     } else {
       const note = el("div", { className: "loader-interrupted" },
@@ -6365,6 +6425,7 @@ function renderLoaderStatus(s) {
     const list = el("div", { className: "loader-prompt-list" });
     list.append(el("div", { className: "loader-prompt-list-head" }, label));
     const rows = el("div", { className: "loader-prompt-rows" });
+    rows.dataset.plat = plat;
     (ps.prompts || []).forEach((p, i) => {
       const row = el("div", { className: `loader-prompt-row status-${p.status}` },
         el("span", { className: "loader-prompt-icon", title: PROMPT_STATUS_LABEL[p.status] }, PROMPT_STATUS_ICON[p.status]),
@@ -6377,6 +6438,10 @@ function renderLoaderStatus(s) {
     lists.append(list);
   }
   box.append(lists);
+  for (const r of lists.querySelectorAll(".loader-prompt-rows[data-plat]")) {
+    const y = listScroll[r.dataset.plat];
+    if (y) r.scrollTop = y;
+  }
 }
 
 // poll loader status while the Campaigns tab is open

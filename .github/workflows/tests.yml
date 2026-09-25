@@ -106,7 +106,7 @@ jobs:
         run: |
           fail=0
           for f in test/adapter.test.mjs test/ai-brands.test.mjs test/auth-check.test.mjs \
-                   test/brand-context.test.mjs \
+                   test/brand-context.test.mjs test/build-id.test.mjs \
                    test/auto-competitors.test.mjs \
                    test/behaviour.test.mjs test/brands.test.mjs test/campaign-workbook.test.mjs \
                    test/concurrency.test.mjs test/diagnostics-summary.test.mjs \
@@ -162,16 +162,17 @@ jobs:
         run: |
           fail=0
           for f in test/analyze-feedback.test.mjs test/analyze-header-gap.test.mjs \
-                   test/analyze-layout.test.mjs test/brand-detail.test.mjs \
+                   test/analyze-layout.test.mjs test/brand-detail.test.mjs test/build-mismatch.test.mjs \
                    test/campaign-diagnostics-export.test.mjs test/capture-attribution.test.mjs \
                    test/campaign-drilldown.test.mjs test/capture-latency.test.mjs \
                    test/compare-tab.test.mjs test/concurrency-live.test.mjs test/full-audit.test.mjs \
-                   test/funnel-omitted.test.mjs test/live-run-toast.test.mjs \
+                   test/funnel-omitted.test.mjs test/live-run-toast.test.mjs test/loader-status-stability.test.mjs \
                    test/mention-list.test.mjs \
                    test/perplexity-campaign-preview.test.mjs test/prompt-manual-add.test.mjs \
                    test/prompt-submit.test.mjs test/reload-false-positive.test.mjs \
                    test/run-interrupted.test.mjs \
                    test/saved-conversations-engine.test.mjs test/tab-management.test.mjs \
+                   test/timeout-diagnostics.test.mjs \
                    test/ui-visibility.test.mjs; do
             echo "── $f"
             if ! node "$f"; then

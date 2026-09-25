@@ -206,6 +206,10 @@ if (body) {
       document: doc,
       location: { href: "https://perplexity.ai/thread/1" },
       setTimeout: (fn) => { scheduled.push(fn); return scheduled.length; },
+      // The follow-up goes through the harvester's scheduleHarvest (a due time
+      // the run's clock also checks, so a throttled page timer can't strand
+      // it) — record it the same way a bare setTimeout was recorded before.
+      scheduleHarvest: (ms) => { scheduled.push(ms); },
       chrome: { runtime: { sendMessage: (msg) => sent.push(msg), get lastError() { return undefined; } } },
     };
     const sent = [];

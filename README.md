@@ -10,7 +10,7 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.41.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.42.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research.
 
@@ -148,6 +148,28 @@ higher bar than a normal feature:
   the expected engine — before it's touched. Click a source link, check something else, or
   come back after a browser restart (which reassigns tab IDs) and the run parks itself with an
   honest reason instead of navigating whatever page now holds that ID.
+- **A run keeps working after its tabs have been in the background for five
+  minutes.** Chrome slows timers in hidden tabs, to once a second immediately
+  and to once a *minute* after five minutes, and a run's engine tabs are always
+  hidden. The prompt-submitting loop ran on the page's own timer, so it crawled
+  from the start and all but stopped at the five-minute mark: two real runs in
+  two browsers stopped succeeding at 4.96 and 4.97 minutes, on every engine at
+  once. The loop's clock now comes from the extension's service worker, whose
+  timers and messages Chrome doesn't throttle. Each tab also holds a Web Lock
+  while its prompt is in flight, one of Chrome's documented exemptions from
+  freezing background tabs under Energy Saver.
+- **A timed-out prompt says why.** A failure used to be the bare word "timeout",
+  which can mean opposite things. The run now asks the tab where the prompt got
+  to before giving up on it. It records *never went out*, *sent but no answer
+  captured*, *signed out* or *page script not responding*, together with the
+  step it reached, how far apart its timer ticks really were (proof of
+  throttling if there was any), and its step-by-step trace, all in the
+  diagnostics export.
+- **A half-updated install is called out.** Windows can skip files Chrome has
+  open when an update is extracted over the folder, leaving new screens running
+  on top of an old engine that every screen still labels as the new version.
+  The panel now checks which code is actually running and shows how to fix a
+  mismatch before a run is wasted on the old code.
 - **Every campaign capture is filed under the prompt it actually answers.** A slow
   answer used to be labelled with whatever prompt its tab had moved on to by the
   time it arrived — so one prompt's answer was quietly counted in another's

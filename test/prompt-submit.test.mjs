@@ -53,33 +53,67 @@ const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] }
 
 // Runs the REAL content-iso.js against a mock page shaped like one engine.
 // The page records every submission it receives so the count can be asserted.
-async function run(html, { gemini = false, waitMs = 9000 } = {}) {
+async function run(html, { gemini = false, waitMs = 9000, throttle = false, throttleMs = 60000, workerClock = true } = {}) {
   const page = await browser.newPage();
   const host = gemini ? "https://gemini.google.com" : "https://chatgpt.com";
   await page.route("**/*", (r) => r.fulfill({ status: 200, contentType: "text/html", body: `<body>${html}</body>` }));
   await page.goto(`${host}/mock?q=${encodeURIComponent(PROMPT)}&lcfc=1&lcfctok=T1`);
-  const res = await page.evaluate(async ({ iso, waitMs }) => {
+  const res = await page.evaluate(async ({ iso, waitMs, throttle, throttleMs, workerClock }) => {
     const t0 = Date.now();
     window.__t0 = t0;
     const events = [];
-    window.chrome = {
-      runtime: {
-        lastError: null,
-        sendMessage: (m, cb) => { events.push(JSON.parse(JSON.stringify(m))); if (cb) cb({ ok: true }); },
-        onMessage: { addListener() {} },
-      },
-      storage: { local: { get: (_k, cb) => cb && cb({}) } },
+    // Unthrottled timers, kept for the harness itself and for standing in for
+    // the service worker — which is exactly what isn't throttled in reality.
+    const realSetInterval = window.setInterval.bind(window);
+    const realClearInterval = window.clearInterval.bind(window);
+    const realSetTimeout = window.setTimeout.bind(window);
+    if (throttle) {
+      // Chrome's throttling of a hidden page's timers: once a second from the
+      // moment it's hidden, once a MINUTE after five minutes (the default
+      // here). Real browsers can't be made to do this under Playwright, which
+      // keeps every page it drives "visible".
+      window.setInterval = (fn, ms, ...a) => realSetInterval(fn, Math.max(ms || 0, throttleMs), ...a);
+      window.setTimeout = (fn, ms, ...a) => realSetTimeout(fn, Math.max(ms || 0, throttleMs), ...a);
+    }
+    let onMsg = null;
+    const runtime = {
+      lastError: null,
+      sendMessage: (m, cb) => { events.push(JSON.parse(JSON.stringify(m))); if (cb) cb({ ok: true }); },
+      onMessage: { addListener(fn) { onMsg = fn; } },
     };
+    if (workerClock && throttle) {
+      // The service worker's side of startClock: ticks at the asked-for rate,
+      // from a clock the page's throttling doesn't touch.
+      runtime.connect = () => {
+        const fns = [];
+        let iv = null;
+        return {
+          onMessage: { addListener: (fn) => fns.push(fn) },
+          onDisconnect: { addListener() {} },
+          postMessage: (m) => { if (m && m.everyMs && !iv) iv = realSetInterval(() => fns.forEach((f) => f(1)), m.everyMs); },
+          disconnect: () => { if (iv) realClearInterval(iv); },
+        };
+      };
+    }
+    window.chrome = { runtime, storage: { local: { get: (_k, cb) => cb && cb({}) } } };
     eval(iso); // eslint-disable-line no-eval
-    await new Promise((r) => setTimeout(r, waitMs));
+    await new Promise((r) => realSetTimeout(r, waitMs));
+    // What the run's watchdog would be told if it asked now (see
+    // probeLoaderTab in background.js).
+    let probe = null;
+    if (onMsg) onMsg({ type: "loader-probe", token: "T1" }, {}, (r) => { probe = r; });
+    let locks = [];
+    try { locks = ((await navigator.locks.query()).held || []).map((l) => l.name); } catch (_) {}
     return {
       events,
+      probe,
+      locks,
       submits: window.__submits || 0,
       submitAt: window.__submitAt === undefined ? null : window.__submitAt,
       text: window.__lastText || null,
       url: location.pathname + location.search,
     };
-  }, { iso: ISO, waitMs });
+  }, { iso: ISO, waitMs, throttle, throttleMs, workerClock });
   await page.close();
   return {
     ...res,
@@ -147,6 +181,63 @@ console.log("\nChatGPT: send button present but inert via aria-disabled (Enter m
     </script>`);
   check("submitted exactly once via Enter", r.submits === 1, `submits=${r.submits}`);
   check("the prompt text is correct", r.text === PROMPT, JSON.stringify(r.text));
+}
+
+/* Hidden-tab throttling.
+ *
+ * A campaign's engine tabs are always hidden, and Chrome throttles a hidden
+ * page's timers — to once a MINUTE after five minutes. Two real runs, in two
+ * browsers, stopped succeeding at 4.96 and 4.97 minutes on every engine at
+ * once, and not one of 57 failures carried a trace: the page-timer-driven
+ * loop never got far enough to report. The loop now runs on ticks the
+ * service worker supplies over a port. The first scenario is the control — it
+ * proves this harness's throttle is real, so the second isn't passing by luck.
+ */
+const ENTER_PAGE = `
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <button id="composer-submit-button" aria-disabled="true">send</button><div id="convo"></div>
+    <script>${RECORD_CHATGPT}
+      const box=document.getElementById('prompt-textarea');
+      box.addEventListener('keydown',e=>{ if(e.key==='Enter'&&box.innerText.trim()){
+        const t=box.innerText; box.innerHTML=''; window.__record(t); }});
+    </script>`;
+
+console.log("\nControl: page timers throttled to once a minute, and only the page's clock to run on");
+{
+  const r = await run(ENTER_PAGE, { throttle: true, workerClock: false });
+  check("nothing is submitted — the throttle this harness applies is real", r.submits === 0, `submits=${r.submits}`);
+}
+
+console.log("\nPage timers throttled to once a minute, ticks supplied by the service worker");
+{
+  const r = await run(ENTER_PAGE, { throttle: true });
+  check("the prompt is still submitted, exactly once", r.submits === 1, `submits=${r.submits}`);
+  check("in about the time an unthrottled tab takes, not minutes", r.submitAt !== null && r.submitAt < 8000, `submitAt=${r.submitAt}ms`);
+  check("the prompt text is correct", r.text === PROMPT, JSON.stringify(r.text));
+  // What the watchdog would record if this turn's answer then never arrived.
+  const p = r.probe || {};
+  check("a probe reports the turn as sent, and how that was confirmed",
+    p.stage === "sent" && !!p.sentWhy, JSON.stringify({ stage: p.stage, sentWhy: p.sentWhy }));
+  check("it reports the worker's clock, ticking at its intended rate",
+    p.clock === "worker" && p.maxTickGap > 0 && p.maxTickGap < 900, JSON.stringify({ clock: p.clock, maxTickGap: p.maxTickGap }));
+  check("it carries the turn's event trace", typeof p.trace === "string" && /\bsent\b/.test(p.trace), p.trace);
+  // Chrome 133+ freezes CPU-busy hidden tabs under Energy Saver; holding a
+  // Web Lock is a documented exemption. Whether Chrome honours it can't be
+  // driven from this harness — that the turn holds one while in flight can.
+  check("a turn in flight holds the Web Lock that exempts its tab from freezing",
+    r.locks.some((n) => n === "citoskeleton-turn-T1"), JSON.stringify(r.locks));
+}
+
+console.log("\nPage timers at Chrome's once-a-second hidden-tab rate, no worker clock");
+{
+  // The rate every campaign tab gets from the moment it's hidden, before the
+  // five-minute cliff. The loop still limps along — but the probe must show
+  // the throttling plainly, so an export can say so.
+  const r = await run(ENTER_PAGE, { throttle: true, throttleMs: 1000, workerClock: false, waitMs: 6000 });
+  const p = r.probe || {};
+  check("the probe says the page's own clock was driving the turn", p.clock === "page", JSON.stringify(p.clock));
+  check("and that its ticks were ~1s apart instead of 400ms — throttling, measured",
+    p.maxTickGap >= 900, JSON.stringify({ maxTickGap: p.maxTickGap, ticks: p.ticks }));
 }
 
 console.log("\nChatGPT: send button only mounts after a real pointer interaction with the composer");
@@ -439,6 +530,10 @@ console.log("\nNothing usable on the page: report the failure, never hang silent
   check("no submission happened", r.submits === 0, `submits=${r.submits}`);
   check("a failure reason was reported to the run", r.gaveUp.length === 1, JSON.stringify(r.gaveUp));
   check("the reason names the real problem", /composer never appeared/.test(r.gaveUp[0] || ""), r.gaveUp[0]);
+  // The freeze-exemption lock (see stopLoop in content-iso.js) belongs to a
+  // live turn only; one that's over must let go of it.
+  check("the turn's Web Lock is released once it has given up",
+    !r.locks.some((n) => n.startsWith("citoskeleton-turn-")), JSON.stringify(r.locks));
 }
 
 await browser.close();

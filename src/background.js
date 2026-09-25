@@ -19,6 +19,7 @@ import {
   parseCooldownFromNotice, formatCooldown,
 } from "./lib/pacing.js";
 import { createErrorLog } from "./lib/errorlog.js";
+import { BUILD } from "./lib/build.js";
 import { checkEnginesAuth, AUTH_COOKIES } from "./lib/auth-check.js";
 import { buildDemoRecords, isDemoRecord } from "./lib/demo-data.js";
 import { buildCampaignWorkbook } from "./lib/campaignWorkbook.js";
@@ -629,11 +630,76 @@ async function heartbeatTick() {
 // than one concurrent leg.
 function armWatchdog(plat, leg, ms) {
   if (!leg) return;
-  leg.watchdog = setTimeout(() => {
+  leg.watchdog = setTimeout(async () => {
     if (!loader.running || loader.paused || leg.paused) return;
     if (leg.idx >= leg.prompts.length) return;
-    failTurnAndAdvance(plat, leg, "timeout");
+    // Ask the tab where the turn got to before calling it — see
+    // probeLoaderTab. The turn may complete while the probe is in flight
+    // (an answer landing in the last second), so it's re-checked after.
+    const idxAtFire = leg.idx;
+    const tokenAtFire = leg.token;
+    const probe = await probeLoaderTab(leg);
+    if (!loader.running || loader.paused || leg.paused) return;
+    if (leg.idx !== idxAtFire || leg.token !== tokenAtFire) return;
+    const { reason, trace, ctx } = describeTimeout(probe);
+    failTurnAndAdvance(plat, leg, reason, 0, trace, ctx);
   }, ms);
+}
+
+/* What a timed-out tab says about itself.
+ *
+ * A watchdog timeout used to be recorded as the bare word "timeout", which
+ * covers opposite failures: a prompt that never went out, and one that went
+ * out and was answered but whose answer the extension never caught. Across
+ * two real runs 57 of 57 failures were bare timeouts, so nothing in the
+ * export could say which. The content script answers with its stage, how it
+ * confirmed a send, its tick timing and its clock (a hidden tab on the page
+ * clock shows ~1000ms or ~60000ms gaps instead of 400ms), whether it's
+ * visible, and its event trace. No answer at all within a moment is itself
+ * informative: the script never started in that tab, or the tab is frozen.
+ */
+function probeLoaderTab(leg) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (r) => { if (!settled) { settled = true; resolve(r); } };
+    setTimeout(() => done({ ok: false, error: "no answer" }), 1500);
+    try {
+      chrome.tabs.sendMessage(leg.tabId, { type: "loader-probe", token: leg.token }, { frameId: 0 }, (res) => {
+        if (chrome.runtime.lastError) done({ ok: false, error: "unreachable" });
+        else done(res && res.ok ? res : { ok: false, error: "no answer" });
+      });
+    } catch (_) {
+      done({ ok: false, error: "unreachable" });
+    }
+  });
+}
+
+function describeTimeout(probe) {
+  if (!probe || !probe.ok) {
+    return {
+      reason: "timeout: page script not responding",
+      trace: `probe:${(probe && probe.error) || "none"}`,
+      ctx: { stage: (probe && probe.error) || "none" },
+    };
+  }
+  const reason = probe.signedOut ? "timeout: signed out"
+    : probe.stage === "sent" ? "timeout: sent, no answer captured"
+    : "timeout: prompt never went out";
+  const head = `probe stage=${probe.stage}${probe.sentWhy ? ` via=${probe.sentWhy}` : ""} ticks=${probe.ticks}`
+    + ` maxgap=${probe.maxTickGap}ms clock=${probe.clock} vis=${probe.visibility}`
+    + `${probe.streaming ? " streaming" : ""}`;
+  return {
+    reason,
+    trace: `${head} | ${probe.trace || ""}`,
+    ctx: {
+      stage: probe.stage,
+      ticks: probe.ticks,
+      maxTickGapMs: probe.maxTickGap,
+      clock: probe.clock,
+      visibility: probe.visibility,
+      streaming: !!probe.streaming,
+    },
+  };
 }
 
 // The one place a turn is counted as failed and the run moves on — shared by
@@ -644,7 +710,7 @@ function armWatchdog(plat, leg, ms) {
 // behaviour); the tab-closed path passes a short delay to avoid hammering
 // chrome.tabs.update in a tight loop if every remaining prompt in the list
 // would also fail against the same closed tab.
-function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "") {
+function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "", extraCtx = null) {
   if (!leg) return;
   loader.errors++;
   leg.failed = (leg.failed || 0) + 1;
@@ -684,6 +750,7 @@ function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "") {
     reported: !!trace,
     elapsedMs,
     runId: loader.runId,
+    ...(extraCtx || {}),
   }, trace);
   // A durable per-turn outcome, alongside the error entry above — this is
   // what lets a campaign export show a full turn-by-turn timeline (status,
@@ -692,6 +759,7 @@ function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "") {
   logEvent(`run:turn:${plat}`, "turn", reason, {
     platform: plat, promptIndex, status: "failed", elapsedMs,
     retries: reloadRetriesAtFailure, runId: loader.runId,
+    ...(extraCtx || {}),
   });
   persistLoaderState();
   syncGeoRun(undefined, reason);
@@ -1330,6 +1398,30 @@ const RELOAD_DETECT_GRACE_MS = 3000;
 // actually happened is the user navigating this tab to something else
 // entirely (not a reload back to the same engine), that still parks the
 // run instead of resubmitting into a page the user is using.
+/* The clock for a campaign turn running in a hidden tab.
+ *
+ * Chrome throttles timers in hidden pages — to once a second at once, and to
+ * once a MINUTE after five minutes — and a run's engine tabs are always
+ * hidden. The content script's submit loop is tick-driven, so it opens a port
+ * here and this worker, whose timers aren't throttled, supplies the ticks;
+ * message delivery into the page isn't throttled either. See startClock in
+ * content-iso.js. The page disconnects when its turn ends, and navigating
+ * away disconnects it too, so an interval can't outlive the turn it serves.
+ */
+chrome.runtime.onConnect?.addListener((port) => {
+  if (port.name !== "lcfc-clock") return;
+  let iv = null;
+  const stop = () => { if (iv) { clearInterval(iv); iv = null; } };
+  port.onMessage.addListener((m) => {
+    if (iv || !m || !m.everyMs) return;
+    const ms = Math.min(5000, Math.max(100, Number(m.everyMs) || 400));
+    iv = setInterval(() => {
+      try { port.postMessage(1); } catch (_) { stop(); }
+    }, ms);
+  });
+  port.onDisconnect.addListener(stop);
+});
+
 const MAX_RELOAD_RETRIES = 2;
 // How long a load event gets to prove itself before it counts as a lost
 // prompt. This is NOT "how long an engine takes to answer" — that is
@@ -2888,6 +2980,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           });
           break;
         }
+        // The build THIS script was loaded with — not the manifest's version,
+        // which can be new while the running code is old. See lib/build.js.
+        case "build-info":
+          sendResponse({ ok: true, build: BUILD });
+          break;
+
         default:
           sendResponse({ ok: false, error: "unknown message type" });
       }
