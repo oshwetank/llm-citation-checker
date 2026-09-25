@@ -86,6 +86,7 @@
     }
   });
 
+  const engineSubmit = { at: 0, via: "" };
   window.addEventListener("message", (event) => {
     if (event.source !== window) return;
     if (event.origin !== location.origin) return;
@@ -100,6 +101,14 @@
           () => void chrome.runtime.lastError
         );
       } catch (_) {}
+      return;
+    }
+
+    // The engine's own submit request left the page (content-main.js's
+    // SUBMIT_RE) — proof the prompt went out; see submittedWhy.
+    if (data.type === "engine-submit") {
+      engineSubmit.at = Date.now();
+      engineSubmit.via = String(data.via || "").slice(0, 10);
       return;
     }
 
@@ -365,9 +374,11 @@
 
       /* Which signal proves the prompt actually went out — or null.
        *
-       * The URL check is first because it is the one signal that does not
-       * depend on markup. Both engines move the tab to a per-conversation
-       * path the moment a turn is really sent (chatgpt.com/ -> /c/<id>,
+       * The engine's own submit request (seen by content-main.js) comes
+       * first: it is proof on the wire, not a reading of the page. After
+       * it, the URL check is the one signal that does not depend on markup.
+       * Both engines move the tab to a per-conversation path the moment a
+       * turn is really sent (chatgpt.com/ -> /c/<id>,
        * gemini.google.com/app -> /app/<id>), and that behaviour is part of
        * how the products work rather than an implementation detail of their
        * DOM. The two selector-based signals below are kept as corroboration,
@@ -378,6 +389,9 @@
        * bouncing the tab to a login page) must not read as success.
        */
       const submittedWhy = () => {
+        // Each turn loads a fresh document, so any submit request seen in
+        // it — ours, or the engine's own from ?q= — is this turn's prompt.
+        if (engineSubmit.at) return "net";
         const path = location.pathname;
         if (path !== startPath && path.length > startPath.length) return "url";
         if (pick(sel.streaming)) return "stream";

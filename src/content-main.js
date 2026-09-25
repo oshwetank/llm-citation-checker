@@ -111,6 +111,23 @@
     /* ignore */
   }
 
+  /* The engine's own "answer this prompt" request, as it leaves the page:
+   * proof a prompt went out that doesn't depend on page markup. The content
+   * script's other signals (the URL moving to a conversation, a stop button,
+   * the prompt in the transcript) all read markup, and on Grok none of them
+   * matched — the script kept re-entering a prompt that had already gone.
+   * Stricter than CONV_RE, which also matches Perplexity's GraphQL sidebar
+   * calls: only the request that starts an answer. Grok's gateway sends its
+   * prompt over a WebSocket instead — see the WebSocket patch. */
+  const SUBMIT_RE = IS_CHATGPT ? CHATGPT_RE
+    : IS_GEMINI ? GEMINI_RE
+    : IS_PERPLEXITY ? /\/rest\/sse\/perplexity_ask(?:\?|$)/i
+    : IS_GROK ? /\/rest\/app-chat\/conversations\/(?:new|[^/?]+\/responses)(?:\?|$)/i
+    : null;
+  const signalSubmit = (via) => {
+    try { window.postMessage({ __LCFC__: CHANNEL, type: "engine-submit", via }, location.origin); } catch (_) { /* ignore */ }
+  };
+
   function emit(record) {
     try {
       window.postMessage({ __LCFC__: CHANNEL, type: "raw-conversation", ...record }, location.origin);
@@ -174,6 +191,7 @@
       url = "";
     }
 
+    if (method === "POST" && SUBMIT_RE && SUBMIT_RE.test(url || "")) signalSubmit("fetch");
     const isConv = (method === "POST" || (IS_PERPLEXITY && /socket\.io|sse/i.test(url))) && CONV_RE.test(url || "");
     let reqBody = null;
     if (isConv) {
@@ -226,6 +244,7 @@
     };
     XHR.prototype.send = function (body) {
       if (this.__lcfc_post) dbg("xhr", { url: this.__lcfc_url.slice(0, 140), matched: !!this.__lcfc_conv });
+      if (this.__lcfc_post && SUBMIT_RE && SUBMIT_RE.test(this.__lcfc_url)) signalSubmit("xhr");
       if (this.__lcfc_conv) {
         this.__lcfc_body = typeof body === "string" ? body : null;
         if (isBackgroundSubscription(this.__lcfc_body)) return send.call(this, body);
@@ -293,6 +312,9 @@
                 // A new turn: a Socket.IO/GraphQL query, or the Grok
                 // gateway's conversation.item.create (which carries the
                 // prompt — the adapter reads it from here).
+                if ((IS_GROK && data.includes('"conversation.item.create"')) || (IS_PERPLEXITY && /^42\["perplexity_ask"/.test(data))) {
+                  signalSubmit("ws");
+                }
                 if (/^4[0-9]/.test(data) || (data.startsWith("{") && (data.includes('"query"') || data.includes('"variables"') ||
                     (IS_GROK && data.includes('"conversation.item.create"'))))) {
                   lastReqBody = data;

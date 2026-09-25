@@ -536,6 +536,39 @@ console.log("\nNothing usable on the page: report the failure, never hang silent
     !r.locks.some((n) => n.startsWith("citoskeleton-turn-")), JSON.stringify(r.locks));
 }
 
+// Grok in a real run: the script typed, clicked, and then — with no URL
+// change, no stop button it recognised and no transcript entry it could
+// match — kept re-entering the prompt ("reenter", "recomposer") until it
+// gave up, possibly sending it several times. The page's own submit request
+// is proof on the wire; content-main.js reports it as "engine-submit". This
+// page shows NOTHING after a send except that report.
+console.log("\nA send confirmed only by the engine's own submit request");
+{
+  const r = await run(`
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <button id="composer-submit-button">send</button><div id="convo"></div>
+    <script>
+      document.documentElement.setAttribute('data-lcfc-ch', 'CH-TEST');
+      window.__submits = 0;
+      const box = document.getElementById('prompt-textarea');
+      document.getElementById('composer-submit-button').addEventListener('click', () => {
+        const t = box.innerText.trim(); if (!t) return;
+        window.__submits++; window.__lastText = t;
+        if (window.__submitAt === undefined) window.__submitAt = Date.now() - (window.__t0 || Date.now());
+        box.innerHTML = '';
+        // What content-main.js posts when the engine's submit request leaves.
+        window.postMessage({ __LCFC__: 'CH-TEST', type: 'engine-submit', via: 'ws' }, location.origin);
+      });
+    </script>`, { waitMs: 25000 });
+  check("the prompt went out exactly once — no re-entering it", r.submits === 1, `submits=${r.submits}`);
+  // The old code gave up on this prompt at ~22s — "send emptied the
+  // composer but the prompt never reached the conversation" — after it had
+  // gone out.
+  check("no failure reported", r.gaveUp.length === 0, r.gaveUp.join(","));
+  check("the turn reads as sent, confirmed on the wire", !!r.probe && r.probe.stage === "sent" && r.probe.sentWhy === "net",
+    JSON.stringify(r.probe && { stage: r.probe.stage, why: r.probe.sentWhy }));
+}
+
 await browser.close();
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
 process.exit(failures ? 1 : 0);

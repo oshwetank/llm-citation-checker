@@ -110,7 +110,7 @@ jobs:
                    test/auto-competitors.test.mjs \
                    test/behaviour.test.mjs test/brands.test.mjs test/campaign-workbook.test.mjs \
                    test/concurrency.test.mjs test/diagnostics-summary.test.mjs \
-                   test/dom-harvest-multiturn.test.mjs test/errorlog.test.mjs \
+                   test/dom-harvest-multiturn.test.mjs test/engine-submit-signal.test.mjs test/errorlog.test.mjs \
                    test/fanout.test.mjs test/feedback-bundle.test.mjs \
                    test/gemini-answer.test.mjs test/geo.test.mjs \
                    test/grok-gateway.test.mjs test/grok-render-citation-tags.test.mjs \

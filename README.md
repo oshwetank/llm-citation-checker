@@ -192,6 +192,13 @@ higher bar than a normal feature:
   format, so every stream was dropped and Perplexity relied on the slower page
   harvest. Inline `[n]` citations become links to the source they name, and
   only sources the answer cites count as cited.
+- **A sent prompt is recognised from the engine's own request.** Whether a
+  prompt went out used to be judged only from the page: the address changing,
+  a stop button, the prompt showing in the conversation. On Grok none of those
+  matched, so the extension kept retyping a prompt that had already gone and
+  then reported it as never sent. The page's own "answer this" request (the
+  conversation POST, Gemini's StreamGenerate, Perplexity's `perplexity_ask`,
+  Grok's `conversation.item.create`) now counts as proof on its own.
 - **Long answers get time to finish.** When a prompt's 90 seconds run out while
   the engine is still visibly writing, it gets up to two more minutes rather
   than being failed mid-answer.
