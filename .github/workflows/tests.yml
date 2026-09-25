@@ -120,6 +120,7 @@ jobs:
                    test/perplexity-cite-marker-brands.test.mjs test/perplexity-clock-contamination.test.mjs \
                    test/perplexity-export.test.mjs test/perplexity-fanout.test.mjs \
                    test/perplexity-fanout-answer-leak.test.mjs \
+                   test/perplexity-block-stream.test.mjs \
                    test/perplexity-markdown-harvest.test.mjs test/perplexity-real-dom.test.mjs \
                    test/perplexity-steps.test.mjs test/perplexity-table-layout-brands.test.mjs \
                    test/perplexity-ws-contamination.test.mjs \
@@ -165,7 +166,8 @@ jobs:
                    test/analyze-layout.test.mjs test/brand-detail.test.mjs test/build-mismatch.test.mjs \
                    test/campaign-diagnostics-export.test.mjs test/capture-attribution.test.mjs \
                    test/campaign-drilldown.test.mjs test/capture-latency.test.mjs \
-                   test/compare-tab.test.mjs test/concurrency-live.test.mjs test/full-audit.test.mjs \
+                   test/compare-tab.test.mjs test/concurrency-live.test.mjs test/duplicate-capture.test.mjs \
+                   test/full-audit.test.mjs test/long-answer.test.mjs \
                    test/funnel-omitted.test.mjs test/live-run-toast.test.mjs test/loader-status-stability.test.mjs \
                    test/mention-list.test.mjs \
                    test/perplexity-campaign-preview.test.mjs test/prompt-manual-add.test.mjs \

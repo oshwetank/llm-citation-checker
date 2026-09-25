@@ -143,6 +143,8 @@ function platformFromUrl(url) {
 }
 
 /* ---------- Capture ---------- */
+const unreadableKindsLogged = new Set();
+
 // The path of a captured request with ids folded to ":id" — which endpoint a
 // payload came from, without the conversation it belongs to. Pages often
 // request a relative path, so it's resolved against the page it came from.
@@ -235,16 +237,25 @@ async function storeCapture(payload, meta) {
   // (event types or top-level keys, never values) and keeps its id, so the
   // diagnostics export can include the payload itself.
   if (!record && meta && meta.runId) {
-    logEvent(`capture:unreadable:${platform}`, "capture", "the adapter found no prompt, answer or sources in this payload", {
-      platform,
-      runId: meta.runId,
-      captureId,
-      transport: payload.transport || null,
-      bytes: rawText.length,
-      endpoint: endpointShape(payload.url, payload.pageUrl),
-      shape: payloadShape(rawText),
-    });
-    if (typeof meta.onUnreadable === "function") meta.onUnreadable(payloadShape(rawText));
+    const endpoint = endpointShape(payload.url, payload.pageUrl);
+    const shape = payloadShape(rawText);
+    // Once per kind per run: a real run logged ~80 identical Perplexity
+    // entries, which pushed everything else out of the 200-entry capture log.
+    const kind = `${meta.runId}|${platform}|${endpoint}|${shape}`;
+    if (!unreadableKindsLogged.has(kind)) {
+      unreadableKindsLogged.add(kind);
+      if (unreadableKindsLogged.size > 500) unreadableKindsLogged.clear();
+      logEvent(`capture:unreadable:${platform}`, "capture", "the adapter found no prompt, answer or sources in this payload", {
+        platform,
+        runId: meta.runId,
+        captureId,
+        transport: payload.transport || null,
+        bytes: rawText.length,
+        endpoint,
+        shape,
+      });
+    }
+    if (typeof meta.onUnreadable === "function") meta.onUnreadable(shape);
   }
 
   // Some campaign captures can only be judged once the adapter has read them
@@ -543,6 +554,7 @@ async function persistLoaderState() {
               startedAt: leg.startedAt || 0,
               token: leg.token || null,
               expectedPrompt: leg.expectedPrompt || null,
+              inFlightIdx: Number.isInteger(leg.inFlightIdx) ? leg.inFlightIdx : -1,
               durations: leg.durations || [],
               outcomes: leg.outcomes || [],
               // Set only on a rate-limit hit — see loader-rate-limited — so
@@ -679,6 +691,10 @@ async function heartbeatTick() {
 // after-restart path (resumeFromSnapshot) can never drift apart. Takes the
 // LEG directly (not looked up by plat) because a platform can now have more
 // than one concurrent leg.
+// A turn whose answer is still streaming when its watchdog fires gets this
+// much more time, at most this many times — see armWatchdog.
+const STREAM_EXTENSION_MS = 60 * 1000;
+const MAX_STREAM_EXTENSIONS = 2;
 function armWatchdog(plat, leg, ms) {
   if (!leg) return;
   leg.watchdog = setTimeout(async () => {
@@ -692,8 +708,20 @@ function armWatchdog(plat, leg, ms) {
     const probe = await probeLoaderTab(leg);
     if (!loader.running || loader.paused || leg.paused) return;
     if (leg.idx !== idxAtFire || leg.token !== tokenAtFire) return;
+    // Still streaming its answer: not a failure yet. Two real ChatGPT turns
+    // were failed at 90s with the stop button still showing — a long answer,
+    // not a lost one. The extensions are capped so a stuck indicator can't
+    // hold a turn forever.
+    if (probe && probe.ok && probe.stage === "sent" && probe.streaming && (leg.streamExtensions || 0) < MAX_STREAM_EXTENSIONS) {
+      leg.streamExtensions = (leg.streamExtensions || 0) + 1;
+      armWatchdog(plat, leg, STREAM_EXTENSION_MS);
+      return;
+    }
     const unreadable = leg.unreadable && leg.unreadable.token === leg.token ? leg.unreadable : null;
     const { reason, trace, ctx } = describeTimeout(probe, unreadable);
+    if (leg.streamExtensions) {
+      ctx.streamExtensions = leg.streamExtensions;
+    }
     failTurnAndAdvance(plat, leg, reason, 0, trace, ctx);
   }, ms);
 }
@@ -710,11 +738,15 @@ function armWatchdog(plat, leg, ms) {
  * visible, and its event trace. No answer at all within a moment is itself
  * informative: the script never started in that tab, or the tab is frozen.
  */
+// 4s, not less: a hidden engine tab under load can take a moment to get to
+// the message, and "no answer" must mean the page is gone or hung, not busy.
+const PROBE_WAIT_MS = 4000;
 function probeLoaderTab(leg) {
+  const sentAt = Date.now();
   return new Promise((resolve) => {
     let settled = false;
-    const done = (r) => { if (!settled) { settled = true; resolve(r); } };
-    setTimeout(() => done({ ok: false, error: "no answer" }), 1500);
+    const done = (r) => { if (!settled) { settled = true; resolve({ ...r, probeMs: Date.now() - sentAt }); } };
+    setTimeout(() => done({ ok: false, error: "no answer" }), PROBE_WAIT_MS);
     try {
       chrome.tabs.sendMessage(leg.tabId, { type: "loader-probe", token: leg.token }, { frameId: 0 }, (res) => {
         if (chrome.runtime.lastError) done({ ok: false, error: "unreachable" });
@@ -733,12 +765,44 @@ function probeLoaderTab(leg) {
 // while the log said only "timeout".
 function describeTimeout(probe, unreadable = null) {
   const unreadableCtx = unreadable ? { unreadableShape: unreadable.shape } : {};
-  const unreadableReason = "timeout: answer arrived but couldn't be read";
+  const unreadableReason = "timeout: engine replied, but the reply couldn't be read";
   if (!probe || !probe.ok) {
     return {
       reason: unreadable ? unreadableReason : "timeout: page script not responding",
-      trace: `probe:${(probe && probe.error) || "none"}${unreadable ? ` unreadable=${unreadable.shape}` : ""}`,
-      ctx: { stage: (probe && probe.error) || "none", ...unreadableCtx },
+      trace: `probe:${(probe && probe.error) || "none"}${probe && probe.probeMs != null ? ` after ${probe.probeMs}ms` : ""}`
+        + `${unreadable ? ` unreadable=${unreadable.shape}` : ""}`,
+      ctx: { stage: (probe && probe.error) || "none", probeMs: probe && probe.probeMs, ...unreadableCtx },
+    };
+  }
+  // No turn is running in the page that answered (see pageFacts in
+  // content-iso.js): the document the prompt was sent to is gone.
+  if (probe.stage === "no-turn" && !unreadable) {
+    const reason = probe.challenge ? "timeout: blocked by a verification page"
+      : !probe.hadMarkers ? (probe.navType === "reload" ? "timeout: page reloaded and lost the prompt" : "timeout: page navigated away from the prompt")
+      : probe.verify === "rejected" ? "timeout: run did not recognise this tab"
+      : probe.verify === "already-fired" ? "timeout: prompt already used in this tab"
+      : "timeout: page never confirmed the prompt with the run";
+    return {
+      reason,
+      trace: `probe stage=no-turn nav=${probe.navType} markers=${probe.hadMarkers ? "yes" : "no"} verify=${probe.verify}`
+        + ` path=${probe.path} age=${probe.docAgeMs}ms ready=${probe.readyState}${probe.challenge ? " challenge" : ""} vis=${probe.visibility}`,
+      ctx: {
+        stage: "no-turn",
+        navType: probe.navType,
+        hadMarkers: !!probe.hadMarkers,
+        verify: probe.verify,
+        path: probe.path,
+        docAgeMs: probe.docAgeMs,
+        challenge: !!probe.challenge,
+        visibility: probe.visibility,
+      },
+    };
+  }
+  if (probe.stage === "probe-error") {
+    return {
+      reason: unreadable ? unreadableReason : "timeout: page script failed while reporting",
+      trace: `probe stage=probe-error ${probe.error || ""} | ${probe.trace || ""}`,
+      ctx: { stage: "probe-error", ...unreadableCtx },
     };
   }
   const reason = probe.signedOut ? "timeout: signed out"
@@ -777,6 +841,7 @@ function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "", ext
   leg.failed = (leg.failed || 0) + 1;
   leg.outcomes = leg.outcomes || [];
   leg.outcomes[leg.idx] = { status: "failed", reason, at: Date.now() };
+  leg.inFlightIdx = -1;
   leg.idx++;
   leg.lastAdvanceAt = Date.now();
   leg.lastFailReason = reason;
@@ -985,6 +1050,10 @@ async function resumeFromSnapshot(snap) {
         startedAt: sl.startedAt || Date.now(),
         token: sl.token || null,
         expectedPrompt: sl.expectedPrompt || null,
+        // The prompt that was in flight is still in flight only if the
+        // restored position is still on it. A snapshot from before this field
+        // existed keeps the old behaviour: a token meant a turn was running.
+        inFlightIdx: idx === (sl.idx || 0) && (Number.isInteger(sl.inFlightIdx) ? sl.inFlightIdx === sl.idx : !!sl.token) ? idx : -1,
         durations: sl.durations || [],
         outcomes,
         watchdog: null,
@@ -1398,6 +1467,9 @@ async function loaderRunLeg(plat, leg) {
   leg.token = crypto.randomUUID();
   leg.expectedPrompt = prompt;
   leg.startedAt = Date.now();
+  // The one prompt this leg can currently complete — see loaderOnCapture.
+  leg.inFlightIdx = leg.idx;
+  leg.streamExtensions = 0;
   await persistLoaderState();
 
   const search = plat === "chatgpt" && loader.options.forceSearch ? "&lcfcsearch=1" : "";
@@ -1902,6 +1974,20 @@ function loaderOnCapture(tabId, record) {
   if (!found) return;
   const { plat, leg } = found;
 
+  /* Only a turn that is actually in flight can be completed.
+   *
+   * After a turn completes, the next prompt is only sent 2-8s later (the
+   * pacing gap), and until then the leg still expects the OLD prompt. Gemini
+   * sends several captures per answer, so a second capture of the answer
+   * just counted landed in that gap, matched the old prompt, and "completed"
+   * the next prompt before it was ever asked — skipping it while the run
+   * logged it as ok. A real run had four such phantom turns on Gemini alone,
+   * two past the end of their legs ("prompt 10" of 10), and reported 35/40
+   * captured with far fewer prompts actually asked. MIN_ADVANCE_GAP_MS
+   * couldn't catch it: the second capture came 3-4s after the first.
+   */
+  if (leg.idx >= leg.prompts.length || leg.inFlightIdx !== leg.idx) return;
+
   // Ignore empty race-loser captures — advancing on those silently SKIPS prompts.
   if (!hasSignal(record)) return;
   // Ignore a second completion arriving immediately after one we already counted.
@@ -1951,6 +2037,7 @@ function loaderOnCapture(tabId, record) {
   leg.outcomes[leg.idx] = { status: "done", reason: null, at: Date.now() };
   leg.lastAdvanceAt = Date.now();
   loader.done++;
+  leg.inFlightIdx = -1;
   const donePromptIndex = (leg.startOffset || 0) + leg.idx;
   const reloadRetriesAtSuccess = leg.reloadRetries || 0;
   leg.idx++;
@@ -2443,38 +2530,36 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const turnEntries = diagEntries.filter((e) => e.cat === "turn");
           const captureEntries = diagEntries.filter((e) => e.cat === "capture");
 
-          // Each capture's file carries the WHOLE record, answer text
-          // included. It used to be written from a stripped copy (answerText,
-          // platformSpecific and _extraction removed) on the assumption that
-          // the full text lived elsewhere in the zip — it didn't, so the
-          // "everything, raw payload included" export was missing the one
-          // field most often needed to see what an engine actually said.
-
-          // One raw payload per capture, gunzipped once here rather than N
-          // round trips from the panel — see this case's header comment.
-          const raw = {};
-          for (const rec of records) {
-            try {
-              const row = await db.get("raw", rec.captureId);
-              if (row) raw[rec.captureId] = { text: await gunzipToString(row.gz), url: row.url, reqBody: row.reqBody };
-            } catch (_) { /* a pruned or missing raw payload just isn't included */ }
-          }
+          // Records and raw payloads are NOT in this response. A message
+          // between the service worker and a page is capped at 64 MiB, and a
+          // real ten-prompt, four-engine campaign crossed it (Perplexity's
+          // answer stream alone is 150-430 KB a capture, Gemini's up to
+          // several MB): the export failed outright with "Message exceeded
+          // maximum allowed size". This returns an index; the panel fetches
+          // the records in batches (get-diagnostics-records) and each raw
+          // payload on its own (get-raw), so no one message grows with the
+          // campaign. Each capture's file still carries the WHOLE record,
+          // answer text included — see get-diagnostics-records.
+          const recordIds = records.map((r) => r.captureId);
 
           // Payloads the adapters couldn't read (see storeCapture). They have
           // no record — that's the problem — so they are found through their
-          // log entries. Capped: this is for seeing a new format, not
-          // archiving every miss.
+          // log entries. One sample per endpoint and shape: a run can log a
+          // hundred of the same unreadable stream, and one is enough to read
+          // the format. Capped: this is for seeing a format, not archiving.
           const unreadable = [];
+          const unreadableKinds = new Set();
           for (const e of captureEntries) {
             if (unreadable.length >= 20) break;
-            const id = e.context && e.context.captureId;
-            if (!id || !String(e.where || "").startsWith("capture:unreadable:")) continue;
+            const c = e.context || {};
+            if (!c.captureId || !String(e.where || "").startsWith("capture:unreadable:")) continue;
+            const kind = `${c.platform}|${c.endpoint}|${c.shape}`;
+            if (unreadableKinds.has(kind)) continue;
             try {
-              const row = await db.get("raw", id);
+              const row = await db.get("raw", c.captureId);
               if (!row) continue;
-              const text = await gunzipToString(row.gz);
-              unreadable.push({ captureId: id, platform: row.platform, url: row.url, reqBody: row.reqBody,
-                transport: row.transport, capturedAt: row.capturedAt, text: text.slice(0, 2 * 1024 * 1024) });
+              unreadableKinds.add(kind);
+              unreadable.push({ captureId: c.captureId, platform: row.platform, endpoint: c.endpoint || null });
             } catch (_) { /* gone — the log entry still says what it was */ }
           }
 
@@ -2495,8 +2580,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             errors: errorEntries,
             turns: turnEntries,
             captures: captureEntries,
-            records,
-            raw,
+            recordIds,
             env: { version: manifest.version, userAgent: navigator.userAgent },
             generatedAt: Date.now(),
           });
@@ -3003,6 +3087,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
 
+        // Whole derived records for the diagnostics export, a batch at a
+        // time — see get-campaign-diagnostics for why they aren't inline.
+        case "get-diagnostics-records": {
+          const ids = Array.isArray(msg.captureIds) ? msg.captureIds.slice(0, 100) : [];
+          const out = [];
+          for (const id of ids) {
+            const rec = await db.get("derived", id);
+            if (rec) out.push(rec);
+          }
+          sendResponse({ ok: true, records: out });
+          break;
+        }
         case "get-raw": {
           const row = await db.get("raw", msg.captureId);
           const raw = row ? await gunzipToString(row.gz) : null;

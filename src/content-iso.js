@@ -190,6 +190,59 @@
     return "chatgpt";
   };
 
+  /* What this page can say about itself when the run asks after a turn that
+   * isn't running here.
+   *
+   * The turn's own probe responder (inside begin(), below) only exists once a
+   * turn has started in THIS document. Every Grok turn in a real v0.42 run
+   * timed out as "page script not responding": the script was there (Chrome
+   * delivered the probe) but no turn was — typically because the page
+   * reloaded or navigated after the run's markers were stripped from its URL,
+   * so the new document never started one. This answers in that case with
+   * facts, not guesses: how the document was loaded, whether it carried the
+   * run's markers, what verification said, where it is, and whether it is a
+   * verification/challenge page. No prompt, answer or query text.
+   */
+  const pageFacts = {
+    loadedAt: Date.now(),
+    hadMarkers: false,
+    token: "",
+    verify: "none",      // none | pending | ok | rejected | error | already-fired
+    turnToken: "",
+  };
+  const navigationType = () => {
+    try { return (performance.getEntriesByType("navigation")[0] || {}).type || "unknown"; } catch (_) { return "unknown"; }
+  };
+  const pathShape = () =>
+    location.pathname.replace(/[0-9a-f][0-9a-f-]{15,}/gi, ":id").replace(/\/\d{4,}(?=\/|$)/g, "/:n").slice(0, 60);
+  const looksLikeChallenge = () => {
+    try {
+      if (/just a moment|attention required|verify you are human|checking your browser|are you a robot/i.test(document.title || "")) return true;
+      return !!document.querySelector('#challenge-form, #cf-challenge-running, iframe[src*="challenges.cloudflare.com"], iframe[src*="recaptcha"], iframe[src*="hcaptcha"]');
+    } catch (_) { return false; }
+  };
+  chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
+    if (!msg || msg.type !== "loader-probe") return;
+    if (pageFacts.turnToken && msg.token === pageFacts.turnToken) return; // the turn answers for itself
+    try {
+      reply({
+        ok: true,
+        stage: "no-turn",
+        navType: navigationType(),
+        hadMarkers: pageFacts.hadMarkers,
+        sameToken: !!pageFacts.token && pageFacts.token === msg.token,
+        verify: pageFacts.verify,
+        path: pathShape(),
+        docAgeMs: Date.now() - pageFacts.loadedAt,
+        readyState: document.readyState,
+        challenge: looksLikeChallenge(),
+        visibility: document.visibilityState,
+      });
+    } catch (e) {
+      reply({ ok: true, stage: "no-turn", error: String((e && e.message) || e).slice(0, 80) });
+    }
+  });
+
   (function loaderAutoSubmit() {
     const params = new URLSearchParams(location.search);
     if (params.get("lcfc") !== "1") return;
@@ -197,6 +250,8 @@
     const token = params.get("lcfctok") || "";
     const wantSearch = params.get("lcfcsearch") === "1";
     if (!q || !token) return;
+    pageFacts.hadMarkers = true;
+    pageFacts.token = token;
 
     /* Strip OUR markers immediately — a crafted ?lcfc=1&lcfctok=… link must
      * not be replayable — but deliberately KEEP ?q= for now.
@@ -229,13 +284,16 @@
     // double-run if this script somehow evaluates twice for one navigation.
     try {
       const fired = sessionStorage.getItem("lcfcFired");
-      if (fired === token) return;
+      if (fired === token) { pageFacts.verify = "already-fired"; return; }
       sessionStorage.setItem("lcfcFired", token);
     } catch (_) { /* sessionStorage unavailable — proceed, the token check still gates us */ }
 
+    pageFacts.verify = "pending";
     chrome.runtime.sendMessage({ type: "loader-verify", token }, (res) => {
-      if (chrome.runtime.lastError) return;
-      if (!res || !res.ok) return; // not a genuine Loader navigation — do nothing
+      if (chrome.runtime.lastError) { pageFacts.verify = "error"; return; }
+      if (!res || !res.ok) { pageFacts.verify = "rejected"; return; } // not a genuine Loader navigation — do nothing
+      pageFacts.verify = "ok";
+      pageFacts.turnToken = token;
       begin();
     });
 
@@ -776,22 +834,30 @@
        */
       chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
         if (!msg || msg.type !== "loader-probe" || msg.token !== token) return;
-        let streaming = false;
-        try { streaming = !!pick(sel.streaming); } catch (_) {}
-        reply({
-          ok: true,
-          stage: sentOk ? "sent" : submitTried ? "send-attempted" : injected ? "typed"
-            : composerSeenTick ? "composer-found" : "no-composer",
-          sentWhy,
-          ticks,
-          maxTickGap,
-          clock: clockState.source,
-          visibility: document.visibilityState,
-          focused: document.hasFocus(),
-          streaming,
-          signedOut: signedOut(),
-          trace: trace.join(" "),
-        });
+        // Always answer: an exception here used to mean no reply at all,
+        // which the run reads as "page script not responding".
+        try {
+          let streaming = false;
+          try { streaming = !!pick(sel.streaming); } catch (_) {}
+          let isSignedOut = false;
+          try { isSignedOut = signedOut(); } catch (_) {}
+          reply({
+            ok: true,
+            stage: sentOk ? "sent" : submitTried ? "send-attempted" : injected ? "typed"
+              : composerSeenTick ? "composer-found" : "no-composer",
+            sentWhy,
+            ticks,
+            maxTickGap,
+            clock: clockState.source,
+            visibility: document.visibilityState,
+            focused: document.hasFocus(),
+            streaming,
+            signedOut: isSignedOut,
+            trace: trace.join(" "),
+          });
+        } catch (e) {
+          reply({ ok: true, stage: "probe-error", error: String((e && e.message) || e).slice(0, 80), trace: trace.join(" ") });
+        }
       });
     }
   })();

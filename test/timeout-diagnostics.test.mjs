@@ -23,6 +23,13 @@
  * "0-signal" in silence, and the turn logged as a plain timeout. Now the drop
  * is logged with the payload's shape (never its content), the timeout names
  * it, and the diagnostics export carries the payload itself.
+ *
+ * Grok runs alongside, on a stub page that reloads itself once after load.
+ * Every Grok turn in a real v0.42 run timed out as "page script not
+ * responding": the probe reached the page, but no turn was running there,
+ * because the document the prompt was sent to had been replaced. The page now
+ * answers for itself, and the timeout says the page reloaded and lost the
+ * prompt, with how it was loaded and where it is.
  */
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -93,6 +100,18 @@ try {
     });
   });
 
+  // A grok.com page that reloads itself once, 1.5s after load — after the
+  // content script has taken the run's markers off its URL.
+  await context.route(/^https:\/\/grok\.com\//, (route) => route.fulfill({
+    status: 200, contentType: "text/html",
+    body: `<body>grok stub<script>
+      if (!sessionStorage.getItem('reloaded')) {
+        sessionStorage.setItem('reloaded', '1');
+        setTimeout(function () { location.reload(); }, 1500);
+      }
+    </script></body>`,
+  }));
+
   let sw = context.serviceWorkers()[0];
   if (!sw) sw = await context.waitForEvent("serviceworker", { timeout: 20000 });
   const extId = sw.url().split("/")[2];
@@ -117,7 +136,7 @@ try {
     const id = crypto.randomUUID();
     await put("profiles", {
       id, name: "Timeout Diagnostics Test", brand: { name: "Acme", url: "acme.example" },
-      competitors: [], engines: ["chatgpt"], locked: true,
+      competitors: [], engines: ["chatgpt", "grok"], locked: true,
       createdAt: Date.now(), lastRunAt: Date.now(), deletedAt: null,
     });
     // Two prompts on one engine run in its two tabs at once, so both
@@ -135,13 +154,15 @@ try {
   console.log("\nWaiting out the turns' real watchdogs (~90s)…");
   let entry = null;
   let unreadableEntry = null;
+  let grokEntry = null;
   const deadline = Date.now() + 150000;
-  while ((!entry || !unreadableEntry) && Date.now() < deadline) {
+  while ((!entry || !unreadableEntry || !grokEntry) && Date.now() < deadline) {
     await page.waitForTimeout(5000);
     const log = await ask({ type: "error-log", limit: 100 });
     const failed = ((log && log.entries) || []).filter((e) => e.where === "run:turn-failed:chatgpt");
     entry = failed.find((e) => e.message === "timeout: sent, no answer captured") || entry;
     unreadableEntry = failed.find((e) => /couldn't be read/.test(e.message)) || unreadableEntry;
+    grokEntry = ((log && log.entries) || []).find((e) => e.where === "run:turn-failed:grok") || grokEntry;
   }
   const diag = await ask({ type: "get-campaign-diagnostics", profileId });
   await ask({ type: "loader-stop" });
@@ -170,9 +191,19 @@ try {
   check("and its shape — keys only, no values", dctx.shape === "keys=hello" && !JSON.stringify(dctx).includes("world"), JSON.stringify(dctx));
   check("and the capture's id, so the export can find it", typeof dctx.captureId === "string" && dctx.captureId.length > 10);
   const u = (diag && diag.unreadable) || [];
+  const uRaw = u[0] ? await ask({ type: "get-raw", captureId: u[0].captureId }) : null;
   check("the diagnostics export includes the unreadable payload itself",
-    u.length === 1 && u[0].platform === "chatgpt" && u[0].text.includes('"hello"') && u[0].captureId === dctx.captureId,
-    JSON.stringify(u.map((x) => ({ p: x.platform, id: x.captureId, t: (x.text || "").slice(0, 40) }))));
+    u.length === 1 && u[0].platform === "chatgpt" && u[0].captureId === dctx.captureId && !!uRaw && String(uRaw.raw).includes('"hello"'),
+    JSON.stringify({ u, raw: uRaw && String(uRaw.raw).slice(0, 40) }));
+
+  console.log("\nA page that reloaded after the prompt started says so");
+  const gctx = (grokEntry && grokEntry.context) || {};
+  check("the Grok turn failed as a lost prompt, not 'page script not responding'",
+    !!grokEntry && grokEntry.message === "timeout: page reloaded and lost the prompt", grokEntry && grokEntry.message);
+  check("with the evidence: reloaded, without the run's markers", gctx.stage === "no-turn" && gctx.navType === "reload" && gctx.hadMarkers === false,
+    JSON.stringify(gctx));
+  check("and where the page is", gctx.path === "/", JSON.stringify(gctx.path));
+  check("in its trace too", !!grokEntry && /nav=reload markers=no/.test(grokEntry.trace || ""), grokEntry && grokEntry.trace);
 
   const turns = await ask({ type: "error-log", limit: 100, cat: "turn" });
   const turn = ((turns && turns.entries) || []).find((e) => e.where === "run:turn:chatgpt" && e.context && e.context.stage === "sent" && !e.context.unreadableShape);

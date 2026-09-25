@@ -10,7 +10,7 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.42.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.43.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research.
 
@@ -178,9 +178,32 @@ higher bar than a normal feature:
 - **An answer that can't be read is reported, not dropped.** When a campaign
   capture yields nothing readable, the log records where it came from and its
   shape (event types or field names, never content). The timed-out prompt says
-  *answer arrived but couldn't be read*, and the diagnostics export includes the
+  *engine replied, but the reply couldn't be read*, and the diagnostics export includes the
   payload itself under `unreadable/`. The next format change will show up in
   the first export.
+- **A prompt is never skipped by a duplicate answer.** Gemini sends several
+  captures per answer. A second one arriving during the pause before the next
+  prompt was counted as that next prompt's answer, so the prompt was marked
+  done without ever being asked. One real run reported 35/40 this way. A turn
+  can now only be completed while it is actually in flight.
+- **Perplexity's live answer stream is read.** Its answers now arrive as
+  `blocks` (markdown chunks, or a workflow patched by diffs) with sources in a
+  separate block, and the prompt in `query_str`. The reader only knew the older
+  format, so every stream was dropped and Perplexity relied on the slower page
+  harvest. Inline `[n]` citations become links to the source they name, and
+  only sources the answer cites count as cited.
+- **Long answers get time to finish.** When a prompt's 90 seconds run out while
+  the engine is still visibly writing, it gets up to two more minutes rather
+  than being failed mid-answer.
+- **"Page script not responding" is explained.** The page now answers the
+  run's check even when it holds no prompt, saying whether it was reloaded or
+  navigated away, whether it still had the run's markers, and whether a
+  verification page is showing. A timeout then reads, for example, *page
+  reloaded and lost the prompt*.
+- **The diagnostics export works for real campaigns.** It used to send
+  everything in one internal message, which Chrome caps at 64 MiB, and a
+  ten-prompt campaign already exceeded that. It now fetches records and
+  payloads a piece at a time.
 - **A half-updated install is called out.** Windows can skip files Chrome has
   open when an update is extracted over the folder, leaving new screens running
   on top of an old engine that every screen still labels as the new version.

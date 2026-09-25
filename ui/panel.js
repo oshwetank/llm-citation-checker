@@ -6599,16 +6599,36 @@ $("#diagExportBtn")?.addEventListener("click", async () => {
       // second failure.
       { name: "capture-events.json", text: JSON.stringify(r.captures, null, 2) },
     ];
-    for (const rec of r.records || []) {
-      files.push({ name: `captures/${rec.captureId}.json`, text: JSON.stringify(rec, null, 2) });
-      const raw = r.raw && r.raw[rec.captureId];
-      if (raw) files.push({ name: `captures/${rec.captureId}-raw.txt`, text: formatRawCapture(rec.captureId, raw, raw.text) });
+    // Records in batches and raw payloads one at a time: the handler returns
+    // only an index, because a whole campaign in one message overran Chrome's
+    // 64 MiB message cap and the export failed for a real ten-prompt run. A
+    // payload that can't be fetched is noted in the zip rather than failing it.
+    const ids = r.recordIds || [];
+    const unreadable = r.unreadable || [];
+    const total = ids.length + unreadable.length;
+    let done = 0;
+    const tick = () => { btn.textContent = `Building… ${Math.min(done, total)}/${total}`; };
+    const skipped = [];
+    const addRaw = async (captureId, name) => {
+      const raw = await send({ type: "get-raw", captureId });
+      if (raw && raw.ok && raw.raw != null) files.push({ name, text: formatRawCapture(captureId, raw.meta, raw.raw) });
+      else skipped.push(`${name}: ${(raw && raw.error) || "not available"}`);
+    };
+    for (let i = 0; i < ids.length; i += 20) {
+      const batch = await send({ type: "get-diagnostics-records", captureIds: ids.slice(i, i + 20) });
+      for (const rec of (batch && batch.ok && batch.records) || []) {
+        files.push({ name: `captures/${rec.captureId}.json`, text: JSON.stringify(rec, null, 2) });
+        await addRaw(rec.captureId, `captures/${rec.captureId}-raw.txt`);
+        done++; tick();
+      }
     }
     // What an engine sent that no adapter could read — the payloads behind
-    // capture-events.json's "capture:unreadable" entries.
-    for (const u of r.unreadable || []) {
-      files.push({ name: `unreadable/${u.platform || "unknown"}-${u.captureId}-raw.txt`, text: formatRawCapture(u.captureId, u, u.text) });
+    // capture-events.json's "capture:unreadable" entries, one per kind.
+    for (const u of unreadable) {
+      await addRaw(u.captureId, `unreadable/${u.platform || "unknown"}-${u.captureId}-raw.txt`);
+      done++; tick();
     }
+    if (skipped.length) files.push({ name: "skipped.txt", text: skipped.join("\n") + "\n" });
     const zip = await makeZip(files);
     const slug = String(r.campaign?.name || "campaign").replace(/[^\w]+/g, "-").replace(/^-|-$/g, "").toLowerCase();
     const a = document.createElement("a");
