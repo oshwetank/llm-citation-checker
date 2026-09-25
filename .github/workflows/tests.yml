@@ -113,7 +113,7 @@ jobs:
                    test/dom-harvest-multiturn.test.mjs test/errorlog.test.mjs \
                    test/fanout.test.mjs test/feedback-bundle.test.mjs \
                    test/gemini-answer.test.mjs test/geo.test.mjs \
-                   test/grok-render-citation-tags.test.mjs \
+                   test/grok-gateway.test.mjs test/grok-render-citation-tags.test.mjs \
                    test/interception-endpoints.test.mjs test/dom-harvest.test.mjs test/nano-stance.test.mjs \
                    test/onboarding.test.mjs \
                    test/perplexity-citation-footnote-brands.test.mjs test/perplexity-citation-marking.test.mjs \

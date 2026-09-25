@@ -264,16 +264,25 @@
         let frames = [];
         let emitTimer = null;
 
+        // grok.com's chat gateway (wss://grok.com/ws/mgw/ — see the Grok
+        // adapter for the protocol) keeps ONE socket per conversation and
+        // pings it; only frames about a response are an answer. Anything
+        // else emitted would be a 0-signal capture dropped downstream.
+        const worthEmitting = (raw) =>
+          !isBackgroundSubscription(raw) && (!IS_GROK || !raw.includes('"event"') || raw.includes('"response.'));
+
+        const flush = () => {
+          if (emitTimer) { clearTimeout(emitTimer); emitTimer = null; }
+          if (!frames.length) return;
+          const raw = frames.join("\n");
+          if (worthEmitting(raw)) {
+            emit({ url: wsUrl, reqBody: lastReqBody, transport: "websocket", raw, capturedAt: Date.now() });
+          }
+        };
+
         const scheduleEmit = () => {
           if (emitTimer) clearTimeout(emitTimer);
-          emitTimer = setTimeout(() => {
-            if (frames.length) {
-              const raw = frames.join("\n");
-              if (!isBackgroundSubscription(raw)) {
-                emit({ url: wsUrl, reqBody: lastReqBody, transport: "websocket", raw, capturedAt: Date.now() });
-              }
-            }
-          }, 1200);
+          emitTimer = setTimeout(flush, 1200);
         };
 
         const origSend = ws.send;
@@ -281,7 +290,11 @@
           try {
             if (typeof data === "string") {
               if (!isBackgroundSubscription(data)) {
-                if (/^4[0-9]/.test(data) || (data.startsWith("{") && (data.includes('"query"') || data.includes('"variables"')))) {
+                // A new turn: a Socket.IO/GraphQL query, or the Grok
+                // gateway's conversation.item.create (which carries the
+                // prompt — the adapter reads it from here).
+                if (/^4[0-9]/.test(data) || (data.startsWith("{") && (data.includes('"query"') || data.includes('"variables"') ||
+                    (IS_GROK && data.includes('"conversation.item.create"'))))) {
                   lastReqBody = data;
                   frames = [];
                 }
@@ -296,20 +309,21 @@
             const d = typeof event.data === "string" ? event.data : "";
             if (d && !isBackgroundSubscription(d) && (/^4[0-9]/.test(d) || d.startsWith("{") || d.startsWith("["))) {
               frames.push(d);
-              scheduleEmit();
+              // The gateway says when an answer is complete. Hand it over on
+              // that frame rather than on the debounce timer: in a background
+              // campaign tab Chrome can hold page timers for up to a minute,
+              // and an answer waiting on one can miss its turn's deadline.
+              if (IS_GROK && d.includes('"response.done"')) {
+                flush();
+                frames = [];
+              } else {
+                scheduleEmit();
+              }
             }
           } catch (_) {}
         });
 
-        ws.addEventListener("close", () => {
-          if (emitTimer) clearTimeout(emitTimer);
-          if (frames.length) {
-            const raw = frames.join("\n");
-            if (!isBackgroundSubscription(raw)) {
-              emit({ url: wsUrl, reqBody: lastReqBody, transport: "websocket", raw, capturedAt: Date.now() });
-            }
-          }
-        });
+        ws.addEventListener("close", flush);
       }
       return ws;
     }

@@ -6604,6 +6604,11 @@ $("#diagExportBtn")?.addEventListener("click", async () => {
       const raw = r.raw && r.raw[rec.captureId];
       if (raw) files.push({ name: `captures/${rec.captureId}-raw.txt`, text: formatRawCapture(rec.captureId, raw, raw.text) });
     }
+    // What an engine sent that no adapter could read — the payloads behind
+    // capture-events.json's "capture:unreadable" entries.
+    for (const u of r.unreadable || []) {
+      files.push({ name: `unreadable/${u.platform || "unknown"}-${u.captureId}-raw.txt`, text: formatRawCapture(u.captureId, u, u.text) });
+    }
     const zip = await makeZip(files);
     const slug = String(r.campaign?.name || "campaign").replace(/[^\w]+/g, "-").replace(/^-|-$/g, "").toLowerCase();
     const a = document.createElement("a");

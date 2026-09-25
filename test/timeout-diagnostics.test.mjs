@@ -15,6 +15,14 @@
  * the real watchdog fires after its real ~90s budget. It also proves the
  * service-worker clock works through Chrome itself, not just a harness stand-
  * in: the probe must report clock=worker.
+ *
+ * A second prompt runs alongside it in the engine's second tab, and there the
+ * stub DOES answer — with a payload the ChatGPT reader can make nothing of.
+ * That is how every Grok turn actually failed once grok.com moved its chat
+ * onto a WebSocket gateway: the answer was caught, read as empty, dropped as
+ * "0-signal" in silence, and the turn logged as a plain timeout. Now the drop
+ * is logged with the payload's shape (never its content), the timeout names
+ * it, and the diagnostics export carries the payload itself.
  */
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -23,6 +31,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const EXT_PATH = path.resolve(HERE, "..");
 const PROFILE_BASE = process.env.UI_TEST_PROFILE_DIR || "/tmp/citoskeleton-timeout-diag-test";
 const PROMPT = "best phone for portrait photos under thirty thousand rupees";
+// The stub answers this one with a payload no reader understands.
+const UNREADABLE_PROMPT = "UNREADABLE-CASE which laptop lasts longest on battery";
 
 let failures = 0;
 const check = (label, cond, detail) => {
@@ -56,12 +66,18 @@ const context = await chromium.launchPersistentContext(`${PROFILE_BASE}-${Date.n
 });
 
 try {
-  // A ChatGPT stub that takes the prompt and shows it in the transcript, but
-  // never makes the network call an answer arrives on — so nothing is ever
-  // captured and the turn can only end by its watchdog.
-  await context.route(/^https:\/\/chatgpt\.com\//, (route) => route.fulfill({
-    status: 200, contentType: "text/html",
-    body: `<body>
+  // A ChatGPT stub that takes the prompt and shows it in the transcript. For
+  // the first prompt it never makes the network call an answer arrives on —
+  // nothing is captured and the turn can only end by its watchdog. For the
+  // second it makes that call, and the "answer" is JSON with nothing in it a
+  // reader could use.
+  await context.route(/^https:\/\/chatgpt\.com\//, (route) => {
+    if (/\/backend-api\/conversation/.test(route.request().url())) {
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ hello: "world" }) });
+    }
+    return route.fulfill({
+      status: 200, contentType: "text/html",
+      body: `<body>
       <div id="prompt-textarea" contenteditable="true"></div>
       <button id="composer-submit-button">send</button><div id="convo"></div>
       <script>
@@ -71,9 +87,11 @@ try {
           box.innerHTML = '';
           const d = document.createElement('div'); d.setAttribute('data-message-author-role', 'user');
           d.textContent = t; document.getElementById('convo').appendChild(d);
+          if (t.includes('UNREADABLE-CASE')) fetch('/backend-api/conversation', { method: 'POST', body: '{}' });
         });
       </script></body>`,
-  }));
+    });
+  });
 
   let sw = context.serviceWorkers()[0];
   if (!sw) sw = await context.waitForEvent("serviceworker", { timeout: 20000 });
@@ -85,7 +103,7 @@ try {
   const ask = (msg) => page.evaluate(
     (m) => new Promise((res) => chrome.runtime.sendMessage(m, (r) => res(r))), msg);
 
-  const profileId = await page.evaluate(async (text) => {
+  const profileId = await page.evaluate(async (texts) => {
     const dbh = await new Promise((res, rej) => {
       const r = indexedDB.open("lcfc");
       r.onsuccess = () => res(r.result);
@@ -102,22 +120,30 @@ try {
       competitors: [], engines: ["chatgpt"], locked: true,
       createdAt: Date.now(), lastRunAt: Date.now(), deletedAt: null,
     });
-    await put("trackedPrompts", { id: crypto.randomUUID(), profileId: id, text, tags: [], active: true, createdAt: Date.now() });
+    // Two prompts on one engine run in its two tabs at once, so both
+    // watchdogs fire in the same ~90s.
+    for (const text of texts) {
+      await put("trackedPrompts", { id: crypto.randomUUID(), profileId: id, text, tags: [], active: true, createdAt: Date.now() });
+    }
     return id;
-  }, PROMPT);
+  }, [PROMPT, UNREADABLE_PROMPT]);
 
   await ask({ type: "error-log-clear" });
   const started = await ask({ type: "geo-run-start", profileId, skipAuthCheck: true });
   check("run started", started && started.ok, JSON.stringify(started));
 
-  console.log("\nWaiting out the turn's real watchdog (~90s)…");
+  console.log("\nWaiting out the turns' real watchdogs (~90s)…");
   let entry = null;
+  let unreadableEntry = null;
   const deadline = Date.now() + 150000;
-  while (!entry && Date.now() < deadline) {
+  while ((!entry || !unreadableEntry) && Date.now() < deadline) {
     await page.waitForTimeout(5000);
     const log = await ask({ type: "error-log", limit: 100 });
-    entry = ((log && log.entries) || []).find((e) => e.where === "run:turn-failed:chatgpt");
+    const failed = ((log && log.entries) || []).filter((e) => e.where === "run:turn-failed:chatgpt");
+    entry = failed.find((e) => e.message === "timeout: sent, no answer captured") || entry;
+    unreadableEntry = failed.find((e) => /couldn't be read/.test(e.message)) || unreadableEntry;
   }
+  const diag = await ask({ type: "get-campaign-diagnostics", profileId });
   await ask({ type: "loader-stop" });
 
   console.log("\nThe failure says where the turn got to");
@@ -130,8 +156,26 @@ try {
   check("its tick timing is recorded", typeof ctx.maxTickGapMs === "number" && ctx.maxTickGapMs > 0, JSON.stringify(ctx.maxTickGapMs));
   check("and the turn's event trace is attached", !!entry && /probe stage=sent/.test(entry.trace || ""), entry && entry.trace);
 
+  console.log("\nAn answer that arrived but couldn't be read is named as such");
+  check("its turn failed with that reason, not as a bare no-answer timeout", !!unreadableEntry,
+    "no run:turn-failed entry mentioning an unreadable answer");
+  const uctx = (unreadableEntry && unreadableEntry.context) || {};
+  check("the failure carries the payload's shape", uctx.unreadableShape === "keys=hello", JSON.stringify(uctx.unreadableShape));
+  check("and the shape is in its trace", !!unreadableEntry && /unreadable=keys=hello/.test(unreadableEntry.trace || ""), unreadableEntry && unreadableEntry.trace);
+  const caps = await ask({ type: "error-log", limit: 100, cat: "capture" });
+  const drop = ((caps && caps.entries) || []).find((e) => e.where === "capture:unreadable:chatgpt");
+  check("the dropped payload is logged, not silently discarded", !!drop);
+  const dctx = (drop && drop.context) || {};
+  check("with the endpoint it came from", dctx.endpoint === "/backend-api/conversation", JSON.stringify(dctx.endpoint));
+  check("and its shape — keys only, no values", dctx.shape === "keys=hello" && !JSON.stringify(dctx).includes("world"), JSON.stringify(dctx));
+  check("and the capture's id, so the export can find it", typeof dctx.captureId === "string" && dctx.captureId.length > 10);
+  const u = (diag && diag.unreadable) || [];
+  check("the diagnostics export includes the unreadable payload itself",
+    u.length === 1 && u[0].platform === "chatgpt" && u[0].text.includes('"hello"') && u[0].captureId === dctx.captureId,
+    JSON.stringify(u.map((x) => ({ p: x.platform, id: x.captureId, t: (x.text || "").slice(0, 40) }))));
+
   const turns = await ask({ type: "error-log", limit: 100, cat: "turn" });
-  const turn = ((turns && turns.entries) || []).find((e) => e.where === "run:turn:chatgpt");
+  const turn = ((turns && turns.entries) || []).find((e) => e.where === "run:turn:chatgpt" && e.context && e.context.stage === "sent" && !e.context.unreadableShape);
   check("the per-turn timeline carries the same diagnosis",
     !!turn && turn.message === "timeout: sent, no answer captured" && turn.context.stage === "sent",
     turn && JSON.stringify({ m: turn.message, stage: turn.context.stage }));

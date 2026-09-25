@@ -165,6 +165,22 @@ higher bar than a normal feature:
   step it reached, how far apart its timer ticks really were (proof of
   throttling if there was any), and its step-by-step trace, all in the
   diagnostics export.
+- **Grok answers are captured again.** grok.com moved its chat from a REST
+  stream onto a WebSocket gateway (`wss://grok.com/ws/mgw/`), which two
+  independent open-source grok.com bridges document. The page script already
+  caught the socket, but the Grok reader only knew the old format, so every
+  answer read as empty and was silently dropped. Grok scored 0 in every
+  campaign export. The reader now understands the gateway's events: the
+  prompt the page sends, streamed answer text (reasoning kept separate),
+  inline citation cards, search results and search queries. Each answer is
+  handed over the moment the gateway says it's done, not on a timer Chrome
+  can delay in a background tab.
+- **An answer that can't be read is reported, not dropped.** When a campaign
+  capture yields nothing readable, the log records where it came from and its
+  shape (event types or field names, never content). The timed-out prompt says
+  *answer arrived but couldn't be read*, and the diagnostics export includes the
+  payload itself under `unreadable/`. The next format change will show up in
+  the first export.
 - **A half-updated install is called out.** Windows can skip files Chrome has
   open when an update is extracted over the folder, leaving new screens running
   on top of an old engine that every screen still labels as the new version.

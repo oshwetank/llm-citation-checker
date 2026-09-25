@@ -143,6 +143,37 @@ function platformFromUrl(url) {
 }
 
 /* ---------- Capture ---------- */
+// The path of a captured request with ids folded to ":id" — which endpoint a
+// payload came from, without the conversation it belongs to. Pages often
+// request a relative path, so it's resolved against the page it came from.
+function endpointShape(url, pageUrl) {
+  try {
+    return new URL(url, pageUrl || "https://page.invalid/").pathname
+      .replace(/[0-9a-f][0-9a-f-]{15,}/gi, ":id").slice(0, 80);
+  } catch (_) { return null; }
+}
+
+// What a payload is made of, never what it says: the gateway event types it
+// carries, or the top-level keys of its JSON frames. Compact (no spaces) so
+// the log's context filter keeps it.
+function payloadShape(rawText) {
+  const types = new Set();
+  const keys = new Set();
+  const lines = String(rawText || "").split(/\r?\n/).slice(0, 400);
+  for (const line of lines) {
+    let t = line.trim();
+    if (t.startsWith("data:")) t = t.slice(5).trim();
+    if (!t.startsWith("{")) continue;
+    try {
+      const o = JSON.parse(t);
+      if (o && o.event && typeof o.event.type === "string") types.add(o.event.type);
+      else if (o && typeof o === "object") Object.keys(o).slice(0, 6).forEach((k) => keys.add(k));
+    } catch (_) { /* not one JSON object per line */ }
+  }
+  const out = types.size ? `types=${[...types].join(",")}` : keys.size ? `keys=${[...keys].join(",")}` : "unparsed";
+  return out.replace(/\s+/g, "").slice(0, 120);
+}
+
 async function storeCapture(payload, meta) {
   const platform = platformFromUrl(payload.pageUrl || payload.url);
   const settings = await getSettings();
@@ -195,6 +226,26 @@ async function storeCapture(payload, meta) {
   await db.put("raw", rawRow);
 
   const record = await deriveAndStore(rawRow, rawText, settings);
+
+  // A campaign capture the adapter could read nothing from is dropped by
+  // deriveAndStore as 0-signal — and until now that was silent. It is how
+  // every Grok answer vanished once grok.com moved chat onto a WebSocket
+  // gateway this adapter didn't know: captured, dropped, never logged, and
+  // the turn reported only as a timeout. The entry names the payload's shape
+  // (event types or top-level keys, never values) and keeps its id, so the
+  // diagnostics export can include the payload itself.
+  if (!record && meta && meta.runId) {
+    logEvent(`capture:unreadable:${platform}`, "capture", "the adapter found no prompt, answer or sources in this payload", {
+      platform,
+      runId: meta.runId,
+      captureId,
+      transport: payload.transport || null,
+      bytes: rawText.length,
+      endpoint: endpointShape(payload.url, payload.pageUrl),
+      shape: payloadShape(rawText),
+    });
+    if (typeof meta.onUnreadable === "function") meta.onUnreadable(payloadShape(rawText));
+  }
 
   // Some campaign captures can only be judged once the adapter has read them
   // (see isUnusableCampaignPreview). A rejected one is removed outright and
@@ -641,7 +692,8 @@ function armWatchdog(plat, leg, ms) {
     const probe = await probeLoaderTab(leg);
     if (!loader.running || loader.paused || leg.paused) return;
     if (leg.idx !== idxAtFire || leg.token !== tokenAtFire) return;
-    const { reason, trace, ctx } = describeTimeout(probe);
+    const unreadable = leg.unreadable && leg.unreadable.token === leg.token ? leg.unreadable : null;
+    const { reason, trace, ctx } = describeTimeout(probe, unreadable);
     failTurnAndAdvance(plat, leg, reason, 0, trace, ctx);
   }, ms);
 }
@@ -674,20 +726,28 @@ function probeLoaderTab(leg) {
   });
 }
 
-function describeTimeout(probe) {
+// `unreadable` — this turn's tab delivered an answer payload the adapter
+// could read nothing from (storeCapture). That outranks what the probe says:
+// the prompt went out and an answer came back; the reader is what failed.
+// It is exactly how every Grok turn failed once grok.com changed transport,
+// while the log said only "timeout".
+function describeTimeout(probe, unreadable = null) {
+  const unreadableCtx = unreadable ? { unreadableShape: unreadable.shape } : {};
+  const unreadableReason = "timeout: answer arrived but couldn't be read";
   if (!probe || !probe.ok) {
     return {
-      reason: "timeout: page script not responding",
-      trace: `probe:${(probe && probe.error) || "none"}`,
-      ctx: { stage: (probe && probe.error) || "none" },
+      reason: unreadable ? unreadableReason : "timeout: page script not responding",
+      trace: `probe:${(probe && probe.error) || "none"}${unreadable ? ` unreadable=${unreadable.shape}` : ""}`,
+      ctx: { stage: (probe && probe.error) || "none", ...unreadableCtx },
     };
   }
   const reason = probe.signedOut ? "timeout: signed out"
+    : unreadable ? unreadableReason
     : probe.stage === "sent" ? "timeout: sent, no answer captured"
     : "timeout: prompt never went out";
   const head = `probe stage=${probe.stage}${probe.sentWhy ? ` via=${probe.sentWhy}` : ""} ticks=${probe.ticks}`
     + ` maxgap=${probe.maxTickGap}ms clock=${probe.clock} vis=${probe.visibility}`
-    + `${probe.streaming ? " streaming" : ""}`;
+    + `${probe.streaming ? " streaming" : ""}${unreadable ? ` unreadable=${unreadable.shape}` : ""}`;
   return {
     reason,
     trace: `${head} | ${probe.trace || ""}`,
@@ -698,6 +758,7 @@ function describeTimeout(probe) {
       clock: probe.clock,
       visibility: probe.visibility,
       streaming: !!probe.streaming,
+      ...unreadableCtx,
     },
   };
 }
@@ -1942,6 +2003,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             if (found) {
               const { leg } = found;
               meta = { projectId: loader.options.projectId || null, runId: loader.runId };
+              // An answer that arrives but can't be read still ends in a
+              // timeout — this lets that timeout say so (see describeTimeout).
+              const turnToken = leg.token;
+              meta.onUnreadable = (shape) => { leg.unreadable = { token: turnToken, shape }; };
               // A GEO tracking run stamps per-prompt provenance so the metrics
               // engine can attribute each response to the right tracked prompt
               // and its tags. loader.options.geoPrompts is index-aligned with
@@ -2395,9 +2460,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             } catch (_) { /* a pruned or missing raw payload just isn't included */ }
           }
 
+          // Payloads the adapters couldn't read (see storeCapture). They have
+          // no record — that's the problem — so they are found through their
+          // log entries. Capped: this is for seeing a new format, not
+          // archiving every miss.
+          const unreadable = [];
+          for (const e of captureEntries) {
+            if (unreadable.length >= 20) break;
+            const id = e.context && e.context.captureId;
+            if (!id || !String(e.where || "").startsWith("capture:unreadable:")) continue;
+            try {
+              const row = await db.get("raw", id);
+              if (!row) continue;
+              const text = await gunzipToString(row.gz);
+              unreadable.push({ captureId: id, platform: row.platform, url: row.url, reqBody: row.reqBody,
+                transport: row.transport, capturedAt: row.capturedAt, text: text.slice(0, 2 * 1024 * 1024) });
+            } catch (_) { /* gone — the log entry still says what it was */ }
+          }
+
           const manifest = chrome.runtime.getManifest();
           sendResponse({
             ok: true,
+            unreadable,
             campaign: {
               profileId: profile.id,
               name: profile.name,
