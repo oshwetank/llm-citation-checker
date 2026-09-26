@@ -24,8 +24,8 @@
  * is logged with the payload's shape (never its content), the timeout names
  * it, and the diagnostics export carries the payload itself.
  *
- * Grok runs alongside, on a stub page that reloads itself once after load.
- * Every Grok turn in a real v0.42 run timed out as "page script not
+ * Grok runs alongside, on a stub page that sends the prompt and then reloads
+ * itself. Every Grok turn in a real v0.42 run timed out as "page script not
  * responding": the probe reached the page, but no turn was running there,
  * because the document the prompt was sent to had been replaced. The page now
  * answers for itself, and the timeout says the page reloaded and lost the
@@ -100,23 +100,35 @@ try {
     });
   });
 
-  // grok.com pages. The first prompt's reloads itself once, 1.5s after load
-  // — after the content script has taken the run's markers off its URL. The
-  // second's hangs its renderer 2s after load: in a real v0.43 run no Grok
-  // page answered the probe at all, and only what the tab itself shows from
+  // grok.com pages. The first prompt's sends the prompt (Grok's own submit
+  // request, whose answer never finishes) and then reloads itself, 1.5s
+  // after load — after the content script has taken the run's markers off
+  // its URL. A page reached without markers picks up a turn that hasn't gone
+  // out yet (redirect-claim.test.mjs); this one has, so the reloaded page
+  // must be refused and the turn described as lost. The second prompt's page
+  // hangs its renderer 2s after load: in a real v0.43 run no Grok page
+  // answered the probe at all, and only what the tab itself shows from
   // outside can say anything about that.
-  await context.route(/^https:\/\/grok\.com\//, (route) => route.fulfill({
-    status: 200, contentType: "text/html",
-    body: `<body>grok stub<script>
-      var q = new URLSearchParams(location.search).get('q') || '';
-      if (q.indexOf('UNREADABLE-CASE') >= 0) {
-        setTimeout(function () { for (;;) {} }, 2000);
-      } else if (!sessionStorage.getItem('reloaded')) {
-        sessionStorage.setItem('reloaded', '1');
-        setTimeout(function () { location.reload(); }, 1500);
-      }
-    </script></body>`,
-  }));
+  await context.route(/^https:\/\/grok\.com\//, (route) => {
+    if (route.request().method() === "POST") {
+      // Held open: a finished reply would complete the turn.
+      setTimeout(() => route.fulfill({ status: 200, contentType: "application/json", body: "{}" }).catch(() => {}), 170000);
+      return;
+    }
+    return route.fulfill({
+      status: 200, contentType: "text/html",
+      body: `<body>grok stub<script>
+        var q = new URLSearchParams(location.search).get('q') || '';
+        if (q.indexOf('UNREADABLE-CASE') >= 0) {
+          setTimeout(function () { for (;;) {} }, 2000);
+        } else if (!sessionStorage.getItem('reloaded')) {
+          sessionStorage.setItem('reloaded', '1');
+          setTimeout(function () { fetch('/rest/app-chat/conversations/new', { method: 'POST', body: '{}' }); }, 500);
+          setTimeout(function () { location.reload(); }, 1500);
+        }
+      </script></body>`,
+    });
+  });
 
   let sw = context.serviceWorkers()[0];
   if (!sw) sw = await context.waitForEvent("serviceworker", { timeout: 20000 });
@@ -214,6 +226,9 @@ try {
   check("and where the page is", gctx.path === "/", JSON.stringify(gctx.path));
   check("in its trace too", !!grokEntry && /nav=reload markers=no/.test(grokEntry.trace || ""), grokEntry && grokEntry.trace);
   check("with the tab's own record of the reload", !!grokEntry && /\| tab: .*L.*C.*L/.test(grokEntry.trace || ""), grokEntry && grokEntry.trace);
+  check("and of the send, and the reloaded page being refused the turn",
+    !!grokEntry && /\bsent\b.*claim:sent/.test(grokEntry.trace || ""), grokEntry && grokEntry.trace);
+  check("the reloaded page says it wasn't handed the turn", gctx.verify === "not-claimed", JSON.stringify(gctx.verify));
 
   console.log("\nA page that stops answering is described from outside");
   const hctx = (hungEntry && hungEntry.context) || {};

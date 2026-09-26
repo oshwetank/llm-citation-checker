@@ -53,12 +53,12 @@ const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] }
 
 // Runs the REAL content-iso.js against a mock page shaped like one engine.
 // The page records every submission it receives so the count can be asserted.
-async function run(html, { gemini = false, waitMs = 9000, throttle = false, throttleMs = 60000, workerClock = true } = {}) {
+async function run(html, { gemini = false, waitMs = 9000, throttle = false, throttleMs = 60000, workerClock = true, clockMs = 0 } = {}) {
   const page = await browser.newPage();
   const host = gemini ? "https://gemini.google.com" : "https://chatgpt.com";
   await page.route("**/*", (r) => r.fulfill({ status: 200, contentType: "text/html", body: `<body>${html}</body>` }));
   await page.goto(`${host}/mock?q=${encodeURIComponent(PROMPT)}&lcfc=1&lcfctok=T1`);
-  const res = await page.evaluate(async ({ iso, waitMs, throttle, throttleMs, workerClock }) => {
+  const res = await page.evaluate(async ({ iso, waitMs, throttle, throttleMs, workerClock, clockMs }) => {
     const t0 = Date.now();
     window.__t0 = t0;
     const events = [];
@@ -90,7 +90,9 @@ async function run(html, { gemini = false, waitMs = 9000, throttle = false, thro
         return {
           onMessage: { addListener: (fn) => fns.push(fn) },
           onDisconnect: { addListener() {} },
-          postMessage: (m) => { if (m && m.everyMs && !iv) iv = realSetInterval(() => fns.forEach((f) => f(1)), m.everyMs); },
+          // clockMs runs the clock faster than asked, to reach tick counts
+          // that take a minute in real time.
+          postMessage: (m) => { if (m && m.everyMs && !iv) iv = realSetInterval(() => fns.forEach((f) => f(1)), clockMs || m.everyMs); },
           disconnect: () => { if (iv) realClearInterval(iv); },
         };
       };
@@ -113,7 +115,7 @@ async function run(html, { gemini = false, waitMs = 9000, throttle = false, thro
       text: window.__lastText || null,
       url: location.pathname + location.search,
     };
-  }, { iso: ISO, waitMs, throttle, throttleMs, workerClock });
+  }, { iso: ISO, waitMs, throttle, throttleMs, workerClock, clockMs });
   await page.close();
   return {
     ...res,
@@ -225,6 +227,25 @@ console.log("\nPage timers throttled to once a minute, ticks supplied by the ser
   // Web Lock is a documented exemption. Whether Chrome honours it can't be
   // driven from this harness — that the turn holds one while in flight can.
   check("a turn in flight holds the Web Lock that exempts its tab from freezing",
+    r.locks.some((n) => n === "citoskeleton-turn-T1"), JSON.stringify(r.locks));
+}
+
+/* The lock has to outlast the send. In a real v0.45.3 run every turn still
+ * waiting at about a minute was frozen, and never answered again: Chrome's
+ * page-load tracker calls a busy page "loaded" at most a minute after it
+ * stops loading (kWaitingForIdleTimeout), and from then on a hidden tab with
+ * no freeze exemption is frozen. The lock was released when the post-send
+ * watch ended — ~150 ticks, one minute — so a slow answer lost its exemption
+ * exactly then. The clock here runs 80x fast to get past those ticks.
+ */
+console.log("\nA sent turn keeps its freeze exemption after the post-send watch ends");
+{
+  const r = await run(ENTER_PAGE, { throttle: true, clockMs: 5, waitMs: 4000 });
+  check("the prompt was submitted, exactly once", r.submits === 1, `submits=${r.submits}`);
+  // The loop stops ticking when the watch ends, so a count past 150 says
+  // it has ended, not how long ago.
+  check("the ~150-tick post-send watch has ended", (r.probe || {}).ticks > 150, String((r.probe || {}).ticks));
+  check("the turn still holds its Web Lock while it waits for the answer",
     r.locks.some((n) => n === "citoskeleton-turn-T1"), JSON.stringify(r.locks));
 }
 

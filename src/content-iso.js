@@ -109,6 +109,9 @@
     if (data.type === "engine-submit") {
       engineSubmit.at = Date.now();
       engineSubmit.via = String(data.via || "").slice(0, 10);
+      // Straight away, not on the next tick: if the engine redirects right
+      // after its send, the run must already know not to hand the turn on.
+      if (pageFacts.turnToken) reportSent(pageFacts.turnToken);
       return;
     }
 
@@ -216,8 +219,15 @@
     loadedAt: Date.now(),
     hadMarkers: false,
     token: "",
-    verify: "none",      // none | pending | ok | rejected | error | already-fired
+    verify: "none",      // none | pending | ok | rejected | error | already-fired | claim-pending | claimed | not-claimed
     turnToken: "",
+  };
+  // Tells the run this turn's prompt has gone out (see loader-sent), once.
+  let sentReported = "";
+  const reportSent = (token) => {
+    if (!token || sentReported === token) return;
+    sentReported = token;
+    try { chrome.runtime.sendMessage({ type: "loader-sent", token }, () => void chrome.runtime.lastError); } catch (_) { /* worker gone */ }
   };
   const navigationType = () => {
     try { return (performance.getEntriesByType("navigation")[0] || {}).type || "unknown"; } catch (_) { return "unknown"; }
@@ -254,10 +264,17 @@
 
   (function loaderAutoSubmit() {
     const params = new URLSearchParams(location.search);
-    if (params.get("lcfc") !== "1") return;
-    const q = params.get("q") || "";
-    const token = params.get("lcfctok") || "";
-    const wantSearch = params.get("lcfcsearch") === "1";
+    // Set from the address, or from the run when a page claims the turn.
+    let q = "";
+    let token = "";
+    let wantSearch = false;
+    // Where dropQ() leaves the address once ?q= has served its purpose. A
+    // claimed page never had our ?q=, so its own address is left alone.
+    let bareUrl = location.pathname + location.search;
+    if (params.get("lcfc") !== "1") { claimTurn(); return; }
+    q = params.get("q") || "";
+    token = params.get("lcfctok") || "";
+    wantSearch = params.get("lcfcsearch") === "1";
     if (!q || !token) return;
     pageFacts.hadMarkers = true;
     pageFacts.token = token;
@@ -285,7 +302,7 @@
     const keepQ = new URLSearchParams(location.search);
     ["lcfc", "lcfctok", "lcfcsearch"].forEach((k) => keepQ.delete(k));
     const qOnlyUrl = location.pathname + (keepQ.toString() ? `?${keepQ}` : "");
-    const bareUrl = location.pathname;
+    bareUrl = location.pathname;
     try { history.replaceState(null, "", qOnlyUrl); } catch (_) {}
 
     // Per-tab, per-token guard. The re-fire protection used to come from
@@ -305,6 +322,39 @@
       pageFacts.turnToken = token;
       begin();
     });
+
+    /* A page the tab reached WITHOUT the run's markers: the engine
+     * redirected, or the tab reloaded. The prompt only ever lived in the
+     * address, so it is gone — but the run still holds it, and hands the
+     * turn to this page if it is still waiting (background.js,
+     * loader-claim). Every Grok turn in a real v0.45.3 run was lost this
+     * way, bounced through /tos-gate to a bare grok.com/.
+     *
+     * Only asked in a tab that has been a run's tab on this site (the
+     * per-tab mark below), so ordinary browsing never messages the run.
+     */
+    function claimTurn() {
+      let runTab = false;
+      try { runTab = !!sessionStorage.getItem("lcfcFired"); } catch (_) { /* unavailable */ }
+      if (!runTab || window.top !== window) return;
+      pageFacts.verify = "claim-pending";
+      try {
+        chrome.runtime.sendMessage({ type: "loader-claim" }, (res) => {
+          if (chrome.runtime.lastError || !res || !res.ok || !res.token || !res.q) {
+            pageFacts.verify = "not-claimed";
+            return;
+          }
+          q = String(res.q);
+          token = String(res.token);
+          wantSearch = !!res.search;
+          pageFacts.token = token;
+          pageFacts.verify = "claimed";
+          pageFacts.turnToken = token;
+          try { sessionStorage.setItem("lcfcFired", token); } catch (_) { /* unavailable */ }
+          begin();
+        });
+      } catch (_) { pageFacts.verify = "error"; }
+    }
 
     function begin() {
       const plat = getPlatform();
@@ -481,6 +531,7 @@
       const giveUp = (reason) => {
         dropQ();
         T("giveup");
+        endTurnLock();
         try {
           // The trace is the point of this message now: a reason alone says
           // WHAT failed, the trace says WHERE in the sequence it stopped.
@@ -670,6 +721,7 @@
 
       const reportLimit = (detail) => {
         stopLoop();
+        endTurnLock(); // the run pauses this engine; the next turn reloads the tab
         dismissLimitModals();
         dropQ();
         try {
@@ -718,7 +770,7 @@
         // Positive proof the turn went out — native auto-submit landed, or our
         // own send did. Nothing left for this script but the limit watch.
         const why = submittedWhy();
-        if (why) { T("sent", why); sentOk = true; sentWhy = why; dropQ(); return; }
+        if (why) { T("sent", why); sentOk = true; sentWhy = why; reportSent(token); dropQ(); return; }
 
         if (ticks > MAX_WAIT_TICKS) {
           stopLoop();
@@ -830,27 +882,45 @@
         if (attempts % 2 === 0 && isUsable(s3)) { (s3.closest ? s3.closest("button") || s3 : s3).click(); attempted(); T("reclick"); }
         else { pressEnter(box); attempted(); T("reenter"); }
       };
-      const stopClock = startClock(TICK_MS);
-      const unsubscribeLoop = onClockTick(loopTick);
-      /* Freezing is the throttle's harsher sibling: with Energy Saver on,
-       * Chrome 133+ FREEZES a CPU-busy tab hidden for five minutes, and a
-       * frozen page runs nothing at all — not even the messages the worker
-       * clock sends. Holding a Web Lock is one of the exemptions Chrome
-       * documents, so one is held for exactly this turn: released when the
-       * loop stops, or by the browser when the page goes away. Scoped by
-       * token, so it can never collide with anything the site itself locks.
+      /* Freezing is the throttle's harsher sibling: a frozen page runs
+       * nothing at all — not the messages the worker clock sends, not the
+       * answer stream, not the probe. Holding a Web Lock is one of the
+       * reasons Chromium's freezing policy will not freeze a page
+       * (CannotFreezeReason::kHoldingWebLock), so one is held for this turn.
+       *
+       * For the WHOLE turn, not just until the send. In a real v0.45.3 run
+       * every turn still waiting at about a minute was frozen: Chromium
+       * calls a page that never goes quiet "loaded" at most a minute after
+       * it stops loading (kWaitingForIdleTimeout), and a hidden tab with no
+       * exemption is freezable from then on. The lock used to be released
+       * when the post-send watch ended — a minute after the send — so a slow
+       * answer lost its exemption exactly when it needed it. It is now let
+       * go when the turn gives up, when the page goes away (the next turn
+       * navigates the tab), or after TURN_LOCK_MAX_MS, which outlasts the
+       * longest turn the run allows (150s budget + two 60s extensions).
+       * Scoped by token, so it can never collide with the site's own locks.
        */
+      const TURN_LOCK_MAX_MS = 5 * 60 * 1000;
       let releaseTurnLock = null;
+      let turnLockDone = false;
+      const endTurnLock = () => {
+        turnLockDone = true;
+        if (releaseTurnLock) { releaseTurnLock(); releaseTurnLock = null; }
+      };
       try {
         if (navigator.locks && navigator.locks.request) {
-          navigator.locks.request(`citoskeleton-turn-${token}`, () => new Promise((resolve) => { releaseTurnLock = resolve; }))
-            .catch(() => {});
+          navigator.locks.request(`citoskeleton-turn-${token}`, () => new Promise((resolve) => {
+            releaseTurnLock = resolve;
+            if (turnLockDone) endTurnLock(); // the turn ended before the lock was granted
+          })).catch(() => {});
+          setTimeout(endTurnLock, TURN_LOCK_MAX_MS);
         }
       } catch (_) {}
+      const stopClock = startClock(TICK_MS);
+      const unsubscribeLoop = onClockTick(loopTick);
       const stopLoop = () => {
         unsubscribeLoop();
         stopClock();
-        if (releaseTurnLock) { releaseTurnLock(); releaseTurnLock = null; }
       };
 
       /* Answers the run's "where did this turn get to?" when its watchdog

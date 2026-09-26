@@ -9,8 +9,10 @@
  * script strips ?lcfc= from the address at document_start. Each of those was
  * then "lost", the tab was reloaded and the prompt re-sent, until the turn
  * died as "tab reloaded repeatedly" — the failure that cost the 0.38/0.39
- * runs 77 of 80 prompts. No run's diagnostics had shown a navigation away
- * from Grok's page, so the change fixed nothing it could point to.
+ * runs 77 of 80 prompts. (Grok does bounce a fresh ?q= page through
+ * /tos-gate and loses the prompt — the v0.45.3 run showed it on every turn —
+ * but that is recovered by handing the turn to the page it lands on, see
+ * redirect-claim.test.mjs, not by reloading on every address change.)
  *
  * The stub is a healthy Grok: it loads, takes the turn, and moves to its new
  * conversation after the reload detector's grace period, the way a slow real

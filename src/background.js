@@ -555,6 +555,9 @@ async function persistLoaderState() {
               token: leg.token || null,
               expectedPrompt: leg.expectedPrompt || null,
               inFlightIdx: Number.isInteger(leg.inFlightIdx) ? leg.inFlightIdx : -1,
+              // The turn whose prompt has gone out — see loader-claim. Kept
+              // across a restart so a resumed turn can't be handed out twice.
+              sentToken: leg.sentToken || null,
               durations: leg.durations || [],
               outcomes: leg.outcomes || [],
               // Set only on a rate-limit hit — see loader-rate-limited — so
@@ -1074,6 +1077,7 @@ async function resumeFromSnapshot(snap) {
         // restored position is still on it. A snapshot from before this field
         // existed keeps the old behaviour: a token meant a turn was running.
         inFlightIdx: idx === (sl.idx || 0) && (Number.isInteger(sl.inFlightIdx) ? sl.inFlightIdx === sl.idx : !!sl.token) ? idx : -1,
+        sentToken: sl.sentToken || null,
         durations: sl.durations || [],
         outcomes,
         watchdog: null,
@@ -1576,6 +1580,10 @@ chrome.runtime.onConnect?.addListener((port) => {
 });
 
 const MAX_RELOAD_RETRIES = 2;
+// How many pages may pick up one turn after redirects (see loader-claim).
+// Grok's bounce is two pages (/tos-gate, then home); this leaves headroom
+// without letting a page that bounces forever hold a turn.
+const MAX_TURN_CLAIMS = 4;
 // How long a load event gets to prove itself before it counts as a lost
 // prompt. This is NOT "how long an engine takes to answer" — that is
 // unknowable and is what the 90s watchdog is for. It is only how long the
@@ -1609,9 +1617,17 @@ chrome.tabs.onUpdated?.addListener((tabId, changeInfo) => {
   if (changeInfo.discarded) bits.push("discarded");
   if (changeInfo.frozen !== undefined) bits.push(changeInfo.frozen ? "frozen" : "unfrozen");
   if (!bits.length) return;
-  if (leg.navLogToken !== leg.token) { leg.navLog = []; leg.navLogToken = leg.token; }
-  if (leg.navLog.length < 24) leg.navLog.push(`${((Date.now() - leg.startedAt) / 1000).toFixed(1)}s:${bits.join(",")}`);
+  noteTabEvent(leg, bits.join(","));
 });
+
+// One entry in the turn's tab log, timed from the turn's start. Also carries
+// the run's own events for the tab (a page claiming the turn, the send), so
+// the log reads as one sequence.
+function noteTabEvent(leg, what) {
+  if (!leg || !leg.startedAt) return;
+  if (leg.navLogToken !== leg.token) { leg.navLog = []; leg.navLogToken = leg.token; }
+  if (leg.navLog.length < 24) leg.navLog.push(`${((Date.now() - leg.startedAt) / 1000).toFixed(1)}s:${what}`);
+}
 
 // The tab itself, when its page doesn't answer: frozen, discarded, still
 // loading, a verification page (judged from the title, which is not kept),
@@ -2227,6 +2243,67 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             if (ok) found.leg.verifiedToken = msg.token;
           }
           sendResponse({ ok });
+          break;
+        }
+
+        // The page this turn is running in saw its prompt go out: the
+        // engine's own submit request, or the conversation moving on. From
+        // here the turn is never handed to another page (loader-claim).
+        case "loader-sent": {
+          const tabId = sender?.tab?.id;
+          const found = loader.running && tabId != null ? legForTab(tabId) : null;
+          const ok = !!(found && found.leg.token && found.leg.token === msg.token);
+          if (ok && found.leg.sentToken !== msg.token) {
+            found.leg.sentToken = msg.token;
+            noteTabEvent(found.leg, "sent");
+            persistLoaderState();
+          }
+          sendResponse({ ok });
+          break;
+        }
+
+        /* A page without the run's markers, in a tab that had them, asking
+         * whether a turn is waiting for it.
+         *
+         * The prompt reached the engine only in the tab's address, and an
+         * engine that redirects drops it. In a real v0.45.3 run every Grok
+         * turn went grok.com/?q=… → /tos-gate → grok.com/ within seven
+         * seconds; the page it landed on had no markers, so nothing typed
+         * the prompt, and a minute later Chrome froze the idle tab. The run
+         * holds the prompt, so it hands the turn to the page the tab ended
+         * up on — the same checks loader-verify makes, plus two of its own:
+         * the page must be on this tab's engine, and the prompt must not
+         * have gone out yet, so a redirect after a send can't send it twice.
+         * Capped per turn, so a page that keeps bouncing can't loop.
+         */
+        case "loader-claim": {
+          const tabId = sender?.tab?.id;
+          const found = loader.running && !loader.paused && tabId != null && (sender.frameId || 0) === 0
+            ? legForTab(tabId) : null;
+          const leg = found && found.leg;
+          let host = "";
+          try { host = new URL(sender.url || "").hostname; } catch (_) { /* no host */ }
+          const onEngine = !!found && (ENGINE_HOSTS[found.plat] || []).includes(host);
+          const claims = leg && leg.claimToken === leg.token ? leg.claims || 0 : 0;
+          const grant = !!leg && onEngine && !leg.paused && !!leg.token
+            && leg.idx < leg.prompts.length && leg.inFlightIdx === leg.idx
+            && leg.sentToken !== leg.token && claims < MAX_TURN_CLAIMS
+            && typeof leg.expectedPrompt === "string" && !!leg.expectedPrompt;
+          if (grant) {
+            leg.claimToken = leg.token;
+            leg.claims = claims + 1;
+            leg.verifiedToken = leg.token; // the turn is in a page's hands again
+            noteTabEvent(leg, "claimed");
+            sendResponse({
+              ok: true,
+              token: leg.token,
+              q: leg.expectedPrompt,
+              search: found.plat === "chatgpt" && !!loader.options.forceSearch,
+            });
+          } else {
+            if (leg && onEngine && leg.inFlightIdx === leg.idx) noteTabEvent(leg, leg.sentToken === leg.token ? "claim:sent" : "claim:refused");
+            sendResponse({ ok: false });
+          }
           break;
         }
 

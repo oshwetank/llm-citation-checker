@@ -10,18 +10,19 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.45.3** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.45.4** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
-> - Undid 0.45.2's Grok change, which re-sent prompts whenever Grok moved to its new
->   conversation after a send.
+> - An engine that redirects its tab no longer loses the prompt: the page the tab lands on
+>   picks the turn up. Every Grok turn was being lost this way (grok.com bounces through
+>   `/tos-gate` to its home page).
+> - A turn's tab can't be frozen by Chrome until the turn is over. Chrome was freezing
+>   every tab still waiting for an answer about a minute in.
 > - Read-only sources whose title shares no word with any search the engine ran are
->   tagged "title mismatch" in Analyze.
-> - Source Domains shows each domain's "Cited %": of the answers that read it, the share
->   that cited it.
+>   tagged "title mismatch" in Analyze; Source Domains shows each domain's "Cited %".
 
 ## Two modes, deliberately kept apart
 
