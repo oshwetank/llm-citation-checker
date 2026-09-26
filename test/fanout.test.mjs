@@ -4,7 +4,7 @@
  * classification, and the whole-capture rollup including the
  * scoped-but-not-cited cross-check.
  */
-import { parseQueryOperators, classifyQuery, analyzeFanout, breadthVerdict } from "../src/lib/fanout.js";
+import { parseQueryOperators, classifyQuery, analyzeFanout, breadthVerdict, titleMatchesQueries } from "../src/lib/fanout.js";
 
 let failures = 0;
 const check = (label, cond, detail) => {
@@ -113,6 +113,27 @@ console.log("\nbreadthVerdict: reads against the published benchmark");
   check("1 -> narrow", breadthVerdict(1).band === "narrow");
   check("8 -> typical (the study's most common bucket)", breadthVerdict(8).band === "typical");
   check("20 -> broad", breadthVerdict(20).band === "broad");
+}
+
+console.log("\ntitleMatchesQueries: does a read-but-uncited page's title echo what was searched");
+{
+  // 0.45.2 compared raw words, so "shoe" never met "shoes" and every page
+  // using the other form was flagged; a shared filler word ("best") counted
+  // as a match; and a site: operator's domain could match a title.
+  const q = ["best running shoes for flat feet", { query: "luxury watches under 5000" }];
+  check("singular title vs plural query", titleMatchesQueries("Running Shoe Picks", q) === true);
+  check("plural -es form (watches / watch)", titleMatchesQueries("How to pick a watch", q) === true);
+  check("nothing in common", titleMatchesQueries("Our company history", q) === false);
+  check("sharing only a filler word is not a match",
+    titleMatchesQueries("Best deals of 2026", ["best budget phone 2026"]) === false);
+  check("a site: operator's domain is not what was searched for",
+    titleMatchesQueries("Reddit - Dive into anything", ["phone deals site:reddit.com"]) === false);
+  check("punctuation doesn't hide a word",
+    titleMatchesQueries("Flat-feet: a runner's guide", q) === true);
+  check("non-Latin scripts compare too",
+    titleMatchesQueries("फोन की समीक्षा", ["सबसे अच्छा फोन"]) === true);
+  check("no searches → no verdict", titleMatchesQueries("Anything", []) === null);
+  check("no title → no verdict", titleMatchesQueries("", q) === null);
 }
 
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");

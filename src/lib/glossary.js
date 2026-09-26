@@ -88,6 +88,14 @@ export const GLOSSARY = {
     howToUse: "Use domain citation counts to prioritize your digital PR and co-marketing outreach.",
     note: "Cited three times inside one answer counts three. Volume, not reach — Source visibility is the reach measure.",
   },
+  citedRate: {
+    group: "Source metrics",
+    term: "Cited %",
+    what: "Of the answers that pulled this source in, the share that credited it.",
+    formula: "answers citing it at least once ÷ answers it appeared in at all × 100",
+    howToUse: "A domain that is read often but rarely credited is being found and then passed over — check whether its pages answer the question directly and are titled in the searcher's words.",
+    note: "Counted per answer, not per citation: cited three times in one answer is one credited answer. Low values are not failures to be found — every answer counted here did read it.",
+  },
   readOnly: {
     group: "Source metrics",
     term: "Read-only",

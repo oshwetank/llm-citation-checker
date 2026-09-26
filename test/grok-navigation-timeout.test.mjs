@@ -1,3 +1,21 @@
+/*
+ * grok-navigation-timeout.test.mjs — a Grok turn that is going fine must not
+ * be sent twice.
+ *
+ * v0.45.2 tried to fix Grok's timeouts by treating any Grok navigation away
+ * from the ?lcfc=1 address as a lost prompt, on the belief that Grok never
+ * changes its address after a send. It does: like ChatGPT it moves to
+ * /c/<conversation id> as soon as it accepts the prompt, and our own content
+ * script strips ?lcfc= from the address at document_start. Each of those was
+ * then "lost", the tab was reloaded and the prompt re-sent, until the turn
+ * died as "tab reloaded repeatedly" — the failure that cost the 0.38/0.39
+ * runs 77 of 80 prompts. No run's diagnostics had shown a navigation away
+ * from Grok's page, so the change fixed nothing it could point to.
+ *
+ * The stub is a healthy Grok: it loads, takes the turn, and moves to its new
+ * conversation after the reload detector's grace period, the way a slow real
+ * send does. It must be loaded exactly once, with no reload retry logged.
+ */
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -36,40 +54,18 @@ const context = await chromium.launchPersistentContext(`${PROFILE_BASE}-${Date.n
 });
 
 try {
-  let grokRequests = 0;
+  let promptLoads = 0;
   await context.route(/^https:\/\/grok\.com\//, (route) => {
     const url = new URL(route.request().url());
-    if (url.pathname === "/") {
-      if (url.searchParams.has("q")) {
-        grokRequests++;
-        if (grokRequests === 1) {
-          // First time: navigate to /tos-gate after 1s
-          return route.fulfill({
-            status: 200, contentType: "text/html",
-            body: `<body>stub grok<script>
-                     setTimeout(() => location.href = "https://grok.com/tos-gate", 1000);
-                   </script></body>`
-          });
-        }
-        // Second time: stay on the page (simulating successful login/TOS accept)
-        return route.fulfill({ status: 200, contentType: "text/html", body: `<body>stub grok success</body>` });
-      }
-      return route.fulfill({ status: 200, contentType: "text/html", body: `<body>stub grok bare</body>` });
-    }
-    if (url.pathname === "/tos-gate") {
-      return route.fulfill({
-        status: 200, contentType: "text/html",
-        body: `<body>tos-gate<script>
-                 setTimeout(() => location.href = "https://grok.com/", 200);
-               </script></body>`
-      });
-    }
-    return route.continue();
-  });
-
-  // Mock chatgpt to complete immediately so run moves forward
-  await context.route(/^https:\/\/chatgpt\.com\//, (route) => {
-    return route.fulfill({ status: 200, contentType: "text/html", body: `<body>chatgpt stub</body>` });
+    if (url.searchParams.has("q")) promptLoads++;
+    // 5s is past RELOAD_DETECT_GRACE_MS (3s), so the move is judged by the
+    // detector rather than waved through as the loader's own navigation.
+    return route.fulfill({
+      status: 200, contentType: "text/html",
+      body: `<body>stub grok<script>
+               setTimeout(() => history.pushState(null, "", "/c/0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b"), 5000);
+             </script></body>`,
+    });
   });
 
   let sw = context.serviceWorkers()[0];
@@ -84,7 +80,7 @@ try {
   const ask = (msg) => page.evaluate(
     (m) => new Promise((res) => chrome.runtime.sendMessage(m, (r) => res(r))), msg);
 
-  console.log("\nSeeding a Grok campaign");
+  console.log("\nA Grok turn that moves to its new conversation");
   const profileId = await page.evaluate(async () => {
     const dbh = await new Promise((res, rej) => {
       const r = indexedDB.open("lcfc");
@@ -98,7 +94,7 @@ try {
     });
     const profileId = crypto.randomUUID();
     await put("profiles", {
-      id: profileId, name: "Grok Bounce Test",
+      id: profileId, name: "Grok Conversation Test",
       brand: { name: "Acme", url: "acme.example" },
       competitors: [], engines: ["grok"],
       locked: true, createdAt: Date.now(), lastRunAt: Date.now(), deletedAt: null,
@@ -112,16 +108,16 @@ try {
   const started = await ask({ type: "geo-run-start", profileId, skipAuthCheck: true });
   check("geo-run-start accepted it", started && started.ok, JSON.stringify(started));
 
-  // Wait long enough for the bounce to happen and the retry to be triggered.
-  // RELOAD_VERIFY_WAIT_MS is 8000ms.
-  await page.waitForTimeout(12000);
+  // The move lands at ~5s; a retry would be decided RELOAD_VERIFY_WAIT_MS
+  // (8s) after it and re-load the page straight away.
+  await page.waitForTimeout(16000);
 
   const log = await ask({ type: "error-log", limit: 400 });
   const entries = (log && log.entries) || [];
   const reloadRetries = entries.filter((e) => String(e.where || "").startsWith("run:tab-reloaded:grok"));
 
-  check("Grok bounce triggered a retry", grokRequests === 2, `grokRequests = ${grokRequests}`);
-  check("Error log recorded the reload retry", reloadRetries.length > 0);
+  check("the prompt page was loaded once — not re-sent", promptLoads === 1, `loads = ${promptLoads}`);
+  check("no reload retry was logged", reloadRetries.length === 0, reloadRetries.map((e) => e.where).join(", "));
 
   await ask({ type: "loader-stop" });
 } finally {

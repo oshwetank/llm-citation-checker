@@ -915,6 +915,16 @@ body.tab .app-content {
   border-color: var(--border-hover);
 }
 
+/* A read-only page whose title echoes none of the searches (fanout.js
+   titleMatchesQueries). Outlined rather than filled: a hint to act on, not
+   an error. */
+.tag.src-mismatch {
+  background: transparent;
+  color: var(--red-fg);
+  border-color: var(--red-border);
+  border-style: dashed;
+}
+
 .tag.src-type {
   background: transparent;
   color: var(--fg-muted);

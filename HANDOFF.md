@@ -2,17 +2,17 @@
 
 Read this before changing anything. It is the working context from the sessions that built v0.38 to v0.45, written so another developer or model can take over without the chat history. For what each change does and why, see PR #26's description and the commit messages. Those are detailed and accurate.
 
-Last updated 25 September 2026, at v0.45.0 (commit `12e97f2`).
+Last updated 26 September 2026, at v0.45.3.
 
 ## Where things stand
 
 - **Product.** CitoSkeleton is a Chrome MV3 extension for GEO (generative engine optimisation) practitioners. It reads the traffic that ChatGPT, Gemini, Perplexity and Grok send to the browser, keeps it raw, and derives each answer's fan-out queries, fetched and cited sources, products, places and brand mentions.
   - **Campaigns** (the "Loader") send a list of prompts to several engines in background tabs and compute visibility metrics across them.
   - See `README.md` for the user-facing description and `ARCHITECTURE.md` / `RESEARCH.md` for the original design.
-- **Branch.** Work happens on `claude/blank-screen-prompts-issue-qnma6w`. **PR #26** targets `master`, has 18 commits, and is **open, CI green and mergeable**. If it has since been merged, start from `master`.
-- **Version.** 0.45.0.
-- **Tests.** 46 unit and 28 browser test files, all passing locally and in CI.
-- **Not yet tried by the owner.** v0.44.0 and v0.45.0 have not been through a real campaign run. The last real run was on v0.43.0 (see the run history).
+- **Branch.** Work happens on `claude/blank-screen-prompts-issue-qnma6w`. **PR #26** targets `master`, is **open**; check its CI before building on it. If it has since been merged, start from `master`.
+- **Version.** 0.45.3. 0.45.1 was never released; 0.45.2 was another model's commit (`c866508`) whose Grok change is undone in 0.45.3 — see open problem 1.
+- **Tests.** 46 unit and 29 browser test files, all passing locally and in CI.
+- **Not yet tried by the owner.** v0.44 and v0.45.x have not been through a real campaign run that has been reported back. The last real run was on v0.43.0 (see the run history).
 
 ## How the owner works
 
@@ -93,7 +93,7 @@ All runs are the owner's, on Windows Chrome 153. Captured counts are per prompt 
 | 0.40 / 0.41 | 12/40, all failures bare `timeout` | Every engine died at about 5 minutes, which is Chrome's hidden-tab timer throttling. The prompt lists also jumped to the top during runs | 0.42 (`bf49c5c`) |
 | 0.42 | "35/40" (inflated) | Phantom turns completed prompts that were never asked. The 64 MiB export failure. Perplexity's stream was unreadable. Grok "page script not responding" | 0.43 (`215f04a`, `4d14c4b`) |
 | 0.43 | **27/40**: ChatGPT 10, Perplexity 10, Gemini 7, **Grok 0** | Gemini got up to 9 identical sends per prompt. Duplicate captures skewed metrics. Grok tabs never answered the probe | 0.44 (`fe31348`) |
-| 0.44 / 0.45 | not run yet | | |
+| 0.44 / 0.45.x | not reported yet | | |
 
 ## Open problems, in priority order
 
@@ -103,6 +103,7 @@ All runs are the owner's, on Windows Chrome 153. Captured counts are per prompt 
    - **What v0.44 adds.** When the probe gets no answer, the timeout now records `tabFacts`: frozen, discarded, load status, title, host and path, plus a per-turn log of the tab's loads. **The next export will show which it is.**
    - **The owner was also asked** to click a Grok tab about 2 minutes into the next run and report what it shows: blank, home, prompt typed but not sent, "Just a moment…", login, "Leave site?", or an answer.
    - **Reproducing it isn't possible from the cloud sandbox,** because grok.com is blocked by its egress proxy.
+   - **Don't fix it by guessing.** 0.45.2 assumed Grok never changes its address after a send and treated any Grok navigation away from `?lcfc=1` as a lost prompt. Grok moves to `/c/<id>` after every send, and our own content script strips `?lcfc=` at load, so every healthy Grok turn was reloaded and re-sent. 0.45.3 undid it; `test/grok-navigation-timeout.test.mjs` now guards against it. No export had shown Grok navigating away. Wait for `tab.*` and `nav` from a real run.
 2. **Gemini failed 3 of 10 prompts in v0.43** with "sent, no answer captured". Most likely a consequence of the multiple sends that 0.44 fixed; confirm on the next run.
 3. **ChatGPT pipeline labels.** These are not a bug: current traffic doesn't carry them. Captures from 21 May to 21 July 2026 do, and pick them up via Reprocess all.
 4. **Freeze coverage.** Chrome's actual freeze decision can't be exercised in the harness. The Web Lock is tested as held and released, not as preventing a freeze.
@@ -111,10 +112,10 @@ All runs are the owner's, on Windows Chrome 153. Captured counts are per prompt 
 
 ## Feature backlog
 
-The owner asked for these after the Peec AI and Konitzny articles, and was asked which to build next. **No answer yet**, so confirm before starting. The recommendation given was **1 and 2 first**, because they work on data already captured.
+The owner asked for these after the Peec AI and Konitzny articles. **1 and 2 are built (first versions, 0.45.2–0.45.3)**; confirm with the owner before starting the next.
 
-1. **Title vs search-query match.** In Ahrefs' 1.4M-prompt study, cited pages' titles matched ChatGPT's hidden search queries more closely than uncited ones (0.602 vs 0.484). Fan-out queries are in `record.fanout`, and sources have outcome `fetched` or `cited`. The tool could flag fetched-not-cited pages whose title doesn't match what was searched.
-2. **Fetched → cited rate per domain.** ChatGPT cites about half of what it retrieves, and Reddit is read but rarely cited. Add a per-domain citation rate across a campaign.
+1. **Title vs search-query match.** In Ahrefs' 1.4M-prompt study, cited pages' titles matched ChatGPT's hidden search queries more closely than uncited ones (0.602 vs 0.484). Fan-out queries are in `record.fanout`, and sources have outcome `fetched` or `cited`. **Built:** Analyze tags a read-only source "title mismatch" when its title shares no meaningful word with any fan-out query (`titleMatchesQueries` in `src/lib/fanout.js`; plurals folded, filler words and `site:` ignored). Word overlap, not semantic similarity, so it flags only the clear case.
+2. **Fetched → cited rate per domain.** ChatGPT cites about half of what it retrieves, and Reddit is read but rarely cited. **Built:** "Cited %" in Source Domains = answers citing the domain ÷ answers it appeared in (`citedRate` in `src/lib/sources.js`, glossary `citedRate`). Counted per answer on both sides, never citations ÷ pages.
 3. **Source freshness.** Labrador has separate news indexes (last day, last 7 days, older). Search results carry `pub_date`, kept as `pubDate`. Show the age of cited sources.
 4. **Local listings considered vs shown.** ChatGPT's `raw_search_entities` lists the local businesses it considered. The adapter extracts only the displayed `local_business` entities (supplier b1) today.
 5. **Fast vs thinking mode.** Thinking-mode (`system2-*`) engines reach Reddit, PDFs and YouTube. A campaign option could run ChatGPT in Thinking mode to compare.

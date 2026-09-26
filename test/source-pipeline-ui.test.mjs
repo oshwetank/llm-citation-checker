@@ -12,6 +12,10 @@
  * store → Analyze): a real repository capture with no pipeline field, then a
  * SYNTHETIC one in the documented shape with labrador / oxylabs / bright
  * results. The panel opens on the latest capture each time.
+ *
+ * A third SYNTHETIC capture checks the "title mismatch" tag: a page the
+ * engine read but didn't cite, whose title shares no word with any search
+ * it ran, is flagged — and one whose title echoes a search is not.
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -58,6 +62,16 @@ const LABELLED = [
     ],
     // Retrieval calls naming engines from the leaked registry.
     retrieval_calls: [{ engine: "labrador-news-7d", query: "q1" }, { engine: "labrador-news-7d", query: "q2" }, { engine: "serpapi", query: "q3" }],
+  } } })}`,
+  "data: [DONE]",
+].join("\n");
+const TITLED = [
+  `data: ${JSON.stringify({ message: { author: { role: "assistant" }, content: { parts: ["Answer text with no citations."] }, metadata: {
+    search_model_queries: { type: "search_model_queries", queries: ["running shoes for flat feet"] },
+    search_result_groups: [
+      { type: "search_result_group", domain: "shoes.example", entries: [result("https://shoes.example/a", "Shoe Picks", "search", 0, null)] },
+      { type: "search_result_group", domain: "corp.example", entries: [result("https://corp.example/b", "Our Company History", "search", 1, null)] },
+    ],
   } } })}`,
   "data: [DONE]",
 ].join("\n");
@@ -133,6 +147,25 @@ try {
     await page.click("#card-sources .filter-pill:has-text('Labrador (2)')");
     const shown = await page.$$eval("#card-sources .srclist .src-item .src-title", (ns) => ns.map((n) => n.textContent));
     check("the Labrador filter shows just those", shown.length === 2 && shown.includes("Review A") && shown.includes("Paper D"), JSON.stringify(shown));
+    await page.close();
+  }
+
+  console.log("\nA read-only page whose title echoes no search is flagged");
+  await send(TITLED);
+  {
+    const page = await openLatest();
+    const flagged = await page.$$eval("#card-sources .srclist .src-item", (ns) => ns.map((n) => ({
+      t: n.querySelector(".src-title")?.textContent,
+      out: n.querySelector(".tag.fetched") ? "fetched" : n.querySelector(".tag.cited") ? "cited" : "?",
+      mismatch: !!n.querySelector(".tag.src-mismatch"),
+    })));
+    const by = Object.fromEntries(flagged.map((f) => [f.t, f]));
+    check("both pages were read, not cited", by["Shoe Picks"]?.out === "fetched" && by["Our Company History"]?.out === "fetched", JSON.stringify(flagged));
+    check("the unrelated title is flagged", by["Our Company History"]?.mismatch === true, JSON.stringify(flagged));
+    check("the title echoing the search (shoe / shoes) is not", by["Shoe Picks"]?.mismatch === false, JSON.stringify(flagged));
+    const tag = await page.$("#card-sources .tag.src-mismatch");
+    const inline = tag ? await tag.getAttribute("style") : null;
+    check("its colours come from the theme, not inline", tag && !inline, String(inline));
     await page.close();
   }
 } finally {

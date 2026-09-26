@@ -16,7 +16,7 @@ import { computeSearchFunnel, computeBrandMatrix } from "../src/lib/funnel-omitt
 import { GLOSSARY, glossaryGroups } from "../src/lib/glossary.js";
 import { normalizeMentions } from "../src/lib/mention-list.js";
 import { aggregateSources, aggregateSourcesFromCaptures } from "../src/lib/sources.js";
-import { analyzeFanout, FANOUT_BENCHMARK } from "../src/lib/fanout.js";
+import { analyzeFanout, FANOUT_BENCHMARK, titleMatchesQueries } from "../src/lib/fanout.js";
 import { sanitizeText, trimLabel } from "../src/lib/text-sanitize.js";
 import { pipelineOf, typeLabel, supplierOf, retrievalMix } from "../src/lib/retrieval.js";
 import { formatCooldown } from "../src/lib/pacing.js";
@@ -2172,18 +2172,9 @@ function renderAnalyze() {
       const SRC_PREVIEW = 10;
       const visible = showAllSources ? ranked : ranked.slice(0, SRC_PREVIEW);
 
-      // Collect all fanout query words for title matching
-      const queryWords = new Set();
-      for (const arr of Object.values(rec.fanout || {})) {
-        if (!arr) continue;
-        for (const q of arr) {
-          const qStr = typeof q === "string" ? q : q?.query || "";
-          qStr.toLowerCase().split(/\s+/).forEach((w) => {
-            const clean = w.replace(/[^a-z0-9]/g, "");
-            if (clean.length > 2) queryWords.add(clean);
-          });
-        }
-      }
+      // Every sub-query the engine ran, for the title check on read-only
+      // sources below (fanout.js titleMatchesQueries).
+      const allQueries = Object.values(rec.fanout || {}).flatMap((arr) => arr || []);
 
       visible.forEach((s, idx) => {
         const li = el("li", { className: "src-item" });
@@ -2207,12 +2198,11 @@ function renderAnalyze() {
         if (kind) header.append(el("span", { className: "tag src-type", title: "The kind of result, as the engine labelled it" }, kind));
         else if (s.type === "news") header.append(el("span", { className: "tag news" }, "news"));
         
-        if (s.outcome === "fetched" && s.title && queryWords.size > 0) {
-          const titleWords = s.title.toLowerCase().split(/\s+/).map((w) => w.replace(/[^a-z0-9]/g, "")).filter((w) => w.length > 2);
-          const matches = titleWords.some((w) => queryWords.has(w));
-          if (!matches) {
-            header.append(el("span", { className: "tag src-mismatch", title: "Fetched but not cited, and title does not match what was searched", style: "background: #fef2f2; color: #ef4444; border-color: #f87171;" }, "title mismatch"));
-          }
+        if (s.outcome === "fetched" && titleMatchesQueries(s.title, allQueries) === false) {
+          header.append(el("span", {
+            className: "tag src-mismatch",
+            title: "Read but not cited, and the title shares no word with anything the engine searched. Cited pages tend to have titles closer to the searches — try retitling it in the searcher's words.",
+          }, "title mismatch"));
         }
 
         const titleLink = el("a", { href: s.url, target: "_blank", rel: "noreferrer", className: "src-title" }, s.title || s.url);
@@ -5308,7 +5298,7 @@ async function refreshPromptPerformance(profile, prompts, since, until) {
       el("th", { className: "num", "data-term": "domainCitations" }, "Citations"),
       el("th", { className: "num", "data-term": "distinctPrompts" }, "Prompts"),
       el("th", { className: "num", "data-term": "readOnly" }, "Read-only"),
-      el("th", { className: "num" }, "Cited %"));
+      el("th", { className: "num", "data-term": "citedRate" }, "Cited %"));
     srcTable.append(el("tr", {}, ...hdr));
 
     shown.forEach((row, i) => {
@@ -5332,16 +5322,12 @@ async function refreshPromptPerformance(profile, prompts, since, until) {
 
       const cells = [el("td", { className: "src-col-idx muted" }, String(i + 1)), el("td", { className: "td-domain" }, keyCell)];
       if (sourceViewMode === "domain") cells.push(el("td", { className: "num" }, String(row.urls.size)));
-      const citations = row.citations || 0;
-      const fetched = row.fetched || 0;
-      const total = citations + fetched;
-      const citedRate = total > 0 ? (citations / total) * 100 : 0;
       cells.push(
         el("td", { className: "src-bar-cell" }, bar),
-        el("td", { className: "num" }, String(citations)),
+        el("td", { className: "num" }, String(row.citations || 0)),
         el("td", { className: "num" }, String(row.citedPromptIds.size)),
-        el("td", { className: "num muted" }, String(fetched)),
-        el("td", { className: "num" }, fmtPct(citedRate)));
+        el("td", { className: "num muted" }, String(row.fetched || 0)),
+        el("td", { className: "num" }, fmtPct(row.citedRate)));
       srcTable.append(el("tr", {}, ...cells));
     });
     root.append(el("div", { className: "drill-scroll" }, srcTable));

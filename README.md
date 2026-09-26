@@ -10,15 +10,18 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.45.2** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.45.3** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
-> - Fixed a bug where Grok turns failed by misidentifying its normal navigation as a lost prompt.
-> - Added a "title mismatch" tag for fetched-not-cited pages whose title doesn't match the search query.
-> - Added a per-domain "Cited %" rate in the Source Domains list to show the ratio of citations to total fetched pages.
+> - Undid 0.45.2's Grok change, which re-sent prompts whenever Grok moved to its new
+>   conversation after a send.
+> - Read-only sources whose title shares no word with any search the engine ran are
+>   tagged "title mismatch" in Analyze.
+> - Source Domains shows each domain's "Cited %": of the answers that read it, the share
+>   that cited it.
 
 ## Two modes, deliberately kept apart
 

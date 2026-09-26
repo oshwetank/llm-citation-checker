@@ -179,6 +179,35 @@ console.log("\nevery row carries the denominator it was measured against");
     domains.get("acme.com").citedResponses === 1);
 }
 
+console.log("\ncited rate: of the answers that read a domain, how many credited it");
+{
+  // 0.45.2 computed this as citations ÷ (citations + read-only). Citations
+  // count every occurrence while read-only counts pages, so one answer
+  // citing a domain four times and three answers only reading it came out
+  // at 57% — when the domain was credited in one answer of the four that
+  // pulled it in. Counted per answer, it is 25%.
+  const read = (domain, prefix) => [{ domain, url: `https://${domain}/${prefix}`, outcome: "fetched" }];
+  const { domains } = aggregateSources({
+    q1: [run(cite("acme.com", 4, "a"))],
+    q2: [run(read("acme.com", "b"))],
+    q3: [run(read("acme.com", "c"))],
+    q4: [run(read("acme.com", "d"))],
+    q5: [run(cite("other.com", 1))],
+  });
+  const d = domains.get("acme.com");
+  check("four answers pulled it in", d.responses === 4, String(d.responses));
+  check("one of them credited it: 25%", d.citedRate === 25, String(d.citedRate));
+  check("a domain that is always cited scores 100%", domains.get("other.com").citedRate === 100,
+    String(domains.get("other.com").citedRate));
+
+  const both = aggregateSources({ q1: [run([...cite("mix.com", 1, "x"), ...read("mix.com", "y")])] });
+  check("cited and also read in the same answer is one credited answer",
+    both.domains.get("mix.com").citedRate === 100, String(both.domains.get("mix.com").citedRate));
+
+  const url = [...aggregateSources({ q1: [run(read("acme.com", "u"))] }).urls.values()][0];
+  check("URL rows carry the same rate", url.citedRate === 0, String(url.citedRate));
+}
+
 console.log("\ndegenerate input never throws");
 {
   check("nothing at all", aggregateSources(null).totalResponses === 0);
