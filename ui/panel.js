@@ -2171,6 +2171,20 @@ function renderAnalyze() {
       // instead of running the card to several screens.
       const SRC_PREVIEW = 10;
       const visible = showAllSources ? ranked : ranked.slice(0, SRC_PREVIEW);
+
+      // Collect all fanout query words for title matching
+      const queryWords = new Set();
+      for (const arr of Object.values(rec.fanout || {})) {
+        if (!arr) continue;
+        for (const q of arr) {
+          const qStr = typeof q === "string" ? q : q?.query || "";
+          qStr.toLowerCase().split(/\s+/).forEach((w) => {
+            const clean = w.replace(/[^a-z0-9]/g, "");
+            if (clean.length > 2) queryWords.add(clean);
+          });
+        }
+      }
+
       visible.forEach((s, idx) => {
         const li = el("li", { className: "src-item" });
         const header = el("div", { className: "src-header" });
@@ -2193,6 +2207,14 @@ function renderAnalyze() {
         if (kind) header.append(el("span", { className: "tag src-type", title: "The kind of result, as the engine labelled it" }, kind));
         else if (s.type === "news") header.append(el("span", { className: "tag news" }, "news"));
         
+        if (s.outcome === "fetched" && s.title && queryWords.size > 0) {
+          const titleWords = s.title.toLowerCase().split(/\s+/).map((w) => w.replace(/[^a-z0-9]/g, "")).filter((w) => w.length > 2);
+          const matches = titleWords.some((w) => queryWords.has(w));
+          if (!matches) {
+            header.append(el("span", { className: "tag src-mismatch", title: "Fetched but not cited, and title does not match what was searched", style: "background: #fef2f2; color: #ef4444; border-color: #f87171;" }, "title mismatch"));
+          }
+        }
+
         const titleLink = el("a", { href: s.url, target: "_blank", rel: "noreferrer", className: "src-title" }, s.title || s.url);
         header.append(titleLink);
         li.append(header);
@@ -5285,7 +5307,8 @@ async function refreshPromptPerformance(profile, prompts, since, until) {
       el("th", { "data-term": "domainVisibility" }, "Visibility"),
       el("th", { className: "num", "data-term": "domainCitations" }, "Citations"),
       el("th", { className: "num", "data-term": "distinctPrompts" }, "Prompts"),
-      el("th", { className: "num", "data-term": "readOnly" }, "Read-only"));
+      el("th", { className: "num", "data-term": "readOnly" }, "Read-only"),
+      el("th", { className: "num" }, "Cited %"));
     srcTable.append(el("tr", {}, ...hdr));
 
     shown.forEach((row, i) => {
@@ -5309,11 +5332,16 @@ async function refreshPromptPerformance(profile, prompts, since, until) {
 
       const cells = [el("td", { className: "src-col-idx muted" }, String(i + 1)), el("td", { className: "td-domain" }, keyCell)];
       if (sourceViewMode === "domain") cells.push(el("td", { className: "num" }, String(row.urls.size)));
+      const citations = row.citations || 0;
+      const fetched = row.fetched || 0;
+      const total = citations + fetched;
+      const citedRate = total > 0 ? (citations / total) * 100 : 0;
       cells.push(
         el("td", { className: "src-bar-cell" }, bar),
-        el("td", { className: "num" }, String(row.citations || 0)),
+        el("td", { className: "num" }, String(citations)),
         el("td", { className: "num" }, String(row.citedPromptIds.size)),
-        el("td", { className: "num muted" }, String(row.fetched || 0)));
+        el("td", { className: "num muted" }, String(fetched)),
+        el("td", { className: "num" }, fmtPct(citedRate)));
       srcTable.append(el("tr", {}, ...cells));
     });
     root.append(el("div", { className: "drill-scroll" }, srcTable));

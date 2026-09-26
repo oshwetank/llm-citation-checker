@@ -168,7 +168,7 @@ jobs:
                    test/campaign-drilldown.test.mjs test/capture-latency.test.mjs \
                    test/compare-tab.test.mjs test/concurrency-live.test.mjs test/duplicate-capture.test.mjs \
                    test/full-audit.test.mjs test/long-answer.test.mjs \
-                   test/funnel-omitted.test.mjs test/live-run-toast.test.mjs test/loader-status-stability.test.mjs \
+                   test/funnel-omitted.test.mjs test/grok-navigation-timeout.test.mjs test/live-run-toast.test.mjs test/loader-status-stability.test.mjs \
                    test/mention-list.test.mjs \
                    test/perplexity-campaign-preview.test.mjs test/prompt-manual-add.test.mjs \
                    test/prompt-submit.test.mjs test/reload-false-positive.test.mjs \

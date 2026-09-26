@@ -1638,25 +1638,17 @@ chrome.tabs.onUpdated?.addListener((tabId, changeInfo) => {
   const { plat, leg } = found;
   if (!loader.running || loader.paused || leg.paused) return;
   if (!leg.startedAt || leg.idx >= leg.prompts.length) return; // no turn in flight on this leg
-  if (Date.now() < (leg.navGraceUntil || 0)) return; // still settling our own navigation
+  // Grok does not navigate post-submit. Any navigation away from the ?lcfc=1 URL
+  // is a lost prompt (e.g. its /tos-gate bounce). If we see that definitively,
+  // we bypass the grace period to trigger an immediate recovery.
+  const isGrokLost = plat === "grok" && changeInfo.url && !changeInfo.url.includes("lcfc=");
+  if (!isGrokLost && Date.now() < (leg.navGraceUntil || 0)) return; // still settling our own navigation
 
-  /* Positive evidence beats elapsed time.
-   *
-   * `loader-verify` fires from the content script on every real document
-   * load carrying this turn's token — so once it has matched, the prompt is
-   * demonstrably in the content script's hands and this turn is under way.
-   * Every navigation after that point is the engine doing its normal job:
-   * accepting the prompt and moving the tab to the conversation it just
-   * created. Treating those as a spontaneous reload is what made two
-   * consecutive real runs lose the large majority of their prompts to "tab
-   * reloaded repeatedly" across all four engines at once — and because each
-   * retry re-issues the navigation, which produces the next late load event,
-   * the retry caused the next detection and the turn burned its whole budget
-   * in seconds. A verified turn that then genuinely dies is still covered:
-   * the content script reports its own submit failures, and the watchdog
-   * closes out anything that goes quiet.
-   */
-  if (leg.verifiedToken && leg.verifiedToken === leg.token) return;
+  if (isGrokLost) {
+    leg.verifiedToken = null; // force the reload check to fail
+  } else if (leg.verifiedToken === leg.token) {
+    return; // content script already claimed it
+  }
 
   // Not yet verified. This is still far more likely to be our own navigation
   // (slow engine, or the second load cycle one chrome.tabs.update produces)
