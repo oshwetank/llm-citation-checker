@@ -2,7 +2,7 @@
 
 Read this before changing anything. It is the working context from the sessions that built v0.38 to v0.45, written so another developer or model can take over without the chat history. For what each change does and why, see PR #26's description and the commit messages. Those are detailed and accurate.
 
-Last updated 26 September 2026, at v0.45.4.
+Last updated 26 September 2026, at v0.45.5.
 
 ## Where things stand
 
@@ -10,9 +10,9 @@ Last updated 26 September 2026, at v0.45.4.
   - **Campaigns** (the "Loader") send a list of prompts to several engines in background tabs and compute visibility metrics across them.
   - See `README.md` for the user-facing description and `ARCHITECTURE.md` / `RESEARCH.md` for the original design.
 - **Branch.** Work happens on `claude/blank-screen-prompts-issue-qnma6w`. **PR #26** targets `master`, is **open**; check its CI before building on it. If it has since been merged, start from `master`.
-- **Version.** 0.45.4. 0.45.1 was never released; 0.45.2 was another model's commit (`c866508`) whose Grok change is undone in 0.45.3 — see open problem 1.
+- **Version.** 0.45.5. 0.45.1 was never released; 0.45.2 was another model's commit (`c866508`) whose Grok change is undone in 0.45.3 — see open problem 1.
 - **Tests.** 46 unit and 30 browser test files, all passing locally and in CI.
-- **Last real run: v0.45.3, 25/40.** v0.45.4 fixes both causes that run exposed and has not been run yet. The last real run was on v0.43.0 (see the run history).
+- **Last real run: v0.45.4 (Gemini + Grok only), 10/20.** Gemini 10/10; Grok 0/10, fixed in 0.45.5, not yet run. The last real run was on v0.43.0 (see the run history).
 
 ## How the owner works
 
@@ -94,19 +94,29 @@ All runs are the owner's, on Windows Chrome 153. Captured counts are per prompt 
 | 0.42 | "35/40" (inflated) | Phantom turns completed prompts that were never asked. The 64 MiB export failure. Perplexity's stream was unreadable. Grok "page script not responding" | 0.43 (`215f04a`, `4d14c4b`) |
 | 0.43 | **27/40**: ChatGPT 10, Perplexity 10, Gemini 7, **Grok 0** | Gemini got up to 9 identical sends per prompt. Duplicate captures skewed metrics. Grok tabs never answered the probe | 0.44 (`fe31348`) |
 | 0.45.3 | **25/40**: ChatGPT 10, Perplexity 10, Gemini 5, **Grok 0** | All 15 failures "Chrome froze the tab", each ~60s after the page stopped loading. Every Grok turn bounced `grok.com/?q=…` → `/tos-gate` → bare `grok.com/`, losing the prompt | 0.45.4 |
-| 0.45.4 | not run yet | | |
+| 0.45.4 | **10/20** (Gemini + Grok only): Gemini **10**, Grok 0 | The freeze fix held (Gemini 5 → 10). Every Grok turn read `composer … sent:url` with nothing typed: the `/tos-gate` hop happens in the same document and counted as a send | 0.45.5 |
+| 0.45.5 | not run yet | | |
 
 ## Open problems, in priority order
 
 1. **Grok has never captured an answer in a real run.**
-   - **What the v0.45.3 export showed.** Every Grok turn's tab log read like `0.4s:L,grok.com/ … 6.9s:L,grok.com/tos-gate 7.0s:C 7.1s:L,grok.com/ 7.1s:C 67.5s:frozen`. grok.com sends the `?q=` page through `/tos-gate` and back to its bare home page within a few seconds, and the prompt, which lived only in the address, is gone. Nothing typed it; a minute later Chrome froze the idle tab.
-   - **Fixed in 0.45.4 (`loader-claim`).** A page without markers, in a tab that had them (per-tab `sessionStorage` mark), asks the run whether a turn is waiting. The run hands it the prompt if the page is on that tab's engine, the turn is in flight and its prompt hasn't gone out (`loader-sent`, reported the moment the engine's own submit request leaves). Capped at 4 claims a turn. `test/redirect-claim.test.mjs` reproduces the bounce, and a page that sends before bouncing must not send twice.
-   - **Still unproven:** capture. No real Grok answer has been read yet; the WebSocket gateway reader (`src/adapters/grok.js`) is built from open-source clients. If the next run sends Grok prompts but captures nothing, look at `unreadable/` for Grok payloads.
-   - **About 0.45.2.** It guessed the `/tos-gate` bounce correctly, but its fix treated *any* Grok navigation away from `?lcfc=1` as a lost prompt, including Grok's own move to `/c/<id>` after a send and our content script stripping `?lcfc=` at load, so healthy turns were reloaded and re-sent. 0.45.3 undid it (`test/grok-navigation-timeout.test.mjs`); 0.45.4 recovers the prompt instead of reloading.
+   - **v0.45.3 export.** Tab logs read `… 6.9s:L,grok.com/tos-gate 7.0s:C 7.1s:L,grok.com/ … 67.5s:frozen`.
+   - **v0.45.4 export (the real cause).** Every turn's page trace read `composer … sent:url` with no `typed`, and the tab log put `sent` at the instant of the `/tos-gate` hop. The hop is a **same-document** route change: the submit loop's "path changed and got longer = sent" rule fired on it during the native-`?q=` grace period, so nothing was ever typed. 0.45.4's cross-document `loader-claim` (below) was built on the wrong reading of the tab log and never engaged: `L` entries don't distinguish same-document route changes from page loads.
+   - **Fixed in 0.45.5**, from outside evidence rather than our own code:
+     - **grok-brain** (github.com/ops120/grok-brain, `references/site-map.md` and `scripts/grb/src/site.mjs`, selectors verified on the live site 2026-09) and four open-source multi-AI extensions (PromptCast, Mosaic, GenAIPromptExtension, Parallel AI) agree that the composer is a Tiptap/ProseMirror contenteditable in `[data-testid="chat-input"]`, and that the send control is `[data-testid="chat-submit"]`, labelled "Submit".
+     - The page also has a hidden `aria-hidden` textarea with an "Ask Grok…" placeholder, which was our first composer match. `pick()` now skips aria-hidden and unlaid-out elements.
+     - The URL "sent" signal needs a conversation path (`/c/<id>`, `/app/<id>`, `/search/…`), and only counts after the script has typed.
+     - `/tos-gate` that doesn't clear within ~10s gives up with "accept Grok's updated terms". It never clicks accept for the owner.
+     - The DOM harvester reads `.message-bubble` outside `[data-testid="user-message"]`.
+     - Tests: `prompt-submit` ("Grok: the app hops through /tos-gate…"), `dom-harvest-multiturn` (today's layout).
+   - **Still unproven: capture.** grok-brain records the answer on `/rest/app-chat/conversations/…`, which `GROK_RE` already intercepts, as well as the WebSocket gateway. If the next run sends Grok prompts but captures nothing, look in `unreadable/`.
+   - **Watch for:** grok-brain notes that opening grok.com can restore the last conversation. Our tab stays on `/` after the hop, so it isn't handled; if Grok answers look like follow-ups, click `[data-testid="new-chat"]` first.
+   - **`loader-claim` (0.45.4).** A page without markers in a run's tab asks for its unsent turn. It is kept because it covers real reloads, but it was not what Grok needed.
+   - **About 0.45.2.** It spotted the `/tos-gate` hop, but reloaded the tab on every Grok address change, re-sending healthy turns; 0.45.3 undid it (`test/grok-navigation-timeout.test.mjs`).
 2. **Chrome froze every turn still waiting at about a minute (v0.45.3: 5 Gemini, 10 Grok).**
    - **Why.** Chromium calls a page that never goes quiet "loaded" at most one minute after it stops loading (`kWaitingForIdleTimeout` in `page_load_tracker_decorator.h`); a hidden tab is freezable from then unless something exempts it. Holding a Web Lock does (`CannotFreezeReason::kHoldingWebLock`). The turn's lock was released when the post-send watch ended, a minute after the send.
    - **Fixed in 0.45.4.** The lock is held until the turn gives up, the page goes away, or 5 minutes pass (longer than any turn). `prompt-submit` checks it is still held after the post-send watch ends.
-   - **Gemini's 5 failures are otherwise unexplained.** No capture ever arrived for them, and the frozen page couldn't answer the probe. With the lock held, the next run's probe will say how far each got (`sentWhy`, stage, trace).
+   - **Confirmed by the v0.45.4 run:** Gemini 10/10 (from 5/10), every turn 12–16s, no freezes.
 3. **ChatGPT pipeline labels.** These are not a bug: current traffic doesn't carry them. Captures from 21 May to 21 July 2026 do, and pick them up via Reprocess all.
 4. **Freeze coverage.** Chrome's actual freeze decision can't be exercised in the harness. The Web Lock is tested as held for the right span, not as preventing a freeze; Chromium's source is the evidence it does.
 

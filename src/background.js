@@ -2265,13 +2265,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         /* A page without the run's markers, in a tab that had them, asking
          * whether a turn is waiting for it.
          *
-         * The prompt reached the engine only in the tab's address, and an
-         * engine that redirects drops it. In a real v0.45.3 run every Grok
-         * turn went grok.com/?q=… → /tos-gate → grok.com/ within seven
-         * seconds; the page it landed on had no markers, so nothing typed
-         * the prompt, and a minute later Chrome froze the idle tab. The run
-         * holds the prompt, so it hands the turn to the page the tab ended
-         * up on — the same checks loader-verify makes, plus two of its own:
+         * The prompt reached the engine only in the tab's address, and a
+         * reload or a cross-page redirect drops it. (Written after grok.com's
+         * /tos-gate hop, which a later run showed happens inside the same
+         * document — that one was a false "sent", fixed in content-iso.js.)
+         * The run holds the prompt, so it hands the turn to the page the tab
+         * ended up on — the same checks loader-verify makes, plus two of its own:
          * the page must be on this tab's engine, and the prompt must not
          * have gone out yet, so a redirect after a send can't send it twice.
          * Capped per turn, so a page that keeps bouncing can't loop.

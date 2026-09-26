@@ -1,23 +1,21 @@
 /*
- * redirect-claim.test.mjs — a prompt survives the engine redirecting its tab.
+ * redirect-claim.test.mjs — a prompt survives the tab being sent to another
+ * page.
  *
- * Every Grok turn in a real v0.45.3 run went the same way. The tab loaded
- * grok.com/?q=…&lcfc=1, Grok sent it through /tos-gate and back to its bare
- * home page within a few seconds, and the prompt — which only ever lived in
- * the address — was gone. The new page had no markers, so nothing typed the
- * prompt; a minute later Chrome froze the idle tab and the watchdog failed
- * the turn. Per-turn load logs from the run, ids folded:
+ * The prompt reaches the engine only in the tab's address (?q=…&lcfc=1), so
+ * a reload or a cross-page redirect loses it: the page the tab lands on has
+ * no markers and nothing types the prompt. The run keeps the prompt, so a
+ * page the tab lands on can ask for it: a document without markers, in a
+ * tab the run owns, on that tab's engine, whose turn hasn't gone out yet, is
+ * handed the turn. One that has gone out is not — a redirect after a send
+ * must never send it twice.
  *
- *   0.4s:L,grok.com/ 2.6s:L 6.9s:L,grok.com/tos-gate 7.0s:C 7.1s:L,grok.com/ 7.1s:C 67.5s:frozen
- *
- * The run keeps the prompt, so a page the tab lands on can ask for it: a
- * document without markers, in a tab the run owns, on that tab's engine,
- * whose turn hasn't gone out yet, is handed the turn. One that has gone out
- * is not — the engine redirecting after a send must never send it twice.
- *
- * The stub reproduces that sequence: the prompt page bounces through
- * /tos-gate to a bare page with a composer. A second prompt's page sends the
- * prompt itself (Grok's own submit request) before bouncing.
+ * Written after grok.com's /tos-gate hop in a v0.45.3 run, modelled here as
+ * a cross-page redirect. A v0.45.4 run showed that hop happens inside the
+ * same document (a false "sent", covered in prompt-submit.test.mjs); the
+ * recovery stays for real reloads and redirects, which lose the prompt
+ * exactly as this stub does. A second prompt's page sends the prompt itself
+ * (Grok's own submit request) before bouncing.
  */
 import { fileURLToPath } from "node:url";
 import path from "node:path";

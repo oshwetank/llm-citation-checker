@@ -10,17 +10,18 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.45.4** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.45.5** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
-> - An engine that redirects its tab no longer loses the prompt: the page the tab lands on
->   picks the turn up. Every Grok turn was being lost this way (grok.com bounces through
->   `/tos-gate` to its home page).
-> - A turn's tab can't be frozen by Chrome until the turn is over. Chrome was freezing
->   every tab still waiting for an answer about a minute in.
+> - Grok prompts are actually typed and sent. grok.com's momentary hop through `/tos-gate`
+>   was being read as "sent" before anything was typed, and the composer list could land on
+>   a hidden decoy textbox. Selectors now follow grok.com's current page, as mapped by
+>   open-source projects that drive it.
+> - A turn's tab can't be frozen by Chrome until the turn is over (Gemini went from 5/10 to
+>   10/10 with this).
 > - Read-only sources whose title shares no word with any search the engine ran are
 >   tagged "title mismatch" in Analyze; Source Domains shows each domain's "Cited %".
 

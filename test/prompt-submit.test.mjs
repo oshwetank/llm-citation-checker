@@ -53,9 +53,9 @@ const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] }
 
 // Runs the REAL content-iso.js against a mock page shaped like one engine.
 // The page records every submission it receives so the count can be asserted.
-async function run(html, { gemini = false, waitMs = 9000, throttle = false, throttleMs = 60000, workerClock = true, clockMs = 0 } = {}) {
+async function run(html, { gemini = false, grok = false, waitMs = 9000, throttle = false, throttleMs = 60000, workerClock = true, clockMs = 0 } = {}) {
   const page = await browser.newPage();
-  const host = gemini ? "https://gemini.google.com" : "https://chatgpt.com";
+  const host = gemini ? "https://gemini.google.com" : grok ? "https://grok.com" : "https://chatgpt.com";
   await page.route("**/*", (r) => r.fulfill({ status: 200, contentType: "text/html", body: `<body>${html}</body>` }));
   await page.goto(`${host}/mock?q=${encodeURIComponent(PROMPT)}&lcfc=1&lcfctok=T1`);
   const res = await page.evaluate(async ({ iso, waitMs, throttle, throttleMs, workerClock, clockMs }) => {
@@ -524,6 +524,48 @@ console.log("\nProof of submission survives stale DOM selectors (the URL changes
   check("submitted exactly once", r.submits === 1, `submits=${r.submits}`);
   check("no failure reported — the URL alone proved it went out",
     r.gaveUp.length === 0, JSON.stringify(r.gaveUp));
+}
+
+/* grok.com as it really is (v0.45.4 run, and grok-brain's selector map,
+ * verified on grok.com in 2026-09). Every Grok turn in the run read
+ * "composer … sent:url" and nothing was ever typed: the app routes a fresh
+ * ?q= page to /tos-gate and back to / in the SAME document, and a path that
+ * changed and got longer counted as proof the prompt went out. The page
+ * also carries a hidden, aria-hidden <textarea> placeholder'd "Ask Grok
+ * anything" — typing into it does nothing — beside the real composer, a
+ * Tiptap/ProseMirror contenteditable inside [data-testid="chat-input"]; the
+ * send control is [data-testid="chat-submit"], labelled "Submit".
+ */
+const GROK_PAGE = `
+    <textarea placeholder="Ask Grok anything" aria-hidden="true" tabindex="-1" style="height:14px"></textarea>
+    <div data-testid="chat-input"><div class="tiptap ProseMirror" contenteditable="true" role="textbox"></div></div>
+    <button data-testid="chat-submit" type="submit" aria-label="Submit">send</button><div id="convo"></div>
+    <script>
+      window.__submits=0;
+      const box=document.querySelector('.ProseMirror');
+      // The app's own bounce: /tos-gate and back, same document, ?q= gone.
+      setTimeout(()=>history.replaceState(null,'','/tos-gate'),300);
+      setTimeout(()=>history.replaceState(null,'','/'),600);
+      document.querySelector('[data-testid="chat-submit"]').addEventListener('click',()=>{
+        const t=box.innerText.trim(); if(!t) return;
+        box.innerHTML=''; window.__submits++; window.__lastText=t;
+        if(window.__submitAt===undefined) window.__submitAt=Date.now()-(window.__t0||Date.now());
+        const d=document.createElement('div'); d.setAttribute('data-testid','user-message'); d.textContent=t;
+        document.getElementById('convo').appendChild(d);
+        history.pushState(null,'','/c/6ca7034d-866d-404f-a776-72608a3113c6');
+      });
+    </script>`;
+
+console.log("\nGrok: the app hops through /tos-gate in the same page, beside a hidden decoy textarea");
+{
+  const r = await run(GROK_PAGE, { grok: true, waitMs: 12000 });
+  check("the prompt is typed and submitted, exactly once", r.submits === 1, `submits=${r.submits}`);
+  check("into the real composer, with the right text", r.text === PROMPT, JSON.stringify(r.text));
+  const tr = (r.probe || {}).trace || "";
+  check("the /tos-gate hop is not taken for a send — it comes after the typing",
+    tr.includes(":typed") && tr.indexOf(":sent") > tr.indexOf(":typed"), tr);
+  check("the send is confirmed by the conversation opening", (r.probe || {}).sentWhy === "url" || (r.probe || {}).sentWhy === "turn",
+    JSON.stringify(r.probe && r.probe.sentWhy));
 }
 
 console.log("\nA tab bounced to a login page says SO, instead of 'composer never appeared'");

@@ -176,22 +176,51 @@
       userTurn: '[data-testid="user-query"], .font-display, h1',
       turns: ".prose, [data-testid='thread-message']",
     },
+    /* grok.com, as mapped by grok-brain (github.com/ops120/grok-brain,
+     * references/site-map.md, verified on the live site 2026-09) and matched
+     * by every open-source multi-AI extension that drives it (PromptCast,
+     * Mosaic, GenAIPromptExtension, Parallel AI): the composer is a
+     * Tiptap/ProseMirror contenteditable inside [data-testid="chat-input"],
+     * and the send control is [data-testid="chat-submit"], labelled
+     * "Submit". The page ALSO carries a hidden textarea (aria-hidden,
+     * tabindex -1, 14px) with an "Ask Grok…" placeholder — typing into it
+     * does nothing, and it used to be this list's first match. Labels change
+     * with the UI language, so structure comes first and text last.
+     */
     grok: {
-      composer: ['textarea[placeholder*="Ask" i]', 'div[contenteditable="true"]', "textarea"],
-      send: ['button[aria-label*="Send" i]', 'button[aria-label*="Grok" i]', 'button[type="submit"]'],
+      composer: ['[data-testid="chat-input"] [contenteditable="true"]', '.ProseMirror[contenteditable="true"]', 'div[contenteditable="true"]', 'textarea[placeholder*="Ask" i]', "textarea"],
+      send: ['[data-testid="chat-submit"]', 'button[aria-label="Submit"]', 'button[type="submit"]', 'button[aria-label*="Submit" i]', 'button[aria-label*="Send" i]'],
       streaming: ['button[aria-label*="Stop" i]'],
-      userTurn: '.user-message, [data-message-author="user"]',
-      turns: ".message-row, [data-message-author]",
+      userTurn: '[data-testid="user-message"], .user-message, [data-message-author="user"]',
+      turns: '.message-bubble, [data-testid="user-message"], .message-row, [data-message-author]',
     },
   };
 
+  /* The first element a selector list finds that a person could actually
+   * use: not aria-hidden (itself or an ancestor) and laid out. A list is in
+   * priority order, but a match that is hidden loses to a later one that
+   * isn't — grok.com's decoy textarea is the case in point. With nothing
+   * visible it falls back to the first match, as before, so a page this
+   * can't lay out (a test harness, an odd renderer) still gets one.
+   */
+  const usable = (el) => {
+    try {
+      if (el.closest('[aria-hidden="true"]')) return false;
+      return el.getClientRects().length > 0;
+    } catch (_) { return true; }
+  };
   const pick = (list) => {
     if (!list) return null;
+    let fallback = null;
     for (const s of list) {
-      const el = document.querySelector(s);
-      if (el) return el;
+      let els;
+      try { els = document.querySelectorAll(s); } catch (_) { continue; }
+      for (const el of els) {
+        if (usable(el)) return el;
+        if (!fallback) fallback = el;
+      }
     }
-    return null;
+    return fallback;
   };
 
   const getPlatform = () => {
@@ -327,8 +356,9 @@
      * redirected, or the tab reloaded. The prompt only ever lived in the
      * address, so it is gone — but the run still holds it, and hands the
      * turn to this page if it is still waiting (background.js,
-     * loader-claim). Every Grok turn in a real v0.45.3 run was lost this
-     * way, bounced through /tos-gate to a bare grok.com/.
+     * loader-claim). (Written for grok.com's /tos-gate hop, which turned
+     * out to happen inside the same document — see submittedWhy — but a
+     * real reload or cross-page redirect loses the prompt exactly this way.)
      *
      * Only asked in a tab that has been a run's tab on this site (the
      * per-tab mark below), so ordinary browsing never messages the run.
@@ -435,15 +465,25 @@
        * but they are exactly the kind of thing that goes stale silently —
        * which is how a turn could look "sent" while nothing had happened.
        *
-       * The length guard matters: a redirect to a SHORTER path (a sign-out
-       * bouncing the tab to a login page) must not read as success.
+       * Only a CONVERSATION path counts, and only once this script has put
+       * the prompt in. Any longer path used to: grok.com routes a fresh
+       * page to /tos-gate and back in the same document, and every Grok turn
+       * in a real v0.45.4 run read that hop as "sent" before anything was
+       * typed. A native ?q= submit (ChatGPT) is already proven by its
+       * request ("net"), so nothing is lost by waiting for our own typing.
        */
+      const CONVERSATION_PATH = {
+        chatgpt: /\/c\/[\w-]{6,}/i,
+        gemini: /^\/app\/[\w-]{6,}/i,
+        grok: /^\/c\/[\w-]{6,}/i,
+        perplexity: /^\/search\/[\w-]/i,
+      }[plat];
       const submittedWhy = () => {
         // Each turn loads a fresh document, so any submit request seen in
         // it — ours, or the engine's own from ?q= — is this turn's prompt.
         if (engineSubmit.at) return "net";
         const path = location.pathname;
-        if (path !== startPath && path.length > startPath.length) return "url";
+        if (injected && path !== startPath && CONVERSATION_PATH && CONVERSATION_PATH.test(path)) return "url";
         if (pick(sel.streaming)) return "stream";
         try {
           const turns = document.querySelectorAll(sel.userTurn || "[data-message-author-role='user']");
@@ -691,6 +731,7 @@
       let sendTicks = 0;
       let searchDone = false;
       let injected = false;
+      let tosTicks = 0;           // ticks spent on grok.com's /tos-gate
       let submitTried = 0;
       let sentOk = false;
       let sentWhy = "";
@@ -764,6 +805,22 @@
         if (signedOut()) {
           stopLoop();
           giveUp("not signed in to this engine — the tab was redirected to a login page");
+          return;
+        }
+
+        /* grok.com's terms gate. Normally it is passed through in a blink
+         * (every turn of the v0.45.4 run hopped /tos-gate → / in under half
+         * a second), but after a terms update the page STAYS there until a
+         * person accepts — grok-brain documents the screen. Accepting terms
+         * is the owner's decision, so this never clicks it: it waits ~10s
+         * for the hop, then says what to do instead of timing out. */
+        if (plat === "grok" && /tos-gate/i.test(location.pathname)) {
+          tosTicks++;
+          if (tosTicks === 1) T("tosgate");
+          if (tosTicks > 25) {
+            stopLoop();
+            giveUp("Grok is asking you to accept its updated terms — open grok.com in a normal tab, accept them, then run again");
+          }
           return;
         }
 
@@ -1702,12 +1759,18 @@
       } else if (plat === "grok") {
         // LAST turn, not first — same follow-up bug as the Perplexity branch
         // above. Reported on Grok too.
-        const userEls = document.querySelectorAll('.user-message, [data-message-author="user"]');
+        // Today's grok.com (grok-brain's site map, 2026-09): the user's turn
+        // is [data-testid="user-message"], and .message-bubble holds BOTH
+        // sides — an answer is a bubble outside any user message. The older
+        // class names stay as a fallback.
+        const userEls = document.querySelectorAll('[data-testid="user-message"], .user-message, [data-message-author="user"]');
         if (userEls.length) promptText = (userEls[userEls.length - 1].textContent || "").trim();
 
-        const msgEls = document.querySelectorAll('.message-row, [data-message-author="assistant"]');
+        let msgEls = Array.from(document.querySelectorAll(".message-bubble")).filter((el) =>
+          !(el.closest && el.closest('[data-testid="user-message"]')) && !(el.querySelector && el.querySelector('[data-testid="user-message"]')));
+        if (!msgEls.length) msgEls = Array.from(document.querySelectorAll('.message-row, [data-message-author="assistant"]'));
         if (msgEls.length) {
-          const els = Array.from(msgEls);
+          const els = msgEls;
           const perTurn = userEls.length > 0 && els.length === userEls.length;
           const chosen = perTurn ? [els[els.length - 1]] : els;
           // Markdown, not innerText — see domToMarkdown's header. The structural
