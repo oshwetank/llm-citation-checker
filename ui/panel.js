@@ -15,6 +15,9 @@ import { BUNDLE_PARTS, buildFeedbackFiles, bundleFilename } from "../src/lib/fee
 import { computeSearchFunnel, computeBrandMatrix } from "../src/lib/funnel-omitted.js";
 import { GLOSSARY, glossaryGroups } from "../src/lib/glossary.js";
 import { normalizeMentions } from "../src/lib/mention-list.js";
+import {
+  answerKind, searchesView, brandsView, pagesView, ownBrandFor, yourBrandView, findPrevious, changesView,
+} from "../src/lib/analyzeView.js";
 import { aggregateSources, aggregateSourcesFromCaptures } from "../src/lib/sources.js";
 import { analyzeFanout, FANOUT_BENCHMARK, titleMatchesQueries } from "../src/lib/fanout.js";
 import { sanitizeText, trimLabel } from "../src/lib/text-sanitize.js";
@@ -335,11 +338,18 @@ function showSignInGate({ signedOut = [], unknown = [], message, onProceed }) {
 }
 
 let RECORDS = [];
+// Every capture's light row, campaign ones included. Analyze reads it to find
+// the previous answer to a campaign prompt, which RECORDS (ad-hoc only) lacks.
+let ALL_RECORDS = [];
 let PROJECTS = [];
 let dashboardCampaignId = ""; // "" = no campaign selected
 let dashboardGeoPrompts = []; // tracked prompts for dashboardCampaignId (tag chips only — independent of the Campaigns tab's own GEO_PROMPTS)
 let dashboardSearch = ""; // filters Saved Conversations (and the ad-hoc stat grid) by prompt text
-let viewingId = null; // which capture the Analyze tab shows (null = latest)
+let viewingId = (() => {
+  // ?capture=<id>: the popup's "Full analysis" link opens the full tab on the
+  // answer that was on screen, not on whatever is latest.
+  try { return new URLSearchParams(location.search).get("capture") || null; } catch (_) { return null; }
+})(); // which capture the Analyze tab shows (null = latest)
 // Which tab to return to from Analyze, and what to call it in the "← Back
 // to X" link. Set by openCapture() from whichever tab was active when a
 // capture link was clicked (Dashboard's Saved Conversations or Prompt
@@ -706,6 +716,8 @@ async function openCapture(captureId) {
   const current = document.querySelector(".panel.active")?.id;
   if (current && current !== "analyze") returnTab = current;
   viewingId = captureId;
+  // A different answer starts with its details sheet and menus closed.
+  apSheet = null; apMenuOpen = false; apFanAll = false; apPromptOpen = false;
   showTab("analyze");
   renderAnalyze();
 }
@@ -745,7 +757,7 @@ async function load() {
         el("div", { className: "card warn-box", style: "margin: 20px; color: var(--red-fg);" },
           el("h3", {}, "Couldn't connect to the extension"),
           el("p", {}, "This usually happens right after the extension is reloaded or updated while this popup/tab was already open."),
-          el("p", { style: "font-weight:600;" }, "Close this popup and reopen it (or refresh the page, if you're in Full tab view)."),
+          el("p", { style: "font-weight:500;" }, "Close this popup and reopen it (or refresh the page, if you're in Full tab view)."),
           el("p", { className: "muted", style: "font-size: 11px;" }, `Details: ${esc(res.error)}`)
         )
       );
@@ -762,6 +774,7 @@ async function load() {
   const all = res.ok ? res.records : [];
   const parts = partitionRecords(all);
   RECORDS = includeTrackedInAdhoc ? all : parts.adhoc;
+  ALL_RECORDS = all;
   TRACKED_COUNT = parts.tracked.length;
 
   // Paint Analyze — the default-visible tab — the moment ITS OWN data
@@ -1181,7 +1194,7 @@ function openProductModal(product, rec) {
   // genuinely illegible. Dropping the override lets .card's real background
   // apply, the same as every other card in the app.
   const priceInfo = el("div", { className: "card", style: "margin-bottom: 12px;" },
-    el("div", { style: "font-weight: 600; font-size: 14px; color: var(--accent);" }, product.price || "Price specified in response text"),
+    el("div", { style: "font-weight: 500; font-size: 14px; color: var(--accent);" }, product.price || "Price specified in response text"),
     el("div", { className: "muted", style: "font-size: 12px; margin-top: 4px;" }, `E-Commerce Merchant: ${product.merchant || "Multiple E-Commerce Retailers"}`),
     el("div", { className: "muted", style: "font-size: 11px; margin-top: 2px;" }, `Rating Source: ${product.rating ? product.rating + " ★ rating aggregated from store metadata & search snippets" : "Rating derived from user evaluation in response"}`)
   );
@@ -1203,7 +1216,7 @@ function openProductModal(product, rec) {
       const li = el("li", { className: "src-item" });
       const h = el("div", { className: "src-header" },
         el("span", { className: `tag ${s.outcome}` }, s.outcome),
-        el("a", { href: s.url, target: "_blank", rel: "noreferrer", style: "font-weight: 600; font-size: 12px; text-decoration: none; color: var(--accent);" }, s.domain || s.url)
+        el("a", { href: s.url, target: "_blank", rel: "noreferrer", style: "font-weight: 500; font-size: 12px; text-decoration: none; color: var(--accent);" }, s.domain || s.url)
       );
       li.append(h);
       if (s.title) li.append(el("div", { style: "font-size: 11px; font-weight: 500; margin-top: 4px;" }, s.title));
@@ -1298,6 +1311,508 @@ chrome.runtime.onMessage.addListener((msg) => {
 });
 
 /* ---------- Analyze (most recent capture) ---------- */
+/* ---------- Analyze, popup layout (0.47.0) ----------
+ * The popup gets its own Analyze, built from src/lib/analyzeView.js. The full
+ * tab keeps the long card layout until its own redesign lands.
+ *
+ * Why a separate layout. Reported on the design canvas: the popup's Analyze
+ * "provides less information", the box under the product cards was "half cut
+ * from the bottom", and the searches (fan-out) were "getting cut". The old
+ * popup was the full-tab card stack squeezed to 540px: General Information
+ * first, searches far down the page, and each search ellipsised. This one
+ * reads top to bottom in the order the owner asked for — the searches the
+ * engine ran directly under the prompt, then what led the answer (product
+ * cards, map or images), your brand, every brand with what backs it, every
+ * cited page, and what changed since the last time.
+ *
+ * Nothing in it squeezes: .ap is a plain column inside the scrolling
+ * .app-content, so a tall section makes the popup scroll instead of being
+ * shrunk to fit and cut off. analyze-popup.test.mjs measures that.
+ */
+let apSheet = null;        // which details tab is open in the popup's sheet, or null
+let apSheetProduct = 0;    // the product the "Where to buy" tab shows
+let apFanAll = false;      // "Show all N searches"
+let apPromptOpen = false;  // long prompt expanded
+let apMenuOpen = false;
+
+const AP_FAN_MAX = 5;
+const AP_KIND_VAR = {
+  "Your site": "--kind-you", "Rival brand sites": "--kind-rival", "Review sites": "--kind-review",
+  "Retailers": "--kind-retail", "Forums & social": "--kind-forum", "Other": "--kind-other",
+};
+const apOrd = (n) => { const s = ["th", "st", "nd", "rd"], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); };
+const apDate = (t) => new Date(t).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
+const apTime = (t) => new Date(t).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+function apSection(id, title, count, extra) {
+  const head = el("div", { className: "ap-sec-head" });
+  const h = el("h2", { className: "ap-h", id: `${id}-h` }, title);
+  if (count != null && count !== "") h.append(el("span", { className: "ap-h-count" }, ` · ${count}`));
+  head.append(h);
+  if (extra) head.append(extra);
+  return el("section", { className: "ap-sec", id, "aria-labelledby": `${id}-h` }, head);
+}
+
+function apPill(text, tone, title) {
+  return el("span", { className: `ap-pill tone-${tone || "neutral"}`, ...(title ? { title } : {}) }, text);
+}
+
+function renderAnalyzePopup(rec, root) {
+  const knownBrands = knownVendors(rec);
+  const own = ownBrandFor(rec, GEO_PROFILES);
+  const previous = findPrevious(rec, ALL_RECORDS);
+  const kind = answerKind(rec);
+  const engineLabel = ENGINES.find((e) => e.id === rec.platform)?.label || rec.platform || "Unknown engine";
+  const mentions = normalizeMentions(rec.brandMentions || [], knownBrands);
+  const brandNames = mentions.map((b) => b.brand);
+  const searches = searchesView(rec, brandNames);
+  const brands = brandsView(rec, { own, knownBrands, previous });
+  const pages = pagesView(rec, { own, knownBrands });
+  const you = yourBrandView(rec, own, { knownBrands, previous });
+  const changes = changesView(rec, previous, { knownBrands });
+  const cited = pages.rows.length;
+
+  const wrap = el("div", { className: "ap" });
+  root.append(wrap);
+
+  if (rec.isDemo || String(rec.captureId || "").startsWith("demo-")) {
+    wrap.append(el("div", { className: "demo-banner" },
+      el("span", { className: "demo-banner-label" }, "Sample"),
+      el("span", {}, "Example data showing what a captured answer looks like — not a real capture. Remove it any time from the About tab.")));
+  }
+
+  /* --- sticky head: engine, time, kind, capture paging, menu; the prompt; the strip --- */
+  const head = el("header", { className: "ap-head" });
+  const row = el("div", { className: "ap-head-row" });
+  const eng = engineIconEl(rec.platform);
+  eng.classList.add("ap-engine-icon");
+  row.append(eng, el("span", { className: "ap-engine" }, engineLabel),
+    el("span", { className: "ap-when", title: new Date(rec.capturedAt).toLocaleString() }, `· ${apDate(rec.capturedAt)}, ${apTime(rec.capturedAt)}`),
+    el("span", { className: `ap-kind kind-${kind.id}` }, kind.label));
+  const spacer = el("span", { className: "ap-head-spacer" });
+  row.append(spacer);
+  const idx = RECORDS.findIndex((r) => r.captureId === rec.captureId);
+  if (idx >= 0 && RECORDS.length > 1) {
+    const go = (j) => { const t = RECORDS[j]; if (!t) return; apSheet = null; apFanAll = false; apPromptOpen = false; openCapture(t.captureId); };
+    const newer = el("button", { className: "ap-icon-btn", type: "button", title: "Newer capture", "aria-label": "Newer capture" }, "‹");
+    newer.disabled = idx === 0;
+    newer.onclick = () => go(idx - 1);
+    const older = el("button", { className: "ap-icon-btn", type: "button", title: "Older capture", "aria-label": "Older capture" }, "›");
+    older.disabled = idx === RECORDS.length - 1;
+    older.onclick = () => go(idx + 1);
+    row.append(newer, el("span", { className: "ap-paging" }, `${idx + 1} of ${RECORDS.length}`), older);
+  } else if (rec.geo) {
+    row.append(el("span", { className: "ap-paging", title: "A campaign capture — open others from the campaign's results" }, "Campaign"));
+  }
+  const menuBtn = el("button", { className: "ap-icon-btn ap-menu-btn", type: "button", title: "More actions", "aria-label": "More actions", "aria-expanded": apMenuOpen ? "true" : "false" }, "⋯");
+  menuBtn.onclick = () => { apMenuOpen = !apMenuOpen; renderAnalyze(); };
+  row.append(menuBtn);
+  head.append(row);
+  if (apMenuOpen) {
+    const menu = el("div", { className: "ap-menu", role: "menu" });
+    const item = (label, fn, danger) => {
+      const b = el("button", { className: `ap-menu-item${danger ? " danger" : ""}`, type: "button", role: "menuitem" }, label);
+      b.onclick = async () => { apMenuOpen = false; await fn(); };
+      menu.append(b);
+    };
+    item("Copy the prompt", async () => { try { await navigator.clipboard.writeText(rec.userPrompt || ""); showToast("Prompt copied"); } catch (_) { showToast("Couldn't copy — select the prompt text instead", "error"); } renderAnalyze(); });
+    item("Save as PDF", () => { exportRecordsAsPdf([rec]); renderAnalyze(); });
+    item("Save as HTML", () => { exportRecordsAsHtml([rec]); renderAnalyze(); });
+    item("Download raw payload", () => { downloadRaw(rec.captureId, "analyze"); renderAnalyze(); });
+    item("Report a wrong reading", () => { renderAnalyze(); openFeedbackModal(rec); });
+    item("Remove from my history", async () => {
+      if (!confirm("Remove this answer from your history? This can't be undone.")) { renderAnalyze(); return; }
+      await send({ type: "delete-record", captureId: rec.captureId });
+      FULL.delete(rec.captureId);
+      viewingId = null;
+      showToast("Removed from your history");
+      load();
+    }, true);
+    head.append(menu);
+  }
+  const promptText = rec.userPrompt || "(no prompt text)";
+  const words = promptText.trim().split(/\s+/).length;
+  const isLong = words > 28 || promptText.length > 180;
+  const h1 = el("h1", { className: `ap-prompt${isLong ? " long" : ""}${isLong && !apPromptOpen ? " clamped" : ""}`, title: promptText }, promptText);
+  head.append(h1);
+  if (isLong) {
+    const t = el("button", { className: "ap-link", type: "button", "aria-expanded": apPromptOpen ? "true" : "false" }, `${apPromptOpen ? "Show less" : "Show all"} · ${words} words`);
+    t.onclick = () => { apPromptOpen = !apPromptOpen; renderAnalyze(); };
+    head.append(t);
+  }
+  const strip = el("div", { className: "ap-strip" });
+  const chip = (text, on, title, cls) => strip.append(el("span", { className: `ap-chip${on ? " on" : ""}${cls ? " " + cls : ""}`, title }, text));
+  if (rec.searched) chip(searches.count ? `Searched the web · ${searches.count} search${searches.count === 1 ? "" : "es"}` : "Searched the web", true, "The engine searched the web before answering", "searched");
+  else chip("No web search", true, "Answered from what the model already knows", "memory");
+  chip(rec.sources.length ? `${rec.sources.length} read · ${cited} cited` : "No pages", rec.sources.length > 0, "Pages the engine opened, and how many it cited");
+  if ((rec.products || []).length) chip(`${rec.products.length} products`, true, "Product cards in the answer");
+  if ((rec.places || []).length) chip(`Map · ${rec.places.length}`, true, "Places on a map");
+  if ((rec.images || []).length) chip(`${rec.images.length} images`, true, "Images from the web");
+  head.append(strip);
+  wrap.append(head);
+
+  /* --- 1. searches it ran, right under the prompt --- */
+  if (searches.count) {
+    const extra = el("span", { className: "ap-sec-meta" });
+    if (searches.breadth) extra.append(apPill(searches.breadth.short, searches.breadth.band === "narrow" ? "warn" : searches.breadth.band === "broad" ? "good" : "neutral", `Breadth: ${searches.breadth.label}`));
+    extra.append(el("span", { className: "ap-muted" }, `avg ${searches.avgWords} words · ${searches.namingBrand} name${searches.namingBrand === 1 ? "s" : ""} a brand`));
+    const sec = apSection("ap-searches", "Searches it ran", searches.count, extra);
+    const ol = el("ol", { className: "ap-fan" });
+    const shown = apFanAll ? searches.rows : searches.rows.slice(0, AP_FAN_MAX);
+    shown.forEach((q) => {
+      ol.append(el("li", { className: "ap-fan-row" },
+        el("span", { className: `ap-lane lane-${q.lane}`, title: q.laneLabel, "aria-label": q.laneLabel }, { web: "W", shopping: "S", image: "I" }[q.lane] || "•"),
+        el("span", { className: "ap-fan-text" }, q.text),
+        q.tag ? el("span", { className: "ap-tag" }, q.tag) : el("span", {})));
+    });
+    sec.append(ol);
+    if (searches.rows.length > AP_FAN_MAX) {
+      const more = el("button", { className: "ap-link", type: "button", "aria-expanded": apFanAll ? "true" : "false" }, apFanAll ? "Show fewer" : `Show all ${searches.rows.length} searches`);
+      more.onclick = () => { apFanAll = !apFanAll; renderAnalyze(); };
+      sec.append(more);
+    }
+    wrap.append(sec);
+  } else if (searches.unpublished) {
+    const sec = apSection("ap-searches", "Searches it ran", "");
+    sec.append(el("p", { className: "ap-note" }, `${engineLabel} confirms it searched the web for this answer but doesn't publish what it searched for, so there is no list to show. That's the engine, not a failed capture.`));
+    wrap.append(sec);
+  }
+
+  /* --- 2. what led the answer --- */
+  if ((rec.products || []).length) {
+    const sec = apSection("ap-products", "Product cards", rec.products.length, el("span", { className: "ap-muted" }, "click one to see where it's sold"));
+    const strip2 = el("div", { className: "ap-cards" });
+    rec.products.forEach((p, i) => {
+      const mine = own && you && new RegExp(`^${escapeRegExp(own.name)}\\b`, "i").test(String(p.name || ""));
+      const b = el("button", { className: `ap-card${mine ? " mine" : ""}`, type: "button", title: p.name || "" },
+        el("span", { className: "ap-card-n" }, String(i + 1)),
+        el("span", { className: "ap-card-name" }, p.name || "—"),
+        el("span", { className: "ap-card-price" }, p.price || "price not shown"),
+        el("span", { className: "ap-card-meta" }, [p.rating != null ? `★ ${p.rating}` : "", p.merchant || ""].filter(Boolean).join(" · ") || "no store named"));
+      b.onclick = () => { apSheet = "buy"; apSheetProduct = i; renderAnalyze(); };
+      strip2.append(b);
+    });
+    sec.append(strip2);
+    wrap.append(sec);
+  }
+  if ((rec.places || []).length) {
+    const sec = apSection("ap-places", "On the map", rec.places.length);
+    const ol = el("ol", { className: "ap-places" });
+    rec.places.slice(0, 5).forEach((p, i) => {
+      const mine = own && String(p.name || "").toLowerCase().startsWith(own.name.toLowerCase());
+      ol.append(el("li", { className: `ap-place${mine ? " mine" : ""}` },
+        el("span", { className: "ap-pin" }, String(i + 1)),
+        el("span", { className: "ap-place-name" }, p.name || "—"),
+        el("span", { className: "ap-muted" }, [p.rating != null ? `★ ${p.rating}` : "", p.category || ""].filter(Boolean).join(" · "))));
+    });
+    sec.append(ol);
+    if (rec.places.length > 5) {
+      const more = el("button", { className: "ap-link", type: "button" }, `All ${rec.places.length} places`);
+      more.onclick = () => { apSheet = "places"; renderAnalyze(); };
+      sec.append(more);
+    }
+    wrap.append(sec);
+  }
+  if ((rec.images || []).length) {
+    const sec = apSection("ap-images", "Images shown", rec.images.length);
+    const grid = el("div", { className: "ap-imgs" });
+    rec.images.slice(0, 6).forEach((im) => {
+      let host = "";
+      try { host = new URL(im.url).hostname.replace(/^www\./, ""); } catch (_) {}
+      const img = el("img", { src: im.url, alt: im.title || "", loading: "lazy" });
+      img.onerror = () => img.replaceWith(el("span", { className: "ap-img-ph" }, im.title || host || "image"));
+      grid.append(el("a", { className: "ap-img", href: im.url, target: "_blank", rel: "noreferrer", title: im.title || host },
+        img,
+        el("span", { className: "ap-img-from" }, im.attribution || host)));
+    });
+    sec.append(grid);
+    wrap.append(sec);
+  }
+  if (kind.id === "memory") {
+    wrap.append(el("section", { className: "ap-sec ap-memory", id: "ap-memory" },
+      el("b", {}, "Answered from memory"),
+      el("span", {}, `${engineLabel} didn't search the web, so there are no pages or citations. The brands below come from what the model already knows.`)));
+  }
+
+  /* --- 3. your brand --- */
+  if (you) {
+    const extra = you.since ? el("span", { className: "ap-muted" }, `vs ${apDate(you.previousAt)}: ${you.since}`) : null;
+    const sec = apSection("ap-you", "Your brand", "", extra);
+    sec.classList.add("ap-you");
+    sec.querySelector(".ap-h").append(el("span", { className: "ap-you-name" }, ` · ${you.name}`));
+    const tiles = el("div", { className: "ap-tiles" });
+    you.tiles.forEach((t) => tiles.append(el("div", { className: "ap-tile", title: t.label },
+      el("span", { className: "ap-tile-label" }, t.label),
+      el("span", { className: `ap-tile-value tone-${t.tone}` }, t.value),
+      el("span", { className: "ap-tile-sub" }, t.sub))));
+    sec.append(tiles);
+    wrap.append(sec);
+  } else if (mentions.length) {
+    wrap.append(el("p", { className: "ap-note ap-you-hint", id: "ap-you" },
+      "Set up a campaign with your brand and this answer will show how your brand did in it."));
+  }
+
+  /* --- 4. every brand, and what backs it --- */
+  if (brands.rows.length) {
+    const title = kind.id === "local" ? "Places named" : "Brands named";
+    const extra = brands.hasPrevious ? null : el("span", { className: "ap-muted" }, previous ? "" : "no earlier answer to compare");
+    const sec = apSection("ap-brands", title, brands.rows.filter((r) => !r.shownOnly).length, extra);
+    const table = el("div", { className: `ap-table ap-brand-table${brands.hasPrevious ? " has-change" : ""}`, role: "table", "aria-labelledby": "ap-brands-h" });
+    table.append(el("div", { className: "ap-tr ap-th", role: "row" },
+      el("span", { role: "columnheader", className: "ap-sr" }, "Position"),
+      el("span", { role: "columnheader" }, kind.id === "local" ? "Place" : "Brand"),
+      el("span", { role: "columnheader", className: "num" }, "Mentions"),
+      el("span", { role: "columnheader" }, "Backed by"),
+      brands.hasPrevious ? el("span", { role: "columnheader" }, `vs ${apDate(previous.capturedAt).replace(/^\w+,?\s*/, "")}`) : null));
+    brands.rows.forEach((r) => {
+      const m = mentions.find((x) => x.brand === r.name);
+      const models = [...new Set([...(m && m.skus) || [], ...extractBrandModels(r.name, rec.products, rec.answerText || "")])].slice(0, 2);
+      const aspects = r.count > 0 && m ? extractBrandAspects(m.passages || []).slice(0, 2) : [];
+      const sub = [...models, ...aspects].join(" · ");
+      const ch = r.change;
+      const chText = !ch ? "—" : ch.kind === "added" ? "New" : ch.kind === "same" ? "= Same" : ch.kind === "up" ? `↑ from ${apOrd(ch.from)}` : `↓ from ${apOrd(ch.from)}`;
+      const tr = el("div", { className: `ap-tr${r.isYou ? " mine" : ""}${r.shownOnly ? " shown-only" : ""}`, role: "row", title: `${r.backing.label}${r.backing.readOnly ? ` · also in ${r.backing.readOnly} page(s) read but not cited` : ""}` },
+        el("span", { role: "cell", className: `ap-rank${r.position === 1 ? " first" : ""}` }, r.position ? String(r.position) : "–"),
+        el("span", { role: "cell", className: "ap-brand-cell" },
+          el("span", { className: "ap-brand-name" }, r.name + (r.isYou ? " · you" : "")),
+          sub ? el("span", { className: "ap-brand-sub" }, sub) : null),
+        el("span", { role: "cell", className: "num" }, r.shownOnly ? "card only" : `×${r.count}`),
+        el("span", { role: "cell" }, apPill(r.backing.label, r.backing.tone, `${r.backing.label}. Pages: ${r.backing.backers.map((x) => x.domain + (x.own ? " (own site)" : "")).join(", ") || "none cited"}`)),
+        brands.hasPrevious ? el("span", { role: "cell", className: `ap-change ch-${ch ? ch.kind : "none"}` }, chText) : null);
+      table.append(tr);
+    });
+    brands.dropped.forEach((d) => {
+      table.append(el("div", { className: "ap-tr dropped", role: "row", title: "Named last time, missing from this answer" },
+        el("span", { role: "cell", className: "ap-rank" }, "–"),
+        el("span", { role: "cell", className: "ap-brand-cell" },
+          el("span", { className: "ap-brand-name" }, d.name),
+          el("span", { className: "ap-brand-sub" }, `was ${apOrd(d.was)} last time`)),
+        el("span", { role: "cell", className: "num" }, "×0"),
+        el("span", { role: "cell" }, apPill("Not named", "neutral")),
+        el("span", { role: "cell", className: "ap-change ch-dropped" }, "Dropped")));
+    });
+    sec.append(table);
+    if (rec.searched) {
+      const b = el("button", { className: "ap-link", type: "button" }, "See the pages behind each brand");
+      b.onclick = () => { apSheet = "backing"; renderAnalyze(); };
+      sec.append(b);
+    }
+    wrap.append(sec);
+  }
+
+  /* --- 5. pages cited --- */
+  if (cited) {
+    const sec = apSection("ap-pages", "Pages cited", `${cited} of ${pages.sourceCount} read`);
+    const bar = el("div", { className: "ap-kindbar", role: "img", "aria-label": "Cited pages by kind: " + pages.kinds.map((k) => `${k.n} ${k.label.toLowerCase()}`).join(", ") });
+    pages.kinds.forEach((k) => bar.append(el("span", { title: `${k.label} · ${k.n}`, style: `flex:${k.n} 1 0; background:var(${AP_KIND_VAR[k.label]})` })));
+    const legend = el("div", { className: "ap-legend" });
+    pages.kinds.forEach((k) => legend.append(el("span", {}, el("i", { style: `background:var(${AP_KIND_VAR[k.label]})` }), `${k.label} · ${k.n}`)));
+    sec.append(bar, legend);
+    const list = el("div", { className: "ap-pagelist" });
+    pages.rows.forEach((p) => {
+      const brandsCell = el("span", { className: "ap-page-brands" });
+      if (p.brands.length) p.brands.forEach((b) => brandsCell.append(el("span", { className: `ap-bchip${b.isYou ? " mine" : ""}` }, b.name)));
+      else brandsCell.append(el("span", { className: "ap-muted" }, "no brand named"));
+      const a = el("a", { className: "ap-page-domain", href: p.url || "#", target: "_blank", rel: "noreferrer", title: p.title || p.url }, p.domain);
+      list.append(el("div", { className: `ap-page${p.kind === "Your site" ? " mine" : ""}` },
+        el("span", { className: "ap-num" }, String(p.n)),
+        el("span", { className: "ap-page-main" }, a,
+          el("span", { className: "ap-page-kind" }, el("i", { style: `background:var(${AP_KIND_VAR[p.kind]})` }), p.kind)),
+        brandsCell));
+    });
+    sec.append(list);
+    if (pages.readOnly.length) sec.append(el("p", { className: "ap-foot warn" }, `Also read, not cited: ${pages.readOnly.join(", ")}`));
+    if (own && pages.silent.length) sec.append(el("p", { className: "ap-foot accent" }, `Cited but silent about ${own.name}: ${pages.silent.join(", ")} — the pages to get onto.`));
+    wrap.append(sec);
+  }
+
+  /* --- 6. since last time --- */
+  if (changes) {
+    const sec = apSection("ap-changes", `Since ${apDate(changes.at)}`, "", el("span", { className: "ap-muted" }, "same prompt, same engine"));
+    const SIGN = { added: "+", dropped: "−", up: "↑", down: "↓", same: "=", site: "↻" };
+    const ul = el("ul", { className: "ap-changes" });
+    changes.items.forEach((x) => ul.append(el("li", {}, el("span", { className: `ap-sign s-${x.kind}`, "aria-hidden": "true" }, SIGN[x.kind] || "•"), x.text)));
+    sec.append(ul);
+    wrap.append(sec);
+  }
+
+  /* --- 7. facts, and the way into the details --- */
+  const ps = rec.platformSpecific || {};
+  const wordsN = ps.wordCount || (rec.answerText ? rec.answerText.trim().split(/\s+/).length : 0);
+  const vg = rec.sources.length && rec.answerText ? computeVerbatimGrounding(rec.answerText, rec.sources) : null;
+  const facts = el("div", { className: "ap-facts" });
+  const fact = (k, v) => facts.append(el("span", {}, el("span", { className: "ap-muted" }, k + " "), el("b", {}, v)));
+  if (wordsN) fact("Answer", `${wordsN} words`);
+  if (vg && vg.totalClaims) fact("Quoted word for word", `${vg.groundedClaims} of ${vg.totalClaims} claims`);
+  fact("Model", rec.model || "not reported");
+  fact("Captured", `${apDate(rec.capturedAt)}, ${apTime(rec.capturedAt)}`);
+  wrap.append(facts);
+
+  const tabs = apSheetTabs(rec);
+  const links = el("div", { className: "ap-links" });
+  tabs.filter((t) => t.id !== "searches").forEach((t) => {
+    const b = el("button", { className: "ap-btn", type: "button" }, t.label);
+    b.onclick = () => { apSheet = t.id; renderAnalyze(); };
+    links.append(b);
+  });
+  const key = normPrompt(rec.userPrompt);
+  // Counted over RECORDS because that is what the Compare page lists (campaign
+  // captures stay out of it unless "include campaign captures" is on).
+  const others = key && RECORDS.some((r) => r.captureId === rec.captureId) ? RECORDS.filter((r) => normPrompt(r.userPrompt) === key).length : 0;
+  if (others > 1) {
+    const b = el("button", { className: "ap-btn", type: "button", "data-open": "compare", title: "Every captured answer to this prompt, run by run and engine by engine" }, `All ${others} answers to this prompt`);
+    b.onclick = () => openCompareFor(rec);
+    links.append(b);
+  }
+  const full = el("button", { className: "ap-link ap-full", type: "button", title: "Open this answer in a full browser tab" }, "Full analysis ↗");
+  full.onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL(`ui/panel.html?mode=tab&capture=${encodeURIComponent(rec.captureId)}`) });
+  links.append(full);
+  wrap.append(links);
+
+  if (apSheet && tabs.some((t) => t.id === apSheet)) renderApSheet(rec, wrap, tabs, { own, brands, pages, searches, knownBrands });
+}
+
+function apSheetTabs(rec) {
+  const t = [];
+  if (rec.searched) t.push({ id: "backing", label: "What backs each brand" });
+  if ((rec.products || []).length) t.push({ id: "buy", label: "Where to buy" });
+  if ((rec.places || []).length) t.push({ id: "places", label: "All places" });
+  if ((rec.images || []).length) t.push({ id: "images", label: "All images" });
+  if (((rec.fanout?.search?.length || 0) + (rec.fanout?.shopping?.length || 0) + (rec.fanout?.image?.length || 0)) > 0) t.push({ id: "searches", label: "Search details" });
+  t.push({ id: "tech", label: "Technical" });
+  return t;
+}
+
+function renderApSheet(rec, wrap, tabs, ctx) {
+  const close = () => { apSheet = null; renderAnalyze(); };
+  const scrim = el("div", { className: "ap-scrim", "aria-hidden": "true" });
+  scrim.onclick = close;
+  const sheet = el("section", { className: "ap-sheet", role: "dialog", "aria-modal": "true", "aria-label": "Details" });
+  const top = el("div", { className: "ap-sheet-top" });
+  const tl = el("div", { className: "ap-sheet-tabs", role: "tablist" });
+  tabs.forEach((t) => {
+    const b = el("button", { className: `ap-sheet-tab${t.id === apSheet ? " on" : ""}`, type: "button", role: "tab", "aria-selected": t.id === apSheet ? "true" : "false" }, t.label);
+    b.onclick = () => { apSheet = t.id; renderAnalyze(); };
+    tl.append(b);
+  });
+  const x = el("button", { className: "ap-icon-btn ap-sheet-close", type: "button", "aria-label": "Close details", title: "Close" }, "×");
+  x.onclick = close;
+  top.append(tl, x);
+  const body = el("div", { className: "ap-sheet-body" });
+  const col = el("div", { className: "ap-sheet-col" });
+  body.append(col);
+  sheet.append(top, body);
+
+  if (apSheet === "backing") {
+    col.append(el("p", { className: "ap-note" }, "Each brand and the cited pages that mention it. Brands backed by independent pages tend to keep their place; brands with only their own site — or nothing — behind them can drop out next time."));
+    ctx.brands.rows.forEach((r) => {
+      const chips = el("div", { className: "ap-chips" });
+      r.backing.backers.forEach((b) => chips.append(el("span", { className: `ap-bchip${b.own ? " own" : ""}` }, `${b.domain} · ${b.own ? "own site" : "independent"}`)));
+      if (!r.backing.backers.length) chips.append(el("span", { className: "ap-muted" }, r.backing.verdict === "read" ? "only in pages it read without citing" : "no page the engine read mentions it"));
+      col.append(el("div", { className: "ap-sheet-row" },
+        el("div", { className: "ap-sheet-row-head" }, el("b", {}, `${r.position || "–"}. ${r.name}`), apPill(r.backing.label, r.backing.tone)),
+        chips,
+        r.backing.readOnly ? el("span", { className: "ap-foot warn" }, `also in ${r.backing.readOnly} page${r.backing.readOnly === 1 ? "" : "s"} read but not cited`) : null));
+    });
+  } else if (apSheet === "buy") {
+    const ps = rec.products;
+    const pick = el("div", { className: "ap-chips" });
+    ps.forEach((p, i) => {
+      const b = el("button", { className: `ap-pick${i === apSheetProduct ? " on" : ""}`, type: "button" }, (p.name || "—").split(/\s+/).slice(0, 3).join(" "));
+      b.onclick = () => { apSheetProduct = i; renderAnalyze(); };
+      pick.append(b);
+    });
+    const p = ps[Math.min(apSheetProduct, ps.length - 1)];
+    const kv = el("dl", { className: "ap-kv" });
+    const add = (k, v) => { if (v) kv.append(el("div", {}, el("dt", {}, k), el("dd", {}, v))); };
+    add("Price on the card", p.price || "not shown");
+    add("Stores the card names", p.merchant || "none named");
+    add("Rating", p.rating != null ? `★ ${p.rating}${p.reviews ? ` (${Number(p.reviews).toLocaleString()} reviews)` : ""}` : "");
+    const sup = supplierOf(p.supplier);
+    add("Listing feed", sup ? sup.code : "");
+    const word = String(p.name || "").split(/\s+/).slice(0, 2).join(" ").toLowerCase();
+    const about = word ? rec.sources.filter((s) => `${s.title || ""} ${s.snippet || ""}`.toLowerCase().includes(word)) : [];
+    col.append(pick, el("h3", { className: "ap-h3" }, p.name || "—"), kv,
+      el("p", { className: "ap-note" }, "The card names its stores but the capture doesn't carry each store's price, so only the card's own price is shown."));
+    if (about.length) {
+      col.append(el("h3", { className: "ap-h3" }, `Pages that mention it · ${about.length}`));
+      about.slice(0, 8).forEach((s) => col.append(el("a", { className: "ap-sheet-link", href: s.url, target: "_blank", rel: "noreferrer" }, `${s.domain || ""} — ${s.title || s.url}`)));
+    }
+  } else if (apSheet === "places") {
+    rec.places.forEach((p, i) => {
+      const links = el("div", { className: "ap-chips" });
+      [["Website", p.website], ["Directions", p.mapsUrl], ["Call", p.phone]].forEach(([k, v]) => links.append(el("span", { className: `ap-bchip${v ? "" : " missing"}`, title: v ? "" : `No ${k.toLowerCase()} on this listing` }, k)));
+      col.append(el("div", { className: "ap-sheet-row" },
+        el("div", { className: "ap-sheet-row-head" }, el("span", { className: "ap-pin" }, String(i + 1)), el("b", {}, p.name || "—")),
+        el("span", { className: "ap-muted" }, [p.rating != null ? `★ ${p.rating}${p.reviews ? ` (${Number(p.reviews).toLocaleString()})` : ""}` : "", p.category, p.priceRange, p.hours].filter(Boolean).join(" · ")),
+        p.address ? el("span", { className: "ap-muted" }, p.address) : null,
+        links));
+    });
+  } else if (apSheet === "images") {
+    rec.images.forEach((im) => {
+      let host = "";
+      try { host = new URL(im.url).hostname.replace(/^www\./, ""); } catch (_) {}
+      const img = el("img", { src: im.url, alt: im.title || "", loading: "lazy" });
+      img.onerror = () => img.replaceWith(el("span", { className: "ap-img-ph" }, ""));
+      col.append(el("a", { className: "ap-sheet-img", href: im.url, target: "_blank", rel: "noreferrer" },
+        img,
+        el("span", {}, el("b", {}, im.title || "Untitled image"), el("span", { className: "ap-muted" }, [im.attribution || host, im.price].filter(Boolean).join(" · ")))));
+    });
+  } else if (apSheet === "searches") {
+    const all = [].concat(rec.fanout.search || [], rec.fanout.shopping || [], rec.fanout.image || []);
+    const fa = analyzeFanout(all, rec.sources || []);
+    const kv = el("dl", { className: "ap-kv" });
+    const add = (k, v) => kv.append(el("div", {}, el("dt", {}, k), el("dd", {}, v)));
+    add("Searches", `${fa.count} · ${fa.benchmark.label}`);
+    add("Average length", `${fa.avgWords} words (longest ${fa.maxWords})`);
+    add("With a year or 'latest'", String(fa.temporalCount));
+    add("Scoped to a site (site:)", fa.scopedDomains.length ? fa.scopedDomains.map((d) => `${d.domain}${d.cited ? " ✓ cited" : " — not cited"}`).join(", ") : "none");
+    if (fa.excludedDomains.length) add("Excluded (-site:)", fa.excludedDomains.map((d) => d.domain).join(", "));
+    add("What the searches were after", fa.intents.length ? fa.intents.map((i) => `${i.key} ${i.count}`).join(", ") : "—");
+    col.append(kv);
+  } else if (apSheet === "tech") {
+    const ps = rec.platformSpecific || {};
+    const kv = el("dl", { className: "ap-kv two" });
+    const add = (k, v) => { if (v) kv.append(el("div", {}, el("dt", {}, k), el("dd", { title: String(v) }, String(v)))); };
+    add("Captured", new Date(rec.capturedAt).toLocaleString());
+    add("Engine", ENGINES.find((e) => e.id === rec.platform)?.label || rec.platform);
+    add("Model", rec.model || "not reported");
+    add("Engine's own label", rec.turnUseCase || "");
+    add("Searched the web", rec.searched ? "Yes" : "No");
+    add("Kind of answer", answerKind(rec).label);
+    add("Pages read · cited", `${rec.sources.length} · ${ctx.pages.rows.length}`);
+    add("Products · places · images", `${(rec.products || []).length} · ${(rec.places || []).length} · ${(rec.images || []).length}`);
+    add("Plan type", ps.planType || "");
+    add("Time to first token", ps.ttfvtMs ? `${(ps.ttfvtMs / 1000).toFixed(2)}s` : "");
+    add("Reference types", Object.entries(rec.referenceTypes || {}).map(([k, v]) => `${k} (${v})`).join(", "));
+    add("Read from", rec._extraction?.usedFallback ? "Page fallback (stream unreadable)" : "The engine's own response");
+    add("Conversation", rec.conversationId || "");
+    add("Capture id", rec.captureId);
+    col.append(kv);
+    const raw = el("button", { className: "ap-btn", type: "button" }, "Download raw payload");
+    raw.onclick = () => downloadRaw(rec.captureId, "analyze");
+    col.append(raw);
+  }
+  wrap.append(scrim, sheet);
+}
+
+// Compare left the top menu in 0.47.0 — comparing answers to one prompt now
+// starts from the answer itself. Same page as before, opened on this prompt.
+function openCompareFor(rec) {
+  cmpProjectFilter = "";
+  cmpModelFilter = "";
+  ["#cmpProject", "#cmpModel"].forEach((id) => { const n = $(id); if (n) n.value = ""; });
+  cmpSearch = "";
+  const si = $("#cmpSearch");
+  if (si) si.value = "";
+  refreshComparePickers();
+  const sel = $("#cmpPrompt");
+  const key = normPrompt(rec.userPrompt);
+  if (sel && [...sel.options].some((o) => o.value === key)) sel.value = key;
+  showTab("compare");
+  renderCompare();
+}
+
 function renderAnalyze() {
   try {
     const root = $("#analyze");
@@ -1344,6 +1859,13 @@ function renderAnalyze() {
       );
       return;
     }
+
+  // The popup has its own layout since 0.47.0 (see renderAnalyzePopup). The
+  // full tab keeps the card layout below until its own redesign.
+  if (document.body.classList.contains("popup")) {
+    renderAnalyzePopup(rec, root);
+    return;
+  }
 
   // Sticky prompt/engine identity bar — the first thing in #analyze, before
   // even the context banner below. On a long Analyze view (Verbatim
@@ -1395,6 +1917,19 @@ function renderAnalyze() {
     }, "💬");
     feedbackBtn.onclick = () => openFeedbackModal(rec);
 
+    // Compare left the top menu in 0.47.0; it opens from here instead, on
+    // this answer's prompt, whenever there is more than one answer to it.
+    const cmpKey = normPrompt(rec.userPrompt);
+    const cmpN = cmpKey && RECORDS.some((r) => r.captureId === rec.captureId)
+      ? RECORDS.filter((r) => normPrompt(r.userPrompt) === cmpKey).length : 0;
+    const cmpBtn = cmpN > 1 ? el("button", {
+      className: "analyze-context-back analyze-context-compare",
+      type: "button",
+      "data-open": "compare",
+      title: "Every captured answer to this prompt, run by run and engine by engine",
+    }, `Compare ${cmpN} answers`) : null;
+    if (cmpBtn) cmpBtn.onclick = () => openCompareFor(rec);
+
     promptBar.append(
       backBtn,
       el("span", { className: "analyze-context-label muted small" }, "Analyzing"),
@@ -1403,6 +1938,7 @@ function renderAnalyze() {
         title: rec.userPrompt || "",
       }, rec.userPrompt || "(no prompt text)"),
       engineChip(rec.platform, ENGINES.find((e) => e.id === rec.platform)?.label || rec.platform || "Unknown"),
+      ...(cmpBtn ? [cmpBtn] : []),
       feedbackBtn
     );
     root.append(promptBar);
@@ -1753,7 +2289,7 @@ function renderAnalyze() {
           body.append(mr);
         }
         if (sourceIdxs && sourceIdxs.length) {
-          const secTitle = el("div", { className: "brand-label", style: "font-size:10.5px; margin-top:3px" }, "Supporting citations:");
+          const secTitle = el("div", { className: "brand-label", style: "font-size:11px; margin-top:3px" }, "Supporting citations:");
           body.append(secTitle);
           sourceIdxs.forEach((idx) => {
             const s = rec.sources[idx];
@@ -1764,7 +2300,7 @@ function renderAnalyze() {
           });
         }
         if (missingIdxs && missingIdxs.length) {
-          const secTitle = el("div", { className: "brand-label", style: "font-size:10.5px; margin-top:5px; color:var(--fg-muted)" }, "Citations omitting this brand:");
+          const secTitle = el("div", { className: "brand-label", style: "font-size:11px; margin-top:5px; color:var(--fg-muted)" }, "Citations omitting this brand:");
           body.append(secTitle);
           missingIdxs.slice(0, 5).forEach((idx) => {
             const s = rec.sources[idx];
@@ -1787,7 +2323,7 @@ function renderAnalyze() {
 
       // 1. Mentioned Brands Citation Support
       if (mentionedMatrixBrands.length) {
-        list.append(el("div", { className: "card-subtitle", style: "font-size:11px; font-weight:700; margin:6px 0 2px 4px; color:var(--fg-secondary)" }, "MENTIONED BRANDS ATTRIBUTION"));
+        list.append(el("div", { className: "card-subtitle", style: "font-size:11px; font-weight:600; margin:6px 0 2px 4px; color:var(--fg-secondary)" }, "MENTIONED BRANDS ATTRIBUTION"));
         mentionedMatrixBrands.forEach((mb) => {
           const pct = Math.round(mb.attributionRate * 100);
           list.append(rowFor(
@@ -1802,7 +2338,7 @@ function renderAnalyze() {
 
       // 2. Omitted Brands & Skipped Models
       if (omittedBrandsList.length || omittedModelsList.length) {
-        list.append(el("div", { className: "card-subtitle", style: "font-size:11px; font-weight:700; margin:10px 0 2px 4px; color:var(--fg-secondary)" }, "SEARCH FUNNEL DROPOUTS (RETRIEVED BUT NOT WRITTEN)"));
+        list.append(el("div", { className: "card-subtitle", style: "font-size:11px; font-weight:600; margin:10px 0 2px 4px; color:var(--fg-secondary)" }, "SEARCH FUNNEL DROPOUTS (RETRIEVED BUT NOT WRITTEN)"));
         omittedBrandsList.forEach((ob) => {
           list.append(rowFor(
             ob.brand,
@@ -1824,7 +2360,7 @@ function renderAnalyze() {
 
       // 3. Domain Coverage & Blind Spots
       if (domainMatrixList.length) {
-        list.append(el("div", { className: "card-subtitle", style: "font-size:11px; font-weight:700; margin:10px 0 2px 4px; color:var(--fg-secondary)" }, "DOMAIN-LEVEL BRAND COVERAGE & BLIND SPOTS"));
+        list.append(el("div", { className: "card-subtitle", style: "font-size:11px; font-weight:600; margin:10px 0 2px 4px; color:var(--fg-secondary)" }, "DOMAIN-LEVEL BRAND COVERAGE & BLIND SPOTS"));
         domainMatrixList.forEach((dm) => {
           const pct = Math.round(dm.coverageRate * 100);
           const subText = `Domain covers ${dm.coveredBrands.length} brands: ${dm.coveredBrands.join(", ") || "None"}. ` +
@@ -1867,7 +2403,7 @@ function renderAnalyze() {
         t.append(tr);
       });
       // Total Row
-      const totalRow = el("tr", { style: "font-weight:700; border-top:1px solid var(--border);" },
+      const totalRow = el("tr", { style: "font-weight:600; border-top:1px solid var(--border);" },
         el("td", {}, "TOTAL"),
         el("td", { className: "num" }, String(rec.sources.length))
       );
@@ -1892,7 +2428,7 @@ function renderAnalyze() {
       el("div", { className: "muted small", style: "margin-bottom:8px" },
         "Verbatim reasoning trace captured during response generation, showing synthesis steps and retrieval evaluation."),
       el("pre", {
-        style: "white-space:pre-wrap; font-family:var(--font-mono, monospace); font-size:11.5px; line-height:1.4; max-height:220px; overflow-y:auto; background:var(--bg-subtle); padding:10px 12px; border-radius:8px; border:1px solid var(--border);"
+        style: "white-space:pre-wrap; font-family:var(--font-mono, monospace); font-size:11px; line-height:1.4; max-height:220px; overflow-y:auto; background:var(--bg-subtle); padding:10px 12px; border-radius:8px; border:1px solid var(--border);"
       }, traceText)
     );
     mainCol.append(thinkCard);
@@ -1941,11 +2477,11 @@ function renderAnalyze() {
           style: "display:flex; height:20px; border-radius:6px; overflow:hidden; border:1px solid var(--border); margin-bottom:8px;",
         },
           el("div", {
-            style: `width:${auth.socialPct}%; background:#1d9bf0; color:#fff; font-size:10px; font-weight:700; display:flex; align-items:center; justify-content:center;`,
+            style: `width:${auth.socialPct}%; background:#1d9bf0; color:#fff; font-size:10px; font-weight:600; display:flex; align-items:center; justify-content:center;`,
             title: `Social Authority (X/Twitter): ${auth.socialPct}%`,
           }, auth.socialPct > 15 ? `🐦 ${auth.socialPct}% Social` : ""),
           el("div", {
-            style: `width:${auth.webPct}%; background:#10b981; color:#fff; font-size:10px; font-weight:700; display:flex; align-items:center; justify-content:center;`,
+            style: `width:${auth.webPct}%; background:#10b981; color:#fff; font-size:10px; font-weight:600; display:flex; align-items:center; justify-content:center;`,
             title: `Editorial Web Authority: ${auth.webPct}%`,
           }, auth.webPct > 15 ? `🌐 ${auth.webPct}% Web` : "")
         )
@@ -2080,7 +2616,7 @@ function renderAnalyze() {
     let qIdx = 1;
     for (const [bucket, arr] of Object.entries(rec.fanout || {})) {
       if (!arr || !arr.length) continue;
-      fc.append(el("div", { className: "muted", style: "margin-top:6px;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;" }, bucket));
+      fc.append(el("div", { className: "muted", style: "margin-top:6px;font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;" }, bucket));
       const chips = el("div", { className: "chips" });
       arr.forEach((q) => {
         const qStr = typeof q === "string" ? q : q?.query || "";
@@ -2090,14 +2626,14 @@ function renderAnalyze() {
     }
 
     if (rec.products && rec.products.length) {
-      fc.append(el("div", { className: "muted", style: "margin-top:10px;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;" }, "Shopping Carousel Products"));
+      fc.append(el("div", { className: "muted", style: "margin-top:10px;font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;" }, "Shopping Carousel Products"));
       const pChips = el("div", { className: "chips" });
       rec.products.forEach((p, idx) => {
         const renderTag = (p.renderAs || "block").toUpperCase();
         if (renderTag === "HERO") {
           pChips.append(el("span", {
             className: "chip active",
-            style: "background: #f59e0b; color: #fff; font-weight: 600; border: 1px solid #d97706; box-shadow: 0 1px 3px rgba(0,0,0,0.1);"
+            style: "background: #f59e0b; color: #fff; font-weight: 500; border: 1px solid #d97706; box-shadow: 0 1px 3px rgba(0,0,0,0.1);"
           }, `⭐ HERO PICK: ${p.name}`));
         } else {
           pChips.append(el("span", { className: "chip" }, `${idx + 1}. BLOCK · ${p.name}`));
@@ -2268,14 +2804,14 @@ function renderAnalyze() {
               // brightens the text and deepens the tint), and are what
               // .tag.cited already uses elsewhere for this identical
               // "present/positive" meaning.
-              style: "font-size:9.5px; padding:1px 5px; background:var(--green-bg); color:var(--green-fg); border:1px solid var(--green-border); border-radius:4px"
+              style: "font-size:10px; padding:1px 5px; background:var(--green-bg); color:var(--green-fg); border:1px solid var(--green-border); border-radius:4px"
             }, `+ ${pb}`));
           });
           if (showSnippets && sm.missingBrands && sm.missingBrands.length) {
             sm.missingBrands.slice(0, 4).forEach((mb) => {
               brandsRow.append(el("span", {
                 className: "tag",
-                style: "font-size:9.5px; padding:1px 5px; background:rgba(100, 116, 139, 0.08); color:var(--fg-muted); border:1px solid rgba(100, 116, 139, 0.2); border-radius:4px"
+                style: "font-size:10px; padding:1px 5px; background:rgba(100, 116, 139, 0.08); color:var(--fg-muted); border:1px solid rgba(100, 116, 139, 0.2); border-radius:4px"
               }, `- ${mb}`));
             });
           }
@@ -2449,7 +2985,7 @@ function renderAnalyze() {
       });
 
       const head = el("div", { className: "item-head" });
-      const nameSpan = el("span", { className: "item-name", style: "font-weight: 600;" });
+      const nameSpan = el("span", { className: "item-name", style: "font-weight: 500;" });
       if (isHero) {
         // Was a hand-picked pale yellow (#fef3c7/#b45309/#fde68a) that
         // happens to be close to the amber tokens but isn't wired to them —
@@ -2476,7 +3012,7 @@ function renderAnalyze() {
   // Model reasoning trace
   if (rec.platformSpecific && rec.platformSpecific.reasoning) {
     const rc = el("div", { className: "card", id: "card-reasoning" }, el("h3", {}, "Model reasoning (thinking trace)"));
-    rc.append(el("div", { className: "muted", style: "white-space:pre-wrap;max-height:220px;overflow:auto;font-size:12px;font-family:'JetBrains Mono',monospace;background:var(--bg-subtle);padding:8px 12px;border-radius:6px;border:1px solid var(--border);" }, rec.platformSpecific.reasoning));
+    rc.append(el("div", { className: "muted", style: "white-space:pre-wrap;max-height:220px;overflow:auto;font-size:12px;font-family:var(--font-mono);background:var(--bg-subtle);padding:8px 12px;border-radius:6px;border:1px solid var(--border);" }, rec.platformSpecific.reasoning));
     mainCol.append(rc);
   }
 
@@ -2492,7 +3028,7 @@ function renderAnalyze() {
     const byCat = {};
     rec.entities.forEach((e) => (byCat[e.category] = byCat[e.category] || []).push(e.text));
     Object.entries(byCat).forEach(([cat, list]) => {
-      ec.append(el("div", { className: "muted", style: "margin-top:6px;font-weight:600;font-size:11px;" }, cat));
+      ec.append(el("div", { className: "muted", style: "margin-top:6px;font-weight:500;font-size:11px;" }, cat));
       const chips = el("div", { className: "chips" });
       list.forEach((t) => chips.append(el("span", { className: "chip" }, t)));
       ec.append(chips);
@@ -2530,7 +3066,7 @@ function renderAnalyze() {
         el("h3", { "data-term": "verbatimGrounding" }, "Verbatim Grounding & Claim Integrity"),
         el("span", {
           className: "tag cited",
-          style: `background:${scoreColor}18; color:${scoreColor}; border:1px solid ${scoreColor}40; font-weight:700;`,
+          style: `background:${scoreColor}18; color:${scoreColor}; border:1px solid ${scoreColor}40; font-weight:600;`,
           "data-term": "verbatimGrounding",
         }, `${vg.score}% Grounded`),
         el("span", { className: "tag", "data-term": "hallucinationGap" }, `${vg.groundedClaims}/${vg.totalClaims} Claims Substantiated`)
@@ -2549,7 +3085,7 @@ function renderAnalyze() {
           el("div", { style: "display:flex; justify-content:space-between; margin-bottom:3px; gap:8px;" },
             el("span", {
               className: "tag",
-              style: `font-size:10px; padding:1px 5px; font-weight:600; background:${cm.isGrounded ? "rgba(16,185,129,0.12)" : "rgba(239,68,68,0.12)"}; color:${cm.isGrounded ? "#10b981" : "#ef4444"};`,
+              style: `font-size:10px; padding:1px 5px; font-weight:500; background:${cm.isGrounded ? "rgba(16,185,129,0.12)" : "rgba(239,68,68,0.12)"}; color:${cm.isGrounded ? "#10b981" : "#ef4444"};`,
             }, cm.isGrounded ? `✓ Grounded (${cm.confidence}%)` : `⚠ Unsubstantiated`),
             cm.sourceDomain ? el("span", { className: "muted small" }, `via ${cm.sourceDomain}`) : ""
           ),
@@ -6189,7 +6725,7 @@ document.querySelectorAll("[data-tab]").forEach((btn) =>
     // openCapture() no longer applies once they've navigated on their own.
     returnTab = null;
     // clicking the Analyze tab directly returns to the latest capture
-    if (btn.dataset.tab === "analyze") { viewingId = null; renderAnalyze(); }
+    if (btn.dataset.tab === "analyze") { viewingId = null; apSheet = null; apMenuOpen = false; apFanAll = false; apPromptOpen = false; renderAnalyze(); }
     if (btn.dataset.tab === "loader") loadGeo();
     showTab(btn.dataset.tab);
   })
@@ -6385,7 +6921,7 @@ async function openFeedbackModal(rec) {
 
   // Unlike the About tab's diagnostic report, this bundle carries real
   // content. Say so, itemised, with a way to leave any part out.
-  body.append(el("p", { className: "small", style: "margin:12px 0 6px;font-weight:600;color:var(--fg-primary);" },
+  body.append(el("p", { className: "small", style: "margin:12px 0 6px;font-weight:500;color:var(--fg-primary);" },
     "What gets included"));
   const boxes = {};
   const list = el("div", { style: "display:flex;flex-direction:column;gap:8px;" });
@@ -6395,7 +6931,7 @@ async function openFeedbackModal(rec) {
     if (part.key === "note") { cb.checked = true; cb.disabled = true; }
     boxes[part.key] = cb;
     row.append(cb, el("span", {},
-      el("span", { style: "font-weight:600;color:var(--fg-primary);" }, part.label),
+      el("span", { style: "font-weight:500;color:var(--fg-primary);" }, part.label),
       el("span", { className: "muted" }, ` — ${part.detail}`)));
     list.append(row);
   }
@@ -7390,7 +7926,7 @@ function renderCompare() {
       },
         el("div", { style: "display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;" },
           el("strong", { style: "font-size:12px;" }, b.label),
-          el("span", { className: "tag", style: "font-size:10.5px;" }, `${b.count} queries`)
+          el("span", { className: "tag", style: "font-size:11px;" }, `${b.count} queries`)
         )
       );
       const qList = el("ul", { style: "list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:4px;" });
@@ -7432,7 +7968,7 @@ function renderCompare() {
 
       exclData.exclusiveDomains.slice(0, 10).forEach((ed) => {
         exclTable.append(el("tr", {},
-          el("td", { style: "font-weight:600;" }, ed.domain),
+          el("td", { style: "font-weight:500;" }, ed.domain),
           el("td", {}, engineChip(ed.exclusiveEngine, engineName(ed.exclusiveEngine))),
           el("td", { className: "num" }, el("span", { className: "tag cited", style: "font-size:10px;" }, "Exclusive"))
         ));
@@ -7645,6 +8181,8 @@ if (cmpSearchInp) {
   });
 }
 
+$("#cmpBack")?.addEventListener("click", () => showTab("analyze"));
+
 ["#cmpPrompt", "#cmpProject", "#cmpModel"].forEach((id) => {
   const node = $(id);
   if (!node) return;
@@ -7735,7 +8273,7 @@ const TOUR_STEPS = [
   {
     tab: "analyze",
     title: "Analyze — one answer, in full",
-    body: "The full captured answer, plus the brands it named and the sources behind them. 'Sources cited' vs 'retrieved' is the key number: a source the engine read but never quoted is a very different signal from one it built its answer on.",
+    body: "The searches the engine ran, the brands it named and the pages behind them. 'Cited' vs 'read' is the key number: a page the engine read but never cited is a very different signal from one it built its answer on. Asked the same prompt more than once? 'All answers to this prompt' compares them run by run and engine by engine.",
   },
   {
     tab: "dashboard",
@@ -7746,11 +8284,6 @@ const TOUR_STEPS = [
     tab: "loader",
     title: "Campaigns — run prompts on a schedule",
     body: "Give it a list of prompts and the engines to run them on, and it drives your own logged-in sessions at a human pace. It now checks you're signed in before opening anything, so a run can't quietly fail into a login page.",
-  },
-  {
-    tab: "compare",
-    title: "Compare — engines side by side",
-    body: "The same prompt across ChatGPT, Gemini, Perplexity and Grok. Each engine retrieves and cites differently, and that difference is usually the actionable part.",
   },
   {
     tab: "about",

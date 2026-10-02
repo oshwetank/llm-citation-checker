@@ -18,6 +18,9 @@
  *      errors occur while walking them, which catches the whole class, not
  *      just this one identifier.
  *
+ * Since 0.47.0 Compare is reached from Analyze, not the top menu; this file
+ * opens it that way.
+ *
  * Compare needs a prompt captured MORE THAN ONCE to have anything to compare,
  * so the same fixture is submitted twice (identical prompt text = one
  * timeline with two runs) rather than seeding distinct prompts.
@@ -114,9 +117,17 @@ try {
   // Errors from seeding/first paint aren't what this test is about.
   pageErrors.length = 0;
 
-  console.log("\nCompare tab: renders a real comparison for a prompt with two runs");
-  await page.evaluate(() => document.querySelector('[data-tab="compare"]')?.click());
+  console.log("\nCompare: renders a real comparison for a prompt with two runs");
+  // Since 0.47.0 Compare is not in the top menu; it opens from the answer,
+  // on that answer's prompt (analyze-popup.test.mjs covers the popup's link).
+  const menuHasCompare = await page.evaluate(() => !!document.querySelector('.nav-tabs [data-tab="compare"]'));
+  check("Compare is no longer a top-menu tab", !menuHasCompare);
+  const opener = await page.evaluate(() => document.querySelector('#analyze [data-open="compare"]')?.textContent || "");
+  check("the answer offers to compare its two answers", /Compare 2 answers/.test(opener), opener);
+  await page.evaluate(() => document.querySelector('#analyze [data-open="compare"]')?.click());
   await page.waitForTimeout(900);
+  const preselected = await page.evaluate(() => document.querySelector("#cmpPrompt")?.value || "");
+  check("Compare opens on this answer's prompt", /50000/.test(preselected), preselected);
 
   const optionCount = await page.evaluate(() => document.querySelectorAll("#cmpPrompt option").length);
   check("the prompt picker is populated (placeholder + at least one prompt)", optionCount >= 2, `${optionCount} options`);
@@ -148,7 +159,7 @@ try {
 
   // Same failure mode could hide in any render path, so walk them all.
   console.log("\nEvery tab renders without throwing");
-  for (const tab of ["analyze", "dashboard", "loader", "compare", "about"]) {
+  for (const tab of ["analyze", "dashboard", "loader", "about"]) {
     pageErrors.length = 0;
     await page.evaluate((t) => document.querySelector(`[data-tab="${t}"]`)?.click(), tab);
     await page.waitForTimeout(700);

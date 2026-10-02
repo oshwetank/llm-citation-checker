@@ -46,7 +46,9 @@ const EXT_PATH = path.resolve(HERE, "..");
 const FIXDIR = path.join(HERE, "fixtures");
 const PROFILE_BASE = process.env.UI_TEST_PROFILE_DIR || "/tmp/citoskeleton-ui-test";
 
-const TABS = ["analyze", "dashboard", "loader", "compare", "about"];
+// Compare left the top menu in 0.47.0 (it opens from an answer instead);
+// compare-tab.test.mjs renders it that way.
+const TABS = ["analyze", "dashboard", "loader", "about"];
 
 let failures = 0;
 const check = (label, cond, detail) => {

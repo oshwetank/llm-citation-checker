@@ -247,7 +247,9 @@ try {
   await page.waitForTimeout(3000);
   drain();
 
-  const TABS = ["analyze", "dashboard", "loader", "compare", "about"];
+  // Compare left the top menu in 0.47.0 (it opens from an answer instead);
+  // compare-tab.test.mjs renders it that way.
+  const TABS = ["analyze", "dashboard", "loader", "about"];
   /* The interactive surface each tab MUST have once data exists.
    *
    * Without this, a tab that silently rendered its empty state satisfied

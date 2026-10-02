@@ -12,9 +12,9 @@
          promise — "no network calls of our own", stated in the store listing,
          the About tab and the README. A privacy tool that phones home for a
          typeface is not a privacy tool.
-         panel.css now uses system font stacks only. 'JetBrains Mono' is still
-         NAMED first in the monospace stacks so anyone who has it installed
-         locally still gets it — it just is never fetched. -->
+         Since 0.47.0 the typeface (IBM Plex) ships inside the extension, in
+         /fonts, and panel.css's @font-face rules load it from there. Still no
+         request leaves the browser for it; analyze-popup.test.mjs checks. -->
     <link rel="stylesheet" href="panel.css" />
   </head>
   <body>
@@ -27,7 +27,7 @@
             </div>
             <div class="brand-text">
               <span class="brand-title">CitoSkeleton</span>
-              <span class="version-badge">v0.46.0</span>
+              <span class="version-badge">v0.47.0</span>
               <span class="brand-sub">ChatGPT, Gemini, Perplexity &amp; Grok</span>
             </div>
           </div>
@@ -61,10 +61,6 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"></path><line x1="4" y1="22" x2="4" y2="3"></line></svg>
             <span>Campaigns</span>
           </button>
-          <button class="nav-tab tab" data-tab="compare">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>
-            <span>Compare</span>
-          </button>
           <button class="nav-tab tab" data-tab="about">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
             <span>About</span>
@@ -77,7 +73,13 @@
         <section id="dashboard" class="panel"></section>
         <section id="loader" class="panel"></section>
 
+        <!-- Compare left the top menu in 0.47.0: comparing answers to one prompt
+             starts from the answer itself (Analyze → "All N answers to this
+             prompt"), so this page is always reached from Analyze. -->
         <section id="compare" class="panel">
+          <button id="cmpBack" class="analyze-context-back cmp-back" type="button" title="Back to the answer">
+            <span aria-hidden="true">←</span><span>Back to the answer</span>
+          </button>
           <div class="card">
             <div class="card-header">
               <h3>Track a prompt over time</h3>
@@ -132,7 +134,7 @@
           <div class="card about-hero">
             <div class="about-hero-icon"><img src="../icons/icon128.png" width="40" height="40" alt="" /></div>
             <div class="about-hero-main">
-              <h2 class="about-title">CitoSkeleton <span class="version-badge">v0.46.0</span></h2>
+              <h2 class="about-title">CitoSkeleton <span class="version-badge">v0.47.0</span></h2>
               <p class="about-tagline">
                 See what ChatGPT, Gemini, Perplexity and Grok actually read before
                 they answer — the searches they run, the pages they fetch, the

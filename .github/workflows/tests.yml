@@ -105,7 +105,7 @@ jobs:
       - name: Run unit tests
         run: |
           fail=0
-          for f in test/adapter.test.mjs test/ai-brands.test.mjs test/auth-check.test.mjs \
+          for f in test/adapter.test.mjs test/ai-brands.test.mjs test/analyze-view.test.mjs test/auth-check.test.mjs \
                    test/brand-context.test.mjs test/build-id.test.mjs test/chatgpt-retrieval.test.mjs \
                    test/auto-competitors.test.mjs \
                    test/behaviour.test.mjs test/brands.test.mjs test/campaign-workbook.test.mjs \
@@ -162,7 +162,7 @@ jobs:
       - name: Run browser tests
         run: |
           fail=0
-          for f in test/analyze-feedback.test.mjs test/analyze-header-gap.test.mjs \
+          for f in test/analyze-feedback.test.mjs test/analyze-header-gap.test.mjs test/analyze-popup.test.mjs \
                    test/analyze-layout.test.mjs test/brand-detail.test.mjs test/build-mismatch.test.mjs \
                    test/campaign-diagnostics-export.test.mjs test/capture-attribution.test.mjs \
                    test/campaign-drilldown.test.mjs test/campaign-setup.test.mjs test/capture-latency.test.mjs \

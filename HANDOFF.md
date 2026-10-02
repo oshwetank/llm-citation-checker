@@ -2,7 +2,7 @@
 
 Read this before changing anything. It is the working context from the sessions that built v0.38 to v0.45, written so another developer or model can take over without the chat history. For what each change does and why, see PR #26's description and the commit messages. Those are detailed and accurate.
 
-Last updated 2 October 2026, at v0.46.0.
+Last updated 2 October 2026, at v0.47.0.
 
 ## Where things stand
 
@@ -10,7 +10,7 @@ Last updated 2 October 2026, at v0.46.0.
   - **Campaigns** (the "Loader") send a list of prompts to several engines in background tabs and compute visibility metrics across them.
   - See `README.md` for the user-facing description and `ARCHITECTURE.md` / `RESEARCH.md` for the original design.
 - **Branch.** Work happens on `claude/blank-screen-prompts-issue-qnma6w`. **PR #26** targets `master`, is **open**; check its CI before building on it. If it has since been merged, start from `master`.
-- **Version.** 0.46.0, which only redesigns the campaign setup screen (see below). 0.45.1 was never released; 0.45.2 was another model's commit (`c866508`) whose Grok change is undone in 0.45.3 — see open problem 1.
+- **Version.** 0.47.0: the bundled IBM Plex typeface, the popup's new Analyze screen, and Compare moved out of the top menu (see below). It is release 1 of the owner's canvas redesign; the rest is planned release by release (see "UI redesign, release by release"). 0.46.0 redesigned the campaign setup screen. 0.45.1 was never released; 0.45.2 was another model's commit (`c866508`) whose Grok change is undone in 0.45.3 — see open problem 1.
 - **Tests.** 46 unit and 31 browser test files, all passing locally and in CI.
 - **Last real run: v0.45.4 (Gemini + Grok only), 10/20.** Gemini 10/10; Grok 0/10, fixed in 0.45.5, not yet run (0.46.0 carries the same fix). The last real run was on v0.43.0 (see the run history).
 
@@ -67,7 +67,9 @@ for t in test/*.test.mjs; do node "$t" || echo "FAILED: $t"; done
 | `src/lib/geo.js` | Campaign metrics. `selectTracked` keeps **one capture per run × engine × prompt** (most sources, then longest answer, then earliest). Pass `{allCaptures:true}` for diagnostics. |
 | `src/lib/retrieval.js` | ChatGPT retrieval labels: the 69-engine registry, `pipelineOf`, `typeLabel`, `supplierOf`, `retrievalMix`, `enginesNamedIn`. |
 | `src/lib/errorlog.js`, `diagnosticsSummary.js` | The single diagnostics log and per-run counts. The export is assembled in `ui/panel.js` in batches, because one Chrome message is capped at 64 MiB. |
-| `ui/panel.js` / `.css` / `.html` | Analyze · Dashboard · Campaigns · Compare · About (Diagnostics). |
+| `ui/panel.js` / `.css` / `.html` | Analyze · Dashboard · Campaigns · About (Diagnostics). Compare is a page reached from Analyze, not a top-menu tab, since 0.47.0. |
+| `src/lib/analyzeView.js`, `siteKind.js` | The popup Analyze screen's content as plain data (searches, brands and what backs them, pages cited and their kind of site, your brand, changes since the previous answer). `ui/panel.js` `renderAnalyzePopup` only draws it. |
+| `fonts/` | IBM Plex Sans (variable), Sans Devanagari and Mono, Latin/Latin Extended/Devanagari subsets only, with `OFL.txt`. Loaded by `@font-face` at the top of `panel.css`; never fetched from the web. |
 
 **Campaign setup screen (0.46.0).** `renderCampaignSetup` in `ui/panel.js`, styles under "Campaign setup" in `panel.css`, guarded by `test/campaign-setup.test.mjs`. The owner approved it from a design canvas first.
 
@@ -76,6 +78,18 @@ for t in test/*.test.mjs; do node "$t" || echo "FAILED: $t"; done
 - Two columns when the setup is at least 880px wide, using a container query on `.cs`, not the window width. The popup and narrow tabs get one column with the required things first.
 - Unsaved typing survives re-renders through `setupDraft`. Every prompt add, filter click and search keystroke rebuilds the tab, and that used to wipe it.
 - 0.46.0 also fixed sticky positioning in full-tab mode. `body` was a scroll container that never scrolls, so the header and Analyze's context bar scrolled away. It is now `overflow-x: clip`.
+
+**UI redesign, release by release (from 0.47.0).** The owner designed and approved a full redesign on a design canvas (popup and full-tab Analyze, Dashboard, Campaigns, About, Excel/PDF exports) and asked for it to be built "release by release". Each release is its own version, tested and zipped:
+
+1. **0.47.0 (done):** IBM Plex bundled and the type scale tidied (sizes 11/12/13/14/16, weights 400/500/600); the popup Analyze rebuilt (`renderAnalyzePopup`; tests `analyze-view`, `analyze-popup`); Compare out of the top menu, opened from an answer instead.
+2. Full-tab Analyze: the answer as the engine showed it on the right, the analysis on the left, adapting to the kind of answer; comparing engines inside Analyze.
+3. Dashboard (tab and popup): search-first prompt history, periods, answer-type facets, fan-out view.
+4. Campaigns and the brand-vs-competitor detail, adapting to the kinds of answer.
+5. About: overview, glossary, diagnostics.
+6. Exports: a real .xlsx workbook with charts and formulas, designed PDF reports, and the export dialog (today's export is a chart-less SpreadsheetML .xls and a browser-printed PDF).
+
+- The popup's details sheet says what the capture can't: a product card names its stores but not each store's price, and Gemini doesn't publish its searches. Keep it that way; don't fill gaps.
+- "Your brand" in an ad-hoc answer comes from the campaigns (`ownBrandFor`): the capture's own campaign, a brand tagged as yours, a tracked brand the answer names, or the only campaign.
 
 **Engine specifics worth knowing**
 

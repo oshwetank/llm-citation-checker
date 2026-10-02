@@ -10,12 +10,25 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.46.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.47.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - A new typeface, IBM Plex, chosen for this kind of screen: "I", "l" and "1" never look
+>   alike in site names and model numbers, digits line up in columns, and it has the ₹ sign
+>   and a matching Hindi version. It ships inside the extension, so nothing is downloaded.
+>   Text sizes and weights are tidied to a short, consistent scale.
+> - The popup's Analyze screen is rebuilt. The searches the engine ran come first, right
+>   under the prompt, each one in full. Then the product cards, map or images; your brand
+>   as four numbers; every brand with its mentions, what backs it and how it moved since
+>   last time; every cited page with its kind of site and the brands it mentions; and what
+>   changed since the previous answer to the same prompt. Details (what backs each brand,
+>   where to buy, places, images, search details, technical) open in a sheet. No box is
+>   cut off at the bottom any more: the popup scrolls instead.
+> - Compare has left the top menu. It opens from an answer instead ("All N answers to
+>   this prompt" in the popup, "Compare N answers" in the full tab), on that prompt.
 > - The campaign setup screen is redesigned. Save draft and Save & start tracking sit in a bar
 >   pinned at the top, which lists the five things a campaign needs and turns any missing one
 >   red. Prompts are added with two clear buttons (Upload a file / Add manually). Competitors

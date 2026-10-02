@@ -332,7 +332,7 @@ export function structuralCandidates(answerText) {
 }
 
 /* ---------- 4. cited domains ---------- */
-const MARKETPLACE_DOMAINS = new Set([
+export const MARKETPLACE_DOMAINS = new Set([
   "amazon.com", "amazon.in", "amazon.co.uk", "amazon.ae", "amazon.de", "amazon.ca",
   "flipkart.com", "myntra.com", "meesho.com", "snapdeal.com", "shopclues.com",
   "ebay.com", "ebay.in", "walmart.com", "aliexpress.com", "alibaba.com", "etsy.com",
@@ -343,7 +343,7 @@ const MARKETPLACE_DOMAINS = new Set([
 
 // Publishers, news outlets, tech portals, aggregators, price comparison sites, and social platforms that
 // produce citations or host discussions, NOT product brands being reviewed.
-const EDITORIAL_DOMAINS = new Set([
+export const EDITORIAL_DOMAINS = new Set([
   "digit.in", "gadgets01.com", "91mobiles.com", "gsmarena.com", "techradar.com",
   "theverge.com", "tomsguide.com", "cnet.com", "androidauthority.com", "androidcentral.com",
   "smartprix.com", "mysmartprice.com", "bgr.in", "gadgets360.com", "gizmochina.com",
