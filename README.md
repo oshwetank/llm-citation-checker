@@ -10,12 +10,16 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.45.5** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.46.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - The campaign setup screen is redesigned. Save draft and Save & start tracking sit in a bar
+>   pinned at the top, which lists the five things a campaign needs and turns any missing one
+>   red. Prompts are added with two clear buttons (Upload a file / Add manually). Competitors
+>   are compact chips in their own card. The popup gets its own one-column layout.
 > - Grok prompts are actually typed and sent. grok.com's momentary hop through `/tos-gate`
 >   was being read as "sent" before anything was typed, and the composer list could land on
 >   a hidden decoy textbox. Selectors now follow grok.com's current page, as mapped by

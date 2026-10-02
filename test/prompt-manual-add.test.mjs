@@ -82,7 +82,7 @@ try {
   await page.waitForTimeout(700);
 
   const opened = await page.evaluate(() => {
-    const toggle = [...document.querySelectorAll("button")].find((b) => /type prompts manually/i.test(b.textContent));
+    const toggle = document.querySelector('.cs-mode[data-mode="manual"]');
     if (!toggle) return false;
     toggle.click();
     return true;

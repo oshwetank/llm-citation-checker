@@ -395,6 +395,17 @@ let promptOnlyUnassigned = false;
 let promptSearch = "";
 let campaignManageOpen = false; // collapsible setup/prompts panel once a campaign is locked
 let selectedPromptIds = new Set(); // checked rows in the prompt table, for bulk pause/enable/remove
+// Campaign setup state that has to outlive a re-render — every add, filter
+// click and search keystroke in this tab rebuilds it from the database:
+//   setupDraft — what's typed in the setup form but not saved yet;
+//   setupAttemptedFor — the campaign whose "Save & start tracking" was pressed
+//     with gaps, so its missing items stay red until they're filled;
+//   promptAddMode / promptAddNote — which way of adding prompts is open, and
+//     what the last add did.
+let setupDraft = null;
+let setupAttemptedFor = null;
+let promptAddMode = null;
+let promptAddNote = null;
 const ONBOARD_KEY = "lcfc.onboarding.campaignsDismissed";
 let campaignOnboardDismissed = true; // flips to false once we've checked storage, if unset
 chrome.storage.local.get(ONBOARD_KEY, (r) => { campaignOnboardDismissed = !!r[ONBOARD_KEY]; });
@@ -3844,10 +3855,10 @@ function renderCampaignEmptyState() {
     "A campaign tracks how your brand and competitors show up across LLM answers, for a fixed set of prompts. Set it up once, then lock it in so every run stays comparable."));
   const steps = el("ol", { className: "onboard-steps" });
   [
-    "Name the campaign and set your brand + competitors",
-    "Upload a CSV/Excel of prompts (or type them) and tag them",
-    "Choose which LLMs to track",
-    "Lock the campaign to start measuring",
+    "Name the campaign and add your brand and website",
+    "Pick which AI engines to track",
+    "Upload a CSV/Excel of prompts, or type them in",
+    "Add competitors (optional), then press Save & start tracking",
   ].forEach((s) => steps.append(el("li", {}, s)));
   box.append(steps);
   const cta = el("button", { className: "btn primary" }, "+ Create your first campaign");
@@ -3863,7 +3874,7 @@ function renderOnboardingBanner() {
   const box = el("div", { className: "warn-box onboard-banner" });
   box.append(el("div", {},
     el("b", {}, "Setting up a campaign — "),
-    "add prompts (upload a CSV/Excel or type them), tag them so you can filter later, pick which LLMs to track, then lock the campaign. Locking freezes the setup so your results stay comparable run over run."));
+    "fill in the five required items listed at the top, add competitors if you like, then press Save & start tracking. That locks the setup so your results stay comparable run over run."));
   const dismiss = el("button", { className: "linkbtn" }, "Got it, don't show this again");
   dismiss.onclick = () => {
     campaignOnboardDismissed = true;
@@ -3883,141 +3894,410 @@ function trashCampaign(profile) {
   };
 }
 
-/** Setup card: name/brand/competitors/LLMs + the embedded prompt manager.
- *  Used both for the unlocked wizard and the locked "Manage" panel (dis=true). */
+/* The five things a campaign can't be tracked without, in the order the
+   setup screen asks for them. Competitors are recommended, never required:
+   a campaign with none still measures the brand on its own. */
+const SETUP_REQUIRED = [
+  { key: "name", label: "Campaign name" },
+  { key: "brand", label: "Brand name" },
+  { key: "site", label: "Website" },
+  { key: "engine", label: "AI engine" },
+  { key: "prompt", label: "Prompt" },
+];
+
+// Line icons for the setup screen, drawn in currentColor so they follow the
+// button or chip they sit in, in both themes.
+const SETUP_ICON = {
+  trash: '<path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/>',
+  lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+  unlock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 7.5-2"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  alert: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5"/><path d="M12 16.5h.01"/>',
+  todo: '<circle cx="12" cy="12" r="8"/>',
+  upload: '<path d="M12 15V4"/><path d="M7 9l5-5 5 5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>',
+  pencil: '<path d="M4 20h4L19 9l-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  x: '<path d="M6 6l12 12M18 6L6 18"/>',
+  file: '<path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5"/><path d="M9 14h6"/><path d="M9 17h4"/>',
+};
+const setupIcon = (name, size = 16, weight = 2) => el("span", {
+  className: "cs-icon", "aria-hidden": "true",
+  innerHTML: `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${weight}" stroke-linecap="round" stroke-linejoin="round">${SETUP_ICON[name]}</svg>`,
+});
+
+// What "Download a template" saves: the header row rowsToPrompts() looks for
+// and two example rows, one with tags.
+const PROMPT_TEMPLATE_CSV = 'Prompt,Tags\n"best running shoes for flat feet","footwear, comparison"\n"which running shoe brands last the longest",\n';
+
+function setupCardHead(id, title, help, { pill, count } = {}) {
+  const titleRow = el("div", { className: "cs-title-row" }, el("h3", { id, className: "cs-h" }, title));
+  if (pill) titleRow.append(pill);
+  const text = el("div", { className: "cs-head-text" }, titleRow);
+  if (help) text.append(el("p", { className: "cs-help" }, help));
+  const head = el("div", { className: "cs-card-head" }, text);
+  if (count) head.append(count);
+  return head;
+}
+
+function setupPill(key) {
+  const pill = el("span", { className: "cs-pill" }, "Required");
+  pill.dataset.pill = key;
+  return pill;
+}
+
+function setupField({ id, label, value, placeholder, req, msg, disabled, optional }) {
+  const input = el("input", { type: "text", id, className: "cs-input", value: value || "", placeholder: placeholder || "", disabled: !!disabled, spellcheck: false });
+  const labelEl = el("label", { htmlFor: id, className: "cs-label" }, label);
+  if (optional) labelEl.append(el("span", { className: "cs-optional" }, " (optional)"));
+  const row = el("div", { className: "cs-label-row" }, labelEl);
+  if (req && !disabled) row.append(setupPill(req));
+  const wrap = el("div", { className: "cs-field" }, row, input);
+  let msgEl = null;
+  if (msg) {
+    msgEl = el("p", { className: "cs-msg", id: `${id}-msg`, hidden: true }, msg);
+    wrap.append(msgEl);
+  }
+  return { wrap, input, msgEl };
+}
+
+/** Campaign setup: a bar with the save actions and what's still required,
+ *  then three cards — details (name, brand, AI engines), prompts, and
+ *  competitors. Used for the unlocked setup and, read-only (dis=true), for a
+ *  locked campaign's "Manage" view.
+ *
+ *  The actions used to sit under the whole prompt table, and nothing said
+ *  which fields a campaign needs before it can be tracked; each competitor
+ *  was a full-width row, so every one added pushed the engine picker further
+ *  down. Now the bar is pinned at the top, lists the five required items,
+ *  and turns each missing one red — in the bar and on the box itself — when
+ *  Save & start tracking is pressed with gaps. Competitors are compact chips
+ *  in their own card, after the required things. */
 function renderCampaignSetup(profile, dis) {
-  const card = el("div", { className: "card" });
-  const head = el("div", { className: "card-header" }, el("h3", {}, dis ? "Manage campaign" : "Set up your campaign"));
-  // Everything typed into this form (name/brand/url/competitors/engines)
-  // lives only in these DOM inputs until "Save details" is clicked — reading
-  // collectFormValues() (defined below, once the inputs exist) is how every
-  // OTHER action in this card that touches the profile gets the values the
-  // user can actually see, instead of the `profile` argument, which is a
-  // snapshot from whenever this card was last rendered and goes stale the
-  // moment someone types. Locking against the stale snapshot silently
-  // dropped just-typed details (and could reject a just-picked engine pill
-  // as "none selected" because it was reading the old profile.engines);
-  // adding a prompt triggered loadGeo() -> a full re-render from the DB,
-  // which wiped anything typed here that had never been saved. Both are
-  // fixed by routing through collectFormValues() instead of `profile`.
-  let collectFormValues = () => profile; // reassigned below once inputs exist
-  const persistDetails = async () => send({ type: "geo-profile-save", profile: { ...profile, ...collectFormValues() } });
+  const draft = !dis && setupDraft && setupDraft.id === profile.id ? setupDraft : null;
+  const start = draft ? { ...profile, ...draft } : profile;
+  const root = el("section", { className: `cs${dis ? " cs-readonly" : ""}`, "aria-label": dis ? "Campaign setup" : "Set up your campaign" });
+
+  // Everything typed here lives only in these inputs until it's saved, so
+  // every action reads the form through collectFormValues() rather than the
+  // `profile` argument — a snapshot from the last render that goes stale the
+  // moment someone types. Locking against that snapshot once dropped
+  // just-typed details. Reassigned below, once the inputs exist.
+  let collectFormValues = () => profile;
+  let refresh = () => [];
+  const persistDetails = async () => {
+    const r = await send({ type: "geo-profile-save", profile: { ...profile, ...collectFormValues() } });
+    if (r.ok) setupDraft = null;
+    return r;
+  };
+  // Every prompt add, filter click and search keystroke in this tab rebuilds
+  // it from the database, which used to wipe whatever was typed here but not
+  // saved yet. The draft carries it across those re-renders.
+  const changed = () => {
+    if (!dis) setupDraft = { id: profile.id, ...collectFormValues(true) };
+    refresh();
+  };
+
+  /* ---- the bar ---- */
+  const bar = el("div", { className: "cs-bar" });
+  const titleText = el("h2", { className: "cs-bar-name" });
+  bar.append(el("div", { className: "cs-bar-title" }, titleText,
+    el("p", { className: "cs-bar-sub" }, dis
+      ? "Locked, so every run is measured the same way. Unlocking lets you change it, but results from before and after won't be directly comparable."
+      : "Save & start tracking locks the setup, so every run is measured the same way. You can unlock it later.")));
+
+  const reqButtons = {};
+  const segs = el("div", { className: "cs-segs", "aria-hidden": "true" });
+  const progText = el("span", { className: "cs-progress-text" });
+  const checkText = el("span", { className: "cs-progress-text" });
+  const nextBtn = el("button", { type: "button", className: "linkbtn cs-next" });
+  let saveBtn = null;
+  let draftBtn = null;
+  let saveLabel = null;
   if (!dis) {
-    const delBtn = el("button", { className: "btn sm ghost danger" }, "🗑 Delete campaign");
+    const delBtn = el("button", { type: "button", className: "cs-delete", "aria-label": "Delete campaign", title: "Delete campaign" },
+      setupIcon("trash"), el("span", { className: "cs-delete-label" }, "Delete"));
     delBtn.onclick = trashCampaign(profile);
-    const lockBtn = el("button", { className: "btn sm primary" }, "🔒 Lock & start tracking");
-    lockBtn.onclick = async () => {
-      const current = collectFormValues();
-      if (!GEO_PROMPTS.length) return showToast("Add at least one prompt before locking.", "error");
-      if (!current.engines.length) return showToast("Choose at least one LLM to track before locking.", "error");
-      if (!confirm("Lock this campaign?\n\nLocking freezes the brand set, competitors, prompts and LLMs so your trend data stays comparable day to day. You can unlock any time.")) return;
-      const r = await send({ type: "geo-profile-save", profile: { ...profile, ...current, locked: true }, unlockOverride: true });
-      if (r.ok) loadGeo(); else showToast(r.error, "error");
-    };
-    head.append(delBtn, lockBtn);
+    draftBtn = el("button", { type: "button", className: "btn ghost cs-draft" }, "Save draft");
+    saveLabel = el("span", {}, "Save & start tracking");
+    saveBtn = el("button", { type: "button", className: "btn primary cs-save" }, setupIcon("lock", 15, 2.2), saveLabel);
+    bar.append(delBtn, el("div", { className: "cs-actions" }, draftBtn, saveBtn));
+
+    const reqList = el("ul", { className: "cs-req-list" });
+    SETUP_REQUIRED.forEach((r) => {
+      const b = el("button", { type: "button", className: "cs-req" }, el("span", { className: "cs-req-icon" }), el("span", {}, r.label));
+      b.dataset.req = r.key;
+      b.onclick = () => goTo(r.key);
+      reqButtons[r.key] = b;
+      reqList.append(el("li", {}, b));
+      segs.append(el("span", { className: "cs-seg" }));
+    });
+    bar.append(
+      el("div", { className: "cs-checklist" }, el("span", { className: "cs-checklist-label" }, "Required to start tracking"), reqList, checkText),
+      el("div", { className: "cs-progress" }, progText, segs, nextBtn));
   } else {
-    const unlockBtn = el("button", { className: "btn sm ghost" }, "🔓 Unlock to edit");
+    const unlockBtn = el("button", { type: "button", className: "btn ghost cs-unlock" }, setupIcon("unlock", 15), el("span", {}, "Unlock to edit"));
     unlockBtn.onclick = async () => {
       if (!confirm("Unlock and allow edits?\n\nChanging the brand set, prompts or LLMs changes what the metrics are measured against — numbers before and after this point are NOT directly comparable.")) return;
       const r = await send({ type: "geo-profile-save", profile: { ...profile, locked: false }, unlockOverride: true });
       if (r.ok) loadGeo(); else showToast(r.error, "error");
     };
-    head.append(unlockBtn);
+    bar.append(el("div", { className: "cs-actions" }, unlockBtn));
   }
-  card.append(head);
+  root.append(bar);
 
-  const nameIn = el("input", { type: "text", value: profile.name || "", placeholder: "Campaign name", disabled: dis });
-  const brandIn = el("input", { type: "text", value: profile.brand?.name || "", placeholder: "Your brand name", disabled: dis });
-  const urlIn = el("input", { type: "text", value: profile.brand?.url || "", placeholder: "yourbrand.com", disabled: dis });
-  card.append(el("div", { className: "proj-row" }, nameIn));
-  card.append(el("label", { className: "muted", style: "display:block;margin-top:8px" }, "Your brand"));
-  card.append(el("div", { className: "proj-row" }, brandIn, urlIn));
+  const body = el("div", { className: "cs-body" });
+  const errors = el("div", { className: "cs-errors", role: "alert", hidden: true });
+  const grid = el("div", { className: "cs-grid" });
+  body.append(errors, grid);
+  root.append(body);
 
-  // Competitors: a repeatable name+url row per competitor, rather than a
-  // freeform "name, url per line" textarea — less error-prone to fill in and
-  // to read back.
-  card.append(el("label", { className: "muted", style: "display:block;margin-top:14px" }, "Competitors"));
-  const compWrap = el("div", { className: "competitor-rows" });
-  const addCompetitorRow = (name = "", url = "") => {
-    const row = el("div", { className: "proj-row competitor-row" });
-    row.append(
-      el("input", { type: "text", placeholder: "Competitor name", value: name, disabled: dis, className: "comp-name" }),
-      el("input", { type: "text", placeholder: "competitor.com", value: url, disabled: dis, className: "comp-url" }),
-    );
-    if (!dis) {
-      const rm = el("button", { className: "btn sm ghost danger", title: "Remove competitor" }, "✕");
-      rm.onclick = () => row.remove();
-      row.append(rm);
-    }
-    compWrap.append(row);
-  };
-  (profile.competitors || []).forEach((c) => addCompetitorRow(c.name, c.url));
-  if (dis && !(profile.competitors || []).length) compWrap.append(el("div", { className: "muted small" }, "No competitors added."));
-  card.append(compWrap);
-  if (!dis) {
-    const addCompBtn = el("button", { className: "btn sm ghost", style: "margin-top:8px" }, "➕ Add competitor");
-    addCompBtn.onclick = () => addCompetitorRow();
-    card.append(addCompBtn);
-  }
+  /* ---- campaign details ---- */
+  const details = el("section", { className: "card cs-card cs-card-details", "aria-labelledby": "cs-details-h" });
+  details.append(setupCardHead("cs-details-h", "Campaign details", dis ? null : "Everything here is needed before you can start tracking."));
+  const nameF = setupField({ id: "cs-name", label: "Campaign name", value: start.name, placeholder: "e.g. Running shoes — Q4", req: "name", msg: "Give the campaign a name so you can find it later.", disabled: dis });
+  const brandF = setupField({ id: "cs-brand", label: "Brand name", value: start.brand?.name, placeholder: "e.g. Northwind", req: "brand", msg: "Add your brand name.", disabled: dis });
+  const siteF = setupField({ id: "cs-site", label: "Website", value: start.brand?.url, placeholder: "e.g. northwind.com", req: "site", msg: "Add your website, e.g. northwind.com.", disabled: dis });
+  details.append(nameF.wrap, el("div", { className: "cs-block" },
+    el("div", { className: "cs-block-head" },
+      el("span", { className: "cs-label cs-label-lg" }, "Your brand"),
+      el("p", { className: "cs-help" }, "Answers are scanned for this name, and cited pages are matched to this website.")),
+    el("div", { className: "cs-pair" }, brandF.wrap, siteF.wrap)));
 
-  // LLMs to track: an icon-forward selectable grid instead of plain checkboxes.
-  card.append(el("label", { className: "muted", style: "display:block;margin-top:16px" }, "LLMs to track"));
-  const engCount = el("div", { className: "muted small", style: "margin-top:6px" });
-  const engGrid = el("div", { className: "llm-grid" });
+  const engCount = el("span", {});
+  const engMsg = el("p", { className: "cs-msg", id: "cs-engines-msg", hidden: true }, "Pick at least one AI engine to track.");
+  const engLabelRow = el("div", { className: "cs-label-row" }, el("span", { className: "cs-label cs-label-lg", id: "cs-eng-label" }, "AI engines to track"));
+  if (!dis) engLabelRow.append(setupPill("engine"));
+  const engGroup = el("div", { className: "cs-group", id: "cs-engines", role: "group", "aria-labelledby": "cs-eng-label" },
+    el("div", { className: "cs-block-head" }, engLabelRow, el("p", { className: "cs-help" }, "Every prompt is sent to each engine you pick. ", engCount)));
+  const engGrid = el("div", { className: "cs-engine-grid" });
+  const startEngines = new Set(start.engines || []);
   ENGINES.forEach((e) => {
-    const selected = (profile.engines || []).includes(e.id);
-    const pillDisabled = dis || !e.available;
-    const pill = el("div", {
-      className: `llm-pill${selected ? " selected" : ""}${pillDisabled ? " disabled" : ""}`,
-      role: "checkbox", "aria-checked": String(selected), tabIndex: pillDisabled ? -1 : 0,
+    const off = dis || !e.available;
+    const tile = el("button", {
+      type: "button", className: "cs-engine", disabled: off,
+      "aria-pressed": String(e.available && startEngines.has(e.id)),
     });
-    pill.dataset.value = e.id;
-    pill.append(engineIconEl(e.id));
-    pill.append(el("span", { className: "llm-label" }, e.label));
-    // Unavailable engines are shown disabled rather than hidden: the roadmap
-    // stays visible, and a metric can never silently under-count because a
-    // pill looked selectable but drove nothing.
-    if (!e.available) pill.append(el("span", { className: "soon" }, e.note || "coming soon"));
-    else pill.append(el("span", { className: "llm-check" }, "✓"));
-    if (!pillDisabled) {
-      const toggle = () => {
-        pill.classList.toggle("selected");
-        pill.setAttribute("aria-checked", String(pill.classList.contains("selected")));
-        engCount.textContent = `${engGrid.querySelectorAll(".llm-pill.selected").length} of ${ENGINES.length} selected`;
+    tile.dataset.value = e.id;
+    tile.append(
+      el("span", { className: "cs-engine-mark" }, engineIconEl(e.id)),
+      el("span", { className: "cs-engine-text" },
+        el("span", { className: "cs-engine-name" }, e.label),
+        el("span", { className: "cs-engine-host" }, e.available ? e.host : (e.note || "coming soon"))),
+      el("span", { className: "cs-engine-check" }, setupIcon("check", 12, 3.2)));
+    if (!off) {
+      tile.onclick = () => {
+        tile.setAttribute("aria-pressed", String(tile.getAttribute("aria-pressed") !== "true"));
+        changed();
       };
-      pill.onclick = toggle;
-      pill.onkeydown = (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggle(); } };
     }
-    engGrid.append(pill);
+    engGrid.append(tile);
   });
-  engCount.textContent = `${(profile.engines || []).length} of ${ENGINES.length} selected`;
-  card.append(engGrid, engCount);
+  engGroup.append(engGrid, engMsg);
+  details.append(engGroup);
 
-  // Now that every input exists, collectFormValues can read what's actually
-  // on screen — this is what lockBtn (above) and persistDetails (used by
-  // both Save and, below, adding a prompt) both call instead of trusting
-  // the possibly-stale `profile` argument.
-  collectFormValues = () => ({
-    name: nameIn.value.trim() || profile.name,
-    brand: { name: brandIn.value.trim(), url: urlIn.value.trim() },
-    competitors: [...compWrap.querySelectorAll(".competitor-row")]
-      .map((row) => ({ name: row.querySelector(".comp-name").value.trim(), url: row.querySelector(".comp-url").value.trim() }))
-      .filter((c) => c.name),
-    engines: [...engGrid.querySelectorAll(".llm-pill.selected")].map((p) => p.dataset.value),
+  /* ---- prompts ---- */
+  const promptsCard = el("section", { className: "card cs-card cs-card-prompts", "aria-labelledby": "cs-prompts-h" });
+  promptsCard.append(renderPromptManager(profile, dis, persistDetails));
+
+  /* ---- competitors ---- */
+  let comps = (start.competitors || []).map((c) => ({ name: c.name, url: c.url || "" }));
+  const compCount = el("span", { className: "cs-count" });
+  const compsCard = el("section", { className: "card cs-card cs-card-comps", "aria-labelledby": "cs-comps-h" });
+  compsCard.append(setupCardHead("cs-comps-h", "Competitors",
+    dis ? null : "Compared with your brand in every answer. Optional, add as many as you like.",
+    { pill: dis ? null : el("span", { className: "cs-pill cs-pill-soft" }, "Recommended"), count: compCount }));
+  const compList = el("ul", { className: "cs-comp-list", "aria-label": "Competitors" });
+  const compEmpty = el("p", { className: "cs-empty-line" }, dis ? "No competitors added." : "No competitors yet. Your brand is still tracked without them.");
+  let compNameF = null;
+  const drawComps = () => {
+    compList.textContent = "";
+    comps.forEach((c, i) => {
+      const chip = el("li", { className: "cs-comp-chip" }, el("span", { className: "cs-comp-name" }, c.name));
+      if (c.url) chip.append(el("span", { className: "cs-comp-site" }, c.url));
+      if (!dis) {
+        const rm = el("button", { type: "button", className: "cs-comp-remove", "aria-label": `Remove ${c.name}`, title: `Remove ${c.name}` }, setupIcon("x", 13, 2.6));
+        rm.onclick = () => {
+          comps = comps.filter((_, j) => j !== i);
+          drawComps();
+          changed();
+          compNameF.input.focus();
+        };
+        chip.append(rm);
+      }
+      compList.append(chip);
+    });
+    compList.hidden = !comps.length;
+    compEmpty.hidden = !!comps.length;
+    compCount.textContent = `${comps.length} added`;
+    compCount.hidden = !comps.length;
+  };
+  if (!dis) {
+    compNameF = setupField({ id: "cs-comp-name", label: "Name", placeholder: "e.g. Contoso" });
+    const compSiteF = setupField({ id: "cs-comp-site", label: "Website", optional: true, placeholder: "e.g. contoso.com" });
+    const addBtn = el("button", { type: "button", className: "btn ghost cs-comp-add", disabled: true }, setupIcon("plus", 14, 2.4), el("span", {}, "Add competitor"));
+    const compHint = el("p", { className: "cs-hint", role: "status", hidden: true });
+    const addComp = () => {
+      const name = compNameF.input.value.trim();
+      if (!name) return;
+      const key = name.toLowerCase();
+      let why = "";
+      if (comps.some((c) => c.name.toLowerCase() === key)) why = `${name} is already in the list.`;
+      else if (key === brandF.input.value.trim().toLowerCase()) why = "That's your own brand — it's tracked already.";
+      if (why) { compHint.textContent = why; compHint.hidden = false; return; }
+      comps = comps.concat([{ name, url: compSiteF.input.value.trim() }]);
+      compNameF.input.value = "";
+      compSiteF.input.value = "";
+      addBtn.disabled = true;
+      compHint.hidden = true;
+      drawComps();
+      changed();
+      compNameF.input.focus();
+    };
+    addBtn.onclick = addComp;
+    const onKey = (ev) => { if (ev.key === "Enter") { ev.preventDefault(); addComp(); } };
+    compNameF.input.onkeydown = onKey;
+    compSiteF.input.onkeydown = onKey;
+    compNameF.input.oninput = () => { addBtn.disabled = !compNameF.input.value.trim(); compHint.hidden = true; };
+    compsCard.append(el("div", { className: "cs-comp-form" }, compNameF.wrap, compSiteF.wrap, addBtn), compHint);
+  }
+  compsCard.append(compList, compEmpty);
+  drawComps();
+
+  // DOM order is the one-column order: required things first.
+  grid.append(details, promptsCard, compsCard);
+
+  /* ---- reading and checking the form ---- */
+  collectFormValues = (raw = false) => ({
+    name: raw ? nameF.input.value : (nameF.input.value.trim() || profile.name),
+    brand: { name: brandF.input.value.trim(), url: siteF.input.value.trim() },
+    competitors: comps.map((c) => ({ ...c })),
+    engines: [...engGrid.querySelectorAll('.cs-engine[aria-pressed="true"]')].map((t) => t.dataset.value),
   });
+  [nameF, brandF, siteF].forEach((f) => { f.input.oninput = changed; });
+
+  const fields = { name: nameF, brand: brandF, site: siteF };
+  const goTo = (key) => {
+    const box = key === "engine" ? engGroup : key === "prompt" ? root.querySelector("#cs-prompts") : fields[key]?.input;
+    const target = key === "engine" ? engGrid.querySelector(".cs-engine:not(:disabled)")
+      : key === "prompt" ? root.querySelector(".cs-mode") : fields[key]?.input;
+    const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (box) box.scrollIntoView({ block: "center", behavior: smooth ? "smooth" : "auto" });
+    if (target) target.focus({ preventScroll: true });
+  };
+  const markField = (f, bad) => {
+    f.wrap.classList.toggle("is-invalid", bad);
+    if (bad) { f.input.setAttribute("aria-invalid", "true"); f.input.setAttribute("aria-describedby", f.msgEl.id); }
+    else { f.input.removeAttribute("aria-invalid"); f.input.removeAttribute("aria-describedby"); }
+    f.msgEl.hidden = !bad;
+  };
+  const markGroup = (group, bad) => {
+    if (!group) return;
+    group.classList.toggle("is-invalid", bad);
+    const msg = group.querySelector(":scope > .cs-msg");
+    if (msg) msg.hidden = !bad;
+  };
+  let shownErrors = "";
+  refresh = () => {
+    const v = collectFormValues(true);
+    const ok = {
+      name: !!v.name.trim(),
+      brand: !!v.brand.name,
+      site: !!v.brand.url,
+      engine: v.engines.length > 0,
+      prompt: GEO_PROMPTS.some((p) => p.active !== false),
+    };
+    const missing = SETUP_REQUIRED.filter((r) => !ok[r.key]);
+    titleText.textContent = v.name.trim() || "New campaign";
+    engCount.textContent = `${v.engines.length} of ${ENGINES.length} selected.`;
+    if (dis) return missing;
+
+    const attempted = setupAttemptedFor === profile.id;
+    SETUP_REQUIRED.forEach((r, i) => {
+      const state = ok[r.key] ? "done" : attempted ? "bad" : "todo";
+      const b = reqButtons[r.key];
+      b.dataset.state = state;
+      b.setAttribute("aria-label", `${r.label}: ${state === "done" ? "done" : "still needed"}`);
+      b.querySelector(".cs-req-icon").replaceChildren(setupIcon(state === "done" ? "check" : state === "bad" ? "alert" : "todo", 13, state === "done" ? 3 : 2.2));
+      segs.children[i].dataset.state = state;
+      root.querySelectorAll(`.cs-pill[data-pill="${r.key}"]`).forEach((p) => p.classList.toggle("is-bad", state === "bad"));
+    });
+    Object.entries(fields).forEach(([key, f]) => markField(f, attempted && !ok[key]));
+    markGroup(engGroup, attempted && !ok.engine);
+    markGroup(root.querySelector("#cs-prompts"), attempted && !ok.prompt);
+
+    const n = SETUP_REQUIRED.length;
+    const text = !missing.length ? `All ${n} required items done`
+      : attempted ? `${missing.length} required item${missing.length === 1 ? "" : "s"} missing`
+      : `${n - missing.length} of ${n} required items done`;
+    progText.textContent = text;
+    checkText.textContent = text;
+    bar.dataset.state = !missing.length ? "ready" : attempted ? "bad" : "todo";
+    nextBtn.hidden = !missing.length;
+    if (missing.length) {
+      nextBtn.textContent = `Next: ${missing[0].label}`;
+      nextBtn.onclick = () => goTo(missing[0].key);
+    }
+
+    // Rebuilt only when what's missing changes: it's a live region, and
+    // redrawing it on every keystroke would re-announce it each time.
+    const errKey = attempted ? missing.map((m) => m.key).join() : "";
+    if (errKey !== shownErrors) {
+      shownErrors = errKey;
+      errors.textContent = "";
+      errors.hidden = !errKey;
+      if (errKey) {
+        const links = el("div", { className: "cs-errors-links" });
+        missing.forEach((m) => {
+          const b = el("button", { type: "button", className: "linkbtn" }, m.label);
+          b.onclick = () => goTo(m.key);
+          links.append(b);
+        });
+        errors.append(setupIcon("alert", 18), el("div", { className: "cs-errors-text" },
+          el("p", { className: "cs-errors-title" }, `Add ${missing.length === 1 ? "1 more thing" : `${missing.length} more things`} before you start tracking:`),
+          links));
+      }
+    }
+    return missing;
+  };
 
   if (!dis) {
-    const save = el("button", { className: "btn sm" }, "💾 Save details");
-    save.onclick = async () => {
-      const r = await persistDetails();
-      if (r.ok) loadGeo(); else showToast(r.error, "error");
+    saveBtn.onclick = async () => {
+      if (saveBtn.disabled) return;
+      setupAttemptedFor = profile.id;
+      const missing = refresh();
+      if (missing.length) { goTo(missing[0].key); return; }
+      saveBtn.disabled = true;
+      draftBtn.disabled = true;
+      saveLabel.textContent = "Saving…";
+      try {
+        const r = await send({ type: "geo-profile-save", profile: { ...profile, ...collectFormValues(), locked: true }, unlockOverride: true });
+        if (r.ok) {
+          setupAttemptedFor = null;
+          setupDraft = null;
+          showToast("Campaign saved and locked. Start a run whenever you're ready.");
+          loadGeo();
+        } else showToast(r.error, "error");
+      } finally {
+        saveBtn.disabled = false;
+        draftBtn.disabled = false;
+        saveLabel.textContent = "Save & start tracking";
+      }
     };
-    card.append(el("div", { className: "ft-actions", style: "margin-top:10px" }, save));
+    draftBtn.onclick = async () => {
+      if (draftBtn.disabled) return;
+      draftBtn.disabled = true;
+      draftBtn.textContent = "Saving…";
+      try {
+        const r = await persistDetails();
+        if (r.ok) { showToast("Draft saved. Nothing is locked yet."); loadGeo(); } else showToast(r.error, "error");
+      } finally {
+        draftBtn.disabled = false;
+        draftBtn.textContent = "Save draft";
+      }
+    };
   }
-
-  card.append(el("div", { className: "wizard-divider" }));
-  card.append(renderPromptManager(profile, dis, persistDetails));
-  return card;
+  refresh();
+  return root;
 }
 
 /* Real brand marks, as inline SVG, instead of the stand-in emoji this used to
@@ -4108,53 +4388,83 @@ function reportAddResult(r) {
   );
 }
 
-/** The prompts table: CSV/Excel upload (primary), manual entry (fallback),
- *  search, tag-filter sidebar (with per-tag rename/delete), "only unassigned"
- *  toggle, inline tag editing, and bulk select for pause/remove. */
+/** The prompts card: two ways in (upload a file, or type them), then the
+ *  prompts table — search, tag-filter sidebar (with per-tag rename/delete),
+ *  "only unassigned" toggle, inline tag editing, and bulk select for
+ *  pause/remove. Upload used to be a small button with manual entry hidden
+ *  behind an "or type prompts manually" link; they're now two equal choices. */
 function renderPromptManager(profile, dis, persistDetails) {
   const wrap = el("div", { className: "prompt-manager" });
-  wrap.append(el("div", { className: "card-header", style: "margin-top:0" },
-    el("h3", {}, "Prompts"),
-    el("span", { className: "muted small" }, `${GEO_PROMPTS.filter((p) => p.active !== false).length} active of ${GEO_PROMPTS.length}`)));
+  const activeCount = GEO_PROMPTS.filter((p) => p.active !== false).length;
+  wrap.append(setupCardHead("cs-prompts-h", "Prompts",
+    dis ? null : "The questions people ask AI engines. Add at least one.", {
+      pill: dis ? null : setupPill("prompt"),
+      count: el("span", { className: "cs-count" }, activeCount === GEO_PROMPTS.length
+        ? `${GEO_PROMPTS.length} prompt${GEO_PROMPTS.length === 1 ? "" : "s"}`
+        : `${activeCount} active of ${GEO_PROMPTS.length}`),
+    }));
 
   if (!dis) {
-    const fileInput = el("input", { type: "file", accept: ".csv,.tsv,.xlsx", style: "display:none" });
-    const uploadBtn = el("button", { className: "btn sm" }, "⬆ Upload prompts (CSV/Excel)");
-    uploadBtn.onclick = () => fileInput.click();
-    fileInput.onchange = async () => {
-      const file = fileInput.files[0];
-      if (!file) return;
-      try {
-        const rows = /\.xlsx$/i.test(file.name) ? await parseXlsx(await file.arrayBuffer()) : parseCsv(await file.text());
-        const prompts = rowsToPrompts(rows);
-        if (!prompts.length) { showToast("No prompts found in that file — make sure column A has your prompts.", "error"); return; }
-        // Adding prompts triggers loadGeo() below, a full re-fetch-and-render
-        // — which used to silently wipe any campaign name/brand/url/
-        // competitor/engine edits still sitting unsaved in this same card's
-        // inputs. Persist them first so nothing typed but not yet saved is
-        // lost just because the user uploaded a prompt list next.
-        const detailsSave = await persistDetails();
-        if (!detailsSave.ok) { showToast(`Couldn't save campaign details: ${detailsSave.error}`, "error"); return; }
-        const r = await send({ type: "geo-prompt-bulk-add-rows", profileId: profile.id, rows: prompts });
-        fileInput.value = "";
-        if (r.ok) { reportAddResult(r); loadGeo(); } else showToast(r.error, "error");
-      } catch (err) {
-        showToast(`Couldn't read that file: ${err.message}`, "error");
-      }
+    // Adding prompts re-fetches and re-renders the whole tab, so whatever is
+    // still unsaved in the campaign details is saved first rather than lost.
+    const addRows = async (rows, verb) => {
+      const detailsSave = await persistDetails();
+      if (!detailsSave.ok) { showToast(`Couldn't save campaign details: ${detailsSave.error}`, "error"); return false; }
+      const r = await send({ type: "geo-prompt-bulk-add-rows", profileId: profile.id, rows });
+      if (!r.ok) { showToast(r.error, "error"); return false; }
+      const dup = (r.duplicates || []).length;
+      promptAddNote = {
+        id: profile.id,
+        text: `${verb} ${r.added} prompt${r.added === 1 ? "" : "s"}${dup ? ` · skipped ${dup} already in this campaign` : ""}`,
+      };
+      reportAddResult(r);
+      loadGeo();
+      return true;
     };
-    wrap.append(el("div", { className: "proj-row" },
-      uploadBtn,
-      el("span", { className: "muted small" }, "Column A = prompt, column B = tags (comma-separated)"),
-      fileInput));
 
-    const manualToggle = el("button", { className: "linkbtn" }, "or type prompts manually");
-    const manualBox = el("div", { style: "display:none; margin-top:8px" });
-    const ta = el("textarea", {
-      rows: 4,
-      placeholder: "One prompt per line — add tags after a | (pipe)…\nbest trading app in India | finance, beginner\nbest broker for beginners | finance",
-    });
-    const addBtn = el("button", { className: "btn sm" }, "➕ Add prompts");
-    addBtn.onclick = async () => {
+    const buildUpload = () => {
+      const fileInput = el("input", { type: "file", accept: ".csv,.tsv,.xlsx", hidden: true });
+      const importFile = async (file) => {
+        if (!file) return;
+        if (!/\.(csv|tsv|xlsx)$/i.test(file.name)) {
+          showToast("Use a .csv, .tsv or .xlsx file. An older .xls file needs saving as .xlsx first.", "error");
+          return;
+        }
+        try {
+          const rows = /\.xlsx$/i.test(file.name) ? await parseXlsx(await file.arrayBuffer()) : parseCsv(await file.text());
+          const prompts = rowsToPrompts(rows);
+          if (!prompts.length) { showToast("No prompts found in that file — make sure column A has your prompts.", "error"); return; }
+          await addRows(prompts, "Imported");
+        } catch (err) {
+          showToast(`Couldn't read that file: ${err.message}`, "error");
+        } finally {
+          fileInput.value = "";
+        }
+      };
+      fileInput.onchange = () => importFile(fileInput.files[0]);
+      const choose = el("button", { type: "button", className: "btn primary" }, "Choose file");
+      choose.onclick = () => fileInput.click();
+      const template = el("button", { type: "button", className: "linkbtn" }, "Download a template");
+      template.onclick = () => download("prompts-template.csv", PROMPT_TEMPLATE_CSV, "text/csv");
+      const drop = el("div", { className: "cs-drop" },
+        setupIcon("file", 26, 1.6),
+        el("p", { className: "cs-drop-title" }, "Drop a .csv, .tsv or .xlsx file here"),
+        el("div", { className: "cs-drop-actions" }, choose, template),
+        fileInput);
+      drop.ondragover = (ev) => { ev.preventDefault(); drop.classList.add("is-over"); };
+      drop.ondragleave = () => drop.classList.remove("is-over");
+      drop.ondrop = (ev) => { ev.preventDefault(); drop.classList.remove("is-over"); importFile(ev.dataTransfer.files[0]); };
+      const format = el("table", { className: "cs-format" },
+        el("thead", {}, el("tr", {}, el("th", {}, "A · Prompt"), el("th", {}, "B · Tags (optional)"))),
+        el("tbody", {}, el("tr", {}, el("td", {}, "best running shoes for flat feet"), el("td", {}, "footwear, comparison"))));
+      return el("div", { className: "cs-mode-panel" }, drop, format);
+    };
+
+    const buildManual = () => {
+      const ta = el("textarea", {
+        id: "cs-manual", className: "cs-textarea", rows: 5,
+        placeholder: "One prompt per line — add tags after a | (pipe)…\nbest trading app in India | finance, beginner\nbest broker for beginners | finance",
+      });
       // Reported: a long prompt's own commas were being read as tag
       // separators, turning most of the sentence into tags — splitting on
       // EVERY comma in the line assumed a short "prompt, tag, tag" shape,
@@ -4163,28 +4473,69 @@ function renderPromptManager(profile, dis, persistDetails) {
       // never appears in normal prose, so only an explicit `| tag, tag`
       // suffix is treated as tags now — a comma in the prompt itself is
       // just a comma, however long the prompt runs.
-      const rows = ta.value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((line) => {
+      const parse = () => ta.value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((line) => {
         const bar = line.indexOf("|");
         const text = (bar === -1 ? line : line.slice(0, bar)).trim();
         const tags = bar === -1 ? [] : line.slice(bar + 1).split(",").map((t) => t.trim()).filter(Boolean);
         return { text, tags };
       }).filter((r) => r.text);
-      if (!rows.length) return;
-      // Same reasoning as the upload path above: save whatever's currently
-      // in the campaign-details fields before the loadGeo() a successful
-      // add triggers, so it isn't wiped out unsaved.
-      const detailsSave = await persistDetails();
-      if (!detailsSave.ok) { showToast(`Couldn't save campaign details: ${detailsSave.error}`, "error"); return; }
-      const r = await send({ type: "geo-prompt-bulk-add-rows", profileId: profile.id, rows });
-      if (r.ok) { ta.value = ""; reportAddResult(r); loadGeo(); } else showToast(r.error, "error");
+      const count = el("span", { className: "cs-manual-count" }, "Nothing to add yet");
+      const add = el("button", { type: "button", className: "btn primary", disabled: true }, "Add prompts");
+      ta.oninput = () => {
+        const n = parse().length;
+        add.disabled = !n;
+        count.textContent = n ? `${n} prompt${n === 1 ? "" : "s"} ready to add` : "Nothing to add yet";
+      };
+      add.onclick = async () => {
+        const rows = parse();
+        if (!rows.length) return;
+        add.disabled = true;
+        if (!(await addRows(rows, "Added"))) add.disabled = false;
+      };
+      return el("div", { className: "cs-mode-panel" },
+        el("label", { htmlFor: "cs-manual", className: "cs-label" }, "Your prompts"),
+        ta,
+        el("p", { className: "cs-help" }, "One prompt per line. To tag a prompt, add ", el("b", {}, "|"), " then tags separated by commas."),
+        el("div", { className: "cs-manual-foot" }, count, add));
     };
-    manualBox.append(ta, el("div", { className: "proj-row", style: "margin-top:6px" }, addBtn));
-    manualToggle.onclick = () => { manualBox.style.display = manualBox.style.display === "none" ? "block" : "none"; };
-    wrap.append(manualToggle, manualBox);
+
+    const modeButton = (mode, icon, title, sub) => {
+      const b = el("button", { type: "button", className: "cs-mode", "aria-pressed": String(promptAddMode === mode) },
+        el("span", { className: "cs-mode-icon" }, setupIcon(icon, 20, 1.9)),
+        el("span", { className: "cs-mode-text" },
+          el("span", { className: "cs-mode-title" }, title),
+          el("span", { className: "cs-mode-sub" }, sub)));
+      b.dataset.mode = mode;
+      return b;
+    };
+    const uploadBtn = modeButton("upload", "upload", "Upload a file", "CSV or Excel. Prompts in column A, tags in column B");
+    const manualBtn = modeButton("manual", "pencil", "Add manually", "Type or paste, one prompt per line");
+    const host = el("div", { className: "cs-mode-host" });
+    const noteText = promptAddNote && promptAddNote.id === profile.id ? promptAddNote.text : "";
+    const note = el("p", { className: "cs-note", role: "status", hidden: !noteText }, setupIcon("check", 14, 2.6), el("span", {}, noteText));
+    // Switched in place, not by re-rendering the tab, so nothing typed in the
+    // campaign details is disturbed.
+    const showMode = (mode, focus) => {
+      promptAddMode = mode;
+      uploadBtn.setAttribute("aria-pressed", String(mode === "upload"));
+      manualBtn.setAttribute("aria-pressed", String(mode === "manual"));
+      host.replaceChildren(...(mode === "upload" ? [buildUpload()] : mode === "manual" ? [buildManual()] : []));
+      if (focus && mode === "manual") host.querySelector("textarea").focus();
+    };
+    uploadBtn.onclick = () => { note.hidden = true; promptAddNote = null; showMode(promptAddMode === "upload" ? null : "upload", true); };
+    manualBtn.onclick = () => { note.hidden = true; promptAddNote = null; showMode(promptAddMode === "manual" ? null : "manual", true); };
+    showMode(promptAddMode, false);
+    wrap.append(el("div", { className: "cs-group", id: "cs-prompts" },
+      el("div", { className: "cs-modes" }, uploadBtn, manualBtn),
+      host,
+      note,
+      el("p", { className: "cs-msg", id: "cs-prompts-msg", hidden: true }, "Add at least one prompt. Upload a file or type them in.")));
   }
 
   if (!GEO_PROMPTS.length) {
-    wrap.append(el("div", { className: "empty" }, "No prompts yet — upload a CSV/Excel or add them manually above."));
+    wrap.append(el("div", { className: "cs-empty" },
+      el("p", { className: "cs-empty-title" }, "No prompts yet"),
+      el("p", {}, dis ? "This campaign has no prompts." : "Choose Upload a file or Add manually above. Your prompts will be listed here.")));
     return wrap;
   }
 
