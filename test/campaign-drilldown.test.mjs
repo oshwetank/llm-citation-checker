@@ -183,20 +183,19 @@ try {
   await page.goto(`chrome-extension://${extId}/ui/panel.html?mode=tab`);
   await page.waitForTimeout(1200);
 
-  // Dashboard, campaign selected.
-  await page.click('[data-tab="dashboard"]').catch(() => {});
+  // The campaign's results: in Campaigns since 0.49.0, under the campaign
+  // (they were on the Dashboard, behind a campaign picker).
+  await page.click('[data-tab="loader"]').catch(() => {});
   await page.waitForTimeout(600);
   const picked = await page.evaluate(() => {
-    const sel = [...document.querySelectorAll("select")].find((s) =>
-      [...s.options].some((o) => /Drilldown Test/.test(o.textContent)));
-    if (!sel) return false;
-    const opt = [...sel.options].find((o) => /Drilldown Test/.test(o.textContent));
-    sel.value = opt.value;
-    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    const chip = [...document.querySelectorAll("#loader .geo-chip")].find((b) => /Drilldown Test/.test(b.textContent));
+    if (!chip) return false;
+    chip.click();
     return true;
   });
-  check("the seeded campaign is selectable on the Dashboard", picked);
-  await page.waitForTimeout(1500);
+  check("the seeded campaign can be opened in Campaigns", picked);
+  await page.waitForTimeout(2500);
+  check("its results show below it", await page.evaluate(() => !!document.querySelector("#loader #campaignResults #geoMetrics")));
 
   console.log("\ncompetitors inferred from the captures");
   {
@@ -515,20 +514,19 @@ try {
         .filter((sel) => [...sel.options].some((o) => /all models|chatgpt|gemini/i.test(o.textContent)))
         .length,
     }));
-    // One engine control for the whole tab, not two with the same word on them.
+    // One engine control for the results, not two with the same word on them.
     check("the campaign card no longer carries its own engine dropdown",
       before.engineSelects === 0, `${before.engineSelects} engine select(s) of ${before.controls} total`);
 
     const engines = await page.evaluate(() => {
-      const sel = [...document.querySelectorAll("select")]
-        .find((s) => [...s.options].some((o) => o.textContent === "All Models"));
+      const sel = document.querySelector('#campaignResults select[aria-label="Engine"]');
       return sel ? [...sel.options].map((o) => o.textContent) : null;
     });
-    check("the Dashboard has a model filter", !!engines, engines && engines.join(", "));
+    // Since 0.49.0 the filter sits in the results' own header in Campaigns.
+    check("the campaign's results have an engine filter", !!engines, engines && engines.join(", "));
 
     const switched = await page.evaluate(() => {
-      const sel = [...document.querySelectorAll("select")]
-        .find((s) => [...s.options].some((o) => o.textContent === "All Models"));
+      const sel = document.querySelector('#campaignResults select[aria-label="Engine"]');
       const opt = [...sel.options].find((o) => o.value === "chatgpt");
       if (!opt) return false;
       sel.value = opt.value;
@@ -554,8 +552,7 @@ try {
 
       // Put it back so the sections after this measure the full data set.
       await page.evaluate(() => {
-        const sel = [...document.querySelectorAll("select")]
-          .find((s) => [...s.options].some((o) => o.textContent === "All Models"));
+        const sel = document.querySelector('#campaignResults select[aria-label="Engine"]');
         sel.value = "";
         sel.dispatchEvent(new Event("change", { bubbles: true }));
       });

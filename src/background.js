@@ -25,6 +25,7 @@ import { buildDemoRecords, isDemoRecord } from "./lib/demo-data.js";
 import { buildCampaignWorkbook } from "./lib/campaignWorkbook.js";
 import { summarizeRunDiagnostics } from "./lib/diagnosticsSummary.js";
 import { gzipString, gunzipToString } from "./lib/gzip.js";
+import { searchAnswers } from "./lib/answerSearch.js";
 import { adapt as adaptChatGpt, cleanPassage } from "./adapters/chatgpt.js";
 import { enrichBrandsWithAI, enrichBrandStance } from "./lib/ai-brands.js";
 import { adapt as adaptGemini } from "./adapters/gemini.js";
@@ -3229,6 +3230,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "get-record": {
           const rec = await db.get("derived", msg.captureId);
           sendResponse({ ok: true, record: rec || null });
+          break;
+        }
+
+        // The Dashboard's "Answers" search (0.49.0). The panel holds light
+        // rows without answer text, so the words are looked for here and only
+        // the matching ids come back, each with a snippet around the match.
+        case "search-answers": {
+          const records = await db.getAll("derived");
+          sendResponse({ ok: true, hits: searchAnswers(records, String(msg.query || "").slice(0, 200)) });
           break;
         }
 

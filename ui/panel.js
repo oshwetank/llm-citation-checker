@@ -19,8 +19,9 @@ import {
   answerKind, searchesView, brandsView, pagesView, ownBrandFor, yourBrandView, findPrevious, changesView, knownVendors,
 } from "../src/lib/analyzeView.js";
 import { answersToPrompt, compareView } from "../src/lib/compareView.js";
+import { historyRows, historyView, highlightRuns, dayDiff, shortDate, PERIODS, KINDS, ENGINE_ORDER } from "../src/lib/historyView.js";
 import { siteKindOf } from "../src/lib/siteKind.js";
-import { aggregateSources, aggregateSourcesFromCaptures } from "../src/lib/sources.js";
+import { aggregateSources } from "../src/lib/sources.js";
 import { analyzeFanout, FANOUT_BENCHMARK, titleMatchesQueries } from "../src/lib/fanout.js";
 import { sanitizeText, trimLabel } from "../src/lib/text-sanitize.js";
 import { pipelineOf, typeLabel, supplierOf, retrievalMix } from "../src/lib/retrieval.js";
@@ -344,9 +345,6 @@ let RECORDS = [];
 // the previous answer to a campaign prompt, which RECORDS (ad-hoc only) lacks.
 let ALL_RECORDS = [];
 let PROJECTS = [];
-let dashboardCampaignId = ""; // "" = no campaign selected
-let dashboardGeoPrompts = []; // tracked prompts for dashboardCampaignId (tag chips only — independent of the Campaigns tab's own GEO_PROMPTS)
-let dashboardSearch = ""; // filters Saved Conversations (and the ad-hoc stat grid) by prompt text
 let viewingId = (() => {
   // ?capture=<id>: the popup's "Full analysis" link opens the full tab on the
   // answer that was on screen, not on whatever is latest.
@@ -354,8 +352,8 @@ let viewingId = (() => {
 })(); // which capture the Analyze tab shows (null = latest)
 // Which tab to return to from Analyze, and what to call it in the "← Back
 // to X" link. Set by openCapture() from whichever tab was active when a
-// capture link was clicked (Dashboard's Saved Conversations or Prompt
-// Performance table, Campaigns' own Prompt Performance, Compare's run
+// capture link was clicked (a Dashboard row, a campaign's Prompt
+// Performance table in Campaigns, Compare's run
 // links…), so following a link and coming back doesn't require re-finding
 // whatever filter/scroll state was on that screen — combined with
 // TAB_SCROLL below, showTab() restores it exactly as it was left.
@@ -368,8 +366,6 @@ const TAB_LABELS = { dashboard: "Dashboard", loader: "Campaigns", compare: "Comp
 // switching TO (often clamped near the top if the other tab's content is
 // shorter). This is what actually restores "come back to where you were."
 const TAB_SCROLL = {};
-let selectedIds = new Set(); // captures ticked in the Saved Conversations table
-let showEmptyCaptures = false; // reveal zero-signal rows (see hasSignal note below)
 // Tracking-run captures are hidden from the ad-hoc views by default so brand
 // measurements and casual browsing never contaminate each other's numbers.
 let includeTrackedInAdhoc = false;
@@ -427,7 +423,8 @@ chrome.storage.local.get(ONBOARD_KEY, (r) => { campaignOnboardDismissed = !!r[ON
 // auto_switcher_race_winner) and retries — a losing/interrupted request still
 // hits our capture endpoint but streams almost nothing. These are legitimate
 // captures (raw data is kept, nothing is discarded), just not useful to browse,
-// so the list hides them by default with a toggle to reveal.
+// so they are never the answer Analyze opens on by default. (The Dashboard
+// lists prompts, and these have none.)
 function hasSignal(r) {
   if (!r) return false;
   const fan = ((r.fanout?.search?.length || 0) + (r.fanout?.shopping?.length || 0) + (r.fanout?.image?.length || 0));
@@ -790,7 +787,7 @@ async function load() {
 
   const pr = await projectsP;
   PROJECTS = pr.ok ? pr.projects : [];
-  await geoP; // populates GEO_PROFILES/GEO_PROMPTS so Dashboard can show campaign performance
+  await geoP; // populates GEO_PROFILES/GEO_PROMPTS: the Dashboard names each prompt's campaign
   renderDashboard();
 
   const s = await statsP;
@@ -1302,8 +1299,8 @@ chrome.runtime.onMessage.addListener((msg) => {
 
 /* ---------- Analyze (most recent capture) ---------- */
 /* ---------- Analyze, popup layout (0.47.0) ----------
- * The popup gets its own Analyze, built from src/lib/analyzeView.js. The full
- * tab keeps the long card layout until its own redesign lands.
+ * The popup gets its own Analyze, built from src/lib/analyzeView.js. (The
+ * full tab got its own too in 0.48.0: renderAnalyzeTab.)
  *
  * Why a separate layout. Reported on the design canvas: the popup's Analyze
  * "provides less information", the box under the product cards was "half cut
@@ -3847,9 +3844,9 @@ function renderAnalyze() {
         const box = el("div", { className: "empty" },
           el("div", {}, `Nothing selected to analyse — but ${TRACKED_COUNT} capture${TRACKED_COUNT === 1 ? "" : "s"} ${TRACKED_COUNT === 1 ? "is" : "are"} stored against your campaigns.`),
           el("div", { className: "muted small", style: "margin-top:6px" },
-            "Campaign captures are kept separate from ad-hoc browsing so a tracking run can't skew your ad-hoc numbers. Open one from the Dashboard's campaign view — click any prompt in the performance table."));
+            "Campaign captures are kept separate from ad-hoc browsing so a tracking run can't skew your ad-hoc numbers. Open one from the Dashboard (turn on “From a campaign”) or from a prompt in the campaign's results."));
         const go = el("button", { className: "btn sm primary", style: "margin-top:10px" }, "Go to campaign results →");
-        go.onclick = () => { showTab("dashboard"); renderDashboard(); };
+        go.onclick = () => { showTab("loader"); document.getElementById("campaignResults")?.scrollIntoView({ block: "start" }); };
         box.append(go);
         root.append(box);
         return;
@@ -3886,657 +3883,537 @@ function renderAnalyze() {
   }
 }
 
-let dashboardModelFilter = ""; 
-let dashboardTimeFilter = "";
-let customStartTime = 0;
-let customEndTime = 0;
+// The captures the Dashboard lists right now; About's export and delete
+// buttons act on these.
 let currentFilteredRecs = [];
-let dashboardDrill = null; // which Performance Overview metric is expanded
 
-/* Detail view behind each Performance Overview metric. Always built from the
- * already-filtered records, so the project / model / timeframe selections apply
- * here too rather than silently showing everything. */
-function renderDrilldown(recs) {
-  if (!dashboardDrill) return null;
+/* ---------- Dashboard (0.49.0) ----------
+ * Release 3 of the canvas redesign. The owner's feedback on the old
+ * Dashboard: it must not be brand-centric; it "is a record of prompts,
+ * search is central, and the right-hand side should go". So it is now a
+ * searchable history of everything captured (src/lib/historyView.js works
+ * it out): one row per prompt, grouped by day, with the engines that answered
+ * it, how often it was asked and what the answer held; filters for the
+ * period, the engines, the kind of answer and the week; and a second view of
+ * the searches the engines ran. The search looks in the prompts, in the
+ * searches the engines ran and, through the background ("search-answers"),
+ * in the answers themselves.
+ *
+ * A campaign's results moved to the Campaigns tab with it (see
+ * renderCampaignResults), ahead of that tab's own redesign.
+ */
 
-  const card = el("div", { className: "drilldown" });
-  const titles = {
-    captures: "Every capture",
-    searched: "Captures that triggered a web search",
-    fanout: "Every fan-out query the model issued",
-    domains: "Every domain seen",
-    cited: "Sources the model actually cited",
-    fetched: "Sources fetched but not cited",
-  };
-  const headRow = el("div", { className: "card-header" }, el("h3", {}, titles[dashboardDrill] || "Details"));
-  const close = el("button", { className: "linkbtn" }, "close ✕");
-  close.onclick = () => { dashboardDrill = null; renderDashboard(); };
-  headRow.append(close);
-  card.append(headRow);
+// The canvas's line glyphs (Glyph.dc.html): 24×24, stroked in currentColor.
+// Static markup, never built from data.
+const GLYPH_PATHS = {
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18"/><path d="M12 3a14 14 0 0 0 0 18"/>',
+  noglobe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18"/><path d="M12 3a14 14 0 0 0 0 18"/><path d="M4 4l16 16" stroke-width="2.6"/>',
+  pages: '<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5"/><path d="M10 13h6"/><path d="M10 17h6"/>',
+  cart: '<path d="M3 4h2l2.4 11h10.2L20 8H6.2"/><circle cx="9" cy="19.5" r="1.4"/><circle cx="17" cy="19.5" r="1.4"/>',
+  pin: '<path d="M12 21s-6.5-6.2-6.5-11a6.5 6.5 0 0 1 13 0c0 4.8-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/>',
+  image: '<rect x="3.5" y="5" width="17" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M4 17l5-5 4 4 3-3 4 4"/>',
+  book: '<path d="M4 5.5A2 2 0 0 1 6 4h5v15H6a2 2 0 0 0-2 1.5z"/><path d="M20 5.5A2 2 0 0 0 18 4h-5v15h5a2 2 0 0 1 2 1.5z"/>',
+  task: '<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4.5V3h6v1.5"/><path d="M8.5 11l2 2 4-4"/><path d="M8.5 17h7"/>',
+  trash: '<path d="M4.5 7h15"/><path d="M9.5 7V4.5h5V7"/><path d="M6.5 7l1 13h9l1-13"/><path d="M10.5 11v5.5"/><path d="M13.5 11v5.5"/>',
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4-4"/>',
+};
+function glyphEl(name, size = 16) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  for (const [k, v] of Object.entries({ viewBox: "0 0 24 24", width: size, height: size, fill: "none", stroke: "currentColor", "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" })) svg.setAttribute(k, String(v));
+  svg.innerHTML = GLYPH_PATHS[name] || "";
+  svg.classList.add("glyph");
+  return svg;
+}
+const AK_GLYPH = { shopping: "cart", info: "book", local: "pin", images: "image", memory: "noglobe", task: "task" };
 
-  const tableWrap = (rows, headers, exportName) => {
-    if (!rows.length) {
-      card.append(el("div", { className: "empty" }, "Nothing here for the current filters."));
-      return;
-    }
-    const bar = el("div", { className: "dlbar" });
-    bar.append(el("span", { className: "muted" }, `${rows.length} row${rows.length === 1 ? "" : "s"}`));
-    const dl = el("button", { className: "btn sm ghost" }, "⬇ CSV");
-    dl.onclick = () => download(`citoskeleton-${exportName}-${Date.now()}.csv`, csvOf([headers, ...rows]), "text/csv");
-    bar.append(dl);
-    card.append(bar);
+let dbQuery = "";
+let dbScope = { prompts: true, answers: true, fan: true };
+let dbEngines = { chatgpt: true, gemini: true, perplexity: true, grok: true };
+let dbPeriod = null;         // null until picked: the view's default, widened if that would show nothing
+let dbRepeat = false;
+let dbCampaignOnly = false;
+let dbKinds = {};
+let dbWeek = null;
+let dbView = "prompts";      // "prompts" | "fan"
+let dbSort = "newest";
+let dbSelected = new Set();  // row keys
+let dbMenu = null;           // "export" | "campaign" | null
+let dbAnswerHits = new Map(); // captureId -> snippet, for dbAnswerFor
+let dbAnswerFor = "";
+let dbAnswerTimer = null;
+let dbRecentTimer = null;
+let dbPending = null;        // removal waiting out its Undo: { keys, ids, timer }
 
-    const wrap = el("div", { className: "drill-scroll" });
-    const t = el("table", { className: "drill-table" });
-    // Right-align ONLY genuinely numeric cells. This used to be
-    // `i === 0 ? "" : "num"` — i.e. every column but the first — which
-    // right-aligned text columns like "Original prompt"/"Platform" and made
-    // the table read as ragged nonsense. Testing `typeof` instead of a column
-    // index also can't drift when a column is added or reordered.
-    const isNum = (c) => typeof c === "number";
-    t.append(el("tr", {}, ...headers.map((h, i) =>
-      el("th", { className: rows.length && isNum(rows[0][i]) ? "num" : "" }, h))));
-    rows.slice(0, 500).forEach((r) =>
-      t.append(el("tr", {}, ...r.map((c) => el("td", { className: isNum(c) ? "num" : "" }, String(c))))));
-    wrap.append(t);
-    card.append(wrap);
-    if (rows.length > 500) card.append(el("div", { className: "muted" }, `Showing first 500 of ${rows.length} — export the CSV for all.`));
-  };
-
-  const when = (t) => new Date(t).toLocaleString();
-
-  if (dashboardDrill === "captures" || dashboardDrill === "searched") {
-    const list = dashboardDrill === "searched" ? recs.filter((r) => r.searched) : recs;
-    const rows = list.map((r) => [
-      r.userPrompt || "(no prompt)",
-      r.platform || "",
-      r.model || "",
-      when(r.capturedAt),
-      ((r.fanout?.search?.length || 0) + (r.fanout?.shopping?.length || 0) + (r.fanout?.image?.length || 0)),
-      (r.sources || []).length,
-      (r.sources || []).filter((s) => s.outcome === "cited").length,
-      (r.brandMentions || []).length,
-    ]);
-    tableWrap(rows, ["Prompt", "Platform", "Model", "Captured", "Fan-out", "Sources", "Cited", "Brands"], "captures");
-  }
-
-  if (dashboardDrill === "fanout") {
-    const rows = [];
-    recs.forEach((r) => {
-      ["search", "shopping", "image"].forEach((bucket) => {
-        (r.fanout?.[bucket] || []).forEach((q) => {
-          const qStr = typeof q === "string" ? q : q?.query || "";
-          rows.push([qStr, bucket, r.userPrompt || "", r.platform || "", when(r.capturedAt)]);
-        });
-      });
-    });
-    tableWrap(rows, ["Fan-out query", "Type", "Original prompt", "Platform", "Captured"], "fanout-queries");
-  }
-
-  if (dashboardDrill === "domains" || dashboardDrill === "cited" || dashboardDrill === "fetched") {
-    // Domain-level rollup. For cited/fetched we scope to that outcome so the
-    // numbers reconcile with the metric that was clicked.
-    const want = dashboardDrill === "domains" ? null : dashboardDrill;
-    const agg = new Map();
-    recs.forEach((r) => {
-      (r.sources || []).forEach((s) => {
-        if (!s.domain) return;
-        if (want && s.outcome !== want) return;
-        const cur = agg.get(s.domain) || { cited: 0, fetched: 0, prompts: new Set(), sample: "" };
-        if (s.outcome === "cited") cur.cited++;
-        else cur.fetched++;
-        if (r.userPrompt) cur.prompts.add(r.userPrompt);
-        if (!cur.sample && s.url) cur.sample = s.url;
-        agg.set(s.domain, cur);
-      });
-    });
-    const rows = [...agg.entries()]
-      .map(([domain, v]) => [domain, v.cited, v.fetched, v.cited + v.fetched, v.prompts.size, v.sample])
-      .sort((a, b) => b[3] - a[3]);
-    tableWrap(rows, ["Domain", "Cited", "Read-only", "Total", "Prompts", "Example URL"], `${dashboardDrill}-domains`);
-  }
-
-  return card;
+// Recent searches: a per-viewer convenience, so browser storage is enough.
+const DB_RECENT_KEY = "cito-recent-searches";
+function dbRecent() {
+  try { const v = JSON.parse(localStorage.getItem(DB_RECENT_KEY) || "[]"); return Array.isArray(v) ? v.filter((x) => typeof x === "string").slice(0, 6) : []; } catch (_) { return []; }
+}
+function dbRememberSearch(q) {
+  const t = String(q || "").trim();
+  if (t.length < 3) return;
+  try { localStorage.setItem(DB_RECENT_KEY, JSON.stringify([t, ...dbRecent().filter((x) => x.toLowerCase() !== t.toLowerCase())].slice(0, 6))); } catch (_) { /* storage off: nothing to keep */ }
 }
 
-/* ---------- Dashboard (aggregates across all captures) ---------- */
+// The answer search runs in the background (the panel has no answer text);
+// a beat after typing stops, and only the latest query's results are kept.
+function dbRequestAnswers() {
+  clearTimeout(dbAnswerTimer);
+  const q = dbQuery.trim();
+  if (!q || !dbScope.answers) { dbAnswerHits = new Map(); dbAnswerFor = ""; return; }
+  if (q === dbAnswerFor) return;
+  dbAnswerHits = new Map();
+  dbAnswerTimer = setTimeout(async () => {
+    const r = await send({ type: "search-answers", query: q });
+    if (dbQuery.trim() !== q) return;
+    dbAnswerHits = new Map(((r && r.ok && r.hits) || []).map((h) => [h.captureId, h.snippet]));
+    dbAnswerFor = q;
+    renderDashboard();
+  }, 250);
+}
+
+function dbSetQuery(q) {
+  dbQuery = q;
+  dbWeek = null;
+  dbSelected.clear();
+  dbRequestAnswers();
+  clearTimeout(dbRecentTimer);
+  dbRecentTimer = setTimeout(() => dbRememberSearch(dbQuery), 1500);
+}
+
+// The default period: the view's own (the canvas's 7 days in a tab, 3 in the
+// popup) unless that would open on an empty list, then the next wider one.
+function dbDefaultPeriod(rows, popup) {
+  const order = popup ? ["3d", "7d", "30d", "all"] : ["7d", "30d", "all"];
+  const base = { query: "", scope: dbScope, engines: dbEngines, kinds: {}, week: null };
+  return order.find((p) => historyView(rows, { ...base, period: p }).list.length) || "all";
+}
+
+/* Remove with Undo: the rows go at once; the records are deleted when the
+ * Undo window closes, or straight away if the panel is closing. */
+function dbRemove(rows) {
+  if (dbPending) dbCommitRemoval();
+  const keys = new Set(rows.map((r) => r.key));
+  const ids = rows.flatMap((r) => r.captureIds);
+  rows.forEach((r) => dbSelected.delete(r.key));
+  dbPending = { keys, ids, n: rows.length, timer: setTimeout(dbCommitRemoval, 7000) };
+  renderDashboard();
+}
+async function dbCommitRemoval() {
+  const p = dbPending;
+  if (!p) return;
+  dbPending = null;
+  clearTimeout(p.timer);
+  for (const id of p.ids) { FULL.delete(id); send({ type: "delete-record", captureId: id }); }
+  if (p.ids.includes(viewingId)) viewingId = null;
+  // load() re-reads the store; the messages above are queued ahead of it.
+  load();
+}
+function dbUndoRemoval() {
+  if (!dbPending) return;
+  clearTimeout(dbPending.timer);
+  dbPending = null;
+  renderDashboard();
+}
+addEventListener("pagehide", () => { if (dbPending) dbCommitRemoval(); });
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden" && dbPending) dbCommitRemoval(); });
+
+function dbChip(label, on, onclick, { cls = "", title = "", pressed = true } = {}) {
+  const b = el("button", { className: `db-chip${on ? " on" : ""}${cls ? " " + cls : ""}`, type: "button", title }, ...[].concat(label));
+  if (pressed) b.setAttribute("aria-pressed", on ? "true" : "false");
+  b.onclick = onclick;
+  return b;
+}
+function dbHighlight(text, toks) {
+  const span = el("span", {});
+  highlightRuns(text, toks).forEach((x) => span.append(x.hit ? el("mark", { className: "db-hit" }, x.t) : document.createTextNode(x.t)));
+  return span;
+}
+const dbEngineLabel = (id) => ENGINES.find((e) => e.id === id)?.label || id;
+const DB_DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+function dbWhen(t) {
+  const dd = dayDiff(Date.now(), t);
+  if (dd < 2) return apTime(t);
+  return `${DB_DOW[new Date(t).getDay()]} ${shortDate(t)}`;
+}
+
+function dbTokens(r, max) {
+  const out = [];
+  const tok = (g, n, title) => out.push(el("span", { className: "db-tok", title }, glyphEl(g, 14), n === "" ? null : el("span", {}, String(n))));
+  if (r.searches) tok("globe", r.searches, `${r.searches} search${r.searches === 1 ? "" : "es"} the engines ran`);
+  else if (r.unpublished) tok("globe", "?", "Searched the web, but the engine doesn't publish what for");
+  else tok("noglobe", "", "No web search");
+  if (r.pages) tok("pages", r.pages, `${r.pages} page${r.pages === 1 ? "" : "s"} read`);
+  if (r.products) tok("cart", r.products, `${r.products} product card${r.products === 1 ? "" : "s"}`);
+  if (r.places) tok("pin", r.places, `A map with ${r.places} place${r.places === 1 ? "" : "s"}`);
+  if (r.images) tok("image", r.images, `${r.images} image${r.images === 1 ? "" : "s"}`);
+  return el("span", { className: "db-toks" }, ...out.slice(0, max || out.length));
+}
+
+function dbEngineMarks(r) {
+  const box = el("span", { className: "db-engines" });
+  r.engines.forEach((id) => {
+    const ic = engineIconEl(id);
+    const b = el("button", { className: "db-engine", type: "button", "data-engine": id, title: `Open ${dbEngineLabel(id)}'s answer`, "aria-label": `Open ${dbEngineLabel(id)}'s answer` }, ic, el("span", { className: "ap-sr" }, dbEngineLabel(id)));
+    b.onclick = () => openCapture(r.latestByEngine[id]);
+    box.append(b);
+  });
+  return box;
+}
+
+// The second line under a prompt: why it matched, or what's worth knowing.
+function dbMuted(r, toks) {
+  if (r.hitAnswer && !r.hitPrompt) return el("span", { className: "db-muted" }, "In the answer: ", dbHighlight(r.hitAnswer.snippet, toks));
+  if (r.hitFan && !r.hitPrompt) return el("span", { className: "db-muted" }, "An engine searched “", dbHighlight(r.hitFan.text, toks), "”");
+  const parts = [];
+  if (r.asked > 1) parts.push(`asked ${r.asked}×`);
+  if (r.campaign) parts.push(`${r.campaign} campaign`);
+  if (r.words > 30) parts.push(`${r.words}-word prompt`);
+  if (r.sample) parts.push("sample data");
+  return parts.length ? el("span", { className: "db-muted" }, parts.join(" · ")) : null;
+}
+
+function dbRow(r, v, popup) {
+  const kind = KINDS.find((k) => k.id === r.kind) || KINDS[1];
+  const long = r.words > 30;
+  const openId = r.hitAnswer ? r.hitAnswer.captureId : r.latestId;
+  const prompt = el("button", { className: `db-prompt${long ? " long" : ""}`, type: "button", title: r.text }, dbHighlight(r.text, dbScope.prompts ? v.tokens : []));
+  prompt.onclick = () => openCapture(openId);
+  const text = el("div", { className: "db-text" }, prompt);
+  const muted = dbMuted(r, v.tokens);
+  if (r.kind === "task") {
+    const rm = el("button", { className: "db-link danger", type: "button" }, "Remove it");
+    rm.onclick = () => dbRemove([r]);
+    text.append(el("span", { className: "db-muted" }, "Looks like a task, not research. ", rm));
+  } else if (muted) text.append(muted);
+  const tile = el("span", { className: `db-kind k-${r.kind}`, title: kind.label, "aria-label": kind.label }, glyphEl(AK_GLYPH[r.kind], popup ? 14 : 15));
+  const trash = el("button", { className: `db-trash${r.kind === "task" ? " task" : ""}`, type: "button", title: "Remove from my history", "aria-label": `Remove “${r.text.slice(0, 40)}” from my history` }, glyphEl("trash", 15));
+  trash.onclick = () => dbRemove([r]);
+  if (popup) {
+    return el("li", { className: `db-row k-${r.kind}`, "data-key": r.key },
+      tile,
+      el("div", { className: "db-main" }, text, el("span", { className: "db-meta" }, el("span", { className: "db-when" }, dbWhen(r.latestAt)), dbTokens(r, 4))),
+      dbEngineMarks(r), trash);
+  }
+  const cb = el("input", { type: "checkbox", "aria-label": `Select “${r.text.slice(0, 40)}”` });
+  cb.checked = dbSelected.has(r.key);
+  cb.onchange = () => { if (cb.checked) dbSelected.add(r.key); else dbSelected.delete(r.key); renderDashboard(); };
+  return el("li", { className: `db-row k-${r.kind}${cb.checked ? " selected" : ""}`, "data-key": r.key },
+    el("label", { className: "db-check" }, cb),
+    el("span", { className: "db-when" }, dbWhen(r.latestAt)),
+    tile, text, dbEngineMarks(r), dbTokens(r), trash);
+}
+
+function dbExportMenu(rows, label) {
+  const wrap = el("div", { className: "menu-wrap" });
+  const btn = el("button", { className: "at-btn sm", type: "button", "aria-expanded": dbMenu === "export" ? "true" : "false", "aria-haspopup": "menu" }, label);
+  btn.onclick = (e) => { e.stopPropagation(); dbMenu = dbMenu === "export" ? null : "export"; renderDashboard(); };
+  wrap.append(btn);
+  if (dbMenu === "export") {
+    const recs = rows.flatMap((r) => r.captureIds).map((id) => ALL_RECORDS.find((x) => x.captureId === id)).filter(Boolean);
+    const menu = el("div", { className: "menu-pop db-menu", role: "menu" });
+    [["excel", "Excel", ".xls spreadsheet"], ["csv", "Detailed CSV", "one row per source"], ["html", "Conversations", "readable HTML document"], ["json", "Raw data", "full JSON payloads"]].forEach(([k, l, sub]) => {
+      const it = el("button", { className: "menu-item", type: "button", role: "menuitem" }, el("span", { className: "menu-item-label" }, l), el("span", { className: "menu-item-sub muted small" }, sub));
+      it.onclick = async () => {
+        dbMenu = null;
+        renderDashboard();
+        if (k === "json") download(`citoskeleton-selected-${Date.now()}.json`, JSON.stringify(recs, null, 2), "application/json");
+        else if (k === "html") await exportRecordsAsHtml(recs);
+        else downloadDetailedFormat(recs, k);
+      };
+      menu.append(it);
+    });
+    menu.append(el("div", { className: "menu-note muted small" }, `${recs.length} answer${recs.length === 1 ? "" : "s"} to ${rows.length} prompt${rows.length === 1 ? "" : "s"}`));
+    wrap.append(menu);
+  }
+  return wrap;
+}
+
+function dbCampaignMenu(rows) {
+  const wrap = el("div", { className: "menu-wrap" });
+  const btn = el("button", { className: "at-btn sm", type: "button", "aria-expanded": dbMenu === "campaign" ? "true" : "false", "aria-haspopup": "menu" }, "Add to a campaign");
+  btn.onclick = (e) => { e.stopPropagation(); dbMenu = dbMenu === "campaign" ? null : "campaign"; renderDashboard(); };
+  wrap.append(btn);
+  if (dbMenu === "campaign") {
+    const menu = el("div", { className: "menu-pop db-menu", role: "menu" });
+    // A campaign that has started tracking is locked, so its prompts stay
+    // comparable run to run; only campaigns still being set up take more.
+    const open = GEO_PROFILES.filter((p) => !p.locked);
+    open.forEach((p) => {
+      const it = el("button", { className: "menu-item", type: "button", role: "menuitem" }, el("span", { className: "menu-item-label" }, p.name || "Untitled"));
+      it.onclick = async () => {
+        dbMenu = null;
+        const r = await send({ type: "geo-prompt-bulk-add-rows", profileId: p.id, rows: rows.map((x) => ({ text: x.text, tags: [] })) });
+        if (r && r.ok) {
+          const dup = (r.duplicates || []).length;
+          showToast(`Added ${r.added} prompt${r.added === 1 ? "" : "s"} to ${p.name || "the campaign"}${dup ? ` (${dup} already there)` : ""}`);
+          dbSelected.clear();
+          loadGeo();
+        } else showToast((r && r.error) || "Couldn't add them to the campaign", "error");
+        renderDashboard();
+      };
+      menu.append(it);
+    });
+    if (!open.length) menu.append(el("div", { className: "menu-note muted small" }, GEO_PROFILES.length ? "Campaigns lock once they start tracking. Start a new one in Campaigns to track these prompts." : "No campaigns yet. Start one in Campaigns to track these prompts."));
+    const go = el("button", { className: "menu-item", type: "button", role: "menuitem" }, el("span", { className: "menu-item-label" }, "Go to Campaigns →"));
+    go.onclick = () => { dbMenu = null; showTab("loader"); };
+    menu.append(go);
+    wrap.append(menu);
+  }
+  return wrap;
+}
+
+// One row per prompt, rebuilt only when the records or campaigns change:
+// load() replaces ALL_RECORDS and GEO_PROFILES, so identity is enough, and
+// typing in the search box doesn't re-read every capture on each key.
+let dbRowsCache = null;
+function dbHistoryRows() {
+  if (!dbRowsCache || dbRowsCache.recs !== ALL_RECORDS || dbRowsCache.profiles !== GEO_PROFILES) {
+    dbRowsCache = { recs: ALL_RECORDS, profiles: GEO_PROFILES, rows: historyRows(ALL_RECORDS, { profiles: GEO_PROFILES }) };
+  }
+  return dbRowsCache.rows;
+}
+
 function renderDashboard() { withScrollPreserved(renderDashboardImpl); }
 function renderDashboardImpl() {
   const root = $("#dashboard");
+  if (!root) return;
   beginSwap(root);
   root.textContent = "";
-
-  const now = Date.now();
-  let timeLimit = dashboardTimeFilter === "1h" ? now - 3600000 :
-                  dashboardTimeFilter === "24h" ? now - 86400000 :
-                  dashboardTimeFilter === "7d" ? now - 604800000 : 0;
-
-  const recs = RECORDS.filter((r) => {
-    if (!matchesSearch(r.userPrompt, dashboardSearch)) return false;
-    if (dashboardModelFilter && r.platform !== dashboardModelFilter) return false;
-    if (dashboardTimeFilter === "custom") {
-      if (customStartTime && r.capturedAt < customStartTime) return false;
-      if (customEndTime && r.capturedAt > customEndTime) return false;
-    } else if (timeLimit && r.capturedAt < timeLimit) {
-      return false;
-    }
-    return true;
-  });
-  currentFilteredRecs = recs;
-  if (!recs.length && !RECORDS.length && !GEO_PROFILES.length) {
-    root.append(el("div", { className: "empty" }, "No data captured yet. Open ChatGPT, Gemini, Perplexity or Grok in a tab and run a query."));
+  const popup = document.body.classList.contains("popup");
+  const removing = dbPending ? dbPending.keys : new Set();
+  const all = dbHistoryRows().filter((r) => !removing.has(r.key));
+  const wrap = el("div", { className: `db ${popup ? "db-popup" : "db-tab"}` });
+  root.append(wrap);
+  if (dbPending) root.append(dbToast());
+  if (!all.length) {
+    currentFilteredRecs = [];
+    wrap.append(el("div", { className: "empty" }, "Nothing captured yet. Ask ChatGPT, Gemini, Perplexity or Grok something in a tab and it shows up here, with the searches it ran and the pages it read."));
     return;
   }
+  const period = dbPeriod || dbDefaultPeriod(all, popup);
+  const v = historyView(all, { query: dbQuery, scope: dbScope, engines: dbEngines, period, kinds: dbKinds, week: dbWeek, repeat: dbRepeat, campaign: dbCampaignOnly, sort: dbSort }, { now: Date.now(), answerHits: dbAnswerHits });
+  currentFilteredRecs = v.list.flatMap((r) => r.captureIds).map((id) => ALL_RECORDS.find((x) => x.captureId === id)).filter(Boolean);
+  const periodPhrase = (PERIODS.find((p) => p.id === period) || PERIODS[5]).phrase;
 
-  let fanTotal = 0, searched = 0, citedTotal = 0, fetchedTotal = 0;
-  const domainCount = new Map();
-  const domainTypes = new Map();
-  const termCount = new Map();
-  recs.forEach((r) => {
-    if (r.searched) searched++;
-    ["search", "shopping", "image"].forEach((b) =>
-      (r.fanout[b] || []).forEach((q) => {
-        fanTotal++;
-        q.query.toLowerCase().split(/\s+/).forEach((w) => {
-          if (w.length > 2) termCount.set(w, (termCount.get(w) || 0) + 1);
-        });
-      })
-    );
-    r.sources.forEach((s) => {
-      if (s.outcome === "cited") citedTotal++;
-      else if (s.outcome === "fetched") fetchedTotal++;
-      if (s.domain) {
-        domainCount.set(s.domain, (domainCount.get(s.domain) || 0) + 1);
-        const set = domainTypes.get(s.domain) || new Set();
-        set.add(s.outcome);
-        if (s.type === "news") set.add("news");
-        domainTypes.set(s.domain, set);
-      }
-    });
-  });
-
-  // Top Metric KPI Grid Card
-  const overviewCard = el("div", { className: "card" });
-  const ovHeader = el("div", { className: "card-header" }, el("h3", {}, "Performance Overview"));
-  
-  const filterRow = el("div", { className: "header-brand", style: "display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end;" });
-
-  // 0. Search — filters captures by prompt text (affects the stat grid,
-  // drilldown, and Saved Conversations list below, same as the other filters).
-  const searchInp = el("input", { id: "dashboardSearch", type: "text", placeholder: "🔍 Search words in prompts…", title: "Type any words — rows matching every word are shown, in any order", value: dashboardSearch, className: "filter", style: "min-width:140px" });
-  searchInp.oninput = () => {
-    dashboardSearch = searchInp.value;
-    const cursor = searchInp.selectionStart;
+  /* --- search --- */
+  const search = el("div", { className: "db-search" });
+  const inp = el("input", { id: "dashboardSearch", type: "search", className: "db-input", value: dbQuery, autocomplete: "off", spellcheck: "false",
+    placeholder: popup ? "Search prompts, answers and searches" : "Search your prompts, the answers, and what the engines searched for",
+    "aria-label": "Search your history" });
+  inp.oninput = () => {
+    const cursor = inp.selectionStart;
+    dbSetQuery(inp.value);
     renderDashboard();
     const next = $("#dashboardSearch");
     if (next) { next.focus(); next.setSelectionRange(cursor, cursor); }
   };
-  filterRow.append(searchInp);
-
-  // 1. Timeframe Filter Container
-  const timeContainer = el("div", { style: "display: flex; gap: 8px; align-items: center;" });
-  
-  const timeSel = el("select", { className: "filter" });
-  const timeOpts = [
-    { v: "", l: "All Time" },
-    { v: "1h", l: "Last Hour" },
-    { v: "24h", l: "Last 24 Hours" },
-    { v: "7d", l: "Last 7 Days" },
-    { v: "custom", l: "Custom..." }
-  ];
-  timeOpts.forEach(o => {
-    const opt = el("option", { value: o.v }, o.l);
-    if (o.v === dashboardTimeFilter) opt.selected = true;
-    timeSel.append(opt);
-  });
-  timeSel.onchange = () => { dashboardTimeFilter = timeSel.value; renderDashboard(); };
-  timeContainer.append(timeSel);
-
-  if (dashboardTimeFilter === "custom") {
-    const startInp = el("input", { type: "datetime-local", className: "filter", style: "width: 140px; padding: 2px 6px;" });
-    if (customStartTime) {
-      const d = new Date(customStartTime);
-      startInp.value = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0,16);
-    }
-    startInp.onchange = (e) => { customStartTime = e.target.value ? new Date(e.target.value).getTime() : 0; renderDashboard(); };
-    
-    const endInp = el("input", { type: "datetime-local", className: "filter", style: "width: 140px; padding: 2px 6px;" });
-    if (customEndTime) {
-      const d = new Date(customEndTime);
-      endInp.value = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0,16);
-    }
-    endInp.onchange = (e) => { customEndTime = e.target.value ? new Date(e.target.value).getTime() : 0; renderDashboard(); };
-
-    timeContainer.append(el("span", { className: "muted" }, "from"), startInp, el("span", { className: "muted" }, "to"), endInp);
+  inp.onkeydown = (e) => { if (e.key === "Enter") dbRememberSearch(dbQuery); if (e.key === "Escape" && dbQuery) { dbSetQuery(""); renderDashboard(); } };
+  search.append(glyphEl("search", 16), inp);
+  if (dbQuery) {
+    const x = el("button", { className: "db-clear", type: "button", title: "Clear the search", "aria-label": "Clear the search" }, "×");
+    x.onclick = () => { dbSetQuery(""); renderDashboard(); $("#dashboardSearch")?.focus(); };
+    search.append(x);
   }
-  
-  filterRow.append(timeContainer);
+  const top = el("section", { className: "db-card db-top", "aria-label": "Search and filters" });
+  wrap.append(top);
+  if (!popup) top.append(el("div", { className: "db-caption" }, "Everything you’ve captured · stored on this computer"));
+  top.append(search);
 
-  // 2. Model Filter — the single engine control for this whole tab, campaign
-  // section included. Re-synced on every render so no other code path can
-  // leave the campaign reading a different engine than the one shown here.
-  geoEngineFilter = dashboardModelFilter ? [dashboardModelFilter] : [];
-  const modelSel = el("select", { className: "filter", title: "Limit every number on this tab — including the campaign below — to one engine" });
-  // Built from the engines that actually have adapters rather than a hardcoded
-  // pair, so adding one doesn't leave a filter that can never select it.
-  [{ id: "", label: "All Models" }, ...availableEngines()].forEach((o) => {
-    const opt = el("option", { value: o.id }, o.label);
-    if (o.id === dashboardModelFilter) opt.selected = true;
-    modelSel.append(opt);
-  });
-  // Reported: "when I change the model the data in the campaign doesn't
-  // change at all." It didn't: this select drove only the ad-hoc record list,
-  // while the campaign section read a SEPARATE geoEngineFilter set by its own
-  // dropdown. Two controls, same word, one of them silently inert over the
-  // section people were actually looking at.
-  //
-  // Unified rather than merely connected — the campaign card's duplicate
-  // dropdown is gone, the same way the "Last 7/30/90 days" selector was
-  // removed when the time filter was unified. One control, one meaning.
-  modelSel.onchange = () => {
-    dashboardModelFilter = modelSel.value;
-    geoEngineFilter = modelSel.value ? [modelSel.value] : [];
-    renderDashboard();
-  };
-  filterRow.append(modelSel);
-
-  // 3. Campaign Filter — picks which campaign's performance shows below.
-  // Nothing selected means no campaign section is shown at all (see the
-  // "No campaign selected" note further down), rather than silently
-  // defaulting to one.
-  if (GEO_PROFILES.length) {
-    const sel = el("select", { className: "filter" });
-    sel.append(el("option", { value: "" }, "No campaign selected"));
-    GEO_PROFILES.forEach((p) => {
-      const o = el("option", { value: p.id }, p.name || "Untitled");
-      if (p.id === dashboardCampaignId) o.selected = true;
-      sel.append(o);
+  /* --- filters --- */
+  const setPeriod = (p) => { dbPeriod = p; dbWeek = null; renderDashboard(); };
+  const engineToggle = (id) => () => { dbEngines = { ...dbEngines, [id]: dbEngines[id] === false }; renderDashboard(); };
+  const recent = dbRecent();
+  if (popup) {
+    const row = el("div", { className: "db-filters" });
+    const sel = el("select", { className: "db-select", "aria-label": "When" });
+    PERIODS.forEach((p) => { const o = el("option", { value: p.id }, p.label); if (p.id === period) o.selected = true; sel.append(o); });
+    sel.onchange = () => setPeriod(sel.value);
+    row.append(sel);
+    const eng = el("span", { className: "db-engine-toggles" });
+    ENGINE_ORDER.forEach((id) => {
+      const on = dbEngines[id] !== false;
+      const b = el("button", { className: `db-etoggle${on ? " on" : ""}`, type: "button", "aria-pressed": on ? "true" : "false", title: `${dbEngineLabel(id)}: ${on ? "shown" : "hidden"}`, "aria-label": dbEngineLabel(id) }, engineIconEl(id));
+      b.onclick = engineToggle(id);
+      eng.append(b);
     });
-    sel.onchange = async () => {
-      dashboardCampaignId = sel.value;
-      expandedPromptRuns = new Set();
-      geoTagFilter = [];
-      // A prompt/source filter typed for one campaign is meaningless against
-      // another and would silently hide most of the new campaign's rows.
-      geoPromptSearch = "";
-      sourceSearch = "";
-      if (dashboardCampaignId) {
-        const qs = await send({ type: "geo-prompt-list", profileId: dashboardCampaignId });
-        dashboardGeoPrompts = qs.ok ? qs.prompts : [];
-      } else {
-        dashboardGeoPrompts = [];
-      }
-      renderDashboard();
-    };
-    filterRow.append(sel);
-  }
-
-  ovHeader.append(filterRow);
-  overviewCard.append(ovHeader);
-  // Always in the DOM — this is what used to disappear once a campaign was
-  // selected, taking the only way to change or clear the selection with it.
-  root.append(overviewCard);
-
-  const selectedCampaign = dashboardCampaignId ? GEO_PROFILES.find((p) => p.id === dashboardCampaignId) : null;
-  // Same timeframe the ad-hoc filters above use — campaign performance used
-  // to have its OWN separate "Last 7/30/90 days" dropdown, which was a second,
-  // inconsistent time filter instead of reusing this one.
-  const geoSince = dashboardTimeFilter === "custom" ? (customStartTime || undefined) : (timeLimit || undefined);
-  const geoUntil = dashboardTimeFilter === "custom" ? (customEndTime || undefined) : undefined;
-
-  if (!selectedCampaign) {
-    // Every metric is clickable and opens a detail view built from the SAME
-    // filtered `recs`, so the model / timeframe filters above always apply
-    // to the drill-down too. Only shown when no campaign is selected — once
-    // one is, this and the campaign KPIs below merge into a single section
-    // (see refreshGeoMetrics) instead of two disconnected cards.
-    const stats = el("div", { className: "statgrid" });
-    const stat = (n, l, key) => {
-      const node = el(
-        "div",
-        { className: `stat clickable-stat${dashboardDrill === key ? " stat-active" : ""}`, title: `Click to break down: ${l}` },
-        el("div", { className: "n" }, String(n)),
-        el("div", { className: "l" }, l)
-      );
-      node.onclick = () => {
-        dashboardDrill = dashboardDrill === key ? null : key;
-        renderDashboard();
-      };
-      return node;
-    };
-    stats.append(
-      stat(recs.length, "Captures", "captures"),
-      stat(searched, "With search", "searched"),
-      stat(fanTotal, "Fan-out queries", "fanout"),
-      stat(domainCount.size, "Unique domains", "domains"),
-      stat(citedTotal, "Cited", "cited"),
-      stat(fetchedTotal, "Read-only", "fetched")
-    );
-    overviewCard.append(stats);
-    const drill = renderDrilldown(recs);
-    if (drill) overviewCard.append(drill);
-
-    if (GEO_PROFILES.length) {
-      root.append(el("div", { className: "empty" }, "No campaign selected — pick one above to see its performance."));
-    }
+    row.append(eng);
+    top.append(row);
+    const kinds = el("div", { className: "db-kindchips", role: "group", "aria-label": "Kind of answer" });
+    KINDS.forEach((k) => {
+      const n = v.kindCounts[k.id] || 0;
+      const on = !!dbKinds[k.id];
+      const c = dbChip([glyphEl(AK_GLYPH[k.id], 13), `${k.label.split(" ·")[0]} · ${n}`], on, () => { dbKinds = { ...dbKinds, [k.id]: !on }; renderDashboard(); }, { cls: `k-${k.id}${n ? "" : " zero"}` });
+      kinds.append(c);
+    });
+    top.append(kinds);
   } else {
-    // A campaign is selected: merge its own captures/fan-out/domain overview
-    // together with its brand KPIs into the one card refreshGeoMetrics builds,
-    // instead of showing the generic ad-hoc overview above it.
-    const gc = el("div", { className: "card", id: "geoMetrics" });
-    gc.append(el("div", { className: "card-header" }, el("h3", {}, "Campaign Performance")), el("div", { className: "muted small" }, "loading…"));
-    root.append(gc);
-
-    const pp = el("div", { className: "card", id: "geoPromptTable" });
-    pp.append(el("div", { className: "card-header" }, el("h3", {}, "Prompt Performance")), el("div", { className: "muted small" }, "loading…"));
-    root.append(pp);
-
-    // Reported: scrolled down into a campaign's Source Domains/URLs table
-    // (which lives inside #geoPromptTable, filled in below), the page kept
-    // jumping back to the top. beginSwap()'s minHeight hold on #dashboard
-    // (above) only lasts two animation frames, but these two panels start
-    // out as a one-line "loading…" placeholder and only reach their real,
-    // tall size after their own chrome.runtime.sendMessage round trip
-    // resolves — which routinely outlasts those two frames, especially
-    // during a live run competing for the service worker's attention. In
-    // that gap #dashboard is genuinely shorter than it was, so the browser
-    // clamps scrollTop back up on its own — the same class of bug already
-    // named and fixed below for the loader-status poll, just triggered here
-    // by every "new-capture" broadcast during a run instead of a timer.
-    // Re-apply the pre-rebuild position once both panels have actually
-    // finished filling back in, undoing that clamp.
-    const scroller = activeScroller();
-    const y = scroller ? scroller.scrollTop : 0;
-    Promise.all([
-      refreshGeoMetrics(selectedCampaign, dashboardGeoPrompts, geoSince, geoUntil),
-      refreshPromptPerformance(selectedCampaign, dashboardGeoPrompts, geoSince, geoUntil),
-    ]).then(() => { if (scroller) scroller.scrollTop = y; });
+    const row = el("div", { className: "db-filters" });
+    const scope = el("div", { className: "db-group", role: "group", "aria-label": "Look in" }, el("span", { className: "db-label" }, "Look in"));
+    [["prompts", "Prompts"], ["answers", "Answers"], ["fan", "Searches engines ran"]].forEach(([k, l]) => scope.append(dbChip(l, !!dbScope[k], () => {
+      dbScope = { ...dbScope, [k]: !dbScope[k] };
+      if (k === "answers") { dbAnswerFor = ""; dbRequestAnswers(); }
+      renderDashboard();
+    }, { cls: "scope" })));
+    const eng = el("div", { className: "db-group", role: "group", "aria-label": "Engines" });
+    ENGINE_ORDER.forEach((id) => eng.append(dbChip([engineIconEl(id), dbEngineLabel(id), el("span", { className: "db-n" }, String(v.engineCounts[id] || 0))], dbEngines[id] !== false, engineToggle(id), { cls: "engine" })));
+    const seg = el("div", { className: "db-seg", role: "group", "aria-label": "When" });
+    PERIODS.forEach((p) => { const b = el("button", { className: `db-seg-btn${p.id === period ? " on" : ""}`, type: "button", "aria-pressed": p.id === period ? "true" : "false" }, p.label); b.onclick = () => setPeriod(p.id); seg.append(b); });
+    const toggles = el("div", { className: "db-group" });
+    toggles.append(
+      dbChip(`${dbRepeat ? "✓ " : ""}Asked more than once`, dbRepeat, () => { dbRepeat = !dbRepeat; renderDashboard(); }, { cls: "toggle" }),
+      dbChip(`${dbCampaignOnly ? "✓ " : ""}From a campaign`, dbCampaignOnly, () => { dbCampaignOnly = !dbCampaignOnly; renderDashboard(); }, { cls: "toggle" }));
+    row.append(scope, eng, seg, toggles);
+    top.append(row);
+  }
+  if (recent.length && !dbQuery) {
+    const rr = el("div", { className: "db-recent" }, el("span", { className: "db-label" }, popup ? "Recent" : "Your recent searches"));
+    recent.forEach((q) => rr.append(dbChip(q, false, () => { dbSetQuery(q); renderDashboard(); }, { cls: "recent", pressed: false })));
+    if (!popup) rr.append(el("span", { className: "db-muted" }, "· kept automatically, nothing to set up"));
+    top.append(rr);
   }
 
-  // Saved Conversations + Top Domains are ad-hoc-only (per the isolation rule
-  // in geo.js — tracked runs never mix into this data), so they don't apply
-  // once a campaign is selected. Prompt Performance + the domain/URL toggle
-  // above replace them for that view instead of showing an empty/irrelevant
-  // ad-hoc list underneath a campaign's data.
-  if (selectedCampaign) return;
-
-  // Split Grid Container
-  const grid = el("div", { className: "dashboard-grid" });
-
-  // Main Column: Saved Conversations Card
-  const savedCard = el("div", { className: "card" }, el("div", { className: "card-header" }, el("h3", {}, "Saved Conversations")));
-  const emptyCount = recs.filter((r) => !hasSignal(r)).length;
-  const visibleRecs = showEmptyCaptures ? recs : recs.filter(hasSignal);
-  if (emptyCount) {
-    const note = el("div", { className: "muted", style: "margin-bottom:8px; font-size:11px;" });
-    const toggle = el("button", { className: "linkbtn" }, showEmptyCaptures ? "hide them" : "show them");
-    toggle.onclick = () => { showEmptyCaptures = !showEmptyCaptures; renderDashboard(); };
-    note.append(
-      `${emptyCount} capture${emptyCount === 1 ? "" : "s"} with no prompt/fan-out/sources hidden — `,
-      toggle
-    );
-    savedCard.append(note);
-  }
-
-  // Unified Download Toolbar
-  const bar = el("div", { className: "dlbar" });
-  const sel = () => (selectedIds.size ? visibleRecs.filter((r) => selectedIds.has(r.captureId)) : visibleRecs);
-  const lbl = el("span", { className: "muted" });
-  const updLbl = () => (lbl.textContent = selectedIds.size ? `${selectedIds.size} Selected` : `All ${visibleRecs.length}`);
-  updLbl();
-  
-  // A native <select> sizes itself to its LONGEST option ("Conversations
-  // (HTML)"), so no amount of max-width tightening made it compact — it just
-  // clipped. A button plus its own popover is as wide as the word "Export"
-  // and nothing else. The old hardcoded #10b981 green also made it read as a
-  // foreign control; it uses the accent token like every other action now.
-  const dlWrap = el("div", { className: "menu-wrap" });
-  const dlBtn = el("button", { className: "btn sm ghost menu-btn", title: "Export the shown or selected conversations" },
-    el("span", {}, "\u2913"), el("span", {}, "Export"), el("span", { className: "menu-caret" }, "\u25be"));
-  const dlMenu = el("div", { className: "menu-pop", style: "display:none" });
-  const runExport = async (val) => {
-    dlMenu.style.display = "none";
-    if (val === "json") download(`citoskeleton-selected-${Date.now()}.json`, JSON.stringify(sel(), null, 2), "application/json");
-    else if (val === "excel" || val === "csv") downloadDetailedFormat(sel(), val);
-    else if (val === "html") await exportRecordsAsHtml(sel());
-  };
-  // Trimmed to the formats people actually reach for: a spreadsheet (Excel),
-  // structured data for further analysis (CSV), a readable document (HTML),
-  // and the raw underlying data for bulk-selected conversations (JSON) — vs.
-  // the previous 6-option list where Fan-outs TXT and Print/PDF saw little
-  // use. Print/PDF is still available per-conversation from the Analyze tab.
-  [
-    ["excel", "Excel", ".xls spreadsheet"],
-    ["csv", "Detailed CSV", "one row per source"],
-    ["html", "Conversations", "readable HTML document"],
-    ["json", "Raw data", "full JSON payloads"],
-  ].forEach(([v, label, sub]) => {
-    const item = el("button", { className: "menu-item" },
-      el("span", { className: "menu-item-label" }, label),
-      el("span", { className: "menu-item-sub muted small" }, sub));
-    item.onclick = () => runExport(v);
-    dlMenu.append(item);
+  /* --- summary: how many, when, what kind --- */
+  const maxW = Math.max(1, ...v.weeks.map((w) => w.n));
+  const bars = el("div", { className: "db-weeks", role: "group", "aria-label": "Prompts by week — pick one to see only that week" });
+  v.weeks.forEach((w) => {
+    const on = dbWeek === w.start;
+    const b = el("button", { className: `db-week${on ? " on" : ""}${dbWeek && !on ? " dim" : ""}`, type: "button", "aria-pressed": on ? "true" : "false",
+      title: `${w.n} prompt${w.n === 1 ? "" : "s"} in the week of ${shortDate(w.start)}`, "aria-label": `${w.label}: ${w.n} prompt${w.n === 1 ? "" : "s"}` });
+    if (!popup) b.append(el("span", { className: "db-week-n" }, w.n ? String(w.n) : ""));
+    b.append(el("span", { className: "db-week-bar", style: `height:${Math.round((w.n / maxW) * (popup ? 30 : 58))}px` }));
+    if (!popup) b.append(el("span", { className: "db-week-l" }, w.label));
+    b.onclick = () => { dbWeek = on ? null : w.start; renderDashboard(); };
+    bars.append(b);
   });
-  dlBtn.onclick = (ev) => {
-    ev.stopPropagation();
-    dlMenu.style.display = dlMenu.style.display === "none" ? "block" : "none";
-  };
-  // Click-away close. Registered once per render alongside the menu it closes,
-  // and removed on the same click, so these don't stack up across re-renders.
-  const closeDlMenu = () => { dlMenu.style.display = "none"; document.removeEventListener("click", closeDlMenu); };
-  dlBtn.addEventListener("click", () => { if (dlMenu.style.display === "block") setTimeout(() => document.addEventListener("click", closeDlMenu), 0); });
-  dlWrap.append(dlBtn, dlMenu);
-
-  const deleteSelected = el("button", { className: "btn sm danger", style: selectedIds.size ? "margin-left: auto;" : "display:none;" }, `🗑 Delete Selected`);
-  deleteSelected.onclick = async () => {
-    if (!confirm(`Delete the ${selectedIds.size} selected conversation(s)?`)) return;
-    for (const id of selectedIds) {
-      await send({ type: "delete-record", captureId: id });
-      FULL.delete(id);
-    }
-    selectedIds.clear();
-    load();
-  };
-
-  const deleteAll = el("button", { className: "btn sm danger ghost", style: selectedIds.size ? "" : "margin-left: auto;" }, "🗑 Delete All");
-  deleteAll.onclick = async () => {
-    if (!confirm("Delete all captured conversations? This action cannot be undone.")) return;
-    await send({ type: "clear-all" });
-    FULL.clear();
-    viewingId = null;
-    load();
-  };
-
-  const clearSel = el("button", { className: "linkbtn", style: selectedIds.size ? "" : "display:none;" }, "clear selection");
-  clearSel.onclick = () => { selectedIds.clear(); renderDashboard(); };
-  
-  const rightGroup = el("div", { style: "display: flex; gap: 8px; margin-left: auto; align-items: center;" });
-  rightGroup.append(dlWrap, deleteSelected, deleteAll);
-
-  bar.append(lbl, clearSel, rightGroup);
-  savedCard.append(bar);
-
-  const listHeader = el("div", { className: "capture-list-header" });
-  const head = el("input", { type: "checkbox", title: "Select all shown" });
-  head.checked = visibleRecs.length > 0 && visibleRecs.slice(0, 100).every((r) => selectedIds.has(r.captureId));
-  head.onchange = () => {
-    visibleRecs.slice(0, 100).forEach((r) => (head.checked ? selectedIds.add(r.captureId) : selectedIds.delete(r.captureId)));
-    renderDashboard();
-  };
-  const selectAllLabel = el("label", { className: "chk", style: "margin: 0;" }, head, "Select all shown");
-  listHeader.append(selectAllLabel);
-  savedCard.append(listHeader);
-
-  const ul = el("ul", { className: "capture-list" });
-  const grouped = new Map();
-  visibleRecs.slice(0, 100).forEach((r) => {
-    const d = new Date(r.capturedAt).toLocaleDateString();
-    const p = (r.userPrompt || "(No prompt)").toLowerCase().trim();
-    const key = d + "|" + p;
-    if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key).push(r);
-  });
-
-  Array.from(grouped.values()).forEach((cluster) => {
-    cluster.sort((a,b) => a.capturedAt - b.capturedAt);
-    let activeIdx = 0;
-    
-    const card = el("li", { className: "capture-item", style: "flex-direction: column; align-items: stretch; gap: 8px; cursor: default;" });
-    
-    const renderClusterContent = () => {
-      card.textContent = "";
-      const activeRecord = cluster[activeIdx];
-      const fan = ((activeRecord.fanout?.search?.length || 0) + (activeRecord.fanout?.shopping?.length || 0) + (activeRecord.fanout?.image?.length || 0));
-      
-      const rawB = el("button", { title: "Download raw payload" }, "Raw");
-      rawB.onclick = (e) => { e.stopPropagation(); downloadRaw(activeRecord.captureId, (activeRecord.userPrompt || "capture").slice(0, 24).replace(/\W+/g, "_")); };
-      
-      const del = el("button", { className: "del-btn", title: "Delete capture" }, "Delete");
-      del.onclick = async (e) => {
-         e.stopPropagation();
-         await send({ type: "delete-record", captureId: activeRecord.captureId });
-         load();
-      };
-
-      const promptDiv = el("div", { className: "capture-prompt", title: "Open this capture", style: "cursor: pointer; font-weight: 500;" }, highlightMatch(activeRecord.userPrompt || "(No prompt text)", dashboardSearch));
-      promptDiv.onclick = () => openCapture(activeRecord.captureId);
-      
-      const cb = el("input", { type: "checkbox" });
-      cb.checked = cluster.every(r => selectedIds.has(r.captureId));
-      cb.onchange = (e) => { 
-        cluster.forEach(r => {
-           if (e.target.checked) selectedIds.add(r.captureId);
-           else selectedIds.delete(r.captureId);
-        });
-        updLbl(); 
-        if (typeof mchk !== 'undefined') mchk.checked = false; 
-        renderClusterContent(); 
-      };
-
-      // Reported: "if same prompt is not run on both the llms you won't know
-      // which one was run on which platform." The platform pills below only
-      // ever appeared when a cluster held more than one run — the common case
-      // of a prompt captured on just ONE engine showed no engine at all
-      // anywhere on the row. This badge is unconditional: every saved
-      // conversation states which engine produced it, whether or not its
-      // prompt was also run elsewhere.
-      const engineLabel = ENGINES.find((e) => e.id === activeRecord.platform)?.label || activeRecord.platform || "Unknown";
-      const engineBadge = el("span", { className: "capture-engine", title: `Captured on ${engineLabel}` },
-        engineChip(activeRecord.platform, engineLabel));
-
-      const metaRow = el("div", { className: "capture-meta", style: "margin-top: 4px;" },
-        el("label", { className: "capture-select" }, cb),
-        el("span", { className: "capture-date" }, new Date(activeRecord.capturedAt).toLocaleString()),
-        engineBadge,
-        el("span", { className: "tag cited" }, `${fan} fan-out`),
-        el("span", { className: "tag fetched" }, `${activeRecord.sources.length} src`),
-        el("div", { className: "row-actions", style: "margin-left: auto;" }, rawB, del)
-      );
-
-      let tabsRow = null;
-      if (cluster.length > 1) {
-        tabsRow = el("div", { style: "display:flex; align-items: center; gap: 8px; margin-top: 6px; margin-bottom: 4px; flex-wrap: wrap;" });
-        
-        // Group cluster items by platform
-        const byPlatform = {};
-        cluster.forEach(r => {
-          const p = r.platform || "chatgpt";
-          if (!byPlatform[p]) byPlatform[p] = [];
-          byPlatform[p].push(r);
-        });
-
-        let currentPlat = activeRecord.platform || "chatgpt";
-        if (!byPlatform[currentPlat]) currentPlat = Object.keys(byPlatform)[0];
-
-        // Platform Selector Pills
-        Object.keys(byPlatform).forEach(plat => {
-          const count = byPlatform[plat].length;
-          const label = `${plat.charAt(0).toUpperCase() + plat.slice(1)} (${count})`;
-          const isSelected = plat === currentPlat;
-          
-          const btn = el("button", {
-            className: `btn sm ${isSelected ? "primary" : "ghost"}`,
-            style: "padding: 2px 8px; font-size: 11px; text-transform: capitalize;"
-          }, label);
-          
-          btn.onclick = (e) => {
-            e.stopPropagation();
-            const firstRec = byPlatform[plat][0];
-            activeIdx = cluster.indexOf(firstRec);
-            renderClusterContent();
-          };
-          tabsRow.append(btn);
-        });
-
-        // Time Dropdown for current platform if > 1 run
-        const platRuns = byPlatform[currentPlat] || [];
-        if (platRuns.length > 1) {
-          const timeSel = el("select", { className: "filter", style: "padding: 1px 6px; font-size: 11px; height: 24px;" });
-          platRuns.forEach(r => {
-            const timeStr = new Date(r.capturedAt).toLocaleTimeString("en-GB");
-            const opt = el("option", { value: r.captureId }, `Run @ ${timeStr}`);
-            if (r.captureId === activeRecord.captureId) opt.selected = true;
-            timeSel.append(opt);
-          });
-          timeSel.onchange = (e) => {
-            e.stopPropagation();
-            const targetId = timeSel.value;
-            const targetIdx = cluster.findIndex(r => r.captureId === targetId);
-            if (targetIdx !== -1) {
-              activeIdx = targetIdx;
-              renderClusterContent();
-            }
-          };
-          tabsRow.append(timeSel);
-        }
-      }
-
-      card.append(promptDiv);
-      if (tabsRow) card.append(tabsRow);
-      card.append(metaRow);
-    };
-
-    renderClusterContent();
-    ul.append(card);
-  });
-  savedCard.append(ul);
-  grid.append(savedCard);
-
-  // Sidebar Column: Top Domains Card
-  const topDomains = [...domainCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 15);
-  if (topDomains.length) {
-    // Card list, not a 3-column table: in the narrow sidebar the "Types" column
-    // (up to 3 badges) pushed the table wider than its card, squashing long
-    // domains like gadgetsnow.indiatimes.com into an unreadable column.
-    const sideCard = el("div", { className: "card" }, el("div", { className: "card-header" }, el("h3", {}, "Top Domains")));
-    const ul = el("ul", { className: "itemlist" });
-    topDomains.forEach(([d, n]) => {
-      const li = el("li", { className: "itemlist-clickable" });
-      const head = el("div", { className: "item-head" });
-      // Clickable, the same as a campaign's Source Domains table — opens the
-      // identical drill-down modal (citations vs. read-only, every URL, and
-      // which of your OWN captures pulled each one in), built from the same
-      // filtered `recs` this whole card is already computed from.
-      const nameBtn = el("button", { className: "linkbtn td-domain-btn item-name domain-name", title: `Click for detailed URLs under ${d}` }, d);
-      nameBtn.onclick = () => openAdhocDomainDetailModal(d, recs);
-      head.append(
-        nameBtn,
-        el("span", { className: "muted", style: "white-space:nowrap" }, `${n} src`)
-      );
-      li.append(head);
-      const tagGroup = el("div", { className: "type-tag-group" });
-      [...(domainTypes.get(d) || [])].forEach((typ) =>
-        tagGroup.append(el("span", { className: `tag ${typ === "news" ? "news" : typ}` }, typ))
-      );
-      if (tagGroup.childNodes.length) li.append(tagGroup);
-      ul.append(li);
+  const t = v.totals;
+  const totalLabel = dbQuery ? `match “${dbQuery.trim()}” ${periodPhrase}` : `prompts captured ${periodPhrase}`;
+  const span = t.from ? `from ${shortDate(t.from)} to ${dayDiff(Date.now(), t.to) === 0 ? "today" : shortDate(t.to)}` : "nothing here yet";
+  if (popup) {
+    const sum = el("section", { className: "db-card db-summary", "aria-label": "Summary" },
+      el("div", { className: "db-total-line" }, el("b", {}, String(t.prompts)), ` ${totalLabel}`,
+        el("span", { className: "db-muted" }, ` · ${t.answers} answer${t.answers === 1 ? "" : "s"}${t.kindLine ? ` · ${t.kindLine}` : ""}`)),
+      bars);
+    wrap.append(sum);
+  } else {
+    const total = el("div", { className: "db-total" },
+      el("div", { className: "db-total-n" }, String(t.prompts)),
+      el("div", { className: "db-total-l" }, totalLabel),
+      el("div", { className: "db-muted" }, `${t.answers} answer${t.answers === 1 ? "" : "s"} on ${t.engines} engine${t.engines === 1 ? "" : "s"}`),
+      el("div", { className: "db-muted" }, span));
+    const when = el("div", { className: "db-when-box" },
+      el("div", { className: "db-box-head" }, el("h2", { className: "db-h" }, "When you asked"), el("span", { className: "db-muted" }, dbWeek ? `Week of ${shortDate(dbWeek)} · click again to clear` : "Click a week to see only those prompts")),
+      bars);
+    const kindBox = el("div", { className: "db-kinds" },
+      el("div", { className: "db-box-head" }, el("h2", { className: "db-h" }, "Kind of answer"), el("span", { className: "db-muted" }, "click to filter")));
+    const stack = el("div", { className: "db-stack", role: "img", "aria-label": KINDS.map((k) => `${v.kindCounts[k.id] || 0} ${k.label}`).join(", ") });
+    KINDS.forEach((k) => { const n = v.kindCounts[k.id] || 0; if (n) stack.append(el("span", { className: `k-${k.id}${v.anyKind && !dbKinds[k.id] ? " dim" : ""}`, style: `flex:${n} 1 0`, title: `${k.label} · ${n}` })); });
+    const kl = el("div", { className: "db-kindlist" });
+    KINDS.forEach((k) => {
+      const n = v.kindCounts[k.id] || 0;
+      const on = !!dbKinds[k.id];
+      const b = el("button", { className: `db-kindbtn k-${k.id}${on ? " on" : ""}${n ? "" : " zero"}`, type: "button", "aria-pressed": on ? "true" : "false" },
+        el("span", { className: "db-kind-ic" }, glyphEl(AK_GLYPH[k.id], 14)), el("span", { className: "db-kind-l" }, k.label), el("span", { className: "db-n" }, String(n)));
+      b.onclick = () => { dbKinds = { ...dbKinds, [k.id]: !on }; renderDashboard(); };
+      kl.append(b);
     });
-    sideCard.append(ul);
-    grid.append(sideCard);
+    kindBox.append(stack, kl);
+    wrap.append(el("section", { className: "db-summary", "aria-label": "Summary" }, el("div", { className: "db-card" }, total), el("div", { className: "db-card" }, when), el("div", { className: "db-card" }, kindBox)));
   }
 
-  root.append(grid);
+  /* --- the list --- */
+  const list = el("section", { className: "db-card db-list", "aria-label": "Your prompts" });
+  wrap.append(list);
+  const head = el("div", { className: "db-list-head" });
+  const views = el("div", { className: "db-views", role: "tablist", "aria-label": "Show" });
+  [["prompts", "Prompts", v.list.length], ["fan", popup ? "Searches" : "Searches the engines ran", v.fan.length]].forEach(([id, label, n]) => {
+    const on = dbView === id;
+    const b = el("button", { className: `db-view${on ? " on" : ""}`, type: "button", role: "tab", "aria-selected": on ? "true" : "false" }, label, el("span", { className: "db-n" }, String(n)));
+    b.onclick = () => { dbView = id; renderDashboard(); };
+    views.append(b);
+  });
+  head.append(views);
+  if (!popup && dbView === "prompts") {
+    const sort = el("select", { className: "db-select", "aria-label": "Sort" });
+    [["newest", "Newest first"], ["asked", "Asked most often"], ["engines", "Most engines"]].forEach(([k, l]) => { const o = el("option", { value: k }, l); if (k === dbSort) o.selected = true; sort.append(o); });
+    sort.onchange = () => { dbSort = sort.value; renderDashboard(); };
+    head.append(el("span", { className: "db-spacer" }), el("label", { className: "db-sort" }, el("span", { className: "db-label" }, "Sort"), sort));
+    if (!dbSelected.size) head.append(dbExportMenu(v.list, "Export"));
+  }
+  list.append(head);
+
+  const selRows = v.list.filter((r) => dbSelected.has(r.key));
+  if (!popup && selRows.length) {
+    const bar = el("div", { className: "db-selbar", role: "toolbar", "aria-label": "Selected prompts" });
+    const one = selRows.length === 1 && selRows[0].engines.length > 1;
+    const side = el("button", { className: "at-btn sm", type: "button", title: one ? "Each engine's answer to this prompt, side by side" : "Pick one prompt that more than one engine answered" }, "Open side by side");
+    side.disabled = !one;
+    // After openCapture() has finished: it resets Analyze's view state.
+    side.onclick = async () => { await openCapture(selRows[0].latestId); atCompare = true; renderAnalyze(); };
+    const rm = el("button", { className: "at-btn sm danger", type: "button" }, "Remove");
+    rm.onclick = () => dbRemove(selRows);
+    const x = el("button", { className: "db-clear", type: "button", title: "Clear the selection", "aria-label": "Clear the selection" }, "×");
+    x.onclick = () => { dbSelected.clear(); renderDashboard(); };
+    bar.append(el("b", {}, `${selRows.length} selected`), side, dbCampaignMenu(selRows), dbExportMenu(selRows, "Export"), rm, el("span", { className: "db-spacer" }), x);
+    list.append(bar);
+  }
+
+  if (dbView === "fan") {
+    if (!v.fan.length) list.append(el("p", { className: "ap-note" }, dbQuery ? "No search the engines ran matches." : "The engines didn't search the web for these prompts, or didn't publish what they searched for."));
+    else {
+      list.append(el("p", { className: "db-muted db-intro" }, `${v.fan.length} search${v.fan.length === 1 ? "" : "es"} the engines ran for ${v.list.length === 1 ? "this prompt" : `these ${v.list.length} prompts`} — how they rephrased what you asked.`));
+      const table = el("div", { className: "db-fan", role: "table", "aria-label": "Searches the engines ran" });
+      if (!popup) table.append(el("div", { className: "db-fan-row db-th", role: "row" }, ...["Search the engine ran", "Times", "Engines", "Ran for your prompt"].map((h) => el("span", { role: "columnheader" }, h))));
+      v.fan.forEach((f) => {
+        const from = el("button", { className: "db-link", type: "button", title: f.from.join("\n") }, (f.from[0].length > 60 ? f.from[0].slice(0, 58) + "…" : f.from[0]) + (f.from.length > 1 ? ` +${f.from.length - 1} more` : ""));
+        from.onclick = () => { const r = v.list.find((x) => x.text === f.from[0]); if (r) openCapture(r.latestId); };
+        const eng = el("span", { className: "db-engines" }, ...f.engines.map((id) => { const ic = engineIconEl(id); ic.setAttribute("title", dbEngineLabel(id)); return ic; }));
+        table.append(el("div", { className: "db-fan-row", role: "row" },
+          el("span", { role: "cell", className: "db-fan-q" }, dbHighlight(f.text, v.tokens), f.lane !== "web" ? el("span", { className: "ap-tag" }, f.lane) : null),
+          el("span", { role: "cell", className: "num" }, `×${f.n}`), el("span", { role: "cell" }, eng), el("span", { role: "cell" }, from)));
+      });
+      list.append(table);
+    }
+    return;
+  }
+  if (!v.list.length) {
+    const msg = dbQuery ? "Nothing you’ve captured matches. Try a shorter word, or look in answers too." : "Nothing here for these filters. Try a longer period.";
+    const p = el("p", { className: "ap-note db-empty" }, msg);
+    if (period !== "all") { const b = el("button", { className: "db-link", type: "button" }, " Show all time"); b.onclick = () => setPeriod("all"); p.append(b); }
+    list.append(p);
+    return;
+  }
+  v.groups.forEach((g) => {
+    const sec = el("div", { className: "db-group-block" },
+      el("h3", { className: "db-group-h" }, g.label, el("span", { className: "db-muted" }, `${g.sub ? ` ${g.sub} ·` : ""} ${g.rows.length} prompt${g.rows.length === 1 ? "" : "s"}`)));
+    const ul = el("ul", { className: "db-rows" });
+    g.rows.forEach((r) => ul.append(dbRow(r, v, popup)));
+    sec.append(ul);
+    list.append(sec);
+  });
+  if (!popup) {
+    const wipe = el("button", { className: "db-link danger", type: "button" }, "Delete everything captured…");
+    wipe.onclick = async () => {
+      if (!confirm("Delete every captured answer, ad-hoc and from campaigns? This can't be undone.")) return;
+      await send({ type: "clear-all" });
+      FULL.clear();
+      viewingId = null;
+      load();
+    };
+    list.append(el("div", { className: "db-foot" }, wipe));
+  }
 }
+
+function dbToast() {
+  const undo = el("button", { className: "db-link", type: "button" }, "Undo");
+  undo.onclick = dbUndoRemoval;
+  return el("div", { className: "db-toast", role: "status" }, dbPending.n === 1 ? "Removed from your history." : `${dbPending.n} prompts removed from your history.`, undo);
+}
+
+// One open menu at a time; a click anywhere else closes it.
+document.addEventListener("click", (e) => {
+  if (dbMenu && !e.target.closest(".db-menu, .menu-wrap")) { dbMenu = null; renderDashboard(); }
+});
 
 /* ---------- exports ---------- */
 function download(name, text, mime) {
@@ -5117,6 +4994,55 @@ function renderCampaignsImpl() {
     if (campaignManageOpen) root.append(renderCampaignSetup(profile, true));
     root.append(renderRunCard(profile));
   }
+  if (profile.lastRunAt || ALL_RECORDS.some((r) => r.geo && r.geo.profileId === profile.id)) root.append(renderCampaignResults(profile));
+}
+
+/* A campaign's results (0.49.0). They lived on the Dashboard behind a
+ * campaign picker; the Dashboard is now a history of prompts (see
+ * renderDashboardImpl), so they moved here, under the campaign they belong
+ * to. Same cards and drill-downs as before (refreshGeoMetrics,
+ * refreshPromptPerformance), with their own period and engine filters;
+ * release 4 redesigns them. */
+let campaignResultsPeriod = "";
+function renderCampaignResults(profile) {
+  const box = el("section", { className: "campaign-results", id: "campaignResults", "aria-labelledby": "campaignResultsH" });
+  const head = el("div", { className: "card campaign-results-head" });
+  const bar = el("div", { className: "card-header" }, el("h3", { id: "campaignResultsH" }, "Results"));
+  const period = el("select", { className: "filter", "aria-label": "Period" });
+  [["", "All time"], ["24h", "Last 24 hours"], ["7d", "Last 7 days"], ["30d", "Last 30 days"]].forEach(([v, l]) => {
+    const o = el("option", { value: v }, l);
+    if (v === campaignResultsPeriod) o.selected = true;
+    period.append(o);
+  });
+  period.onchange = () => { campaignResultsPeriod = period.value; renderCampaigns(); };
+  const engine = el("select", { className: "filter", "aria-label": "Engine", title: "Limit every number below to one engine" });
+  [{ id: "", label: "All engines" }, ...availableEngines()].forEach((e) => {
+    const o = el("option", { value: e.id }, e.label);
+    if ((geoEngineFilter[0] || "") === e.id) o.selected = true;
+    engine.append(o);
+  });
+  engine.onchange = () => { geoEngineFilter = engine.value ? [engine.value] : []; renderCampaigns(); };
+  bar.append(el("span", { className: "campaign-results-filters" }, period, engine));
+  head.append(bar);
+  box.append(head);
+  const gc = el("div", { className: "card", id: "geoMetrics" }, el("div", { className: "card-header" }, el("h3", {}, "Campaign Performance")), el("div", { className: "muted small" }, "loading…"));
+  const pp = el("div", { className: "card", id: "geoPromptTable" }, el("div", { className: "card-header" }, el("h3", {}, "Prompt Performance")), el("div", { className: "muted small" }, "loading…"));
+  box.append(gc, pp);
+  const ms = { "24h": 86400000, "7d": 7 * 86400000, "30d": 30 * 86400000 }[campaignResultsPeriod];
+  const since = ms ? Date.now() - ms : undefined;
+  // Filled once the cards are in the page (both look themselves up by id).
+  // They start as one-line placeholders, so the scroll position is put back
+  // when they reach their real height — see the same note on the Dashboard
+  // before 0.49.0: otherwise every new capture during a run jumped the page.
+  const scroller = activeScroller();
+  const y = scroller ? scroller.scrollTop : 0;
+  setTimeout(() => {
+    Promise.all([
+      refreshGeoMetrics(profile, GEO_PROMPTS, since, undefined),
+      refreshPromptPerformance(profile, GEO_PROMPTS, since, undefined),
+    ]).then(() => { if (scroller && y) scroller.scrollTop = y; });
+  }, 0);
+  return box;
 }
 
 function renderTrashedCampaigns() {
@@ -6100,7 +6026,7 @@ function renderRunHistory(profile) {
       // captured fewer than the others gave you no way to go and look at it.
       const row = el("div", {
         className: `loader-history-row status-${run.status} clickable`,
-        title: "Show only this run's results in the Dashboard",
+        title: "Show only this run's results, below",
         style: "cursor:pointer",
       },
         el("span", { className: "muted" }, new Date(run.startedAt).toLocaleString()),
@@ -6111,8 +6037,8 @@ function renderRunHistory(profile) {
       row.onclick = () => {
         geoRunFilter = run.id;
         geoActiveId = profile.id;
-        showTab("dashboard");
-        renderDashboard();
+        renderCampaigns();
+        document.getElementById("campaignResults")?.scrollIntoView({ block: "start", behavior: "smooth" });
       };
       table.append(row);
     });
@@ -6121,7 +6047,7 @@ function renderRunHistory(profile) {
   return box;
 }
 
-/* ---------- Campaign performance metrics (rendered from the Dashboard) ---------- */
+/* ---------- Campaign performance metrics (rendered in Campaigns since 0.49.0; see renderCampaignResults) ---------- */
 
 async function refreshGeoMetrics(profile, prompts = [], since, until) {
   const mc = $("#geoMetrics");
@@ -6159,9 +6085,9 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
   // cited — is supporting detail and lives in one disclosure at the bottom.
   // Twelve tiles of numbers above the fold was the reported clutter.
   //
-  // Timeframe is the same filter as the rest of the Dashboard (see
-  // renderDashboardImpl) — no separate "Last 7/30/90 days" selector here, so
-  // there's only ever one time filter to reason about.
+  // Timeframe is the results' own period filter (see renderCampaignResults)
+  // — no separate "Last 7/30/90 days" selector here, so there's only ever
+  // one time filter to reason about.
   const controls = el("div", { className: "campaign-controls" });
   head.append(controls);
 
@@ -6234,8 +6160,8 @@ async function refreshGeoMetrics(profile, prompts = [], since, until) {
     }
   }
 
-  // The engine filter lives in the Dashboard's own filter row, above — one
-  // control for the whole tab. A second one here read a different variable
+  // The engine filter lives in the results' own filter row, above — one
+  // control for the whole section. A second one here read a different variable
   // and was the reported "changing the model changes nothing" bug.
   if (geoEngineFilter.length) {
     const only = availableEngines().find((e) => e.id === geoEngineFilter[0]);
@@ -6725,7 +6651,7 @@ function promptPerfCards(filteredPrompts, engineIds, engineLabel, runsOf, rerend
   return wrap;
 }
 
-/** Replaces Saved Conversations once a campaign is selected: prompts grouped
+/** A campaign's Prompt Performance (in its results, in Campaigns): prompts grouped
  *  with their own-brand mention/position/citation per run (merging reruns
  *  of the same prompt instead of listing every response separately), plus a
  *  domain/URL source breakdown for the same filtered response set. */
@@ -6773,8 +6699,8 @@ async function refreshPromptPerformance(profile, prompts, since, until) {
     : prompts
   ).filter((p) => matchesSearch(p.text, geoPromptSearch));
 
-  // Search sits in the card header next to the title, the same place the
-  // Dashboard puts its filters — this table can run to hundreds of prompts
+  // Search sits in the card header next to the title, where the other
+  // filters are — this table can run to hundreds of prompts
   // and previously had no way to narrow it at all.
   const searchInp = el("input", {
     id: "geoPromptSearch", type: "text", className: "filter search-input",
@@ -7066,27 +6992,6 @@ const modalStat = (n, l, tone, tip, term) => el(
   el("div", { className: "n" }, String(n)),
   el("div", { className: "l" }, l),
 );
-
-/** Build the same drill-down row shape openDomainDetailModal expects, but
- *  from ad-hoc (non-campaign) capture data instead of a campaign's tracked
- *  runs — this is what lets the plain Dashboard's "Top Domains" list open
- *  the identical drill-down a campaign's Source Domains table does, instead
- *  of being permanently plain text. Same aggregation, same definitions of
- *  citations and visibility (src/lib/sources.js), so the two paths cannot
- *  drift into reporting different numbers for the same data. */
-function adhocDomainRow(domain, recs) {
-  const { domains, totalResponses } = aggregateSourcesFromCaptures(recs);
-  const row = domains.get(domain);
-  if (!row) {
-    return { key: domain, citations: 0, fetched: 0, citedResponses: 0, visibility: 0,
-             totalResponses, urls: new Set(), citedPromptIds: new Set(), urlList: [] };
-  }
-  return { ...row, totalResponses };
-}
-
-function openAdhocDomainDetailModal(domain, recs) {
-  openDomainDetailModal(adhocDomainRow(domain, recs), "Source breakdown · across your captures", "capture");
-}
 
 /** Domain drill-down: this publisher's totals, then every URL of theirs that
  *  surfaced, then — expanded per URL — the exact prompts (or, for the ad-hoc
@@ -8916,7 +8821,7 @@ function renderCompare() {
   out.append(el("div", { className: "card" },
     el("div", { className: "muted small" },
       "Not shown here: your brand's rank position per run. Ranking needs the full answer text, which the fast list view doesn't load — " +
-      "the Dashboard's Campaign Performance computes it properly for tracked campaigns instead of estimating it here.")));
+      "a campaign's results in Campaigns compute it properly for tracked campaigns instead of estimating it here.")));
 
   // --- export this timeline ---
   const bar = el("div", { className: "dlbar" });
@@ -9043,12 +8948,12 @@ const TOUR_STEPS = [
   {
     tab: "dashboard",
     title: "Dashboard — everything you've captured",
-    body: "Every saved conversation, with share of voice across brands and the domains that keep getting cited. This is where patterns show up that a single answer can't tell you.",
+    body: "Every prompt you've asked, on any engine, in one list. Search the prompts, the answers and what the engines searched for; narrow it by when, which engine and what kind of answer came back.",
   },
   {
     tab: "loader",
     title: "Campaigns — run prompts on a schedule",
-    body: "Give it a list of prompts and the engines to run them on, and it drives your own logged-in sessions at a human pace. It now checks you're signed in before opening anything, so a run can't quietly fail into a login page.",
+    body: "Give it a list of prompts and the engines to run them on, and it drives your own logged-in sessions at a human pace. It checks you're signed in before opening anything, so a run can't quietly fail into a login page. Each campaign's results show under it.",
   },
   {
     tab: "about",

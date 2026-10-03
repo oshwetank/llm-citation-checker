@@ -10,12 +10,24 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.48.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.49.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - The Dashboard is now a history of everything you've asked, on every engine. One row per
+>   prompt, grouped by day, showing the engines that answered it, how often you asked it,
+>   and what the answer held (searches, pages, product cards, a map, images). Search looks
+>   in your prompts, in the answers and in what the engines searched for. Filter by period,
+>   engine, kind of answer (shopping, informational, local, images, from memory, or a task
+>   that isn't research), or a week on the chart. "Searches the engines ran" lists how they
+>   rephrased you. Select prompts to open them side by side, add them to a campaign, export
+>   them or remove them (with Undo). Your recent searches are kept for you.
+> - A campaign's results (its performance and prompt tables) moved from the Dashboard to
+>   Campaigns, under the campaign, with their own period and engine filters.
+> - Fixed: the faint logo in the middle of the page drew on top of the cards, and showed as a
+>   pale square in dark mode.
 > - Analyze in the full browser tab is redesigned. The analysis sits on the left and the
 >   answer, as the engine showed it, stays pinned on the right while you scroll: product
 >   cards or map pins first, then the text with every brand and citation marked. Click a
