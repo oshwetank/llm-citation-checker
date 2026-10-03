@@ -527,7 +527,13 @@ body.popup .app-wrapper {
   border-radius: 14px !important;
   border: 1px solid rgba(255, 255, 255, 0.6) !important;
   box-shadow: 0 10px 34px rgba(15, 23, 42, 0.14), var(--glass-highlight) !important;
-  overflow: hidden !important;
+  /* clip, not hidden: a hidden box is still a scroll container, so any
+     scrollIntoView() inside the popup (the board's section links, "View
+     results") scrolled the frame itself as well as .app-content — the header
+     slid over the content and the footer floated mid-popup. The frame had room
+     to scroll because absolutely positioned screen-reader labels deep in the
+     content count towards its overflow. A clip box can't be scrolled. */
+  overflow: clip !important;
   background: linear-gradient(165deg, rgba(255, 255, 255, 0.42) 0%, rgba(255, 255, 255, 0.24) 100%);
 }
 
@@ -5668,3 +5674,180 @@ mark.db-hit { padding: 0 1px; border-radius: 3px; background: var(--db-hit-bg); 
 /* Campaign results, in Campaigns since 0.49.0 (renderCampaignResults). */
 .campaign-results { display: flex; flex-direction: column; gap: 12px; margin-top: 4px; }
 .campaign-results-filters { display: inline-flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+
+/* ════════════════════════════════════════════════════════════════════════
+   A campaign's results board (0.50.0) — see renderCampaignBoard() and
+   renderCampaignBrandDetail() in panel.js. Cards in one column, with pairs
+   side by side in the full tab; tables are CSS grids that scroll sideways
+   inside their own box, never the page.
+   ════════════════════════════════════════════════════════════════════════ */
+.campaign-results .card, .cb-sec {
+  display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 14px 16px; border-radius: 14px;
+  background: var(--surface-solid); border: 1px solid var(--border); box-shadow: var(--glass-shadow);
+}
+.campaign-results .card { margin: 0; }
+.cb-sec-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.cb-sec-head > :not(.cb-h) { margin-left: auto; }
+.cb-sec-head > .cb-focus { margin-left: auto; }
+.cb-h, .campaign-results .card h3.cb-h { margin: 0; font-size: 15px; font-weight: 600; color: var(--fg-primary); text-transform: none; letter-spacing: 0; }
+.cb-h4 { margin: 0 0 4px; font-size: 13px; font-weight: 600; }
+.cb-head .card-header { margin-bottom: 0; }
+.cb-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 14px; }
+.cb-ctl { display: inline-flex; flex-direction: column; gap: 2px; }
+.cb-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.cb-nav { display: flex; flex-wrap: wrap; gap: 4px; padding-top: 8px; border-top: 1px solid var(--border); }
+.cb-nav-btn { height: 28px; padding: 0 10px; border: none; border-radius: 7px; background: transparent; color: var(--fg-secondary); font: inherit; font-size: 12px; cursor: pointer; }
+.cb-nav-btn:hover { background: var(--bg-subtle); color: var(--fg-primary); }
+.cb-focus { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 3px; border-radius: 9px; background: var(--bg-subtle); }
+.cb-focus-tab { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px; border: none; border-radius: 7px; background: transparent; color: var(--fg-secondary); font: inherit; font-size: 12px; cursor: pointer; }
+.cb-focus-tab.on { background: var(--surface-solid); color: var(--fg-primary); font-weight: 600; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.14); }
+.cb-focus-tab.on svg { color: var(--accent); }
+.cb-focus-tab.empty { opacity: 0.6; }
+.cb-hint { margin-top: -4px; }
+.cb-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.cb-kpi { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; border-left: 1px solid var(--border); min-width: 0; }
+.cb-kpi:first-child { border-left: none; }
+/* The tiles reuse .geo-kpi for the tests and the glossary hooks, but sit in one
+   bordered strip — drop the old per-tile card look and its uppercase label. */
+.cb-kpi.geo-kpi { border: none; border-left: 1px solid var(--border); border-radius: 0; box-shadow: none; background: transparent; }
+.cb-kpi.geo-kpi:first-child { border-left: none; }
+.cb-kpi.geo-kpi.lead { background: var(--accent-subtle); }
+.cb-kpi.geo-kpi .k-label { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.cb-kpi.geo-kpi .k-value { margin-top: 0; }
+.cb-kpi.lead { background: var(--accent-subtle); }
+.cb-kpi .k-label { font-size: 12px; color: var(--fg-secondary); }
+.cb-kpi .k-value { font-size: 24px; line-height: 1.15; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--fg-primary); overflow-wrap: anywhere; }
+.cb-kpi .k-sub { font-size: 12px; }
+.k-delta { font-size: 12px; font-weight: 600; }
+.k-delta.tone-up { color: var(--green-fg); }
+.k-delta.tone-down { color: var(--red-fg); }
+.k-delta.tone-flat { color: var(--fg-muted); }
+.cb-vs .k-value .ahead { color: var(--accent); }
+.cb-vs .k-value .vs { font-size: 13px; font-weight: 500; }
+.cb-note { padding: 12px 14px; grid-column: 1 / -1; }
+
+/* The board's tables sit straight on the card and scroll sideways on their
+   own when the card is narrower than the columns; they grow to full height —
+   a capped inner scroll box hid most of a long product list. */
+.cb-scroll { overflow-x: auto; min-width: 0; max-width: 100%; }
+.cb-table { display: flex; flex-direction: column; min-width: 0; }
+.cb-tr { display: grid; gap: 10px; align-items: center; padding: 7px 8px; border-top: 1px solid var(--border); font-size: 13px; }
+.cb-tr.cb-th { border-top: none; padding: 0 8px 4px; font-size: 11px; font-weight: 500; color: var(--fg-muted); }
+/* A long domain wraps inside its column instead of running into the next. */
+.cb-tr > * { min-width: 0; overflow-wrap: anywhere; }
+.cb-tr .num, .cb-grid-row .num { text-align: right; font-variant-numeric: tabular-nums; }
+.cb-tr.total { background: var(--bg-subtle); font-weight: 600; }
+.cb-tr.none { opacity: 0.65; }
+.cb-tr.mine, .cb-grid-row.mine > :not(.cb-heat-cell) { background: var(--accent-subtle); }
+.cb-kind-table .cb-tr { grid-template-columns: minmax(150px, 1.1fr) 64px 92px 84px 140px 84px 70px minmax(200px, 1.6fr); min-width: 920px; }
+.cb-kindname { display: inline-flex; align-items: center; gap: 7px; font-weight: 500; }
+.t-good { color: var(--green-fg); font-weight: 600; }
+.t-bad { color: var(--red-fg); }
+.t-na { color: var(--fg-muted); }
+.cb-prod-table .cb-tr { grid-template-columns: minmax(180px, 1.4fr) 60px 74px 96px minmax(140px, 1fr) 70px; min-width: 700px; }
+.cb-prod-table .you, .cb-grid-row .you { color: var(--accent); font-weight: 600; }
+.cb-engs { display: inline-flex; gap: 3px; color: var(--fg-primary); }
+.cb-engs .llm-icon, .cb-engs .llm-icon svg { width: 15px; height: 15px; }
+.cb-brand-table .cb-tr { grid-template-columns: minmax(170px, 1.2fr) repeat(6, minmax(78px, 1fr)) 30px; min-width: 820px; }
+.cb-brand-row.focused-brand { background: var(--accent-subtle); }
+.cb-brand-cell { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.cb-brand-btn { padding: 0; border: none; background: transparent; color: var(--fg-primary); font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
+.cb-brand-btn:hover { color: var(--accent); text-decoration: underline; }
+.cb-tag { padding: 0 7px; border-radius: 999px; background: var(--bg-subtle); color: var(--fg-secondary); font-size: 11px; font-weight: 600; line-height: 18px; white-space: nowrap; }
+.cb-tag.you { background: var(--accent); color: var(--accent-fg); }
+.cb-tag.found { background: var(--amber-bg); color: var(--amber-fg, #92400e); border: 1px solid var(--amber-border); }
+.cb-num-bar { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
+.cb-bar { display: block; width: 100%; height: 6px; border-radius: 999px; background: var(--bg-subtle); overflow: hidden; }
+.cb-bar > span { display: block; height: 100%; border-radius: 999px; background: var(--fg-muted); }
+.cb-bar.own > span { background: var(--accent); }
+.cb-bar.src > span { background: var(--green-fg); }
+.cb-bar.them > span { background: var(--kind-rival); }
+.cb-bar.kind > span { background: var(--db-bar); }
+/* Paired cards share a row height, so a short card doesn't leave a hole
+   beside a long one. */
+.cb-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 12px; align-items: stretch; }
+.cb-mini-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.cb-mini-tiles.wide { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.cb-mini-tiles > div { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: 10px; background: var(--bg-subtle); }
+.cb-mini-tiles b { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.cb-engine-list { display: flex; flex-direction: column; gap: 8px; }
+.cb-engine-row.engine-split-cell { border: none; border-radius: 0; padding: 0; background: none; }
+.cb-engine-row { display: grid; grid-template-columns: 120px minmax(0, 1fr) 110px; gap: 10px; align-items: center; font-size: 13px; }
+.cb-engine-name { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-primary); }
+.cb-engine-name .llm-icon, .cb-engine-name .llm-icon svg { width: 16px; height: 16px; }
+.cb-barlist { display: flex; flex-direction: column; gap: 6px; }
+.cb-barrow { display: grid; grid-template-columns: minmax(130px, 1fr) minmax(80px, 1.4fr) auto auto; gap: 10px; align-items: center; font-size: 13px; }
+.cb-barrow.own > span:first-child { color: var(--accent); font-weight: 600; }
+.cb-barrow.kinds { grid-template-columns: minmax(130px, 1fr) minmax(80px, 1.4fr) 36px 120px; }
+.cb-barrow.two { grid-template-columns: minmax(130px, 1fr) minmax(80px, 1.4fr) 60px; }
+.cb-two { display: flex; flex-direction: column; gap: 3px; }
+.cb-swatch { display: inline-block; width: 9px; height: 9px; margin-right: 6px; border-radius: 2px; vertical-align: middle; }
+/* Every cell stretches to its row's height and centres its own content, so
+   the row rules line up even when one cell (a two-line prompt) is taller. */
+.cb-grid { display: grid; align-items: stretch; min-width: 0; font-size: 13px; }
+.cb-grid-row { display: contents; }
+.cb-grid-row > * { display: flex; align-items: center; flex-wrap: wrap; padding: 6px 4px; border-top: 1px solid var(--border); min-width: 0; }
+.cb-grid-row > .num { justify-content: flex-end; }
+.cb-grid-row:first-child > * { border-top: none; font-size: 11px; font-weight: 500; color: var(--fg-muted); }
+.cb-grid-row > .c, .cb-grid-row > [role="columnheader"].c { display: flex; justify-content: center; }
+.cb-grid-row .llm-icon, .cb-grid-row .llm-icon svg { width: 15px; height: 15px; }
+.cb-heat-cell { display: flex; justify-content: center; border-radius: 6px; margin: 2px; padding: 5px 0 !important; border-top: none !important;
+  background: color-mix(in srgb, var(--accent) var(--h, 0%), var(--surface-solid)); font-weight: 600; font-variant-numeric: tabular-nums; color: var(--fg-primary); }
+.cb-heat-cell.dark { color: var(--accent-fg); }
+.cb-topic-table .cb-tr { grid-template-columns: minmax(90px, 1fr) 64px 60px minmax(120px, 1.3fr) 66px; }
+.cb-recommend { display: flex; flex-direction: column; gap: 8px; }
+.cb-rec-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 13px; }
+.cb-rec-row.mine b { color: var(--accent); }
+.cb-gap-table .cb-tr { grid-template-columns: minmax(150px, 1.3fr) 56px minmax(120px, 1.4fr) 100px; }
+.cb-search-stats { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
+.cb-search-stats > div { display: flex; flex-direction: column; padding: 8px 10px; border-radius: 10px; background: var(--bg-subtle); }
+.cb-search-stats b { font-size: 18px; font-variant-numeric: tabular-nums; }
+.cb-queries { margin: 0; padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.cb-queries li { display: grid; grid-template-columns: minmax(0, 1fr) 44px 160px; gap: 10px; padding: 3px 0; border-top: 1px solid var(--border); }
+.cb-q { overflow-wrap: anywhere; }
+.cb-pfilters { display: flex; flex-wrap: wrap; gap: 6px; }
+.cb-grid-row > .cb-ptext { flex-direction: column; flex-wrap: nowrap; align-items: stretch; justify-content: center; gap: 1px; }
+.cb-grid-row .linkbtn { margin-left: 6px; }
+.cb-ptitle { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; color: var(--fg-primary); }
+.cb-grid-row.sub > * { background: var(--bg-subtle); }
+.nowrap { white-space: nowrap; }
+.cb-pos {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 34px; height: 22px; padding: 0 6px; border: none; border-radius: 6px;
+  background: var(--bg-subtle); color: var(--fg-primary); font: inherit; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; cursor: pointer;
+}
+.cb-pos.first { background: var(--green-bg); color: var(--green-fg); }
+.cb-pos.out { background: var(--red-bg); color: var(--red-fg); }
+.cb-pos.none { background: transparent; color: var(--fg-muted); cursor: default; }
+.cb-pos.cited { box-shadow: inset 0 -2px 0 var(--accent); }
+.cb-pos:focus-visible, .cb-win:focus-visible, .cb-brand-btn:focus-visible, .cb-focus-tab:focus-visible, .cb-nav-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cb-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.cb-legend .nowrap { white-space: nowrap; }
+.cb-pos { cursor: default; }
+
+/* brand detail */
+.cb-detail-head { gap: 8px; }
+.cb-detail-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.cb-detail-name { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.cb-detail-title { margin: 0; font-size: 20px; font-weight: 600; }
+.cb-h2h { display: flex; flex-direction: column; gap: 6px; }
+.cb-h2h-row { display: grid; grid-template-columns: 160px minmax(0, 1fr) 50px; gap: 10px; align-items: center; font-size: 13px; }
+.cb-bar.both > span { background: var(--fg-secondary); }
+.cb-bar.you > span { background: var(--accent); }
+.cb-bar.none > span { background: var(--border); }
+.cb-first { display: flex; flex-direction: column; gap: 4px; }
+.cb-first-bar { display: flex; gap: 2px; height: 10px; border-radius: 5px; overflow: hidden; }
+.cb-first-bar .them { background: var(--kind-rival); }
+.cb-first-bar .you { background: var(--accent); }
+.cb-vs-engine .cb-tr { grid-template-columns: 130px repeat(2, minmax(90px, 1fr)) repeat(2, 90px); min-width: 560px; }
+.cb-whom .cb-tr { grid-template-columns: minmax(140px, 1.3fr) minmax(90px, 1fr) 70px 70px minmax(100px, 1fr); }
+.cb-win { min-width: 60px; height: 22px; padding: 0 6px; border: none; border-radius: 6px; background: var(--bg-subtle); color: var(--fg-secondary); font: inherit; font-size: 11px; font-weight: 600; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cb-win.them { background: color-mix(in srgb, var(--kind-rival) 18%, var(--surface-solid)); color: var(--fg-primary); }
+.cb-win.you { background: var(--accent-subtle); color: var(--accent); }
+
+body.popup .cb-pair { grid-template-columns: minmax(0, 1fr); }
+body.popup .cb-search-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+body.popup .cb-mini-tiles.wide { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+body.popup .cb-queries li { grid-template-columns: minmax(0, 1fr) 40px; }
+body.popup .cb-queries li > :last-child { display: none; }
+body.popup .cb-engine-row { grid-template-columns: 96px minmax(0, 1fr) 90px; }
+@media (max-width: 1100px) { .cb-search-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); } }

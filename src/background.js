@@ -26,6 +26,7 @@ import { buildCampaignWorkbook } from "./lib/campaignWorkbook.js";
 import { summarizeRunDiagnostics } from "./lib/diagnosticsSummary.js";
 import { gzipString, gunzipToString } from "./lib/gzip.js";
 import { searchAnswers } from "./lib/answerSearch.js";
+import { campaignBoard, brandDetail } from "./lib/campaignBoard.js";
 import { adapt as adaptChatGpt, cleanPassage } from "./adapters/chatgpt.js";
 import { enrichBrandsWithAI, enrichBrandStance } from "./lib/ai-brands.js";
 import { adapt as adaptGemini } from "./adapters/gemini.js";
@@ -2738,6 +2739,64 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const scoped = msg.profileId ? runs.filter((r) => r.profileId === msg.profileId) : runs;
           scoped.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
           sendResponse({ ok: true, runs: scoped });
+          break;
+        }
+        // A campaign's whole results board (0.50.0), in one round trip.
+        // Computed here, not in the panel, for the reason geo-metrics gives:
+        // positions need the answer text, which the panel's rows don't carry.
+        case "campaign-board": {
+          const profile = await db.get("profiles", msg.profileId);
+          if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
+          const records = await db.getAll("derived");
+          const all = selectTracked(records, { profileId: msg.profileId, engines: msg.engines, tags: msg.tags });
+          const runs = (await db.getAll("geoRuns")).filter((r) => r.profileId === msg.profileId)
+            .sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+          // The run shown: the one asked for; by default the latest run that
+          // has answers, so the board opens on "now" with the change since
+          // the run before; "all" combines every run.
+          const latest = runs.find((r) => all.some((x) => x.geo && x.geo.runId === r.id));
+          const runId = msg.runId === "all" ? null : (msg.runId && runs.some((r) => r.id === msg.runId) ? msg.runId : (latest ? latest.id : null));
+          const recs = runId ? all.filter((r) => r.geo && r.geo.runId === runId) : all;
+          const brands = effectiveTrackedBrands(profile, recs);
+          const prompts = (await db.getAll("trackedPrompts")).filter((p) => p.profileId === msg.profileId)
+            .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+          sendResponse({
+            ok: true,
+            board: campaignBoard(recs, { profile, brands, viewAs: msg.viewAs, prompts, runs, runId, all, engineFilter: msg.engines || [], tags: msg.tags || [] }),
+            runId: runId || "all",
+            runs: runs.map((r) => ({ id: r.id, startedAt: r.startedAt, status: r.status, captured: r.captured || 0, expected: r.expected || 0, hasAnswers: all.some((x) => x.geo && x.geo.runId === r.id) })),
+            brands: brands.map((b) => ({ name: b.name, isOwn: !!b.isOwn, auto: !!b.auto })),
+            excludedBrands: profile.excludedBrands || [],
+            tags: [...new Set(prompts.flatMap((p) => p.tags || []))],
+            answers: recs.length,
+          });
+          break;
+        }
+        // One brand against yours (0.50.0): the brand detail the board opens.
+        // Same scope as the board (run, engine, tags), so the two agree.
+        case "campaign-brand-detail": {
+          const profile = await db.get("profiles", msg.profileId);
+          if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
+          const records = await db.getAll("derived");
+          const all = selectTracked(records, { profileId: msg.profileId, engines: msg.engines, tags: msg.tags });
+          const runs = (await db.getAll("geoRuns")).filter((r) => r.profileId === msg.profileId)
+            .sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
+          const latest = [...runs].reverse().find((r) => all.some((x) => x.geo && x.geo.runId === r.id));
+          const runId = msg.runId === "all" ? null : (msg.runId && runs.some((r) => r.id === msg.runId) ? msg.runId : (latest ? latest.id : null));
+          const recs = runId ? all.filter((r) => r.geo && r.geo.runId === runId) : all;
+          const brands = effectiveTrackedBrands(profile, recs);
+          const own = brands.find((b) => b.isOwn);
+          const prompts = (await db.getAll("trackedPrompts")).filter((p) => p.profileId === msg.profileId)
+            .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+          const detail = own ? brandDetail(recs, { profile, brands, them: msg.brand, you: msg.you || own.name, prompts, tags: msg.tags || [] }) : null;
+          sendResponse({
+            ok: true, detail,
+            error: detail ? undefined : "That brand isn't tracked on this campaign.",
+            sourceDomains: detail ? brandSourceDomains(recs, brands, detail.them.name) : [],
+            brands: brands.map((b) => ({ name: b.name, isOwn: !!b.isOwn, auto: !!b.auto })),
+            answers: recs.length,
+            runLabel: runId ? `Run ${runs.findIndex((r) => r.id === runId) + 1}` : "All runs combined",
+          });
           break;
         }
         case "geo-run-start": {

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "CitoSkeleton",
-  "version": "0.49.0",
+  "version": "0.50.0",
   "description": "See what ChatGPT, Gemini, Perplexity and Grok search, fetch and cite \u2014 and which brands they name. Local-only, no account.",
   "permissions": [
     "storage",

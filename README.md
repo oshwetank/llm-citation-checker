@@ -10,12 +10,23 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.49.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.50.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - A campaign's results are one board under the campaign. Pick a run (it's compared with
+>   the run before), an engine, tags, and the brand you're looking at (yours or any
+>   competitor). The headline numbers come in five groups: mentions, citations, product
+>   cards, images and map listings. Below them: how the brand does in each kind of answer,
+>   the product cards and where they send buyers, all the brands side by side, the brand as a
+>   source, each engine, each run, each tag, what the engines recommend each brand for, the
+>   kinds of sites cited, the sites that cite rivals but not you, the searches the engines
+>   ran, every prompt on every engine (click a cell to open that answer) and the sources.
+> - Click a competitor for its own page against yours: who's ahead on each number, head to
+>   head across the answers, each engine, which sites cite one and not the other, what the
+>   engines read when they named it, and who came first on each prompt.
 > - The Dashboard is now a history of everything you've asked, on every engine. One row per
 >   prompt, grouped by day, showing the engines that answered it, how often you asked it,
 >   and what the answer held (searches, pages, product cards, a map, images). Search looks

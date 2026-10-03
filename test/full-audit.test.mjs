@@ -402,23 +402,26 @@ try {
       `${JSON.stringify(opened).slice(0, 180)} errors=${errs.join(" | ")}`);
   }
 
-  // Brand and URL drilldown modals, reached from the campaign's results —
-  // in Campaigns since 0.49.0 (they were on the Dashboard behind a picker).
-  console.log("\nCampaign brand/URL drilldown modals open and close");
+  // Brand and source drill-downs, reached from the campaign's results board
+  // in Campaigns (0.50.0): a brand opens its detail in place of the board, a
+  // domain opens a modal.
+  console.log("\nCampaign brand/source drill-downs open and close");
   await page.evaluate(() => document.querySelector('[data-tab="loader"]')?.click());
   await page.waitForTimeout(2500);
   drain();
-  check("the campaign's results show in Campaigns", await page.evaluate(() => !!document.querySelector("#loader #geoMetrics table, #loader #geoMetrics .statgrid")));
-  for (const sel of [".brand-name-link", ".geo-brand-row", ".url-row-link", ".geo-url-row"]) {
+  check("the campaign's results show in Campaigns", await page.evaluate(() => !!document.querySelector("#loader #campaignResults #cb-kpis")));
+  for (const sel of ["#cb-brands .cb-brand-btn", "#cb-sources td.td-domain button", "#cb-gaps .cb-tr", "#cb-kpis .cb-focus-tab:nth-child(3)"]) {
     const found = await page.evaluate((s) => document.querySelectorAll(s).length, sel);
     if (!found) continue;
     await page.evaluate(async (s) => {
       const n = document.querySelector(s);
-      if (n) { n.click(); await new Promise((r) => setTimeout(r, 1200)); }
-      document.querySelector(".modal-backdrop, .backdrop")?.remove();
+      if (n) { n.click(); await new Promise((r) => setTimeout(r, 1500)); }
+      document.querySelector(".modal-backdrop, .backdrop, #url-modal-backdrop")?.remove();
+      const back = document.querySelector(".cb-detail-head .analyze-context-back");
+      if (back) { back.click(); await new Promise((r) => setTimeout(r, 1500)); }
     }, sel);
     const errs = drain();
-    check(`${sel} drilldown opens cleanly`, errs.length === 0, errs.join(" | "));
+    check(`${sel} opens cleanly`, errs.length === 0, errs.join(" | "));
   }
 
   /* ---------- 5. exports ---------- */

@@ -20,6 +20,7 @@ import {
 } from "../src/lib/analyzeView.js";
 import { answersToPrompt, compareView } from "../src/lib/compareView.js";
 import { historyRows, historyView, highlightRuns, dayDiff, shortDate, PERIODS, KINDS, ENGINE_ORDER } from "../src/lib/historyView.js";
+import { extractBrandAspects } from "../src/lib/aspects.js";
 import { siteKindOf } from "../src/lib/siteKind.js";
 import { aggregateSources } from "../src/lib/sources.js";
 import { analyzeFanout, FANOUT_BENCHMARK, titleMatchesQueries } from "../src/lib/fanout.js";
@@ -375,28 +376,9 @@ let GEO_PROFILES = [];
 let TRASHED_PROFILES = []; // soft-deleted campaigns, still within the recovery window
 let GEO_PROMPTS = [];
 let geoActiveId = null;
-let geoTagFilter = [];
+// The engine the campaign's results are narrowed to ([] = every engine).
+// The rest of the results' state lives with renderCampaignResults (cb*).
 let geoEngineFilter = [];
-// Reported: a campaign with many auto-generated tags (a 747-prompt import
-// produced 20+) rendered every one of them, unconditionally, above the KPI
-// tiles — three lines of pills before any actual number was visible. This
-// caps the row until the user asks for more; resets each panel load (not
-// persisted) since it's a display convenience, not a filter setting.
-let geoTagsExpanded = false;
-/* Which run the campaign view is scoped to. "" = every run of this campaign
-   averaged together, which stays the default. Set by the run picker in the
-   campaign header and by clicking a row in Run history. */
-let geoRunFilter = "";
-let geoRunsCache = [];
-// Which brand the campaign view is pointed at. null = the campaign's own
-// brand. Everything brand-shaped on the Dashboard — the KPI row, the
-// per-engine split, the Prompt Performance columns — answers for THIS brand,
-// so a competitor can be analysed with the same depth as your own brand
-// instead of being a row you can only read across.
-let geoFocusBrand = null;
-// Whether the campaign card's supporting-detail disclosure is open. Kept
-// across re-renders so changing a filter doesn't close it mid-read.
-let geoDetailOpen = false;
 // Campaigns tab (formerly Tracking + Loader) state
 let promptTagFilter = []; // tag chips selected in the prompt table sidebar
 let promptOnlyUnassigned = false;
@@ -997,86 +979,8 @@ function extractRankAndCategory(brandName, passage, text) {
   return { rank, category };
 }
 
-// Takes the brand's OWN passages (b.passages — each already a tight, correctly
-// scoped ±110-char window around one real mention, computed by the adapter/
-// src/lib/brands.js) instead of re-deriving a window from the full answer
-// text. The previous version re-scanned a fresh 350-char slice of raw text
-// and cut it off at the next hardcoded smartphone-brand name it could find —
-// in dense side-by-side comparisons (several brands named within a couple of
-// sentences of each other, e.g. a TV shootout) that cutoff landed almost
-// immediately, so real aspects a few words later were silently missed. Using
-// the passage(s) already scoped to THIS brand's own mentions avoids that
-// failure mode entirely, and scanning every passage (not just the first)
-// catches aspects raised at a brand's later mentions too.
-//
-// Aspects come from two places, in order of trust:
-//
-//  1. What the answer SAYS it rates the brand for — "best for <x>", "known for
-//     <x>", "stands out for <x>". The label is lifted from the sentence, so it
-//     works in any vertical without knowing a single industry word ("low
-//     processing fees", "same-day delivery", "crack resistance").
-//  2. A curated dimension map, as a fallback for answers that describe a brand
-//     without ever labelling why. This used to be phone specs ONLY — camera,
-//     battery, display, chipset — so a cement or lending answer either got
-//     nothing or, worse, got "Performance" off the word "speed" and "Design"
-//     off "premium". The map now spans the dimensions any category gets
-//     compared on, and the phone-specific triggers only fire on words that
-//     genuinely mean a phone spec.
-const ASPECT_DIMENSIONS = [
-  ["Price & Value", /\b(price|pricing|cost|affordable|budget|value for money|cheaper|expensive|premium pricing|discount|emi)\b/],
-  ["Fees & Rates", /\b(interest rate|interest rates|apr|processing fee|processing fees|brokerage|commission|charges|no annual fee|expense ratio)\b/],
-  ["Quality", /\b(quality|grade|purity|strength|finish|craftsmanship|ingredients|material|materials)\b/],
-  ["Durability", /\b(durability|durable|long[- ]lasting|weather resistant|crack resistan|warranty|wear and tear)\b/],
-  ["Service & Support", /\b(customer (?:service|support|care)|after[- ]sales|helpline|turnaround time|claim settlement|onboarding)\b/],
-  ["Availability", /\b(availability|widely available|in stock|distribution network|dealer network|branches|nationwide|delivery time)\b/],
-  ["Trust & Reputation", /\b(trusted|reputation|reliable|legacy|established|market leader|credibility|certified|regulated|iso )\b/],
-  ["Safety", /\b(safety|safe for|side effects|clinically|dermatologically|non[- ]toxic|fda|hypoallergenic)\b/],
-  ["Sustainability", /\b(sustainab|eco[- ]friendly|recycl|carbon|green building|organic|cruelty[- ]free)\b/],
-  ["Camera", /\b(camera|cameras|megapixel|telephoto|portrait mode|hasselblad|optical zoom)\b/],
-  ["Battery", /\b(battery|mah|fast charging|wireless charging|battery backup)\b/],
-  ["Display", /\b(display|screen|amoled|oled|refresh rate|120hz|ltpo|hdr|dolby vision)\b/],
-  ["Performance", /\b(processor|chipset|snapdragon|dimensity|benchmark|ram|cpu|gpu|thermal throttl)\b/],
-  ["Software", /\b(software update|os update|years of updates|user interface|bloatware|ecosystem)\b/],
-];
-
-// "Best for gaming and photography" → "gaming and photography". Bounded to a
-// short noun phrase so a whole sentence never becomes a chip.
-const ASPECT_PHRASE_RE =
-  /\b(?:best|ideal|great|good|preferred|recommended|popular|known|noted|praised|valued|stands out)\s+(?:choice\s+)?for\s+(?:its\s+)?([a-z][a-z0-9 &/,'-]{2,40}?)(?=[.,;:!?)]|\band\b\s+(?:it|they|the)\b|$)/gi;
-const ASPECT_PHRASE_STOP = /^(the|a|an|you|those|them|it|this|that|these|him|her|us|people|users|customers|anyone|everyone|most|some|many)\b/i;
-
-function extractBrandAspects(passages) {
-  const raw = sanitizeText((passages || []).join(" "));
-  if (!raw) return [];
-  const text = raw.toLowerCase();
-
-  const aspects = [];
-  const seen = new Set();
-  const push = (label) => {
-    const k = label.toLowerCase();
-    if (!seen.has(k)) { seen.add(k); aspects.push(label); }
-  };
-
-  // 1. aspects the answer states outright
-  let m;
-  ASPECT_PHRASE_RE.lastIndex = 0;
-  while ((m = ASPECT_PHRASE_RE.exec(raw))) {
-    // Same bounding as the list-header path, so both chip sources are
-    // trimmed by one rule rather than two that drift apart.
-    const phrase = trimLabel(m[1]);
-    if (!phrase || ASPECT_PHRASE_STOP.test(phrase)) continue;
-    push(phrase.charAt(0).toUpperCase() + phrase.slice(1));
-    if (aspects.length >= 3) return aspects;
-  }
-
-  // 2. fall back to the dimension map
-  for (const [label, re] of ASPECT_DIMENSIONS) {
-    if (re.test(text)) push(label);
-    if (aspects.length >= 3) break;
-  }
-
-  return aspects.slice(0, 3);
-}
+// extractBrandAspects() and its vocabulary live in src/lib/aspects.js (since
+// 0.50.0), shared with the campaign board.
 
 // The vocabulary the Search-Funnel card scans source snippets with.
 //
@@ -4928,7 +4832,6 @@ function relTime(ts) {
   return new Date(ts).toLocaleDateString([], { month: "short", day: "numeric" });
 }
 const fmtPct = (n) => (n == null ? "—" : `${Number(n).toFixed(Number(n) >= 10 ? 0 : 1)}%`);
-const fmtPos = (n) => (n == null ? "—" : `#${Number(n).toFixed(1)}`);
 
 async function loadGeo() {
   const pr = await send({ type: "geo-profile-list", includeDeleted: true });
@@ -4997,52 +4900,670 @@ function renderCampaignsImpl() {
   if (profile.lastRunAt || ALL_RECORDS.some((r) => r.geo && r.geo.profileId === profile.id)) root.append(renderCampaignResults(profile));
 }
 
-/* A campaign's results (0.49.0). They lived on the Dashboard behind a
- * campaign picker; the Dashboard is now a history of prompts (see
- * renderDashboardImpl), so they moved here, under the campaign they belong
- * to. Same cards and drill-downs as before (refreshGeoMetrics,
- * refreshPromptPerformance), with their own period and engine filters;
- * release 4 redesigns them. */
-let campaignResultsPeriod = "";
+/* ---------- A campaign's results (0.50.0) ----------
+ * Release 4 of the canvas redesign: the campaign board. One brand at a time
+ * ("viewing as", your own by default): how it shows up by kind of answer,
+ * against each competitor, on each engine, run by run, topic by topic and
+ * prompt by prompt, and which sites the engines lean on, including the ones
+ * that cite rivals and never mention it. The figures come from
+ * src/lib/campaignBoard.js through the background's "campaign-board"
+ * message (positions need the answer text). Clicking a brand opens its
+ * detail against yours (renderCampaignBrandDetail).
+ *
+ * It opens on the latest run, so the KPIs can say what changed since the run
+ * before; "All runs combined" is one pick away.
+ */
+let cbRun = null;            // null: the latest run with answers; "all"; or a run id
+let cbViewAs = null;         // brand name; null: your own brand
+let cbFocus = "mentions";    // which KPI view
+let cbTags = [];
+let cbPromptFilter = "all";
+let cbOpenPrompts = new Set();
+let cbDetail = null;         // brand whose detail is open
+let cbProfileId = null;      // the campaign the state above belongs to
+
+const CB_FOCUS = [
+  ["mentions", "Mentions", "book", "Named in the answer text"],
+  ["citations", "Citations", "pages", "Its site used as a source"],
+  ["products", "Product cards", "cart", "Product carousels, and where each card sends buyers"],
+  ["images", "Images", "image", "Images in answers, and where a click lands"],
+  ["local", "Map listings", "pin", "Map pins and listing details"],
+];
+// Glossary keys for the tiles that have a definition (src/lib/glossary.js).
+const CB_TERMS = { "Visibility": "visibility", "Share of voice": "shareOfVoice", "Avg position": "avgPosition", "Mentions": "mentions", "Citations": "citations", "Source visibility": "sourceVisibility" };
+// Whole percents, except a small non-zero share keeps one decimal so 0.4% of
+// answers doesn't read as none at all.
+const cbPct = (x) => (x == null ? "—" : x > 0 && x < 10 && Math.round(x * 10) % 10 ? `${x.toFixed(1)}%` : `${Math.round(x)}%`);
+const cbPos = (x) => (x == null ? "—" : x.toFixed(1));
+
+function cbSection(id, title, sub, ...kids) {
+  const head = el("div", { className: "cb-sec-head" }, el("h3", { className: "cb-h", id: `${id}-h` }, title));
+  if (sub) head.append(typeof sub === "string" ? el("span", { className: "muted small" }, sub) : sub);
+  return el("section", { className: "cb-sec", id, "aria-labelledby": `${id}-h` }, head, ...kids);
+}
+function cbBar(pctValue, cls = "") {
+  return el("span", { className: `cb-bar ${cls}`, "aria-hidden": "true" }, el("span", { style: `width:${Math.max(0, Math.min(100, pctValue || 0))}%` }));
+}
+
 function renderCampaignResults(profile) {
+  if (cbProfileId !== profile.id) {
+    cbProfileId = profile.id; cbRun = null; cbViewAs = null; cbTags = []; cbFocus = "mentions";
+    cbPromptFilter = "all"; cbOpenPrompts = new Set(); cbDetail = null;
+  }
   const box = el("section", { className: "campaign-results", id: "campaignResults", "aria-labelledby": "campaignResultsH" });
-  const head = el("div", { className: "card campaign-results-head" });
-  const bar = el("div", { className: "card-header" }, el("h3", { id: "campaignResultsH" }, "Results"));
-  const period = el("select", { className: "filter", "aria-label": "Period" });
-  [["", "All time"], ["24h", "Last 24 hours"], ["7d", "Last 7 days"], ["30d", "Last 30 days"]].forEach(([v, l]) => {
-    const o = el("option", { value: v }, l);
-    if (v === campaignResultsPeriod) o.selected = true;
-    period.append(o);
-  });
-  period.onchange = () => { campaignResultsPeriod = period.value; renderCampaigns(); };
+  box.append(el("div", { className: "card" }, el("div", { className: "card-header" }, el("h3", { id: "campaignResultsH" }, "Results")), el("div", { className: "muted small" }, "Loading results…")));
+  // Filled once the box is in the page. It starts as one line, so the scroll
+  // position is put back once the board reaches its real height: otherwise
+  // every new capture during a run jumped the page to the top.
+  const scroller = activeScroller();
+  const y = scroller ? scroller.scrollTop : 0;
+  setTimeout(async () => {
+    if (cbDetail) await renderCampaignBrandDetail(box, profile);
+    else await renderCampaignBoard(box, profile);
+    if (scroller && y) scroller.scrollTop = y;
+  }, 0);
+  return box;
+}
+
+async function renderCampaignBoard(box, profile) {
+  const r = await send({ type: "campaign-board", profileId: profile.id, runId: cbRun || undefined, viewAs: cbViewAs || undefined, engines: geoEngineFilter, tags: cbTags });
+  box.textContent = "";
+  if (!r || !r.ok) { box.append(el("div", { className: "card" }, el("div", { className: "empty" }, (r && r.error) || "Couldn't load this campaign's results."))); return; }
+  const b = r.board;
+  const rerender = () => renderCampaigns();
+  const view = b.view;
+  const you = view.isOwn ? "you" : view.name;
+
+  /* --- header: what this is, and the filters --- */
+  const head = el("div", { className: "card cb-head" });
+  const runsWithAnswers = r.runs.filter((x) => x.hasAnswers);
+  const runsAsc = [...r.runs].sort((a, c) => (a.startedAt || 0) - (c.startedAt || 0));
+  const runNo = (id) => runsAsc.findIndex((x) => x.id === id) + 1;
+  const runDate = (t) => new Date(t).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+  head.append(el("div", { className: "card-header" },
+    el("h3", { id: "campaignResultsH" }, "Results"),
+    el("span", { className: "muted small" }, `${r.answers} answer${r.answers === 1 ? "" : "s"} · ${b.runLabel}${b.previousLabel ? ` · compared with ${b.previousLabel}` : ""}`)));
+  const controls = el("div", { className: "cb-controls" });
+  const runSel = el("select", { className: "filter", id: "cbRun", "aria-label": "Run", title: "One run, or every run combined" });
+  runsWithAnswers.forEach((x, i) => runSel.append(el("option", { value: x.id }, `Run ${runNo(x.id)} · ${runDate(x.startedAt)}${i === 0 ? " (latest)" : ""}`)));
+  runSel.append(el("option", { value: "all" }, "All runs combined"));
+  runSel.value = r.runId;
+  runSel.onchange = () => { cbRun = runSel.value; rerender(); };
   const engine = el("select", { className: "filter", "aria-label": "Engine", title: "Limit every number below to one engine" });
   [{ id: "", label: "All engines" }, ...availableEngines()].forEach((e) => {
     const o = el("option", { value: e.id }, e.label);
     if ((geoEngineFilter[0] || "") === e.id) o.selected = true;
     engine.append(o);
   });
-  engine.onchange = () => { geoEngineFilter = engine.value ? [engine.value] : []; renderCampaigns(); };
-  bar.append(el("span", { className: "campaign-results-filters" }, period, engine));
-  head.append(bar);
+  engine.onchange = () => { geoEngineFilter = engine.value ? [engine.value] : []; rerender(); };
+  // A dropdown, not chips: a campaign can track twenty brands. Each option
+  // carries its visibility so the list still reads as a ranking.
+  const picker = el("select", { className: "filter brand-picker", "aria-label": "Viewing as", title: "Point the whole board at one brand" });
+  const rowOf = (name) => b.brandRows.find((x) => x.name === name);
+  const groups = [["Your brand", r.brands.filter((x) => x.isOwn)], [`Competitors (${r.brands.filter((x) => !x.isOwn && !x.auto).length})`, r.brands.filter((x) => !x.isOwn && !x.auto)], [`Found in the answers (${r.brands.filter((x) => x.auto).length})`, r.brands.filter((x) => x.auto)]];
+  groups.forEach(([label, list]) => {
+    if (!list.length) return;
+    const g = el("optgroup", { label });
+    list.forEach((x) => g.append(el("option", { value: x.name, selected: x.name === view.name }, `${x.isOwn ? `${x.name} (you)` : x.name} · ${cbPct(rowOf(x.name) ? rowOf(x.name).visibility : 0)}`)));
+    picker.append(g);
+  });
+  picker.onchange = () => { const x = r.brands.find((y) => y.name === picker.value); cbViewAs = x && x.isOwn ? null : picker.value; rerender(); };
+  const wb = el("button", { className: "btn sm ghost", type: "button", title: "Every sheet of this campaign's data, for the run and filters shown, as an Excel workbook" }, "Export workbook");
+  wb.onclick = withBusy(wb, "Building…", async () => {
+    const x = await send({ type: "geo-export-workbook", profileId: profile.id, runId: r.runId === "all" ? undefined : r.runId, tags: cbTags, engines: geoEngineFilter });
+    if (!x || !x.ok) { showToast((x && x.error) || "Couldn't build the workbook.", "error"); return; }
+    download(x.filename || `citoskeleton-campaign-${Date.now()}.xls`, x.xml, "application/vnd.ms-excel");
+    showToast("Workbook downloaded.");
+  });
+  controls.append(
+    el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Run"), runSel),
+    el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Engine"), engine),
+    el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Viewing as"), picker),
+    wb);
+  head.append(controls);
+  if (geoEngineFilter.length) head.append(el("span", { className: "scope-note muted small" }, `${(availableEngines().find((e) => e.id === geoEngineFilter[0]) || {}).label || geoEngineFilter[0]} only`));
+  if (r.tags.length) {
+    const tw = el("div", { className: "cb-tags", role: "group", "aria-label": "Tags" }, el("span", { className: "muted small" }, "Tags"));
+    r.tags.forEach((t) => {
+      const on = cbTags.includes(t);
+      const c = el("button", { className: `db-chip${on ? " on scope" : ""}`, type: "button", "aria-pressed": on ? "true" : "false" }, t);
+      c.onclick = () => { cbTags = on ? cbTags.filter((x) => x !== t) : [...cbTags, t]; rerender(); };
+      tw.append(c);
+    });
+    if (cbTags.length) { const c = el("button", { className: "linkbtn", type: "button" }, "Clear"); c.onclick = () => { cbTags = []; rerender(); }; tw.append(c); }
+    head.append(tw);
+  }
+  // Jump links to the board's sections.
+  const nav = el("nav", { className: "cb-nav", "aria-label": "Sections" });
+  [["cb-brands", "Brands"], ["cb-kinds", "By kind of answer"], ["cb-runs", "Breakdowns"], ["cb-prompts", "Prompts"], ["cb-sources", "Sources"], ["cb-collected", "Data collected"]].forEach(([id, label]) => {
+    const a = el("button", { className: "cb-nav-btn", type: "button" }, label);
+    a.onclick = () => document.getElementById(id)?.scrollIntoView({ block: "start", behavior: "smooth" });
+    nav.append(a);
+  });
+  head.append(nav);
   box.append(head);
-  const gc = el("div", { className: "card", id: "geoMetrics" }, el("div", { className: "card-header" }, el("h3", {}, "Campaign Performance")), el("div", { className: "muted small" }, "loading…"));
-  const pp = el("div", { className: "card", id: "geoPromptTable" }, el("div", { className: "card-header" }, el("h3", {}, "Prompt Performance")), el("div", { className: "muted small" }, "loading…"));
-  box.append(gc, pp);
-  const ms = { "24h": 86400000, "7d": 7 * 86400000, "30d": 30 * 86400000 }[campaignResultsPeriod];
-  const since = ms ? Date.now() - ms : undefined;
-  // Filled once the cards are in the page (both look themselves up by id).
-  // They start as one-line placeholders, so the scroll position is put back
-  // when they reach their real height — see the same note on the Dashboard
-  // before 0.49.0: otherwise every new capture during a run jumped the page.
-  const scroller = activeScroller();
-  const y = scroller ? scroller.scrollTop : 0;
-  setTimeout(() => {
-    Promise.all([
-      refreshGeoMetrics(profile, GEO_PROMPTS, since, undefined),
-      refreshPromptPerformance(profile, GEO_PROMPTS, since, undefined),
-    ]).then(() => { if (scroller && y) scroller.scrollTop = y; });
-  }, 0);
-  return box;
+
+  if (!r.answers) {
+    box.append(el("div", { className: "card" }, el("div", { className: "empty" }, "No answers for these filters yet. Run the campaign, or widen the filters above.")));
+    return;
+  }
+
+  /* --- KPIs, five ways --- */
+  if (!b.available[cbFocus]) cbFocus = "mentions";
+  const kp = el("section", { className: "card cb-kpis", id: "cb-kpis", "aria-labelledby": "cb-kpis-h" });
+  const focusTabs = el("div", { className: "cb-focus", role: "tablist", "aria-label": "What matters for this campaign" });
+  CB_FOCUS.forEach(([id, label, glyph]) => {
+    const on = cbFocus === id;
+    const t = el("button", { className: `cb-focus-tab${on ? " on" : ""}${b.available[id] ? "" : " empty"}`, type: "button", role: "tab", "aria-selected": on ? "true" : "false", title: b.available[id] ? "" : "No answer in this view had any" }, glyphEl(glyph, 14), label);
+    t.onclick = () => { cbFocus = id; rerender(); };
+    focusTabs.append(t);
+  });
+  const hint = (CB_FOCUS.find((f) => f[0] === cbFocus) || CB_FOCUS[0])[3];
+  kp.append(el("div", { className: "cb-sec-head" }, el("h3", { className: "cb-h", id: "cb-kpis-h" }, `What matters for ${view.name}`), focusTabs),
+    el("div", { className: "muted small cb-hint" }, `${view.name}${view.isOwn ? " (you)" : ""} · ${hint}`));
+  const tiles = el("div", { className: "cb-tiles" });
+  // The tiles are written for your own brand ("Your cards", "cite you"); viewed
+  // as a competitor they name it instead, labels included.
+  const whose = (t) => (view.isOwn ? t : t.replace(/\b[Yy]our\b/g, `${view.name}’s`).replace(/\byou\b/g, view.name));
+  b.focus[cbFocus].forEach((k, i) => {
+    const term = CB_TERMS[k.label];
+    tiles.append(el("div", { className: `cb-kpi geo-kpi${i === 0 ? " lead" : ""}` },
+      el("div", { className: "k-label", ...(term ? { "data-term": term } : {}) }, whose(k.label)),
+      el("div", { className: "k-value" }, k.value),
+      k.sub ? el("div", { className: "k-sub muted" }, whose(k.sub)) : null,
+      k.delta ? el("div", { className: `k-delta tone-${k.delta.tone > 0 ? "up" : k.delta.tone < 0 ? "down" : "flat"}` }, k.delta.text) : null));
+  });
+  if (cbFocus === "local" && !b.available.local) tiles.append(el("p", { className: "muted small cb-note" }, "No answer in this campaign showed a map. Local campaigns track pin share, pin position and whether the listing links to your site; add prompts like “service centre near me” to track it."));
+  kp.append(tiles);
+  box.append(kp);
+
+  /* --- competitors inferred from the answers, stated, never applied silently --- */
+  const auto = r.brands.filter((x) => x.auto).map((x) => x.name);
+  if (auto.length || r.excludedBrands.length) {
+    const banner = el("div", { className: "card auto-comp-banner" });
+    if (auto.length) {
+      banner.append(el("div", { className: "small" },
+        el("strong", { "data-term": "autoCompetitor" }, "Also named often, but not on your competitor list. "),
+        el("span", { className: "muted" }, `These ${auto.length} brand${auto.length === 1 ? " is" : "s are"} counted as competitors because the answers named ${auto.length === 1 ? "it" : "them"} most. Nothing has been saved to the campaign.`)));
+      const chips = el("div", { className: "tagline" });
+      auto.forEach((n) => {
+        const chip = el("span", { className: "tag tag-removable" }, n);
+        const x = el("button", { className: "tag-x", type: "button", title: `Leave out ${n}`, "aria-label": `Leave out ${n}` }, "×");
+        x.onclick = async () => {
+          x.disabled = true;
+          const res = await send({ type: "geo-brand-exclude", profileId: profile.id, name: n });
+          if (!res.ok) { x.disabled = false; showToast(res.error || "Couldn't leave that brand out", "error"); return; }
+          if (cbViewAs === n) cbViewAs = null;
+          showToast(`${n} is no longer counted as a competitor`);
+          loadGeo();
+        };
+        chip.append(x);
+        chips.append(chip);
+      });
+      const save = el("button", { className: "btn sm ghost", type: "button" }, "Save these as competitors");
+      save.onclick = async () => {
+        save.disabled = true;
+        const res = await send({ type: "geo-profile-save", profile: { ...profile, competitors: [...(profile.competitors || []), ...auto.map((n) => ({ name: n, url: "" }))] } });
+        save.disabled = false;
+        if (!res.ok) { showToast(res.error || "Couldn't save competitors", "error"); return; }
+        showToast(`Saved ${auto.length} competitor${auto.length === 1 ? "" : "s"} to ${profile.name || "this campaign"}`);
+        loadGeo();
+      };
+      banner.append(chips, save);
+    }
+    if (r.excludedBrands.length) {
+      const row = el("div", { className: "excluded-row muted small" }, el("span", {}, "Left out:"));
+      r.excludedBrands.forEach((n) => {
+        const chip = el("span", { className: "tag tag-removable is-excluded" }, n);
+        const undo = el("button", { className: "tag-x", type: "button", title: `Count ${n} as a competitor again`, "aria-label": `Bring back ${n}` }, "↺");
+        undo.onclick = async () => {
+          undo.disabled = true;
+          const res = await send({ type: "geo-brand-exclude", profileId: profile.id, name: n, restore: true });
+          if (!res.ok) { undo.disabled = false; showToast(res.error || "Couldn't bring that brand back", "error"); return; }
+          loadGeo();
+        };
+        chip.append(undo);
+        row.append(chip);
+      });
+      banner.append(row);
+    }
+    box.append(banner);
+  }
+
+  /* --- by kind of answer --- */
+  const kinds = el("div", { className: "cb-table cb-kind-table", role: "table", "aria-label": "By kind of answer" });
+  kinds.append(el("div", { className: "cb-tr cb-th", role: "row" }, ...["Kind of answer", "Answers", "Named in text", "Site cited", "Product card", "Images", "Map pin", "The lever that matters here"].map((h) => el("span", { role: "columnheader" }, h))));
+  const KG = { shopping: "cart", info: "book", images: "image", memory: "noglobe", local: "pin", all: "globe" };
+  const AK = { shopping: "shopping", info: "info", images: "images", memory: "memory", local: "local" };
+  b.byKind.forEach((k) => {
+    const tone = (x) => (x == null ? "na" : x >= 60 ? "good" : "plain");
+    kinds.append(el("div", { className: `cb-tr${k.id === "all" ? " total" : ""}${k.answers ? "" : " none"}`, role: "row" },
+      el("span", { role: "rowheader", className: `cb-kindname${AK[k.id] ? ` k-${AK[k.id]}` : ""}` }, el("span", { className: "db-kind-ic" }, glyphEl(KG[k.id], 14)), k.label),
+      el("span", { role: "cell", className: "num" }, String(k.answers)),
+      el("span", { role: "cell", className: `num t-${tone(k.named)}` }, cbPct(k.named)),
+      el("span", { role: "cell", className: `num t-${tone(k.cited)}` }, k.id === "memory" ? "no search" : cbPct(k.cited)),
+      el("span", { role: "cell", className: "num" }, k.card ? `${cbPct(k.card.pct)}${k.card.avg ? ` · avg card ${k.card.avg.toFixed(1)}` : ""}` : "—"),
+      el("span", { role: "cell", className: "num" }, k.images ? `${k.images.mine} of ${k.images.of}` : "—"),
+      el("span", { role: "cell", className: "num" }, cbPct(k.pin)),
+      el("span", { role: "cell", className: "muted small" }, k.answers || k.id === "all" ? k.lever : (k.id === "local" ? "No local prompts. Add one like “service centre near me” to track maps." : ""))));
+  });
+  box.append(cbSection("cb-kinds", `How ${view.name} shows up, by kind of answer`, "Different questions get different answers — a carousel, an explainer, a map. Each has its own way in.", el("div", { className: "cb-scroll" }, kinds)));
+
+  /* --- product cards --- */
+  if (b.products.total) {
+    const t = el("div", { className: "cb-table cb-prod-table", role: "table", "aria-label": "Product cards" });
+    t.append(el("div", { className: "cb-tr cb-th", role: "row" }, ...["Product", "Shown", "Avg card", "Engines", "Card sends buyers to", "Own store"].map((h) => el("span", { role: "columnheader" }, h))));
+    b.products.rows.forEach((p) => t.append(el("div", { className: `cb-tr${p.isView ? " mine" : ""}`, role: "row" },
+      el("span", { role: "rowheader" }, el("b", {}, p.name), el("span", { className: `muted small${p.isView ? " you" : ""}` }, ` ${p.brand}${p.isView && view.isOwn ? " · you" : ""}`)),
+      el("span", { role: "cell", className: "num" }, String(p.shown)),
+      el("span", { role: "cell", className: "num" }, cbPos(p.avgPos)),
+      el("span", { role: "cell", className: "cb-engs" }, ...p.engines.map((e) => { const ic = engineIconEl(e); ic.setAttribute("title", dbEngineLabel(e)); return ic; })),
+      el("span", { role: "cell", className: "small" }, p.dest.join(" · ") || "—"),
+      el("span", { role: "cell", className: p.own ? "t-good" : "t-bad" }, p.own ? "yes" : "no"))));
+    const bars = (rows, title) => {
+      const max = Math.max(1, ...rows.map((x) => x.n));
+      return el("div", { className: "cb-barlist" }, el("h4", { className: "cb-h4" }, title),
+        ...rows.map((x) => el("div", { className: `cb-barrow${x.own ? " own" : ""}` }, el("span", {}, x.name + (x.own ? " · own site" : "")), cbBar((x.n / max) * 100, x.own ? "own" : ""), el("span", { className: "num" }, String(x.n)))));
+    };
+    const side = el("div", { className: "cb-pair" });
+    if (b.products.destinations.length) side.append(bars(b.products.destinations, `Where ${view.name}’s cards send buyers`));
+    if (b.products.cardImages.length) side.append(bars(b.products.cardImages, `Where ${view.name}’s card images come from`));
+    box.append(cbSection("cb-products", "Product cards across the campaign", `${b.products.total} cards in ${b.products.answers} answers`,
+      el("div", { className: "cb-scroll" }, t), side.childNodes.length ? side : null, el("p", { className: "muted small" }, b.products.note)));
+  }
+
+  /* --- brands compared --- */
+  const bt = el("div", { className: "cb-table cb-brand-table", role: "table", "aria-label": "Brands compared" });
+  bt.append(el("div", { className: "cb-tr cb-th", role: "row" },
+    el("span", { role: "columnheader" }, "Brand"),
+    ...[["Visibility", "visibility"], ["Share of voice", "shareOfVoice"], ["Mentions", "mentions"], ["Avg position", "avgPosition"], ["Citations", "citations"], ["Source visibility", "sourceVisibility"]].map(([h, term]) => el("span", { role: "columnheader", className: "num", "data-term": term }, h)),
+    el("span", { role: "columnheader", className: "ap-sr" }, "Remove")));
+  const maxSov = Math.max(1, ...b.brandRows.map((x) => x.shareOfVoice));
+  b.brandRows.forEach((x) => {
+    const tag = x.isOwn ? el("span", { className: "cb-tag you" }, "you") : x.auto ? el("span", { className: "cb-tag found auto-tag", title: "Found in your answers — not a competitor you set" }, "found by us") : el("span", { className: "cb-tag" }, "competitor");
+    const name = el("button", { className: "cb-brand-btn", type: "button", title: `${x.name}: head to head, engines and prompt by prompt` }, x.name);
+    name.onclick = () => { cbDetail = x.name; rerender(); };
+    const row = el("div", { className: `cb-tr cb-brand-row${x.isOwn ? " own-brand" : ""}${x.isView ? " focused-brand" : ""}`, role: "row", "data-brand": x.name },
+      el("span", { role: "rowheader", className: "cb-brand-cell" }, name, tag),
+      el("span", { role: "cell", className: "cb-num-bar" }, el("span", { className: "num" }, cbPct(x.visibility)), cbBar(x.visibility, x.isOwn ? "own" : "")),
+      el("span", { role: "cell", className: "cb-num-bar" }, el("span", { className: "num" }, cbPct(x.shareOfVoice)), cbBar((x.shareOfVoice / maxSov) * 100, x.isOwn ? "own" : "")),
+      el("span", { role: "cell", className: "num" }, String(x.mentions)),
+      el("span", { role: "cell", className: "num" }, cbPos(x.avgPosition)),
+      el("span", { role: "cell", className: "num" }, String(x.citations)),
+      el("span", { role: "cell", className: "cb-num-bar" }, el("span", { className: "num" }, cbPct(x.sourceVisibility)), cbBar(x.sourceVisibility, "src")));
+    const cell = el("span", { role: "cell" });
+    if (!x.isOwn) {
+      const drop = el("button", { className: "row-x", type: "button", title: `Remove ${x.name} from this campaign`, "aria-label": `Remove ${x.name} from this campaign` }, "×");
+      drop.onclick = async () => {
+        drop.disabled = true;
+        // An inferred brand is left out; a competitor you typed comes off
+        // the campaign's competitor list, where you put it.
+        const res = x.auto
+          ? await send({ type: "geo-brand-exclude", profileId: profile.id, name: x.name })
+          : (confirm(`Remove ${x.name} from this campaign's competitors?`) ? await send({ type: "geo-profile-save", profile: { ...profile, competitors: (profile.competitors || []).filter((c) => c.name !== x.name) } }) : { ok: false, cancelled: true });
+        if (!res.ok) { drop.disabled = false; if (!res.cancelled) showToast(res.error || "Couldn't remove that brand", "error"); return; }
+        if (cbViewAs === x.name) cbViewAs = null;
+        showToast(`${x.name} is no longer counted as a competitor`);
+        loadGeo();
+      };
+      cell.append(drop);
+    }
+    row.append(cell);
+    bt.append(row);
+  });
+  box.append(cbSection("cb-brands", "Brands compared", "Click a brand for head-to-head, engines and prompt-by-prompt detail",
+    el("div", { className: "cb-scroll" }, bt),
+    el("p", { className: "muted small" }, el("span", { "data-term": "mentionPool" }, `Share of voice counts ${b.mentionPool} mentions of tracked brands.`), " ", el("span", { title: SENTIMENT_NOTE }, "Tone isn’t scored: a mention counts the same whether the answer praises or criticises the brand."))));
+
+  /* --- as a source, and by engine --- */
+  const pair1 = el("div", { className: "cb-pair" });
+  pair1.append(cbSection("cb-source", `${view.name} as a source`, view.domain || "",
+    el("div", { className: "cb-mini-tiles" },
+      el("div", {}, el("b", {}, cbPct(b.asSource.sourceVisibility)), el("span", { className: "muted small", "data-term": "sourceVisibility" }, "Source visibility")),
+      el("div", {}, el("b", {}, String(b.asSource.citations)), el("span", { className: "muted small", "data-term": "citations" }, "Citations")),
+      el("div", {}, el("b", {}, `${b.asSource.citations}/${b.asSource.answers}`), el("span", { className: "muted small" }, view.domain ? `Answers citing ${view.domain}` : "Answers citing its site"))),
+    el("p", { className: "muted small" }, b.asSource.note)));
+  const eng = el("div", { className: "cb-engine-list engine-split" });
+  b.byEngine.forEach((e) => {
+    const ic = engineIconEl(e.id);
+    eng.append(el("div", { className: "cb-engine-row engine-split-cell" }, el("span", { className: "cb-engine-name" }, ic, e.label), cbBar(e.visibility, view.isOwn ? "own" : ""),
+      el("span", { className: "num engine-split-nums" }, el("span", {}, fmtPct(e.visibility)), el("span", { className: "muted" }, ` · avg ${cbPos(e.avgPosition)}`))));
+  });
+  pair1.append(cbSection("cb-by-engine", `${view.name} by engine`, "visibility · average position", eng));
+  box.append(pair1);
+
+  /* --- data collected --- */
+  const c = b.collected;
+  box.append(cbSection("cb-collected", "Data collected", "",
+    el("div", { className: "cb-mini-tiles wide" },
+      el("div", {}, el("b", {}, String(c.answers)), el("span", { className: "muted small", "data-term": "responses" }, `Answers captured${c.runs > 1 ? `, ${c.runs} runs` : ""}`)),
+      el("div", {}, el("b", {}, String(c.searched)), el("span", { className: "muted small", "data-term": "withSearch" }, "Searched the web")),
+      el("div", {}, el("b", {}, String(c.searches)), el("span", { className: "muted small", "data-term": "fanout" }, "Searches the engines ran")),
+      el("div", {}, el("b", {}, String(c.domains)), el("span", { className: "muted small", "data-term": "uniqueDomains" }, "Unique domains")))));
+
+  /* --- run by run, and brand by engine --- */
+  const pair2 = el("div", { className: "cb-pair" });
+  if (b.acrossRuns.runs.length > 1) {
+    const cols = `minmax(110px, 1fr) repeat(${b.acrossRuns.runs.length}, 96px) 64px`;
+    const t = el("div", { className: "cb-grid", role: "table", style: `grid-template-columns:${cols}`, "aria-label": "Visibility across runs" });
+    t.append(el("div", { className: "cb-grid-row", role: "row" }, el("span", { role: "columnheader" }, "Brand"),
+      ...b.acrossRuns.runs.map((x) => el("span", { role: "columnheader", className: "num nowrap" }, `${x.label} · ${new Date(x.at).toLocaleDateString(undefined, { day: "numeric", month: "short" })}`)),
+      el("span", { role: "columnheader", className: "num" }, "Change")));
+    b.acrossRuns.rows.forEach((x) => t.append(el("div", { className: `cb-grid-row${x.isView ? " mine" : ""}`, role: "row" },
+      el("span", { role: "rowheader", className: x.isView ? "you" : "" }, x.name),
+      ...x.cells.map((v) => el("span", { role: "cell", className: "num" }, v == null ? "—" : `${v}%`)),
+      el("span", { role: "cell", className: `num ${x.delta > 0 ? "t-good" : x.delta < 0 ? "t-bad" : ""}` }, x.delta == null ? "—" : `${x.delta > 0 ? "▲" : x.delta < 0 ? "▼" : "="} ${Math.abs(x.delta)}`))));
+    pair2.append(cbSection("cb-runs", "Visibility across runs", "share of answers that named the brand", el("div", { className: "cb-scroll" }, t)));
+  }
+  if (b.heat.engines.length > 1) {
+    const cols = `minmax(110px, 1fr) repeat(${b.heat.engines.length}, minmax(52px, 70px))`;
+    const t = el("div", { className: "cb-grid cb-heat", role: "table", style: `grid-template-columns:${cols}`, "aria-label": "Each brand on each engine" });
+    t.append(el("div", { className: "cb-grid-row", role: "row" }, el("span", { role: "columnheader" }, "Brand"), ...b.heat.engines.map((e) => el("span", { role: "columnheader", className: "c", title: e.label }, engineIconEl(e.id)))));
+    b.heat.rows.forEach((x) => t.append(el("div", { className: `cb-grid-row${x.isView ? " mine" : ""}`, role: "row" },
+      el("span", { role: "rowheader", className: x.isView ? "you" : "" }, x.name),
+      ...x.cells.map((v, i) => el("span", { role: "cell", className: `cb-heat-cell${v != null && v >= 55 ? " dark" : ""}`, style: v == null ? "" : `--h:${Math.round(8 + v * 0.8)}%`, "aria-label": `${x.name} on ${b.heat.engines[i].label}: ${v == null ? "no answers" : `${v}%`}` }, v == null ? "—" : `${v}%`)))));
+    pair2.append(cbSection(b.acrossRuns.runs.length > 1 ? "cb-heat" : "cb-runs", "Each brand on each engine", "visibility, darker is higher", el("div", { className: "cb-scroll" }, t), b.heat.note ? el("p", { className: "muted small" }, b.heat.note) : null));
+  }
+  if (pair2.childNodes.length) box.append(pair2);
+
+  /* --- topics, and what each brand is recommended for --- */
+  const pair3 = el("div", { className: "cb-pair" });
+  if (b.topics.length) {
+    const t = el("div", { className: "cb-table cb-topic-table", role: "table", "aria-label": "By topic" });
+    t.append(el("div", { className: "cb-tr cb-th", role: "row" }, ...["Tag", "Answers", view.name, "Strongest rival", "Gap"].map((h) => el("span", { role: "columnheader" }, h))));
+    b.topics.forEach((x) => t.append(el("div", { className: "cb-tr", role: "row" },
+      el("span", { role: "rowheader" }, el("span", { className: "tag" }, x.tag)),
+      el("span", { role: "cell", className: "num" }, String(x.answers)),
+      el("span", { role: "cell", className: "num" }, `${x.you}%`),
+      el("span", { role: "cell" }, `${x.rival} · ${x.rivalV}%`),
+      el("span", { role: "cell", className: `num ${x.gap > 0 ? "t-good" : x.gap < 0 ? "t-bad" : ""}` }, `${x.gap > 0 ? "+" : ""}${x.gap} pts`))));
+    pair3.append(cbSection("cb-topics", "By topic", `your prompt tags · ${view.name} against the strongest rival`, t));
+  }
+  if (b.recommend.length) {
+    const list = el("div", { className: "cb-recommend" });
+    b.recommend.forEach((x) => list.append(el("div", { className: `cb-rec-row${x.isView ? " mine" : ""}` }, el("b", {}, x.name),
+      el("span", { className: "ap-chips" }, ...x.aspects.map((a) => el("span", { className: "ap-bchip" }, `${a.label} · ${a.n}`))))));
+    pair3.append(cbSection("cb-recommend", "What the engines recommend each brand for", "times picked for", list));
+  }
+  if (pair3.childNodes.length) box.append(pair3);
+
+  /* --- kinds of sites, and the sites that cite rivals but not you --- */
+  const pair4 = el("div", { className: "cb-pair" });
+  if (b.siteKinds.rows.length) {
+    const max = Math.max(1, ...b.siteKinds.rows.map((x) => x.n));
+    const list = el("div", { className: "cb-barlist" });
+    b.siteKinds.rows.forEach((x) => list.append(el("div", { className: "cb-barrow kinds" },
+      el("span", {}, el("i", { className: "cb-swatch", style: `background:var(${AP_KIND_VAR[x.label]})` }), x.label, el("span", { className: "muted small" }, x.eg ? ` · ${x.eg}` : "")),
+      cbBar((x.n / max) * 100, "kind"), el("span", { className: "num" }, String(x.n)),
+      el("span", { className: "num muted small", title: `cited pages in this kind that mention ${view.name}` }, `${x.you} about ${view.name}`))));
+    pair4.append(cbSection("cb-sitekinds", "Kinds of sites cited", `${b.siteKinds.total} citations`, list));
+  }
+  {
+    const t = el("div", { className: "cb-table cb-gap-table", role: "table", "aria-label": `Sites that cite rivals but not ${view.name}` });
+    t.append(el("div", { className: "cb-tr cb-th", role: "row" }, ...["Site", "Cited", "Brands it mentions", view.name].map((h) => el("span", { role: "columnheader" }, h))));
+    b.gapSites.forEach((x) => t.append(el("div", { className: "cb-tr", role: "row" },
+      el("span", { role: "rowheader" }, el("b", {}, x.site), el("span", { className: "muted small" }, ` ${x.kind}`)),
+      el("span", { role: "cell", className: "num" }, String(x.cited)),
+      el("span", { role: "cell", className: "ap-chips" }, ...x.rivals.map((n) => el("span", { className: "ap-bchip" }, n))),
+      el("span", { role: "cell", className: "t-bad small" }, "not mentioned"))));
+    pair4.append(cbSection("cb-gaps", `Sites that cite rivals but not ${view.name}`, "where to get listed or reviewed",
+      b.gapSites.length ? t : el("p", { className: "ap-note" }, `Every cited page that mentions a rival also mentions ${view.name}.`)));
+  }
+  box.append(pair4);
+
+  /* --- searches --- */
+  const s = b.searches;
+  const sq = el("div", { className: "cb-search-stats" },
+    ...[[String(s.total), "searches"], [s.perAnswer.toFixed(1), "per answer"], [cbPct(s.nameBrand), "name a brand"], [cbPct(s.nameView), `name ${view.name}`], [cbPct(s.reddit), "ask Reddit"], [cbPct(s.year), "include a year"]]
+      .map(([v, l]) => el("div", {}, el("b", {}, v), el("span", { className: "muted small" }, l))));
+  const ql = el("ol", { className: "cb-queries" });
+  s.top.forEach((q) => ql.append(el("li", {}, el("span", { className: "cb-q" }, q.text), el("span", { className: "num muted" }, `×${q.n}`), el("span", { className: "small muted" }, q.lead ? `${q.lead} came first` : ""))));
+  box.append(cbSection("cb-searches", "Searches the engines ran for this campaign", "", sq, s.top.length ? ql : el("p", { className: "ap-note" }, "The engines didn't publish any searches for these answers.")));
+
+  /* --- prompt by prompt --- */
+  const pg = b.prompts;
+  const filters = el("div", { className: "cb-pfilters", role: "group", "aria-label": "Show prompts" });
+  [["all", "All"], ["first", "Named first"], ["lower", "Named lower"], ["not", "Not named"]].forEach(([id, label]) => {
+    const on = cbPromptFilter === id;
+    const f = el("button", { className: `db-chip${on ? " on scope" : ""}`, type: "button", "aria-pressed": on ? "true" : "false" }, `${label} · ${pg.counts[id]}`);
+    f.onclick = () => { cbPromptFilter = id; rerender(); };
+    filters.append(f);
+  });
+  // The prompt keeps at least 160px; the grid scrolls sideways only when the
+  // engine columns leave it less than that (four engines in the popup).
+  const pop = document.body.classList.contains("popup");
+  const fixed = [28, ...b.engines.map(() => (pop ? 50 : 58)), pop ? 44 : 64, pop ? 64 : 90];
+  const cols = `28px minmax(0, 1fr) ${fixed.slice(1).map((w) => `${w}px`).join(" ")}`;
+  const grid = el("div", { className: "cb-grid cb-prompt-grid", role: "table", style: `grid-template-columns:${cols};min-width:${fixed.reduce((a, w) => a + w, 160)}px`, "aria-label": "Prompt by prompt" });
+  grid.append(el("div", { className: "cb-grid-row", role: "row" }, el("span", { role: "columnheader" }, "#"),
+    el("span", { role: "columnheader" }, `Prompt · where ${view.name} came in each engine’s answer`),
+    ...b.engines.map((e) => el("span", { role: "columnheader", className: "c", title: e.label }, engineIconEl(e.id), el("span", { className: "ap-sr" }, e.label))),
+    el("span", { role: "columnheader", className: "num" }, "Cites its site"),
+    el("span", { role: "columnheader", className: "num" }, "Last run")));
+  const posCell = (cell, engLabel) => {
+    if (!cell) return el("span", { role: "cell", className: "c" }, el("span", { className: "cb-pos none", title: `No answer from ${engLabel}` }, "·"));
+    const label = cell.pos === 0 ? "✕" : cell.pos === "shown" ? "card" : `#${cell.pos}`;
+    const cls = cell.pos === 0 ? "out" : cell.pos === 1 ? "first" : "in";
+    const btn = el("button", { className: `cb-pos ${cls}${cell.cited ? " cited" : ""}`, type: "button",
+      title: `${cell.pos === 0 ? `${view.name} not named` : cell.pos === "shown" ? `${view.name} shown on a card, not in the text` : `${view.name} named #${cell.pos}`} by ${engLabel}${cell.cited ? `, and the answer cited ${view.domain || "its site"}` : ""} — open the answer` }, label);
+    btn.onclick = () => openCapture(cell.captureId);
+    return el("span", { role: "cell", className: "c" }, btn);
+  };
+  pg.rows.filter((p) => cbPromptFilter === "all" || p.status === cbPromptFilter).forEach((p) => {
+    const open = cbOpenPrompts.has(p.id);
+    const text = el("span", { role: "cell", className: "cb-ptext" }, el("span", { className: "cb-ptitle", title: p.text }, p.text),
+      el("span", { className: "muted small" }, [p.words > 30 ? `${p.words}-word prompt` : "", ...(p.tags || [])].filter(Boolean).join(" · ")));
+    const more = el("span", { role: "cell", className: "num small" });
+    if (p.lastAt) more.append(el("span", { className: "muted", title: new Date(p.lastAt).toLocaleString() }, relTime(p.lastAt)));
+    if (p.history.length) {
+      const t = el("button", { className: "linkbtn", type: "button", "aria-expanded": open ? "true" : "false", title: open ? "Hide earlier runs" : "Show earlier runs" }, open ? " hide" : ` +${p.history.length}`);
+      t.onclick = () => { if (open) cbOpenPrompts.delete(p.id); else cbOpenPrompts.add(p.id); rerender(); };
+      more.append(t);
+    }
+    grid.append(el("div", { className: `cb-grid-row st-${p.status}`, role: "row" },
+      el("span", { role: "cell", className: "muted" }, String(p.n)), text,
+      ...p.cells.map((cell, i) => posCell(cell, b.engines[i].label)),
+      el("span", { role: "cell", className: "num" }, p.citedYou ? String(p.citedYou) : "—"), more));
+    if (open) p.history.forEach((h) => grid.append(el("div", { className: "cb-grid-row sub", role: "row" },
+      el("span", { role: "cell" }), el("span", { role: "cell", className: "muted small" }, `${h.label} · ${new Date(h.at).toLocaleDateString(undefined, { day: "numeric", month: "short" })}`),
+      ...h.cells.map((cell, i) => posCell(cell, b.engines[i].label)), el("span", { role: "cell" }), el("span", { role: "cell" }))));
+  });
+  box.append(cbSection("cb-prompts", "Prompt by prompt", pg.avgWhenNamed ? `average position when named: ${pg.avgWhenNamed.toFixed(1)}` : "",
+    filters, el("div", { className: "cb-scroll" }, grid),
+    el("p", { className: "muted small cb-legend" }, el("span", { className: "cb-pos first" }, "#1"), " named first  ", el("span", { className: "cb-pos in" }, "#3"), " named lower  ", el("span", { className: "cb-pos out" }, "✕"), " not named  ", el("span", { className: "cb-pos in cited" }, "#2"), ` that answer cited ${view.domain || "its site"}`)));
+
+  /* --- sources --- */
+  const srcBox = cbSection("cb-sources", "Sources the engines used", "", el("div", { className: "muted small" }, "Loading sources…"));
+  box.append(srcBox);
+  renderCampaignSources(srcBox, profile, { runId: r.runId === "all" ? undefined : r.runId, focusBrand: view.isOwn ? undefined : view.name });
+}
+
+/* The sources table: domains or URLs, reach before volume, each row drilling
+ * down (openDomainDetailModal / openUrlDetailModal). Unchanged from the
+ * Prompt Performance card it lived in before 0.50.0; it reads the same
+ * geo-prompt-performance aggregate. */
+async function renderCampaignSources(sec, profile, { runId, focusBrand } = {}) {
+  const r = await send({ type: "geo-prompt-performance", profileId: profile.id, focusBrand, tags: cbTags, engines: geoEngineFilter, runId });
+  [...sec.children].forEach((n, i) => { if (i > 0) n.remove(); });
+  if (!r || !r.ok) { sec.append(el("div", { className: "empty" }, (r && r.error) || "Couldn't load the sources.")); return; }
+  const rerender = () => renderCampaignSources(sec, profile, { runId, focusBrand });
+  // Citation VOLUME and REACH are different numbers and must not be one
+  // column: a domain cited three times in a single answer scores three
+  // citations but one response of visibility. See src/lib/sources.js for the
+  // definitions and test/sources.test.mjs for the worked example.
+  const promptTextById = new Map((GEO_PROMPTS || []).map((p) => [p.id, p.text]));
+  const { domains: domainAgg, urls: urlAgg, totalResponses: srcResponses } = aggregateSources(r.prompts || {}, promptTextById);
+  const head = sec.querySelector(".cb-sec-head");
+  head.querySelector(".src-head-tools")?.remove();
+  const modeToggle = el("div", { className: "filter-bar", style: "margin:0" });
+  [["domain", "Domains"], ["url", "URLs"]].forEach(([v, l]) => {
+    const pill = el("button", { className: `filter-pill${sourceViewMode === v ? " active" : ""}`, type: "button" }, l);
+    pill.onclick = () => { sourceViewMode = v; rerender(); };
+    modeToggle.append(pill);
+  });
+  const search = el("input", { id: "sourceSearch", type: "text", className: "filter search-input", placeholder: sourceViewMode === "domain" ? "Filter domains…" : "Filter URLs…", value: sourceSearch, "aria-label": "Filter sources" });
+  search.oninput = () => {
+    sourceSearch = search.value;
+    const cursor = search.selectionStart;
+    rerender().then(() => { const next = $("#sourceSearch"); if (next) { next.focus(); next.setSelectionRange(cursor, cursor); } });
+  };
+  head.append(el("div", { className: "src-head-tools" }, modeToggle, search));
+  head.querySelector(".muted.small")?.replaceChildren(`from ${srcResponses} answer${srcResponses === 1 ? "" : "s"}`);
+  // Sorted by reach first, volume second: a domain cited nine times inside a
+  // single answer is less useful to know about than one cited once in every
+  // answer, and only the visibility ordering says so.
+  const activeMap = sourceViewMode === "domain" ? domainAgg : urlAgg;
+  const rows = [...activeMap.values()].filter((row) => matchesSearch(row.key, sourceSearch))
+    .sort((a, b) => b.visibility - a.visibility || b.citations - a.citations || b.fetched - a.fetched || a.key.localeCompare(b.key));
+  const shown = rows.slice(0, 50);
+  if (!shown.length) { sec.append(el("div", { className: "empty" }, sourceSearch ? `No sources match "${sourceSearch}".` : "No sources captured yet for these filters.")); return; }
+  const t = el("table", { className: "drill-table src-table" });
+  const hdr = [el("th", { className: "src-col-idx" }, "#"), el("th", {}, sourceViewMode === "domain" ? "Domain" : "URL")];
+  if (sourceViewMode === "domain") hdr.push(el("th", { className: "num", "data-term": "distinctUrls" }, "URLs"));
+  hdr.push(
+    // The bar is on Visibility, not Citations: a percentage has a fixed 0-100
+    // scale a bar can honestly show.
+    el("th", { "data-term": "domainVisibility" }, "Visibility"),
+    el("th", { className: "num", "data-term": "domainCitations" }, "Citations"),
+    el("th", { className: "num", "data-term": "distinctPrompts" }, "Prompts"),
+    el("th", { className: "num", "data-term": "readOnly" }, "Read-only"),
+    el("th", { className: "num", "data-term": "citedRate" }, "Cited %"));
+  t.append(el("tr", {}, ...hdr));
+  shown.forEach((row, i) => {
+    const key = el("button", { className: "linkbtn td-domain-btn", type: "button", title: sourceViewMode === "domain" ? "Click for this domain's URLs and the prompts they came from" : "Click to see which prompts cited this URL" });
+    key.append(highlightMatch(row.key, sourceSearch));
+    key.onclick = () => (sourceViewMode === "domain" ? openDomainDetailModal(row, `Source breakdown · ${profile.name || "Untitled campaign"}`, "prompt") : openUrlDetailModal(row.key, profile));
+    const bar = el("div", { className: "src-bar", title: `Cited in ${row.citedResponses} of ${srcResponses} responses` },
+      el("div", { className: "src-bar-fill", style: `width:${Math.round(row.visibility)}%` }), el("span", { className: "src-bar-n" }, fmtPct(row.visibility)));
+    const cells = [el("td", { className: "src-col-idx muted" }, String(i + 1)), el("td", { className: "td-domain" }, key)];
+    if (sourceViewMode === "domain") cells.push(el("td", { className: "num" }, String(row.urls.size)));
+    cells.push(el("td", { className: "src-bar-cell" }, bar), el("td", { className: "num" }, String(row.citations || 0)), el("td", { className: "num" }, String(row.citedPromptIds.size)),
+      el("td", { className: "num muted" }, String(row.fetched || 0)), el("td", { className: "num" }, fmtPct(row.citedRate)));
+    t.append(el("tr", {}, ...cells));
+  });
+  sec.append(el("div", { className: "drill-scroll" }, t));
+  if (rows.length > shown.length) sec.append(el("div", { className: "muted small", style: "margin-top:6px" }, `Showing the top ${shown.length} of ${rows.length} — narrow it with the filter above.`));
+}
+
+/* ---------- One brand against yours (0.50.0) ----------
+ * The canvas's brand detail, in place of the board: the headline numbers
+ * side by side, head to head across the answers, each engine, which kinds of
+ * site write about each, which sites cite one and not the other, the sites
+ * the engines read when they named it, and prompt by prompt who came first.
+ * Background: "campaign-brand-detail" (brandDetail() + brandSourceDomains()).
+ */
+async function renderCampaignBrandDetail(box, profile) {
+  const r = await send({ type: "campaign-brand-detail", profileId: profile.id, brand: cbDetail, runId: cbRun || undefined, engines: geoEngineFilter, tags: cbTags });
+  box.textContent = "";
+  const back = el("button", { className: "analyze-context-back", type: "button" }, el("span", { "aria-hidden": "true" }, "←"), ` ${profile.name || "Campaign"}`);
+  back.onclick = () => { cbDetail = null; renderCampaigns(); };
+  if (!r || !r.ok || !r.detail) {
+    box.append(el("div", { className: "card" }, back, el("div", { className: "empty" }, (r && r.error) || "That brand has no detail on this campaign.")));
+    return;
+  }
+  const d = r.detail;
+  const them = d.them.name, you = d.you.name;
+  const youLabel = d.you.isOwn ? `${you} (you)` : you;
+  // Switch to another brand without going back.
+  const others = el("div", { className: "cb-tags", role: "group", "aria-label": "Another brand" });
+  r.brands.filter((x) => !x.isOwn).forEach((x) => {
+    const on = x.name === them;
+    const c = el("button", { className: `db-chip${on ? " on scope" : ""}`, type: "button", "aria-pressed": on ? "true" : "false" }, x.name);
+    c.onclick = () => { cbDetail = x.name; renderCampaigns(); };
+    others.append(c);
+  });
+  const head = el("div", { className: "card cb-head cb-detail-head" },
+    el("div", { className: "cb-detail-top" }, back, el("span", { className: "muted small" }, `${r.answers} answers · ${r.runLabel}`)),
+    el("div", { className: "cb-detail-name" },
+      el("h2", { className: "cb-detail-title", id: "cb-detail-h" }, them, el("span", { className: "muted" }, " against "), youLabel),
+      el("span", { className: `cb-tag${d.them.auto ? " found auto-tag" : ""}` }, d.them.auto ? "found by us" : d.them.isOwn ? "you" : "competitor")),
+    others);
+  box.append(head);
+
+  // Headline numbers, side by side.
+  const fmt = (k, v) => (v == null ? "—" : k.unit === "%" ? `${Math.round(v)}%` : k.unit === "rank" ? v.toFixed(1) : String(v));
+  const kp = el("div", { className: "cb-tiles cb-vs" });
+  d.kpis.forEach((k) => kp.append(el("div", { className: "cb-kpi geo-kpi" },
+    el("div", { className: "k-label", ...(CB_TERMS[k.label] ? { "data-term": CB_TERMS[k.label] } : {}) }, k.label),
+    el("div", { className: "k-value" }, el("span", { className: k.better === "them" ? "ahead" : "" }, fmt(k, k.them)), el("span", { className: "muted vs" }, " vs "), el("span", { className: k.better === "you" ? "ahead" : "" }, fmt(k, k.you))),
+    el("div", { className: "k-sub muted" }, `${them} vs ${you}`))));
+  head.append(kp);
+
+  // Head to head.
+  const h = d.h2h;
+  const seg = (n, cls, label, term) => el("div", { className: `cb-h2h-row ${cls}` }, el("span", { "data-term": term }, label), cbBar(h.answers ? (n / h.answers) * 100 : 0, cls), el("span", { className: "num" }, String(n)));
+  const h2h = el("div", { className: "cb-h2h head-to-head" },
+    seg(h.both, "both", "Both named", "bothNamed"), seg(h.themOnly, "them", `Only ${them}`, "onlyThem"), seg(h.youOnly, "you", `Only ${you}`, "onlyYou"), seg(h.neither, "none", "Neither", "neitherNamed"));
+  const first = el("div", { className: "cb-first" }, el("span", { className: "muted small", "data-term": "namedFirst" }, `Named first, when both appear · ${them} ${h.firstThem} vs ${you} ${h.firstYou}`),
+    el("div", { className: "cb-first-bar" }, el("span", { className: "them", style: `flex:${h.firstThem || 0.0001} 1 0` }), el("span", { className: "you", style: `flex:${h.firstYou || 0.0001} 1 0` })));
+  box.append(cbSection("cb-h2h", `Head to head, across ${h.answers} answers`, h.line, h2h, h.both ? first : null));
+
+  // On each engine.
+  const et = el("div", { className: "cb-table cb-vs-engine", role: "table", "aria-label": "On each engine" });
+  et.append(el("div", { className: "cb-tr cb-th", role: "row" }, ...["Engine", `Named in · ${them}`, `Named in · ${you}`, `Avg position · ${them}`, `Avg position · ${you}`].map((x) => el("span", { role: "columnheader" }, x))));
+  d.byEngine.forEach((e) => et.append(el("div", { className: "cb-tr", role: "row" },
+    el("span", { role: "rowheader", className: "cb-engine-name" }, engineIconEl(e.id), e.label),
+    el("span", { role: "cell", className: "cb-num-bar" }, el("span", { className: "num" }, fmtPct(e.them.visibility)), cbBar(e.them.visibility, "them")),
+    el("span", { role: "cell", className: "cb-num-bar" }, el("span", { className: "num" }, fmtPct(e.you.visibility)), cbBar(e.you.visibility, "own")),
+    el("span", { role: "cell", className: "num" }, cbPos(e.them.avgPosition)),
+    el("span", { role: "cell", className: "num" }, cbPos(e.you.avgPosition)))));
+  box.append(cbSection("cb-vs-engines", "On each engine", d.engineLine, el("div", { className: "cb-scroll" }, et)));
+
+  // Where each brand's citations come from, and who cites whom.
+  const pair = el("div", { className: "cb-pair" });
+  if (d.kinds.length) {
+    const max = Math.max(1, ...d.kinds.flatMap((k) => [k.them, k.you]));
+    const list = el("div", { className: "cb-barlist" });
+    d.kinds.forEach((k) => list.append(el("div", { className: "cb-barrow two" }, el("span", {}, el("i", { className: "cb-swatch", style: `background:var(${AP_KIND_VAR[k.label]})` }), k.label),
+      el("span", { className: "cb-two" }, cbBar((k.them / max) * 100, "them"), cbBar((k.you / max) * 100, "own")), el("span", { className: "num" }, `${k.them} · ${k.you}`))));
+    pair.append(cbSection("cb-vs-kinds", "Where each brand’s citations come from", `cited pages that mention ${them} · ${you}`, list, d.kindsLine ? el("p", { className: "muted small" }, d.kindsLine) : null));
+  }
+  const st = el("div", { className: "cb-table cb-whom", role: "table", "aria-label": "Who cites whom" });
+  st.append(el("div", { className: "cb-tr cb-th", role: "row" }, ...["Site", "Kind", `Cites ${them}`, `Cites ${you}`, "Verdict"].map((x) => el("span", { role: "columnheader" }, x))));
+  d.sites.forEach((s) => st.append(el("div", { className: "cb-tr", role: "row" },
+    el("span", { role: "rowheader" }, el("b", {}, s.site)), el("span", { role: "cell", className: "muted small" }, s.kind),
+    el("span", { role: "cell", className: "num" }, String(s.them)), el("span", { role: "cell", className: "num" }, String(s.you)),
+    el("span", { role: "cell", className: `small ${s.them && !s.you ? "t-bad" : s.you && !s.them ? "t-good" : ""}` }, s.verdict))));
+  pair.append(cbSection("cb-whom", "Who cites whom", d.gapLine, d.sites.length ? st : el("p", { className: "ap-note" }, "No cited page mentions either brand.")));
+  box.append(pair);
+
+  // What the engines were reading when they named this brand.
+  if (r.sourceDomains && r.sourceDomains.length) {
+    const list = el("div", { className: "cb-barlist brand-sources", "data-term": "brandSources" });
+    r.sourceDomains.forEach((s) => {
+      const btn = el("button", { className: "linkbtn td-domain-btn", type: "button", title: `${s.domain}: its pages and the prompts that cited them` }, s.domain);
+      btn.onclick = () => openCampaignDomain(profile, s.domain);
+      list.append(el("div", { className: "cb-barrow" }, btn, cbBar(s.visibility, "src"), el("span", { className: "num" }, `${cbPct(s.visibility)} · ${s.citations}`)));
+    });
+    box.append(cbSection("cb-vs-sources", `What the engines read when they named ${them}`, "share of the answers naming it that cited the site · citations", list));
+  }
+
+  // Prompt by prompt, who came first.
+  const cols = `28px minmax(0, 1fr) repeat(${d.engines.length}, 74px)`;
+  const g = el("div", { className: "cb-grid cb-prompt-grid", role: "table", style: `grid-template-columns:${cols};min-width:${28 + d.engines.length * 74 + 180}px`, "aria-label": "Prompt by prompt: who came first" });
+  g.append(el("div", { className: "cb-grid-row", role: "row" }, el("span", { role: "columnheader" }, "#"), el("span", { role: "columnheader" }, "Prompt"),
+    ...d.engines.map((e) => el("span", { role: "columnheader", className: "c", title: e.label }, engineIconEl(e.id), el("span", { className: "ap-sr" }, e.label)))));
+  d.prompts.rows.forEach((p) => g.append(el("div", { className: "cb-grid-row", role: "row" },
+    el("span", { role: "cell", className: "muted" }, String(p.n)), el("span", { role: "cell", className: "cb-ptitle", title: p.text }, p.text),
+    ...p.cells.map((c, i) => {
+      if (!c) return el("span", { role: "cell", className: "c" }, el("span", { className: "cb-pos none" }, "·"));
+      const label = c.winner === "them" ? them : c.winner === "you" ? you : c.winner === "both" ? "both" : "neither";
+      const btn = el("button", { className: `cb-win ${c.winner}`, type: "button", title: `${d.engines[i].label}: ${c.winner === "neither" ? "neither named" : c.winner === "both" ? "both shown, no order" : `${label} came first`} — open the answer` }, label);
+      btn.onclick = () => openCapture(c.captureId);
+      return el("span", { role: "cell", className: "c" }, btn);
+    }))));
+  box.append(cbSection("cb-vs-prompts", "Prompt by prompt: who came first", `${them} first in ${d.prompts.counts.them} · ${you} first in ${d.prompts.counts.you}`, el("div", { className: "cb-scroll" }, g)));
+}
+
+// A domain's drill-down, from the brand detail's source list: the same
+// roll-up the sources table opens, over the same filters.
+async function openCampaignDomain(profile, domain) {
+  const r = await send({ type: "geo-prompt-performance", profileId: profile.id, tags: cbTags, engines: geoEngineFilter, runId: cbRun && cbRun !== "all" ? cbRun : undefined });
+  if (!r.ok) { showToast(r.error || "Couldn't load that domain", "error"); return; }
+  const { domains } = aggregateSources(r.prompts || {}, new Map((GEO_PROMPTS || []).map((p) => [p.id, p.text])));
+  const row = domains.get(domain);
+  if (!row) { showToast(`No captured sources from ${domain} under the current filters.`, "error"); return; }
+  openDomainDetailModal(row, `Source breakdown · ${profile.name || "Untitled campaign"}`, "prompt");
 }
 
 function renderTrashedCampaigns() {
@@ -6035,7 +6556,9 @@ function renderRunHistory(profile) {
         el("span", { className: "muted" }, dur ? `took ${dur}` : ""),
         el("span", { className: "linkbtn" }, "View results →"));
       row.onclick = () => {
-        geoRunFilter = run.id;
+        cbRun = run.id;
+        cbDetail = null;
+        cbProfileId = profile.id;
         geoActiveId = profile.id;
         renderCampaigns();
         document.getElementById("campaignResults")?.scrollIntoView({ block: "start", behavior: "smooth" });
@@ -6047,873 +6570,10 @@ function renderRunHistory(profile) {
   return box;
 }
 
-/* ---------- Campaign performance metrics (rendered in Campaigns since 0.49.0; see renderCampaignResults) ---------- */
-
-async function refreshGeoMetrics(profile, prompts = [], since, until) {
-  const mc = $("#geoMetrics");
-  if (!mc || !profile) return;
-
-  // Run list feeds the run picker below. Fetched here rather than in the
-  // picker so switching runs doesn't refetch it on every change, and so a
-  // failure to load it degrades to "All runs" instead of an empty control.
-  if (!geoRunsCache.length || geoRunsCache[0]?.profileId !== profile.id) {
-    const rl = await send({ type: "geo-run-list", profileId: profile.id });
-    geoRunsCache = rl && rl.ok ? (rl.runs || []) : [];
-    // A run scope from a previous campaign must not survive into this one.
-    if (geoRunFilter && !geoRunsCache.some((r) => r.id === geoRunFilter)) geoRunFilter = "";
-  }
-
-  const r = await send({
-    type: "geo-metrics",
-    profileId: profile.id,
-    tags: geoTagFilter,
-    engines: geoEngineFilter,
-    runId: geoRunFilter || undefined,
-    since, until,
-  });
-  beginSwap(mc);
-  mc.textContent = "";
-  const head = el("div", { className: "card-header" }, el("h3", {}, `Campaign Performance — ${profile.name || "Untitled"}`));
-  mc.append(head);
-
-  if (!r.ok) { mc.append(el("div", { className: "empty" }, r.error || "Couldn't load metrics.")); return; }
-  const m = r.metrics;
-
-  // The card is ordered by what the campaign is FOR: who am I looking at,
-  // how visible are they, how does that compare. Everything else — the
-  // capture/crawl counts, the per-engine split, whether your own site got
-  // cited — is supporting detail and lives in one disclosure at the bottom.
-  // Twelve tiles of numbers above the fold was the reported clutter.
-  //
-  // Timeframe is the results' own period filter (see renderCampaignResults)
-  // — no separate "Last 7/30/90 days" selector here, so there's only ever
-  // one time filter to reason about.
-  const controls = el("div", { className: "campaign-controls" });
-  head.append(controls);
-
-  /* Run scope.
-   *
-   * Reported: "if I run the same campaign multiple times and I want to open
-   * one, how would I do that in the dashboard — I don't always want the
-   * overall result." Every campaign number here used to be pooled across all
-   * runs with no way to separate them, which is the wrong default for the
-   * question "did last night's run go worse than the one before". The
-   * aggregate stays the default; this narrows it to a single run.
-   */
-  {
-    const runSel = el("select", { className: "filter", id: "geoRunPick",
-      title: "Show results from every run of this campaign, or just one" });
-    runSel.append(el("option", { value: "" }, "All runs (combined)"));
-    // Raw toLocaleString() renders as "16/09/2026, 15:50:29" on an en-GB/
-    // en-IN locale — ambiguous day/month order, second-level precision
-    // nobody needs, and a comma-separated run-on that reads as unformatted
-    // debug output rather than a product's own UI. Explicit month name and
-    // no seconds reads the same regardless of the browser's locale, and
-    // matches the timestamp style already used in every exported report
-    // (see exportDoc.js's fmtDate).
-    const fmtRunWhen = (ts) => new Date(ts).toLocaleString(undefined, {
-      year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
-    });
-    for (const run of geoRunsCache) {
-      const when = fmtRunWhen(run.startedAt);
-      const outcome = run.failed ? `${run.captured || 0} ok, ${run.failed} failed` : `${run.captured || 0} captured`;
-      runSel.append(el("option", { value: run.id }, `${when} — ${outcome}`));
-    }
-    runSel.value = geoRunFilter || "";
-    runSel.onchange = () => {
-      geoRunFilter = runSel.value;
-      refreshGeoMetrics(profile, prompts, since, until);
-      refreshPromptPerformance(profile, prompts, since, until);
-    };
-    controls.append(runSel);
-
-    /* The whole campaign, as a workbook.
-     *
-     * Sits beside the run picker so it exports exactly what is on screen: no
-     * run selected means every run, a run selected means that run. An export
-     * button whose scope differs from the view above it is a reliable way to
-     * hand someone the wrong numbers. */
-    const wbBtn = el("button", { className: "btn sm ghost",
-      title: "Download every sheet of this campaign's data as an Excel workbook" }, "⬇ Full workbook");
-    wbBtn.onclick = withBusy(wbBtn, "Building…", async () => {
-      const r = await send({
-        type: "geo-export-workbook",
-        profileId: profile.id,
-        runId: geoRunFilter || undefined,
-        tags: geoTagFilter,
-        engines: geoEngineFilter,
-        since, until,
-      });
-      if (!r || !r.ok) { showToast((r && r.error) || "Couldn't build the workbook.", "error"); return; }
-      download(r.filename || `citoskeleton-campaign-${Date.now()}.xls`, r.xml, "application/vnd.ms-excel");
-      showToast("Workbook downloaded — 11 sheets.");
-    });
-    controls.append(wbBtn);
-    if (geoRunFilter) {
-      const clear = el("button", { className: "linkbtn" }, "show all runs");
-      clear.onclick = () => {
-        geoRunFilter = "";
-        refreshGeoMetrics(profile, prompts, since, until);
-        refreshPromptPerformance(profile, prompts, since, until);
-      };
-      controls.append(clear);
-    }
-  }
-
-  // The engine filter lives in the results' own filter row, above — one
-  // control for the whole section. A second one here read a different variable
-  // and was the reported "changing the model changes nothing" bug.
-  if (geoEngineFilter.length) {
-    const only = availableEngines().find((e) => e.id === geoEngineFilter[0]);
-    head.append(el("span", { className: "scope-note muted small" },
-      `${only ? only.label : geoEngineFilter[0]} only`));
-  }
-
-  const tags = allTags(prompts);
-  if (tags.length) {
-    const tw = el("div", { className: "tagline", style: "margin-top:8px" });
-    tw.append(el("span", { className: "muted small" }, "Tags: "));
-    // Cap the row so a campaign with many tags doesn't push the actual KPI
-    // numbers off screen. A tag the user has ACTIVELY filtered on always
-    // shows regardless of the cap — collapsing it out of view would hide the
-    // very thing "clear" needs to be visible to undo.
-    const CAP = 10;
-    const shown = geoTagsExpanded ? tags : tags.filter((t, i) => i < CAP || geoTagFilter.includes(t));
-    const hiddenCount = tags.length - shown.length;
-    shown.forEach((t) => {
-      const on = geoTagFilter.includes(t);
-      const chip = el("button", { className: `tag clickable${on ? " on" : ""}` }, t);
-      chip.onclick = () => {
-        geoTagFilter = on ? geoTagFilter.filter((x) => x !== t) : [...geoTagFilter, t];
-        refreshGeoMetrics(profile, prompts, since, until);
-        refreshPromptPerformance(profile, prompts, since, until);
-      };
-      tw.append(chip);
-    });
-    if (hiddenCount > 0) {
-      const more = el("button", { className: "linkbtn" }, `+${hiddenCount} more`);
-      more.onclick = () => { geoTagsExpanded = true; refreshGeoMetrics(profile, prompts, since, until); refreshPromptPerformance(profile, prompts, since, until); };
-      tw.append(more);
-    } else if (geoTagsExpanded && tags.length > CAP) {
-      const less = el("button", { className: "linkbtn" }, "show fewer");
-      less.onclick = () => { geoTagsExpanded = false; refreshGeoMetrics(profile, prompts, since, until); refreshPromptPerformance(profile, prompts, since, until); };
-      tw.append(less);
-    }
-    if (geoTagFilter.length) {
-      const clr = el("button", { className: "linkbtn" }, "clear");
-      clr.onclick = () => {
-        geoTagFilter = [];
-        refreshGeoMetrics(profile, prompts, since, until);
-        refreshPromptPerformance(profile, prompts, since, until);
-      };
-      tw.append(clr);
-    }
-    mc.append(tw);
-  }
-
-  if (!m.totalResponses) {
-    mc.append(el("div", { className: "empty", style: "margin-top:10px" },
-      "No tracked responses yet for these filters. Head to the Campaigns tab to start a run."));
-    return;
-  }
-
-  /* Brand switcher — the campaign view points at one brand at a time.
-     A row in a table can be read but not analysed; pointing the whole view at
-     a brand is what makes a competitor's numbers as inspectable as your own. */
-  const focusRow = geoFocusBrand
-    ? m.brands.find((b) => b.name === geoFocusBrand)
-    : null;
-  // A brand can vanish between renders (filters narrowed, exclusion applied).
-  // Falling back to the own brand beats rendering an empty KPI row.
-  const own = focusRow || m.own;
-  if (!focusRow) geoFocusBrand = null;
-
-  // A dropdown, not chips: a campaign can legitimately end up tracking twenty
-  // brands, and a wrapping chip row would push the numbers off the screen at
-  // exactly the point the campaign gets interesting. Each option carries its
-  // visibility so the list is still a ranking you can read.
-  const picker = el("select", { className: "filter brand-picker", title: "Point the whole campaign view at one brand" });
-  const ownGroup = el("optgroup", { label: "Your brand" });
-  const compGroup = el("optgroup", { label: `Competitors (${m.brands.filter((b) => !b.isOwn).length})` });
-  m.brands.forEach((b) => {
-    const opt = el("option", {
-      value: b.name,
-      selected: !!(own && b.name === own.name),
-    }, `${b.isOwn ? `${b.name} (you)` : b.name} · ${fmtPct(b.visibility)}`);
-    (b.isOwn ? ownGroup : compGroup).append(opt);
-  });
-  if (ownGroup.childNodes.length) picker.append(ownGroup);
-  if (compGroup.childNodes.length) picker.append(compGroup);
-  picker.onchange = () => {
-    const chosen = m.brands.find((b) => b.name === picker.value);
-    geoFocusBrand = chosen && chosen.isOwn ? null : picker.value;
-    refreshGeoMetrics(profile, prompts, since, until);
-    refreshPromptPerformance(profile, prompts, since, until);
-  };
-  controls.append(picker);
-
-  /* KPI row */
-  const kpis = el("div", { className: "geo-kpis" });
-  // `term` is a key into src/lib/glossary.js — the definition, formula and
-  // caveat all come from there so the same metric reads identically wherever
-  // it appears.
-  const kpi = (label, value, sub, term) => {
-    const b = el("div", { className: "geo-kpi" });
-    b.append(el("div", { className: "k-label", ...(term ? { "data-term": term } : {}) }, label));
-    b.append(el("div", { className: "k-value" }, value));
-    if (sub) b.append(el("div", { className: "k-sub muted" }, sub));
-    return b;
-  };
-  // Whose numbers these are. "your" is right for the own brand and actively
-  // misleading once the view is pointed at a competitor.
-  const whose = own?.isOwn ? "your" : `${own?.name || "this brand"}'s`;
-  const Whose = own?.isOwn ? "Your" : `${own?.name || "This brand"}'s`;
-  // Four headline numbers, not six. Source Visibility and Citations are about
-  // whether YOUR WEBSITE got used as a source — a different question from
-  // whether the brand got mentioned, and one most campaigns can't act on
-  // until the first one is answered. They move into the detail below.
-  kpis.append(
-    // The brand is named here rather than on every tile: four big numbers
-    // floating under a dropdown you have already scrolled past need one
-    // anchor, not four repetitions.
-    kpi("Brand Visibility", fmtPct(own?.visibility),
-      `${own?.name || "—"} in ${own?.responsesPresent || 0} of ${m.totalResponses} responses`, "visibility"),
-    kpi("Share of Voice", fmtPct(own?.shareOfVoice),
-      el("span", { "data-term": "mentionPool" }, `${own?.mentions || 0} of ${m.mentionPool} tracked mentions`),
-      "shareOfVoice"),
-    kpi("Avg position", fmtPos(own?.avgPosition), "rank among tracked brands", "avgPosition"),
-    kpi("Mentions", String(own?.mentions ?? 0), "times named in answers", "mentions"),
-  );
-  mc.append(kpis);
-
-  /* Competitors the user never typed.
-     A campaign with no competitors configured measures nothing: Share of
-     Voice, Position and the Brands columns are all computed against the
-     tracked set, which would be the own brand talking to itself. So when the
-     user hasn't said who they compete with, the answers are asked instead —
-     but the inference is stated out loud, and never written into the profile
-     without the user clicking to accept it. */
-  if (r.autoCompetitors && r.autoCompetitors.length) {
-    const banner = el("div", { className: "auto-comp-banner" });
-    banner.append(el("div", { className: "small" },
-      el("strong", { "data-term": "autoCompetitor" }, "Competitors inferred from your captures. "),
-      el("span", { className: "muted" },
-        `You haven't set any competitors on this campaign, so the ${r.autoCompetitors.length} brand${r.autoCompetitors.length === 1 ? "" : "s"} `
-        + "these answers named most often are being used instead. Nothing has been saved to the campaign.")));
-    // Each chip can be dismissed. Detection is industry-agnostic and will
-    // sometimes surface a publisher, a retailer, or one of your own
-    // sub-brands; without a way to say "not a competitor" the only options
-    // were to accept a wrong denominator or ignore the feature.
-    const chips = el("div", { className: "tagline" });
-    r.autoCompetitors.forEach((n) => {
-      const chip = el("span", { className: "tag tag-removable" }, n);
-      const x = el("button", { className: "tag-x", title: `Don't treat ${n} as a competitor` }, "×");
-      x.onclick = async () => {
-        x.disabled = true;
-        const res = await send({ type: "geo-brand-exclude", profileId: profile.id, name: n });
-        if (!res.ok) { x.disabled = false; showToast(res.error || "Couldn't exclude that brand", "error"); return; }
-        showToast(`${n} is no longer counted as a competitor`);
-        if (geoFocusBrand === n) geoFocusBrand = null;
-        refreshGeoMetrics(res.profile, prompts, since, until);
-        refreshPromptPerformance(res.profile, prompts, since, until);
-      };
-      chip.append(x);
-      chips.append(chip);
-    });
-    banner.append(chips);
-    const save = el("button", { className: "btn sm ghost" }, "Save these as competitors");
-    save.onclick = async () => {
-      save.disabled = true;
-      const res = await send({
-        type: "geo-profile-save",
-        profile: { ...profile, competitors: r.autoCompetitors.map((n) => ({ name: n, url: "" })) },
-      });
-      save.disabled = false;
-      if (!res.ok) { showToast(res.error || "Couldn't save competitors", "error"); return; }
-      showToast(`Saved ${r.autoCompetitors.length} competitors to ${profile.name || "this campaign"}`);
-      loadGeo();
-      refreshGeoMetrics(res.profile, prompts, since, until);
-      refreshPromptPerformance(res.profile, prompts, since, until);
-    };
-    banner.append(save);
-    mc.append(banner);
-  }
-
-  /* Anything the user has said is not a competitor, with a way back — an
-     exclusion you can't see and can't undo is a trap. */
-  if (r.excludedBrands && r.excludedBrands.length) {
-    const box = el("div", { className: "excluded-row muted small" });
-    box.append(el("span", {}, "Not counted as competitors:"));
-    r.excludedBrands.forEach((n) => {
-      const chip = el("span", { className: "tag tag-removable is-excluded" }, n);
-      const undo = el("button", { className: "tag-x", title: `Count ${n} as a competitor again` }, "↺");
-      undo.onclick = async () => {
-        undo.disabled = true;
-        const res = await send({ type: "geo-brand-exclude", profileId: profile.id, name: n, restore: true });
-        if (!res.ok) { undo.disabled = false; showToast(res.error || "Couldn't restore that brand", "error"); return; }
-        refreshGeoMetrics(res.profile, prompts, since, until);
-        refreshPromptPerformance(res.profile, prompts, since, until);
-      };
-      chip.append(undo);
-      box.append(chip);
-    });
-    mc.append(box);
-  }
-
-  /* competitor table — every row is clickable, own brand included, so a
-     competitor's numbers can be broken down per-prompt exactly the same way
-     the campaign's own brand can be in the full Prompt Performance table
-     below (see openBrandDetailModal). */
-  const wrap = el("div", { className: "drill-scroll", style: "margin-top:14px" });
-  const t = el("table", { className: "drill-table" });
-  t.append(el("tr", {},
-    el("th", {}, "Brand"),
-    el("th", { className: "num", "data-term": "visibility" }, "Visibility"),
-    el("th", { className: "num", "data-term": "shareOfVoice" }, "Share of Voice"),
-    el("th", { className: "num", "data-term": "mentions" }, "Mentions"),
-    el("th", { className: "num", "data-term": "avgPosition" }, "Avg position"),
-    el("th", { className: "num", "data-term": "citations" }, "Citations"),
-    el("th", { className: "num", "data-term": "sourceVisibility" }, "Source vis.")));
-  m.brands.forEach((b) => {
-    const focused = own && b.name === own.name;
-    const tr = el("tr", {
-      className: `clickable-row${b.isOwn ? " own-brand" : ""}${focused ? " focused-brand" : ""}`,
-      title: `Click for ${b.name}'s per-prompt performance`,
-    });
-    tr.onclick = () => openBrandDetailModal(profile, b, prompts, since, until);
-    const nameCell = el("td", { className: "td-domain" }, b.isOwn ? `${b.name} (you)` : b.name);
-    if (b.auto) nameCell.append(el("span", { className: "auto-tag", title: "Detected in your captures — not a competitor you configured" }, "auto"));
-    if (b.auto) {
-      // Only inferred rows can be excluded here. A competitor the user typed
-      // is removed by editing the campaign, where they put it.
-      const drop = el("button", { className: "row-x", title: `Don't treat ${b.name} as a competitor` }, "×");
-      drop.onclick = async (ev) => {
-        ev.stopPropagation();          // the row itself opens the drill-down
-        drop.disabled = true;
-        const res = await send({ type: "geo-brand-exclude", profileId: profile.id, name: b.name });
-        if (!res.ok) { drop.disabled = false; showToast(res.error || "Couldn't exclude that brand", "error"); return; }
-        showToast(`${b.name} is no longer counted as a competitor`);
-        if (geoFocusBrand === b.name) geoFocusBrand = null;
-        refreshGeoMetrics(res.profile, prompts, since, until);
-        refreshPromptPerformance(res.profile, prompts, since, until);
-      };
-      nameCell.append(drop);
-    }
-    tr.append(nameCell);
-    tr.append(el("td", { className: "num" }, fmtPct(b.visibility)));
-    tr.append(el("td", { className: "num" }, fmtPct(b.shareOfVoice)));
-    tr.append(el("td", { className: "num" }, String(b.mentions)));
-    tr.append(el("td", { className: "num" }, fmtPos(b.avgPosition)));
-    tr.append(el("td", { className: "num" }, String(b.citations)));
-    tr.append(el("td", { className: "num" }, fmtPct(b.sourceVisibility)));
-    t.append(tr);
-  });
-  wrap.append(t);
-  mc.append(wrap);
-
-  /* Supporting detail, in one disclosure rather than three toggles.
-     Everything here is real and sometimes wanted — it just isn't the answer
-     the campaign exists to give, and above the fold it was burying the answer
-     under twelve tiles of numbers. Open state is remembered across re-renders
-     so changing a filter doesn't shut it while you're reading it. */
-  const more = el("details", { className: "more-detail", ...(geoDetailOpen ? { open: "open" } : {}) });
-  more.append(el("summary", {}, "More detail",
-    el("span", { className: "muted small" }, " — your site as a source, by engine, data collected")));
-  more.addEventListener("toggle", () => { geoDetailOpen = more.open; });
-
-  // 1. Your site as a source. A different question from brand visibility:
-  //    "did anyone get MENTIONED" vs "did MY PAGES get used".
-  const siteBox = el("div", { className: "detail-block" });
-  siteBox.append(el("div", { className: "detail-title muted small" }, `${own?.name || "This brand"} as a source`));
-  const siteStats = el("div", { className: "statgrid" });
-  [[fmtPct(own?.sourceVisibility), "Source visibility", "sourceVisibility"],
-   [String(own?.citations ?? 0), "Citations", "citations"],
-   [String(own?.sourceResponses ?? 0), "Responses with your site", "responses"],
-  ].forEach(([n, l, term]) => siteStats.append(
-    el("div", { className: "stat", "data-term": term },
-      el("div", { className: "n" }, n), el("div", { className: "l" }, l))));
-  siteBox.append(siteStats);
-  if (!own?.url) {
-    siteBox.append(el("div", { className: "muted small", style: "margin-top:6px" },
-      own?.isOwn
-        ? "No website set on this campaign, so there is nothing to match sources against — add one in the Campaigns tab."
-        : `No website on record for ${own?.name}, so its pages can't be recognised in the source list.`));
-  }
-  more.append(siteBox);
-
-  /* 2. Per-engine split for the focused brand.
-     "Strong on ChatGPT, invisible on Gemini" is one of the few findings that
-     changes what you would actually do, and a profile-wide average hides it
-     completely. Only shown when there is more than one engine to compare —
-     with one engine these numbers are the KPI row again. */
-  const engineIdsWithData = Object.keys(r.byEngine || {});
-  if (engineIdsWithData.length > 1 && own) {
-    const box = el("div", { className: "detail-block engine-split" });
-    box.append(el("div", { className: "detail-title muted small" }, `${own.name} by engine`));
-    const grid = el("div", { className: "engine-split-grid" });
-    engineIdsWithData.forEach((id) => {
-      const engRow = r.byEngine[id];
-      const row = engRow.metrics.brands.find((b) => b.name === own.name);
-      const cell = el("div", { className: "engine-split-cell" });
-      cell.append(el("div", { className: "engine-split-head" },
-        engineChip(id, ENGINES.find((e) => e.id === id)?.label || id),
-        el("span", { className: "muted small" }, `${engRow.responses} response${engRow.responses === 1 ? "" : "s"}`)));
-      cell.append(el("div", { className: "engine-split-nums" },
-        el("div", {}, el("strong", {}, fmtPct(row?.visibility)), el("span", { className: "muted small" }, "Visibility")),
-        el("div", {}, el("strong", {}, fmtPct(row?.shareOfVoice)), el("span", { className: "muted small" }, "Share of Voice")),
-        el("div", {}, el("strong", {}, fmtPos(row?.avgPosition)), el("span", { className: "muted small" }, "Avg position")),
-        el("div", {}, el("strong", {}, String(row?.mentions ?? 0)), el("span", { className: "muted small" }, "Mentions"))));
-      grid.append(cell);
-    });
-    box.append(grid);
-    more.append(box);
-  }
-
-  // 3. What was collected. Diagnostics about the crawl, not about the brand —
-  //    which is why it used to be the first thing on screen and shouldn't be.
-  if (r.overview) {
-    const ov = r.overview;
-    const box = el("div", { className: "detail-block" });
-    box.append(el("div", { className: "detail-title muted small" }, "Data collected"));
-    const ovStats = el("div", { className: "statgrid" });
-    [[ov.captures, "Captures", "captures"], [ov.searched, "With search", "withSearch"],
-     [ov.fanTotal, "Fan-out queries", "fanout"], [ov.domainCount, "Unique domains", "uniqueDomains"],
-     [ov.citedTotal, "Cited", "citedOutcome"], [ov.fetchedTotal, "Read-only", "readOnly"]].forEach(([n, l, term]) =>
-      ovStats.append(el("div", { className: "stat", "data-term": term },
-        el("div", { className: "n" }, String(n)), el("div", { className: "l" }, l))));
-    box.append(ovStats);
-    more.append(box);
-  }
-  mc.append(more);
-
-  /* honest gap, stated in the UI rather than left for the user to discover */
-  mc.append(el("div", { className: "geo-note muted small", "data-term": "sentiment" },
-    `Sentiment: not measured. ${SENTIMENT_NOTE}`));
-
-  const dl = el("button", { className: "btn sm ghost", style: "margin-top:10px" }, "⬇ Export metrics CSV");
-  dl.onclick = () => {
-    const rows = [["Brand", "Is own", "Auto-detected", "Visibility %", "Share of Voice %", "Mentions", "Avg position", "Citations", "Source visibility %", "Responses present", "Total responses"]];
-    m.brands.forEach((b) => rows.push([b.name, b.isOwn ? "yes" : "no", b.auto ? "yes" : "no", b.visibility.toFixed(2), b.shareOfVoice.toFixed(2), b.mentions, b.avgPosition == null ? "" : b.avgPosition.toFixed(2), b.citations, b.sourceVisibility.toFixed(2), b.responsesPresent, m.totalResponses]));
-    download(`citoskeleton-tracking-${profile.name.replace(/\W+/g, "-")}-${Date.now()}.csv`, csvOf(rows), "text/csv");
-  };
-  mc.append(dl);
-}
-
-// Per-run detail toggle state, keyed by promptId — which prompts' run
-// history is expanded beyond just the latest run.
-let expandedPromptRuns = new Set();
+// The sources table's mode and filter (renderCampaignSources). Module scope:
+// every render rebuilds the section, so a local would reset on each key.
 let sourceViewMode = "domain"; // "domain" | "url"
-// Both live at module scope, not inside refreshPromptPerformance: every
-// render tears the tab down and rebuilds it, so anything held in a local
-// would reset on the next keystroke / filter change.
-let geoPromptSearch = "";
 let sourceSearch = "";
-
-const posLabel = (n) => (n == null ? "—" : `#${n}`);
-
-/* One engine's result for one prompt, as two glanceable badges instead of the
- * old "✓ #1 / Domain cited ✕" string — a tick and a cross answering two
- * different questions in the same cell read as one verdict and were easy to
- * misparse.
- *
- * Both badges are individually clickable, opening THAT run's capture in
- * Analyze — previously only the prompt's own title link opened anything, and
- * it always opened whichever run happened to be most recent, so there was no
- * way to specifically check "what did Gemini say" once ChatGPT had run more
- * recently. Attaching the click handler directly to each badge (rather than
- * a wrapping element) matters because promptPerfCards() below lifts these
- * exact badge nodes out of their <td> into a card layout in the popup — the
- * handler has to travel with the node itself to survive that move.
- *
- * `whose` names whose result this is, for the tooltip copy — "Your brand" /
- * "your own domain" by default (the campaign's own brand, the only caller
- * this used to have), but openBrandDetailModal passes an actual competitor
- * name so a Samsung row doesn't get told "Your brand was not named" about
- * Samsung.
- */
-function resultCell(run, whose = { subject: "Your brand", domain: "Your own domain" }) {
-  if (!run) return el("td", { className: "pp-cell" }, el("span", { className: "pp-badge none", "data-tip": "This prompt has not been run on this engine yet." }, "no run"));
-  const cell = el("td", { className: "pp-cell" });
-  const stack = el("div", { className: "pp-stack" });
-  const openThis = (ev) => { ev.stopPropagation(); openCapture(run.captureId); };
-  const clickable = (node, tip) => {
-    node.classList.add("pp-clickable");
-    node.setAttribute("data-tip", tip);
-    node.title = "Open this capture in Analyze";
-    node.onclick = openThis;
-    return node;
-  };
-  if (!run.mentioned) {
-    stack.append(clickable(el("span", { className: "pp-badge miss" }, "not mentioned"), `${whose.subject} was not named in this answer.`));
-  } else if (run.position == null) {
-    // Present but unrankable — a product-card/carousel appearance with no
-    // position in the prose. The old "✓ —" implied a missing rank; this says
-    // what actually happened.
-    stack.append(clickable(el("span", { className: "pp-badge shown" }, "shown"), `${whose.subject} appeared, but not in the written answer, so it has no rank.`));
-  } else {
-    stack.append(clickable(
-      el("span", { className: `pp-badge rank${run.position <= 3 ? " top" : ""}` }, posLabel(run.position)),
-      `Ranked ${posLabel(run.position)} among the brands tracked on this campaign.`,
-    ));
-  }
-  stack.append(clickable(
-    run.cited ? el("span", { className: "pp-chip cited" }, "domain cited") : el("span", { className: "pp-chip notcited" }, "not cited"),
-    run.cited ? `${whose.domain} was cited as a source in this answer.` : `${whose.domain} was not cited as a source in this answer.`,
-  ));
-  cell.append(stack);
-  return cell;
-}
-
-// `whose` follows the brand switcher: once the view is pointed at a
-// competitor, "your brand" and "your own site" are the wrong words for what
-// these badges mean.
-const promptPerfLegend = (whose = "your") => el("div", { className: "pp-legend muted small" },
-  `#n = ${whose} rank among the brands tracked on this campaign · `,
-  el("span", { className: "pp-badge shown" }, "shown"), " = appeared without a rank (product card) · ",
-  el("span", { className: "pp-chip cited" }, "domain cited"), ` = ${whose} own site was used as a source`);
-
-/* Popup layout for the same data.
- *
- * A table with a prompt column plus one column per engine needs ~530px; the
- * popup gives it ~444px, so in the popup it was always going to be a
- * sideways-scrolling table with half its columns off-screen. Same numbers,
- * stacked vertically instead — nothing scrolls sideways and nothing is
- * hidden behind a scrollbar. The full-tab view keeps the table, where the
- * width is genuinely there and scanning a column beats reading cards.
- */
-function promptPerfCards(filteredPrompts, engineIds, engineLabel, runsOf, rerender, whose) {
-  const wrap = el("div", { className: "pp-cards" });
-  filteredPrompts.forEach((p, i) => {
-    const runs = runsOf(p);
-    const card = el("div", { className: `pp-card${runs.length ? "" : " idle"}` });
-    const titleRow = el("div", { className: "pp-card-title" });
-    titleRow.append(el("span", { className: "pp-card-idx" }, `${i + 1}`));
-    if (runs.length) {
-      const link = el("a", { href: "#", className: "prompt-link", title: "Open the latest capture of this prompt in Analyze" });
-      link.append(highlightMatch(p.text, geoPromptSearch));
-      link.onclick = (ev) => { ev.preventDefault(); openCapture(runs[0].captureId); };
-      titleRow.append(link);
-    } else {
-      titleRow.append(el("span", { className: "muted" }, highlightMatch(p.text, geoPromptSearch)));
-    }
-    card.append(titleRow);
-
-    if ((p.tags || []).length) {
-      const tagWrap = el("div", { className: "tagline" });
-      p.tags.forEach((t) => tagWrap.append(el("span", { className: "tag" }, t)));
-      card.append(tagWrap);
-    }
-
-    const engRows = el("div", { className: "pp-card-engines" });
-    engineIds.forEach((id) => {
-      const run = runs.find((x) => x.platform === id) || null;
-      const row = el("div", { className: "pp-card-engine" });
-      row.append(el("span", { className: "pp-card-engine-name" }, engineChip(id, engineLabel(id))));
-      // resultCell builds a <td>; lift its badges out so the same markup and
-      // the same wording drive both layouts.
-      const cell = resultCell(run, whose);
-      const stack = cell.firstElementChild;
-      row.append(stack && stack.classList.contains("pp-stack")
-        ? el("span", { className: "pp-card-badges" }, ...stack.childNodes)
-        : el("span", { className: "pp-card-badges" }, ...cell.childNodes));
-      engRows.append(row);
-    });
-    card.append(engRows);
-
-    const foot = el("div", { className: "pp-card-foot" });
-    foot.append(el("span", { className: "muted small", title: runs.length ? new Date(runs[0].capturedAt).toLocaleString() : "" },
-      runs.length ? `Last run ${relTime(runs[0].capturedAt)}` : "Never run"));
-    if (runs.length > 1) {
-      const expanded = expandedPromptRuns.has(p.id);
-      const toggle = el("button", { className: "linkbtn" }, expanded ? "hide earlier runs" : `${runs.length - 1} earlier run${runs.length === 2 ? "" : "s"}`);
-      toggle.onclick = () => {
-        if (expanded) expandedPromptRuns.delete(p.id); else expandedPromptRuns.add(p.id);
-        rerender();
-      };
-      foot.append(toggle);
-    }
-    card.append(foot);
-
-    if (runs.length > 1 && expandedPromptRuns.has(p.id)) {
-      const hist = el("div", { className: "pp-card-history" });
-      runs.slice(1).forEach((run) => {
-        const row = el("div", { className: "pp-card-engine" });
-        row.append(el("span", { className: "pp-card-engine-name muted" }, engineChip(run.platform, relTime(run.capturedAt))));
-        const cell = resultCell(run, whose);
-        const stack = cell.firstElementChild;
-        row.append(el("span", { className: "pp-card-badges" }, ...(stack && stack.classList.contains("pp-stack") ? stack.childNodes : cell.childNodes)));
-        hist.append(row);
-      });
-      card.append(hist);
-    }
-    wrap.append(card);
-  });
-  return wrap;
-}
-
-/** A campaign's Prompt Performance (in its results, in Campaigns): prompts grouped
- *  with their own-brand mention/position/citation per run (merging reruns
- *  of the same prompt instead of listing every response separately), plus a
- *  domain/URL source breakdown for the same filtered response set. */
-async function refreshPromptPerformance(profile, prompts, since, until) {
-  const root = $("#geoPromptTable");
-  if (!root || !profile) return;
-
-  const r = await send({
-    type: "geo-prompt-performance",
-    profileId: profile.id,
-    // Follows the brand switcher above, so mentioned/position/cited in this
-    // table are about whichever brand the campaign view is pointed at.
-    focusBrand: geoFocusBrand || undefined,
-    tags: geoTagFilter,
-    engines: geoEngineFilter,
-    runId: geoRunFilter || undefined,
-    since, until,
-  });
-  beginSwap(root);
-  root.textContent = "";
-  const rerender = () => refreshPromptPerformance(profile, prompts, since, until);
-
-  // Whose performance this table is about, once the brand switcher can point
-  // it at a competitor.
-  const focused = r.focusBrand && !r.focusIsOwn ? r.focusBrand : null;
-  const ppSubject = focused || "your brand";   // "mention your brand" / "mention OnePlus"
-  const ppPoss = focused ? `${focused}'s` : "your";
-  // resultCell's badge tooltips default to "Your brand was not named" — right
-  // for the own brand, wrong the moment the table is pointed at a competitor.
-  const ppWhoseTip = focused
-    ? { subject: focused, domain: `${focused}'s domain` }
-    : { subject: "Your brand", domain: "Your own domain" };
-  const head = el("div", { className: "card-header" },
-    el("h3", {}, r.focusBrand && !r.focusIsOwn ? `Prompt Performance — ${r.focusBrand}` : "Prompt Performance"));
-  root.append(head);
-
-  if (!r.ok) { root.append(el("div", { className: "empty" }, r.error || "Couldn't load prompt performance.")); return; }
-  if (!r.hasBrand) {
-    root.append(el("div", { className: "empty" }, "Set your brand name on this campaign (Campaigns tab) to see per-prompt mention/citation results."));
-    return;
-  }
-
-  const filteredPrompts = (geoTagFilter.length
-    ? prompts.filter((p) => geoTagFilter.some((t) => (p.tags || []).includes(t)))
-    : prompts
-  ).filter((p) => matchesSearch(p.text, geoPromptSearch));
-
-  // Search sits in the card header next to the title, where the other
-  // filters are — this table can run to hundreds of prompts
-  // and previously had no way to narrow it at all.
-  const searchInp = el("input", {
-    id: "geoPromptSearch", type: "text", className: "filter search-input",
-    placeholder: "Search words in prompts…",
-    title: "Type any words — prompts containing every word are shown, in any order",
-    value: geoPromptSearch,
-  });
-  searchInp.oninput = () => {
-    geoPromptSearch = searchInp.value;
-    const cursor = searchInp.selectionStart;
-    rerender().then(() => {
-      const next = $("#geoPromptSearch");
-      if (next) { next.focus(); next.setSelectionRange(cursor, cursor); }
-    });
-  };
-  head.append(searchInp);
-
-  // --- roll-up of the table below, so the headline answer ("how many of my
-  // prompts actually mention me?") doesn't have to be counted by eye ---
-  const engineIds = (profile.engines && profile.engines.length) ? profile.engines : [];
-  const engineLabel = (id) => ENGINES.find((e) => e.id === id)?.label || id;
-  const runsOf = (p) => (r.prompts && r.prompts[p.id]) || [];
-  let withRuns = 0, anyMention = 0, anyCite = 0, rankSum = 0, rankN = 0;
-  filteredPrompts.forEach((p) => {
-    const runs = runsOf(p);
-    if (!runs.length) return;
-    withRuns++;
-    if (runs.some((x) => x.mentioned)) anyMention++;
-    if (runs.some((x) => x.cited)) anyCite++;
-    runs.forEach((x) => { if (x.position != null) { rankSum += x.position; rankN++; } });
-  });
-  const summary = el("div", { className: "pp-summary" });
-  const sChip = (n, l, tone) => el("div", { className: `pp-sum ${tone || ""}` },
-    el("span", { className: "pp-sum-n" }, String(n)), el("span", { className: "pp-sum-l" }, l));
-  summary.append(
-    sChip(`${withRuns}/${filteredPrompts.length}`, "prompts with runs"),
-    sChip(anyMention, `mention ${ppSubject}`, anyMention ? "good" : ""),
-    sChip(anyCite, `cite ${ppPoss} domain`, anyCite ? "good" : ""),
-    sChip(rankN ? `#${(rankSum / rankN).toFixed(1)}` : "—", "average rank"),
-  );
-  root.append(summary);
-
-  if (!filteredPrompts.length) {
-    root.append(el("div", { className: "empty" },
-      geoPromptSearch ? `No prompts match "${geoPromptSearch}".` : "No prompts match the current filters."));
-  } else {
-    // One column per tracked engine (not a single ambiguous "latest run")
-    // so it's clear whether a brand showed up on ChatGPT vs. Gemini rather
-    // than one merged result that could be from either.
-    if (document.body.classList.contains("popup")) {
-      root.append(promptPerfCards(filteredPrompts, engineIds, engineLabel, runsOf, rerender, ppWhoseTip));
-      root.append(promptPerfLegend(ppPoss));
-    } else {
-      const headerCells = [el("th", { className: "pp-col-idx" }, "#"), el("th", {}, "Prompt")];
-      engineIds.forEach((id) => headerCells.push(el("th", {}, engineChip(id, engineLabel(id)))));
-      headerCells.push(el("th", {}, "Last run"), el("th", { className: "pp-col-more" }, ""));
-      const table = el("table", { className: "drill-table prompt-perf-table" }, el("tr", {}, ...headerCells));
-
-      filteredPrompts.forEach((p, i) => {
-        const runs = runsOf(p);
-        // Clicking a prompt opens its most recent capture in Analyze so the
-        // full answer/sources/fan-out can be studied there instead of just
-        // the summarized mention/position/citation flags here.
-        const promptCell = el("td", { className: "prompt-cell" });
-        if (runs.length) {
-          const promptLink = el("a", { href: "#", className: "prompt-link", title: "Open the latest capture of this prompt in Analyze" });
-          promptLink.append(highlightMatch(p.text, geoPromptSearch));
-          promptLink.onclick = (ev) => { ev.preventDefault(); openCapture(runs[0].captureId); };
-          promptCell.append(promptLink);
-        } else {
-          promptCell.append(el("span", { className: "muted" }, highlightMatch(p.text, geoPromptSearch)));
-        }
-        const tagWrap = el("div", { className: "tagline" });
-        (p.tags || []).forEach((t) => tagWrap.append(el("span", { className: "tag" }, t)));
-        if (tagWrap.childNodes.length) promptCell.append(tagWrap);
-
-        const cells = [el("td", { className: "pp-col-idx muted" }, String(i + 1)), promptCell];
-        if (!runs.length) {
-          engineIds.forEach(() => cells.push(resultCell(null, ppWhoseTip)));
-          cells.push(el("td", { className: "muted small" }, "never"), el("td", {}));
-          table.append(el("tr", { className: "pp-row-idle" }, ...cells));
-          return;
-        }
-
-        engineIds.forEach((id) => cells.push(resultCell(runs.find((run) => run.platform === id) || null, ppWhoseTip)));
-        cells.push(el("td", { className: "pp-time", title: new Date(runs[0].capturedAt).toLocaleString() }, relTime(runs[0].capturedAt)));
-
-        const expandCell = el("td", { className: "pp-col-more" });
-        if (runs.length > 1) {
-          const expanded = expandedPromptRuns.has(p.id);
-          const toggle = el("button", { className: "linkbtn" }, expanded ? "hide" : `+${runs.length - 1}`);
-          toggle.title = expanded ? "Hide earlier runs" : `Show ${runs.length - 1} earlier run(s)`;
-          toggle.onclick = () => {
-            if (expanded) expandedPromptRuns.delete(p.id); else expandedPromptRuns.add(p.id);
-            rerender();
-          };
-          expandCell.append(toggle);
-        }
-        cells.push(expandCell);
-        table.append(el("tr", {}, ...cells));
-
-        if (runs.length > 1 && expandedPromptRuns.has(p.id)) {
-          runs.slice(1).forEach((run) => {
-            const subCells = [el("td", { className: "pp-col-idx" }), el("td", { className: "muted small" }, "earlier run")];
-            engineIds.forEach((id) => subCells.push(run.platform === id ? resultCell(run, ppWhoseTip) : el("td", {})));
-            subCells.push(el("td", { className: "pp-time muted small", title: new Date(run.capturedAt).toLocaleString() }, relTime(run.capturedAt)), el("td", {}));
-            table.append(el("tr", { className: "prompt-perf-subrow" }, ...subCells));
-          });
-        }
-      });
-      root.append(el("div", { className: "drill-scroll" }, table));
-      root.append(promptPerfLegend(ppPoss));
-    }
-  }
-
-  // --- source domains, aggregated from this same filtered response set ---
-  // Citation VOLUME and REACH are different numbers and must not be one
-  // column: a domain cited three times in a single answer scores three
-  // citations but one response of visibility. See src/lib/sources.js for the
-  // definitions and test/sources.test.mjs for the worked example.
-  const promptTextById = new Map((prompts || []).map((p) => [p.id, p.text]));
-  const { domains: domainAgg, urls: urlAgg, totalResponses: srcResponses } =
-    aggregateSources(r.prompts || {}, promptTextById);
-
-  root.append(el("div", { className: "wizard-divider" }));
-  const srcHead = el("div", { className: "card-header", style: "margin-top:0" }, el("h3", {}, "Source Domains"));
-  const modeToggle = el("div", { className: "filter-bar", style: "margin:0" });
-  [["domain", "Domains"], ["url", "URLs"]].forEach(([v, l]) => {
-    const pill = el("button", { className: `filter-pill${sourceViewMode === v ? " active" : ""}` }, l);
-    pill.onclick = () => { sourceViewMode = v; rerender(); };
-    modeToggle.append(pill);
-  });
-  const srcSearchInp = el("input", {
-    id: "sourceSearch", type: "text", className: "filter search-input",
-    placeholder: sourceViewMode === "domain" ? "Filter domains…" : "Filter URLs…",
-    value: sourceSearch,
-  });
-  srcSearchInp.oninput = () => {
-    sourceSearch = srcSearchInp.value;
-    const cursor = srcSearchInp.selectionStart;
-    rerender().then(() => {
-      const next = $("#sourceSearch");
-      if (next) { next.focus(); next.setSelectionRange(cursor, cursor); }
-    });
-  };
-  srcHead.append(el("div", { className: "src-head-tools" }, modeToggle, srcSearchInp));
-  root.append(srcHead);
-
-  const activeMap = sourceViewMode === "domain" ? domainAgg : urlAgg;
-  // Sorted by REACH first, volume second. A domain cited nine times inside a
-  // single answer used to outrank one cited once in every answer; the second
-  // is the more useful source to know about, and only the visibility ordering
-  // says so.
-  const rows = [...activeMap.values()]
-    .filter((row) => matchesSearch(row.key, sourceSearch))
-    .sort((a, b) => b.visibility - a.visibility || b.citations - a.citations
-      || b.fetched - a.fetched || a.key.localeCompare(b.key));
-  const shown = rows.slice(0, 50);
-
-  if (!shown.length) {
-    root.append(el("div", { className: "empty" },
-      sourceSearch ? `No sources match "${sourceSearch}".` : "No sources captured yet for these filters."));
-  } else {
-    const unit = sourceViewMode === "domain" ? "domain" : "page";
-    const srcTable = el("table", { className: "drill-table src-table" });
-    const hdr = [el("th", { className: "src-col-idx" }, "#"), el("th", {}, sourceViewMode === "domain" ? "Domain" : "URL")];
-    if (sourceViewMode === "domain") hdr.push(el("th", { className: "num", "data-term": "distinctUrls" }, "URLs"));
-    hdr.push(
-      // The bar is on Visibility, not Citations: a percentage has a fixed 0-100
-      // scale a bar can honestly represent, where a bar over an unbounded count
-      // only ever shows the ratio to whatever the top row happens to be.
-      el("th", { "data-term": "domainVisibility" }, "Visibility"),
-      el("th", { className: "num", "data-term": "domainCitations" }, "Citations"),
-      el("th", { className: "num", "data-term": "distinctPrompts" }, "Prompts"),
-      el("th", { className: "num", "data-term": "readOnly" }, "Read-only"),
-      el("th", { className: "num", "data-term": "citedRate" }, "Cited %"));
-    srcTable.append(el("tr", {}, ...hdr));
-
-    shown.forEach((row, i) => {
-      // Both views drill down now. A domain used to be plain text, with a
-      // comment claiming it had "no single source to drill into" — but the
-      // domain roll-up is exactly what people want first (how much of my
-      // citation volume is this publisher, and through which pages), so it
-      // opens a breakdown of its own URLs, each of which opens the prompts.
-      const keyCell = el("button", {
-        className: "linkbtn td-domain-btn",
-        title: sourceViewMode === "domain" ? "Click for this domain's URLs and the prompts they came from" : "Click to see which prompts cited this URL",
-      });
-      keyCell.append(highlightMatch(row.key, sourceSearch));
-      keyCell.onclick = () => (sourceViewMode === "domain"
-        ? openDomainDetailModal(row, `Source breakdown · ${profile.name || "Untitled campaign"}`, "prompt")
-        : openUrlDetailModal(row.key, profile, since, until));
-
-      const bar = el("div", { className: "src-bar", title: `Cited in ${row.citedResponses} of ${srcResponses} responses` },
-        el("div", { className: "src-bar-fill", style: `width:${Math.round(row.visibility)}%` }),
-        el("span", { className: "src-bar-n" }, fmtPct(row.visibility)));
-
-      const cells = [el("td", { className: "src-col-idx muted" }, String(i + 1)), el("td", { className: "td-domain" }, keyCell)];
-      if (sourceViewMode === "domain") cells.push(el("td", { className: "num" }, String(row.urls.size)));
-      cells.push(
-        el("td", { className: "src-bar-cell" }, bar),
-        el("td", { className: "num" }, String(row.citations || 0)),
-        el("td", { className: "num" }, String(row.citedPromptIds.size)),
-        el("td", { className: "num muted" }, String(row.fetched || 0)),
-        el("td", { className: "num" }, fmtPct(row.citedRate)));
-      srcTable.append(el("tr", {}, ...cells));
-    });
-    root.append(el("div", { className: "drill-scroll" }, srcTable));
-    if (rows.length > shown.length) {
-      root.append(el("div", { className: "muted small", style: "margin-top:6px" }, `Showing the top ${shown.length} of ${rows.length} — narrow it with the filter above.`));
-    }
-  }
-}
 
 /* Shared modal chrome, so the URL and domain drill-downs can't drift apart. */
 // A handful of fixed gradients, picked by a cheap hash of the name — not
@@ -7000,9 +6660,8 @@ const modalStat = (n, l, tone, tip, term) => el(
  *
  *  `unit` is "prompt" for a campaign's tracked runs or "capture" for plain
  *  ad-hoc browsing — the two label their counts differently ("N prompts
- *  cited on" vs. "N captures cited in") but are otherwise the same shape,
- *  built by either refreshPromptPerformance's aggregation or adhocDomainRow
- *  above. */
+ *  cited on" vs. "N captures cited in") but are otherwise the same shape.
+ *  Campaign rows come from aggregateSources() (renderCampaignSources). */
 function openDomainDetailModal(row, subtitle, unit = "prompt") {
   const plural = (n) => (n === 1 ? unit : `${unit}s`);
   const inOn = unit === "prompt" ? "cited on" : "cited in";
@@ -7100,7 +6759,7 @@ async function openUrlDetailModal(url, profile, since, until) {
   const { backdrop, body } = openDetailModal("Rankings by Source URL", url, { wide: true });
   body.append(el("div", { className: "muted small" }, "Loading…"));
 
-  const r = await send({ type: "geo-url-detail", profileId: profile.id, url, tags: geoTagFilter, engines: geoEngineFilter, since, until });
+  const r = await send({ type: "geo-url-detail", profileId: profile.id, url, tags: cbTags, engines: geoEngineFilter, since, until });
   body.textContent = "";
   if (!r.ok) { body.append(el("div", { className: "empty" }, r.error || "Couldn't load this URL's detail.")); return; }
   if (!r.rows.length) { body.append(el("div", { className: "empty" }, "No responses matched for this URL under the current filters.")); return; }
@@ -7172,221 +6831,6 @@ async function openUrlDetailModal(url, profile, since, until) {
  * geo-prompt-performance data through the same aggregateSources() — the two
  * paths cannot report different numbers for the same domain.
  */
-async function openCampaignDomainModal(profile, domain, prompts, since, until) {
-  const r = await send({
-    type: "geo-prompt-performance", profileId: profile.id,
-    tags: geoTagFilter, engines: geoEngineFilter, since, until,
-  });
-  if (!r.ok) { showToast(r.error || "Couldn't load that domain", "error"); return; }
-  const { domains } = aggregateSources(r.prompts || {},
-    new Map((prompts || []).map((p) => [p.id, p.text])));
-  const row = domains.get(domain);
-  if (!row) { showToast(`No captured sources from ${domain} under the current filters.`, "error"); return; }
-  openDomainDetailModal(row, `Source breakdown · ${profile.name || "Untitled campaign"}`, "prompt");
-}
-
-/**
- * Everything about ONE brand on this campaign — own brand or any competitor.
- *
- * Reported: "when I click on any brand I don't get to know much about that
- * competition's visibility, I don't get data to analyse it."
- *
- * It used to show four chips and a per-prompt list. The chips were already on
- * the table behind the modal, so opening it added almost nothing. What a
- * competitor actually raises is a comparative question the aggregate metrics
- * can't answer, because computeMetrics reduces each brand to its own column
- * and throws the PAIRING away:
- *
- *   - which answers let them in and kept you out          (headToHead)
- *   - when you both appear, who gets named first          (headToHead)
- *   - what the engine was reading when it named them      (brandSourceDomains)
- *   - whether that differs by engine                      (byEngine)
- *   - and then, per prompt, both brands side by side
- *
- * All of it needs answerText to rank by first appearance, so it is assembled
- * in one geo-brand-detail round trip rather than reconstructed here.
- */
-async function openBrandDetailModal(profile, brand, prompts, since, until) {
-  const { backdrop, body } = openDetailModal(
-    brand.isOwn ? `${brand.name} (you)` : brand.name,
-    `Brand analysis · ${profile.name || "Untitled campaign"}`,
-    { avatarText: brand.name.slice(0, 1).toUpperCase(), avatarKey: brand.name, wide: true },
-  );
-  body.append(el("div", { className: "muted small" }, "Loading…"));
-
-  const r = await send({
-    type: "geo-brand-detail", profileId: profile.id, brand: brand.name,
-    tags: geoTagFilter, engines: geoEngineFilter, since, until,
-  });
-  body.textContent = "";
-  if (!r.ok) { body.append(el("div", { className: "empty" }, r.error || "Couldn't load this brand's analysis.")); return; }
-  const row = r.row;
-  if (!row) { body.append(el("div", { className: "empty" }, `${brand.name} couldn't be matched against the tracked runs.`)); return; }
-
-  const engineLabel = (id) => ENGINES.find((e) => e.id === id)?.label || id;
-
-  /* --- headline --- */
-  const stats = el("div", { className: "statgrid modal-statgrid" });
-  stats.append(
-    modalStat(fmtPct(row.visibility), "Visibility", "accent", null, "visibility"),
-    modalStat(fmtPct(row.shareOfVoice), "Share of Voice", "accent", null, "shareOfVoice"),
-    modalStat(fmtPos(row.avgPosition), "Avg position", "", null, "avgPosition"),
-    modalStat(row.mentions, "Mentions", "", null, "mentions"),
-    modalStat(row.citations, "Citations", row.citations ? "good" : "muted", null, "citations"),
-  );
-  body.append(stats);
-  if (r.auto) {
-    body.append(el("div", { className: "muted small", style: "margin-bottom:10px" },
-      "Inferred from your captures — not a competitor you configured."));
-  }
-
-  /* --- head to head: the question a competitor actually raises --- */
-  if (r.headToHead && r.ownBrand) {
-    const h = r.headToHead;
-    body.append(el("div", { className: "modal-section-title" }, `${r.brand} vs ${r.ownBrand}`));
-    const h2h = el("div", { className: "h2h" });
-    const seg = (n, label, tone, term) => {
-      const pct = h.responses ? (n / h.responses) * 100 : 0;
-      const cell = el("div", { className: `h2h-seg tone-${tone}`, "data-term": term });
-      cell.append(el("div", { className: "h2h-n" }, String(n)));
-      cell.append(el("div", { className: "h2h-l muted small" }, label));
-      cell.append(el("div", { className: "h2h-bar" }, el("div", { className: "h2h-fill", style: `width:${pct}%` })));
-      return cell;
-    };
-    h2h.append(
-      // Listed first on purpose: this is the gap you can act on.
-      seg(h.aOnly, `Only ${r.brand}`, "bad", "onlyThem"),
-      seg(h.both, "Both named", "neutral", "bothNamed"),
-      seg(h.bOnly, `Only ${r.ownBrand}`, "good", "onlyYou"),
-      seg(h.neither, "Neither", "muted", "neitherNamed"),
-    );
-    body.append(h2h);
-
-    if (h.both) {
-      const lead = el("div", { className: "h2h-lead muted small" });
-      lead.append(el("span", { "data-term": "namedFirst" }, "When both appear: "));
-      lead.append(el("strong", {}, `${r.brand} first in ${h.aheadA}`));
-      lead.append(el("span", {}, " · "));
-      lead.append(el("strong", {}, `${r.ownBrand} first in ${h.aheadB}`));
-      if (h.bothUnranked) {
-        lead.append(el("span", {},
-          ` · ${h.bothUnranked} with no order (shown in a product card rather than written about, so neither is "first")`));
-      }
-      body.append(lead);
-    }
-  }
-
-  /* --- by engine --- */
-  const engineIds = Object.keys(r.byEngine || {});
-  if (engineIds.length > 1) {
-    body.append(el("div", { className: "modal-section-title" }, "By engine"));
-    const grid = el("div", { className: "engine-split-grid" });
-    engineIds.forEach((id) => {
-      const e = r.byEngine[id];
-      const cell = el("div", { className: "engine-split-cell" });
-      cell.append(el("div", { className: "engine-split-head" },
-        engineChip(id, engineLabel(id)),
-        el("span", { className: "muted small" }, `${e.responses} response${e.responses === 1 ? "" : "s"}`)));
-      cell.append(el("div", { className: "engine-split-nums" },
-        el("div", {}, el("strong", {}, fmtPct(e.row?.visibility)), el("span", { className: "muted small" }, "Visibility")),
-        el("div", {}, el("strong", {}, fmtPct(e.row?.shareOfVoice)), el("span", { className: "muted small" }, "Share of Voice")),
-        el("div", {}, el("strong", {}, fmtPos(e.row?.avgPosition)), el("span", { className: "muted small" }, "Avg position")),
-        el("div", {}, el("strong", {}, String(e.row?.mentions ?? 0)), el("span", { className: "muted small" }, "Mentions"))));
-      grid.append(cell);
-    });
-    body.append(grid);
-  }
-
-  /* --- what the engine was reading --- */
-  if (r.sourceDomains && r.sourceDomains.length) {
-    body.append(el("div", { className: "modal-section-title", "data-term": "brandSources" },
-      `Sources cited when ${r.brand} is named`));
-    // Named for what it measures. This is NOT "sites that write about this
-    // brand" — a source can be cited for a reason unrelated to a name three
-    // paragraphs later. It is "when the engine says this name, what was it
-    // reading", which is the honest version and still the useful one.
-    body.append(el("div", { className: "muted small", style: "margin-bottom:8px" },
-      `Domains cited in the ${row.responsesPresent} answer${row.responsesPresent === 1 ? "" : "s"} that mention ${r.brand}. `
-      + "Not proof the page is about them — but it is what the engine had in front of it."));
-    const t = el("table", { className: "drill-table" });
-    t.append(el("tr", {}, el("th", {}, "Domain"),
-      el("th", { className: "num", "data-tip": `Share of the answers mentioning ${r.brand} that cited this domain.` }, "Share"),
-      el("th", { className: "num", "data-term": "domainCitations" }, "Citations")));
-    r.sourceDomains.forEach((d) => {
-      // Clickable, exactly like the campaign's Source Domains table — the
-      // question "which pages on this host, under which prompts" is the same
-      // question wherever a domain is shown, so it gets the same answer.
-      // Aggregated over the whole campaign, not just this brand's answers,
-      // because the drill-down is about the SOURCE; the brand context is the
-      // list you arrived from.
-      const btn = el("button", {
-        className: "linkbtn td-domain-btn",
-        title: `Click for ${d.domain}'s pages and the prompts they came from`,
-      }, d.domain);
-      btn.onclick = () => { backdrop.remove(); openCampaignDomainModal(profile, d.domain, prompts, since, until); };
-      t.append(el("tr", {},
-        el("td", { className: "td-domain" }, btn),
-        el("td", { className: "num" }, fmtPct(d.visibility)),
-        el("td", { className: "num" }, String(d.citations))));
-    });
-    body.append(el("div", { className: "drill-scroll" }, t));
-  }
-
-  /* --- per prompt, both brands side by side --- */
-  if (!r.prompts.length) {
-    body.append(el("div", { className: "empty" }, "No tracked prompts matched the current filters."));
-    return;
-  }
-  body.append(el("div", { className: "modal-section-title" }, "Prompt by prompt"));
-  body.append(el("div", { className: "muted small", style: "margin-bottom:8px" },
-    r.isOwn
-      ? "Prompts are listed with the runs behind them — click one to open that capture in Analyze."
-      : `Prompts where ${r.brand} appears and ${r.ownBrand || "your brand"} does not are listed first — that is the gap. Click a prompt to open the capture.`));
-
-  const table = el("table", { className: "drill-table" });
-  table.append(el("tr", {},
-    el("th", {}, "Prompt"),
-    el("th", {}, "Engine"),
-    el("th", {}, r.brand),
-    ...(r.isOwn ? [] : [el("th", {}, r.ownBrand || "You")]),
-    el("th", {}, "Date")));
-
-  const verdict = (present, position) => {
-    if (!present) return el("span", { className: "pp-badge miss" }, "absent");
-    if (position == null) return el("span", { className: "pp-badge shown" }, "shown");
-    return el("span", { className: "pp-badge rank" }, `#${position}`);
-  };
-
-  r.prompts.forEach((p) => {
-    p.runs.forEach((run, i) => {
-      const promptCell = el("td", { className: "prompt-cell" });
-      if (i === 0) {
-        const link = el("a", { href: "#", className: "prompt-link" }, p.promptText);
-        link.onclick = (ev) => { ev.preventDefault(); backdrop.remove(); openCapture(run.captureId); };
-        promptCell.append(link);
-        if (p.tags.length) {
-          const tw = el("div", { className: "tagline" });
-          p.tags.forEach((t) => tw.append(el("span", { className: "tag" }, t)));
-          promptCell.append(tw);
-        }
-      }
-      // A row where they are in and you are out is the one to notice.
-      const gap = !r.isOwn && run.present && run.ownPresent === false;
-      const cells = [
-        promptCell,
-        el("td", {}, engineChip(run.platform, engineLabel(run.platform))),
-        el("td", {}, verdict(run.present, run.position)),
-      ];
-      if (!r.isOwn) cells.push(el("td", {}, run.ownPresent == null
-        ? el("span", { className: "pp-badge none" }, "—")
-        : verdict(run.ownPresent, run.ownPosition)));
-      cells.push(el("td", { className: "muted small", title: new Date(run.capturedAt).toLocaleString() }, relTime(run.capturedAt)));
-      table.append(el("tr", { className: gap ? "h2h-gap-row" : "" }, ...cells));
-    });
-  });
-  body.append(el("div", { className: "drill-scroll" }, table));
-}
-
 /* ---------- wiring ---------- */
 document.querySelectorAll("[data-tab]").forEach((btn) =>
   btn.addEventListener("click", () => {
