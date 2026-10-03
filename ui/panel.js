@@ -16,8 +16,10 @@ import { computeSearchFunnel, computeBrandMatrix } from "../src/lib/funnel-omitt
 import { GLOSSARY, glossaryGroups } from "../src/lib/glossary.js";
 import { normalizeMentions } from "../src/lib/mention-list.js";
 import {
-  answerKind, searchesView, brandsView, pagesView, ownBrandFor, yourBrandView, findPrevious, changesView,
+  answerKind, searchesView, brandsView, pagesView, ownBrandFor, yourBrandView, findPrevious, changesView, knownVendors,
 } from "../src/lib/analyzeView.js";
+import { answersToPrompt, compareView } from "../src/lib/compareView.js";
+import { siteKindOf } from "../src/lib/siteKind.js";
 import { aggregateSources, aggregateSourcesFromCaptures } from "../src/lib/sources.js";
 import { analyzeFanout, FANOUT_BENCHMARK, titleMatchesQueries } from "../src/lib/fanout.js";
 import { sanitizeText, trimLabel } from "../src/lib/text-sanitize.js";
@@ -718,6 +720,7 @@ async function openCapture(captureId) {
   viewingId = captureId;
   // A different answer starts with its details sheet and menus closed.
   apSheet = null; apMenuOpen = false; apFanAll = false; apPromptOpen = false;
+  atResetState();
   showTab("analyze");
   renderAnalyze();
 }
@@ -876,20 +879,7 @@ const SENTENCE_START_STOPWORDS = new Set([
  * annotations, and the maker of each carded product. Neither is guesswork, so
  * they are the right roots to file loose SKU mentions under.
  */
-function knownVendors(rec) {
-  const out = [];
-  for (const e of rec.entities || []) {
-    if (e && e.text && /vendor|manufacturer|brand/i.test(e.category || "")) out.push(e.text);
-  }
-  for (const p of rec.products || []) {
-    // "Realme P4 5G" -> "Realme". Only the first word, and only when it looks
-    // like a name rather than a spec, so a product called "5G Router" can't
-    // invent a vendor called "5G".
-    const first = String(p.name || "").trim().split(/\s+/)[0];
-    if (first && first.length > 1 && /^[A-Za-z][A-Za-z.&'-]*$/.test(first)) out.push(first);
-  }
-  return [...new Set(out)];
-}
+// knownVendors() moved to src/lib/analyzeView.js in 0.48.0 (shared with the compare view).
 
 // Bare spec and qualifier tokens that are never a model on their own. A chip
 // reading just "5G" or "Fast" says nothing — these turned up in a real capture
@@ -1813,60 +1803,777 @@ function openCompareFor(rec) {
   renderCompare();
 }
 
-function renderAnalyze() {
-  try {
-    const root = $("#analyze");
-    root.textContent = "";
-    // A specifically-requested, already-hydrated capture (viewingId) wins
-    // outright — even a TRACKED one not present in the ad-hoc RECORDS list
-    // (e.g. opened via Prompt Performance's "click a prompt" link). Without
-    // this, RECORDS.find() below would silently miss it (tracked captures
-    // are deliberately excluded from RECORDS — see the isolation note in
-    // load()) and fall back to RECORDS[0], opening the wrong, most-recent
-    // AD-HOC capture instead of the one actually clicked.
-    let rec = viewingId ? FULL.get(viewingId) : null;
-    if (!rec) {
-      // Prefer the hydrated full record (carries answerText, which drives brand rank,
-      // "cited for" aspects and hero-product detection). Falls back to the light row.
-      const targetId = viewingId || defaultRecordId();
-      const light = targetId ? RECORDS.find((r) => r.captureId === targetId) || RECORDS[0] : RECORDS[0];
-      rec = light ? FULL.get(light.captureId) || light : null;
-    }
-    if (!rec) {
-      /* Two different empty states, because they need different answers.
-       *
-       * RECORDS deliberately excludes campaign captures (see the isolation
-       * note in load()), so a user who only ever runs campaigns has an empty
-       * RECORDS and used to be told "No captures yet — run a prompt", while
-       * a thousand captures sat in storage. Telling someone their data does
-       * not exist when it does is worse than showing nothing, and it is the
-       * reported "I ran a campaign, where did my results go".
-       */
-      if (TRACKED_COUNT > 0) {
-        const box = el("div", { className: "empty" },
-          el("div", {}, `Nothing selected to analyse — but ${TRACKED_COUNT} capture${TRACKED_COUNT === 1 ? "" : "s"} ${TRACKED_COUNT === 1 ? "is" : "are"} stored against your campaigns.`),
-          el("div", { className: "muted small", style: "margin-top:6px" },
-            "Campaign captures are kept separate from ad-hoc browsing so a tracking run can't skew your ad-hoc numbers. Open one from the Dashboard's campaign view — click any prompt in the performance table."));
-        const go = el("button", { className: "btn sm primary", style: "margin-top:10px" }, "Go to campaign results →");
-        go.onclick = () => { showTab("dashboard"); renderDashboard(); };
-        box.append(go);
-        root.append(box);
-        return;
-      }
-      root.append(
-        el("div", { className: "empty" },
-          "No captures yet. Open ChatGPT, Gemini, Perplexity or Grok in a tab, run a prompt, then reopen this panel.")
-      );
-      return;
-    }
+/* ---------- Analyze, full tab (0.48.0) ----------
+ * Release 2 of the canvas redesign. The owner's brief for the full tab: the
+ * old page "has lot of white spaces", and the answer itself, as the engine
+ * showed it, belongs on the far right with the analysis down the left. So: a
+ * prompt header,
+ * then two columns — the analysis (searches first, as in the popup; your
+ * brand; what led the answer; every brand and what backs it; every cited
+ * page; what changed; kinds of sites; details) and, pinned on the right, the
+ * answer as the engine showed it, with brands and citations highlighted.
+ * Clicking a brand or a page on the left lights it up in the answer.
+ *
+ * When the same prompt has answers from more than one engine, tabs switch
+ * between them and "Compare engines" lays them side by side
+ * (src/lib/compareView.js) — the comparison that used to need the Compare tab.
+ *
+ * The detailed cards the page always had (every page read with its index and
+ * kind chips, search details, the brand/page matrix, claim grounding,
+ * technical) are kept, built by renderAnalyzeLegacy() and shown in Details.
+ */
+let atFocusBrand = null;   // brand lit up in the answer
+let atFocusCite = null;    // citation number lit up in the answer
+let atHlBrands = true;
+let atHlCites = true;
+let atCompare = false;     // the "Compare engines" view
+let atCompareRead = null;  // whose answer the compare view shows on the right
+let atDetails = "pages";   // which Details tab
+let atProduct = 0;         // product row selected for "Where to buy"
+let atPromptOpen = false;
+let atMenuOpen = false;
+let atHeroObs = null;      // keeps --at-hero-h in step with the pinned header
 
-  // The popup has its own layout since 0.47.0 (see renderAnalyzePopup). The
-  // full tab keeps the card layout below until its own redesign.
-  if (document.body.classList.contains("popup")) {
-    renderAnalyzePopup(rec, root);
-    return;
+function atResetState() {
+  atFocusBrand = null; atFocusCite = null; atCompare = false; atCompareRead = null;
+  atProduct = 0; atPromptOpen = false; atMenuOpen = false;
+}
+
+function atSection(id, title, count, extra) {
+  const head = el("div", { className: "at-sec-head" });
+  const h = el("h2", { className: "at-h", id: `${id}-h` }, title);
+  if (count != null && count !== "") h.append(el("span", { className: "ap-h-count" }, ` · ${count}`));
+  head.append(h);
+  if (extra) head.append(extra);
+  return el("section", { className: "at-sec", id, "aria-labelledby": `${id}-h` }, head);
+}
+
+function atEngineLabel(id) { return ENGINES.find((e) => e.id === id)?.label || id || "Unknown engine"; }
+
+function renderAnalyzeTab(rec, root) {
+  const knownBrands = knownVendors(rec);
+  const own = ownBrandFor(rec, GEO_PROFILES);
+  const previous = findPrevious(rec, ALL_RECORDS);
+  const kind = answerKind(rec);
+  const engineLabel = atEngineLabel(rec.platform);
+  const mentions = normalizeMentions(rec.brandMentions || [], knownBrands);
+  const searches = searchesView(rec, mentions.map((b) => b.brand));
+  const brands = brandsView(rec, { own, knownBrands, previous });
+  const pages = pagesView(rec, { own, knownBrands });
+  const you = yourBrandView(rec, own, { knownBrands, previous, max: 6 });
+  const changes = changesView(rec, previous, { knownBrands });
+  const answers = answersToPrompt(rec, ALL_RECORDS);
+  if (answers.length < 2) atCompare = false;
+
+  // The cards renderAnalyzeLegacy() builds, taken by id for Details.
+  const legacy = el("div");
+  try { renderAnalyzeLegacy(rec, legacy); } catch (err) { console.error("legacy Analyze cards failed:", err); }
+  const legacyCard = (id) => legacy.querySelector(`#${id}`);
+
+  /* --- the prompt header: sticky, so which answer this is never scrolls away --- */
+  const hero = el("div", { className: "analyze-context-bar at-hero" });
+  const row = el("div", { className: "at-hero-row" });
+  const backTo = returnTab || "dashboard";
+  const backBtn = el("button", { className: "analyze-context-back", type: "button", title: `Back to ${TAB_LABELS[backTo] || backTo}` },
+    el("span", { "aria-hidden": "true" }, "←"), el("span", { className: "analyze-context-back-label" }, TAB_LABELS[backTo] || backTo));
+  backBtn.onclick = () => { returnTab = null; showTab(backTo); };
+  const eng = engineIconEl(rec.platform);
+  eng.classList.add("ap-engine-icon");
+  row.append(backBtn, eng,
+    el("span", { className: "at-asked" }, `Asked ${engineLabel}`),
+    el("span", { className: "ap-when", title: new Date(rec.capturedAt).toLocaleString() }, `· ${apDate(rec.capturedAt)}, ${apTime(rec.capturedAt)}`),
+    el("span", { className: `ap-kind kind-${kind.id}` }, kind.label));
+  const promptText = rec.userPrompt || "(no prompt text)";
+  const words = promptText.trim().split(/\s+/).length;
+  const isLong = words > 40 || promptText.length > 260;
+  if (isLong) row.append(el("span", { className: "ap-tag" }, `${words}-word prompt`));
+  row.append(el("span", { className: "ap-head-spacer" }));
+  const idx = RECORDS.findIndex((r) => r.captureId === rec.captureId);
+  if (idx >= 0 && RECORDS.length > 1) {
+    const go = (j) => { const t = RECORDS[j]; if (t) { atResetState(); openCapture(t.captureId); } };
+    const newer = el("button", { className: "ap-icon-btn", type: "button", title: "Newer capture", "aria-label": "Newer capture" }, "‹");
+    newer.disabled = idx === 0;
+    newer.onclick = () => go(idx - 1);
+    const older = el("button", { className: "ap-icon-btn", type: "button", title: "Older capture", "aria-label": "Older capture" }, "›");
+    older.disabled = idx === RECORDS.length - 1;
+    older.onclick = () => go(idx + 1);
+    row.append(newer, el("span", { className: "ap-paging" }, `${idx + 1} of ${RECORDS.length}`), older);
+  }
+  const pdf = el("button", { className: "at-btn", type: "button" }, "Save as PDF");
+  pdf.onclick = () => exportRecordsAsPdf([rec]);
+  const raw = el("button", { className: "at-btn", type: "button", title: "The engine's response exactly as captured" }, "Raw data");
+  raw.onclick = () => downloadRaw(rec.captureId, "analyze");
+  const menuBtn = el("button", { className: "ap-icon-btn", type: "button", title: "More actions", "aria-label": "More actions", "aria-expanded": atMenuOpen ? "true" : "false" }, "⋯");
+  menuBtn.onclick = () => { atMenuOpen = !atMenuOpen; renderAnalyze(); };
+  const feedbackBtn = el("button", { className: "analyze-context-feedback", type: "button", title: "Report a problem with this capture", "aria-label": "Report a problem with this capture" }, "💬");
+  feedbackBtn.onclick = () => openFeedbackModal(rec);
+  row.append(pdf, raw, menuBtn, feedbackBtn);
+  hero.append(row);
+  if (atMenuOpen) {
+    const menu = el("div", { className: "ap-menu at-menu", role: "menu" });
+    const item = (label, fn, danger) => {
+      const b = el("button", { className: `ap-menu-item${danger ? " danger" : ""}`, type: "button", role: "menuitem" }, label);
+      b.onclick = async () => { atMenuOpen = false; await fn(); };
+      menu.append(b);
+    };
+    item("Copy the prompt", async () => { try { await navigator.clipboard.writeText(rec.userPrompt || ""); showToast("Prompt copied"); } catch (_) { showToast("Couldn't copy — select the prompt text instead", "error"); } renderAnalyze(); });
+    item("Save as HTML", () => { exportRecordsAsHtml([rec]); renderAnalyze(); });
+    item("Report a wrong reading", () => { renderAnalyze(); openFeedbackModal(rec); });
+    item("Remove from my history", async () => {
+      if (!confirm("Remove this answer from your history? This can't be undone.")) { renderAnalyze(); return; }
+      await send({ type: "delete-record", captureId: rec.captureId });
+      FULL.delete(rec.captureId);
+      viewingId = null;
+      atResetState();
+      showToast("Removed from your history");
+      load();
+    }, true);
+    hero.append(menu);
+  }
+  const h1 = el("h1", { className: `at-prompt analyze-context-prompt${isLong && !atPromptOpen ? " clamped" : ""}`, title: promptText }, promptText);
+  hero.append(h1);
+  if (isLong) {
+    const t = el("button", { className: "ap-link", type: "button", "aria-expanded": atPromptOpen ? "true" : "false" }, atPromptOpen ? "Show less" : "Show the whole prompt");
+    t.onclick = () => { atPromptOpen = !atPromptOpen; renderAnalyze(); };
+    hero.append(t);
+  }
+  const strip = el("div", { className: "ap-strip at-strip" });
+  const chip = (text, on, title, cls) => strip.append(el("span", { className: `ap-chip${on ? " on" : ""}${cls ? " " + cls : ""}`, title }, text));
+  if (rec.searched) chip(searches.count ? `Searched the web · ${searches.count} search${searches.count === 1 ? "" : "es"}` : "Searched the web", true, "The engine searched the web before answering", "searched");
+  else chip("No web search", true, "Answered from what the model already knows", "memory");
+  chip(rec.sources.length ? `${rec.sources.length} pages read · ${pages.rows.length} cited` : "No pages", rec.sources.length > 0, "Pages the engine opened, and how many it cited");
+  if ((rec.products || []).length) chip(`${rec.products.length} product cards`, true, "Product cards in the answer");
+  if ((rec.places || []).length) chip(`Map · ${rec.places.length} places`, true, "Places on a map");
+  if ((rec.images || []).length) chip(`${rec.images.length} images`, true, "Images from the web");
+  const key = normPrompt(rec.userPrompt);
+  const overTime = key && RECORDS.some((r) => r.captureId === rec.captureId) ? RECORDS.filter((r) => normPrompt(r.userPrompt) === key).length : 0;
+  if (overTime > 1) {
+    const b = el("button", { className: "ap-link at-overtime", type: "button", "data-open": "compare", title: "Every captured answer to this prompt, run by run" }, `All ${overTime} answers to this prompt`);
+    b.onclick = () => openCompareFor(rec);
+    strip.append(b);
+  }
+  hero.append(strip);
+  if (answers.length > 1) {
+    const cv = compareView(answers, { own });
+    const tabs = el("div", { className: "at-engines", role: "tablist", "aria-label": "Engine" });
+    const cmp = el("button", { className: `at-engine-tab cmp${atCompare ? " on" : ""}`, type: "button", role: "tab", "aria-selected": atCompare ? "true" : "false" },
+      el("span", { className: "at-engine-tab-label" }, `Compare ${answers.length} engines`),
+      el("span", { className: "at-engine-tab-sub" }, "how the answers differ"));
+    cmp.onclick = () => { atCompare = true; atFocusBrand = null; atFocusCite = null; renderAnalyze(); };
+    tabs.append(cmp);
+    cv.engines.forEach((e) => {
+      const on = !atCompare && e.captureId === rec.captureId;
+      const icon = engineIconEl(e.id);
+      icon.classList.add("ap-engine-icon");
+      const b = el("button", { className: `at-engine-tab${on ? " on" : ""}`, type: "button", role: "tab", "aria-selected": on ? "true" : "false", title: `${e.label}'s answer` },
+        el("span", { className: "at-engine-tab-label" }, icon, ` ${e.label}`),
+        el("span", { className: "at-engine-tab-sub" }, e.stat));
+      b.onclick = () => {
+        if (e.captureId === rec.captureId) { atCompare = false; renderAnalyze(); return; }
+        atResetState();
+        openCapture(e.captureId);
+      };
+      tabs.append(b);
+    });
+    hero.append(tabs);
+  }
+  root.append(hero);
+  // Under the header, not above it: the band above the pinned header is
+  // covered by .at-hero::before so scrolled text can't show through.
+  if (rec.isDemo || String(rec.captureId || "").startsWith("demo-")) {
+    root.append(el("div", { className: "demo-banner at-demo" },
+      el("span", { className: "demo-banner-label" }, "Sample"),
+      el("span", {}, "This is example data showing what a captured answer looks like — not a real capture. Remove it any time from the About tab.")));
   }
 
+  const grid = el("div", { className: "at-grid" });
+  const main = el("div", { className: "at-main" });
+  grid.append(main);
+  root.append(grid);
+
+  // The answer panel is built first: "which page backs each part" reads it.
+  const reading = atCompare && atCompareRead ? (FULL.get(atCompareRead) || null) : rec;
+  const readingLight = atCompare && atCompareRead ? (ALL_RECORDS.find((r) => r.captureId === atCompareRead) || rec) : rec;
+  if (atCompare && atCompareRead && !reading) hydrate(atCompareRead).then(() => renderAnalyze());
+  const answerPanel = atRenderAnswer(reading || readingLight, {
+    loading: atCompare && atCompareRead && !reading,
+    tabs: atCompare ? answers : null,
+    currentId: atCompareRead || rec.captureId,
+    brandNames: mentions.map((b) => b.brand),
+    own,
+  });
+  grid.append(answerPanel.el);
+
+  if (atCompare) {
+    atRenderCompare(main, compareView(answers, { own }), answers);
+  } else {
+    atRenderSingle(main, rec, { searches, brands, pages, you, changes, previous, kind, own, mentions, answerPanel, legacyCard, engineLabel });
+  }
+  atApplyHighlights(false);
+  const setH = () => document.documentElement.style.setProperty("--at-hero-h", `${hero.offsetHeight}px`);
+  requestAnimationFrame(setH);
+  // One observer for the page's life: every re-render replaces the header.
+  if (atHeroObs) atHeroObs.disconnect();
+  if (window.ResizeObserver) { atHeroObs = new ResizeObserver(setH); atHeroObs.observe(hero); }
+  atCompactOnScroll();
+}
+
+// Once the page scrolls, the pinned header drops to one line (engine, prompt,
+// actions) so it doesn't take a fifth of the screen; scrolling back up
+// restores the chips and engine tabs.
+let atScrollBound = false;
+function atCompactOnScroll() {
+  const apply = () => {
+    const hero = document.querySelector("#analyze .at-hero");
+    if (hero) hero.classList.toggle("compact", window.scrollY > 140);
+  };
+  apply();
+  if (atScrollBound) return;
+  atScrollBound = true;
+  window.addEventListener("scroll", apply, { passive: true });
+}
+
+/* The answer as the engine showed it, with brands and citations marked. */
+function atRenderAnswer(rec, { loading, tabs, currentId, brandNames, own }) {
+  const aside = el("aside", { className: "at-answer", id: "at-answer", "aria-labelledby": "at-answer-h" });
+  const head = el("div", { className: "at-answer-head" });
+  const icon = engineIconEl(rec.platform);
+  icon.classList.add("at-answer-icon");
+  const words = rec.answerText ? rec.answerText.trim().split(/\s+/).length : (rec.platformSpecific || {}).wordCount || 0;
+  head.append(icon, el("div", { className: "at-answer-title" },
+    el("h2", { className: "at-h", id: "at-answer-h" }, `The answer, as ${atEngineLabel(rec.platform)} showed it`),
+    el("span", { className: "ap-muted" }, [apDate(rec.capturedAt) + ", " + apTime(rec.capturedAt), words ? `${words} words` : "", answerKind(rec).label.toLowerCase() + " answer"].filter(Boolean).join(" · "))));
+  if (rec.pageUrl && /^https?:\/\//.test(rec.pageUrl)) {
+    let host = "";
+    try { host = new URL(rec.pageUrl).hostname.replace(/^www\./, ""); } catch (_) {}
+    head.append(el("a", { className: "at-open", href: rec.pageUrl, target: "_blank", rel: "noreferrer", title: "Open the conversation where it was captured" }, `Open on ${host} ↗`));
+  }
+  aside.append(head);
+  if (tabs) {
+    const t = el("div", { className: "at-ans-tabs", role: "tablist", "aria-label": "Whose answer to read" });
+    tabs.forEach((a) => {
+      const on = a.captureId === currentId;
+      const ic = engineIconEl(a.platform);
+      ic.classList.add("ap-engine-icon");
+      const b = el("button", { className: `ap-sheet-tab${on ? " on" : ""}`, type: "button", role: "tab", "aria-selected": on ? "true" : "false" }, ic, ` ${atEngineLabel(a.platform)}`);
+      b.onclick = () => { atCompareRead = a.captureId; atFocusBrand = null; atFocusCite = null; renderAnalyze(); };
+      t.append(b);
+    });
+    aside.append(t);
+  }
+  const hl = el("div", { className: "at-hl" }, el("span", { className: "ap-muted" }, "Highlight"));
+  const toggle = (label, getOn, set) => {
+    const b = el("button", { className: `at-hl-btn${getOn() ? " on" : ""}`, type: "button", "aria-pressed": getOn() ? "true" : "false" }, label);
+    b.onclick = () => { set(!getOn()); b.classList.toggle("on", getOn()); b.setAttribute("aria-pressed", getOn() ? "true" : "false"); atApplyHighlights(); };
+    return b;
+  };
+  hl.append(toggle("Brands", () => atHlBrands, (v) => { atHlBrands = v; }), toggle("Citations", () => atHlCites, (v) => { atHlCites = v; }));
+  const clear = el("button", { className: "at-hl-clear", type: "button", hidden: true }, "");
+  clear.onclick = () => { atFocusBrand = null; atFocusCite = null; atApplyHighlights(); };
+  hl.append(clear);
+  aside.append(hl);
+
+  const body = el("div", { className: "at-answer-body" });
+  aside.append(body);
+  if (loading) {
+    body.append(el("p", { className: "ap-note" }, "Loading this answer…"));
+    return { el: aside, blocks: [], footnotes: [] };
+  }
+  if ((rec.products || []).length) {
+    const cards = el("div", { className: "at-ans-cards", "aria-label": "Product cards, in the order the carousel showed them" });
+    rec.products.forEach((p, i) => cards.append(el("div", { className: `at-ans-card${own && new RegExp(`^${escapeRegExp(own.name)}\\b`, "i").test(String(p.name || "")) ? " mine" : ""}` },
+      el("span", { className: "ap-card-n" }, String(i + 1)),
+      el("span", { className: "ap-card-name" }, p.name || "—"),
+      el("span", { className: "ap-card-price" }, p.price || ""),
+      el("span", { className: "ap-card-meta" }, [p.rating != null ? `★ ${p.rating}` : "", p.merchant || ""].filter(Boolean).join(" · ")))));
+    body.append(cards);
+  }
+  if ((rec.places || []).length) {
+    const ol = el("ol", { className: "ap-places at-ans-places" });
+    rec.places.forEach((p, i) => ol.append(el("li", { className: "ap-place" }, el("span", { className: "ap-pin" }, String(i + 1)), el("span", { className: "ap-place-name" }, p.name || "—"), el("span", { className: "ap-muted" }, p.rating != null ? `★ ${p.rating}` : ""))));
+    body.append(ol);
+  }
+  if ((rec.images || []).length && !(rec.products || []).length) {
+    const g = el("div", { className: "ap-imgs at-ans-imgs" });
+    rec.images.slice(0, 8).forEach((im) => {
+      const img = el("img", { src: im.url, alt: im.title || "", loading: "lazy" });
+      img.onerror = () => img.replaceWith(el("span", { className: "ap-img-ph" }, im.title || "image"));
+      g.append(el("a", { className: "ap-img", href: im.url, target: "_blank", rel: "noreferrer", title: im.title || "" }, img));
+    });
+    body.append(g);
+  }
+  if (!rec.answerText) {
+    body.append(el("p", { className: "ap-note" }, rec.hasAnswerText === false || !rec.answerChars
+      ? "The answer text wasn't captured for this answer — the analysis on the left comes from its searches, pages and cards."
+      : "Loading the answer text…"));
+    return { el: aside, blocks: [], footnotes: [] };
+  }
+  const model = buildExportModel(rec);
+  const text = el("div", { className: "at-answer-text" });
+  // bodyHtml is built by exportDoc.js from escaped text plus a fixed set of
+  // our own tags (see markdownToHtml there), the same HTML the export writes.
+  text.innerHTML = model.bodyHtml;
+  const fnByN = new Map(model.footnotes.map((f) => [String(f.n), f.source]));
+  text.querySelectorAll("sup.fn a").forEach((a) => {
+    const n = (a.textContent.match(/\d+/) || [""])[0];
+    const s = fnByN.get(n);
+    const label = s ? normDomainLabel(s.domain || s.url) : n;
+    const chipEl = el("button", { className: "at-cite", type: "button", "data-n": n, title: s ? `${s.title || ""} — ${s.url || ""}` : `Citation ${n}` }, label);
+    chipEl.onclick = () => { atFocusCite = atFocusCite === n ? null : n; atFocusBrand = null; atApplyHighlights(true); };
+    a.parentNode.replaceWith(chipEl);
+  });
+  atMarkBrands(text, brandNames);
+  body.append(text);
+  if (model.footnotes.length) {
+    const list = el("ol", { className: "at-fn-list", "aria-label": "Sources cited in the answer" });
+    model.footnotes.forEach((f) => list.append(el("li", { "data-n": String(f.n) },
+      el("a", { href: f.source.url || "#", target: "_blank", rel: "noreferrer" }, normDomainLabel(f.source.domain || f.source.url)),
+      el("span", { className: "ap-muted" }, ` ${f.source.title || ""}`))));
+    body.append(el("h3", { className: "at-h3" }, "Sources it cited"), list);
+  }
+  // Blocks with the citations inside them, for "which page backs each part".
+  const blocks = [...text.querySelectorAll("p, li")].map((b) => ({
+    text: b.textContent.replace(/\s+/g, " ").trim(),
+    cites: [...new Set([...b.querySelectorAll(".at-cite")].map((c) => c.textContent))],
+  })).filter((b) => b.text);
+  return { el: aside, blocks, footnotes: model.footnotes };
+}
+
+function normDomainLabel(d) {
+  return String(d || "").replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "");
+}
+
+/* Wrap every mention of a known brand in a <mark>, outside links and chips. */
+function atMarkBrands(container, names) {
+  const list = [...new Set(names.filter((n) => n && n.length > 1))].sort((a, b) => b.length - a.length);
+  if (!list.length) return;
+  // Escaped for a /u pattern: escapeRegExp() also escapes "-", which is a
+  // syntax error under /u ("CaratLane - Phoenix Mall" crashed the page).
+  const reEsc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`(^|[^\\p{L}\\p{N}])(${list.map(reEsc).join("|")})(?=$|[^\\p{L}\\p{N}])`, "giu");
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) => (n.parentElement && n.parentElement.closest("a, button, mark") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+  });
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    const t = node.nodeValue;
+    re.lastIndex = 0;
+    if (!re.test(t)) continue;
+    re.lastIndex = 0;
+    const frag = document.createDocumentFragment();
+    let last = 0, m;
+    while ((m = re.exec(t))) {
+      const start = m.index + m[1].length;
+      frag.append(document.createTextNode(t.slice(last, start)));
+      const canon = list.find((n) => n.toLowerCase() === m[2].toLowerCase()) || m[2];
+      const mark = el("mark", { className: "at-mark", "data-brand": canon, title: `${canon} — click to show only this brand` }, m[2]);
+      mark.onclick = () => { atFocusBrand = atFocusBrand === canon ? null : canon; atFocusCite = null; atApplyHighlights(); };
+      frag.append(mark);
+      last = start + m[2].length;
+    }
+    frag.append(document.createTextNode(t.slice(last)));
+    node.replaceWith(frag);
+  }
+}
+
+/* Highlights change in place — no re-render, so the answer keeps its scroll. */
+function atApplyHighlights(scroll) {
+  const body = document.querySelector("#at-answer .at-answer-body");
+  if (!body) return;
+  body.classList.toggle("hl-brands", atHlBrands);
+  body.classList.toggle("hl-cites", atHlCites);
+  body.classList.toggle("has-focus", !!(atFocusBrand || atFocusCite));
+  body.querySelectorAll(".at-mark").forEach((m) => m.classList.toggle("focus", m.dataset.brand === atFocusBrand));
+  body.querySelectorAll(".at-cite").forEach((c) => c.classList.toggle("focus", c.dataset.n === atFocusCite));
+  body.querySelectorAll(".at-fn-list li").forEach((li) => li.classList.toggle("focus", li.dataset.n === atFocusCite));
+  document.querySelectorAll("#analyze [data-focus-brand]").forEach((r) => r.setAttribute("aria-pressed", r.dataset.focusBrand === atFocusBrand ? "true" : "false"));
+  document.querySelectorAll("#analyze [data-focus-cite]").forEach((r) => r.setAttribute("aria-pressed", r.dataset.focusCite === atFocusCite ? "true" : "false"));
+  const clear = document.querySelector("#at-answer .at-hl-clear");
+  if (clear) {
+    clear.hidden = !(atFocusBrand || atFocusCite);
+    clear.textContent = atFocusBrand ? `Showing ${atFocusBrand} ×` : atFocusCite ? `Showing citation ${atFocusCite} ×` : "";
+  }
+  if (scroll !== false && (atFocusBrand || atFocusCite)) {
+    const first = body.querySelector(".at-mark.focus, .at-cite.focus");
+    const behavior = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+    if (!first) return;
+    // Scroll the pinned answer panel only. scrollIntoView() also scrolls the
+    // page, so the row just clicked on the left jumped away.
+    if (body.scrollHeight > body.clientHeight + 1) {
+      const y = first.getBoundingClientRect().top - body.getBoundingClientRect().top + body.scrollTop - body.clientHeight / 2;
+      body.scrollTo({ top: Math.max(0, y), behavior });
+    } else {
+      first.scrollIntoView({ block: "center", behavior });
+    }
+  }
+}
+
+function atRenderSingle(main, rec, ctx) {
+  const { searches, brands, pages, you, changes, previous, kind, own, mentions, answerPanel, legacyCard, engineLabel } = ctx;
+  main.append(el("p", { className: "at-lead" }, {
+    shopping: "Products came first, so the product cards and where they lead matter most.",
+    local: "The map came first, so pin order and what each listing shows matter most.",
+    images: "Images came first, so which sites supplied them matters most.",
+    info: "Text came first, so which page backs each part of the answer matters most.",
+    memory: "No web search, so there are no sources — this is what the model already believes.",
+  }[kind.id] || ""));
+
+  /* 1. searches it ran — the first thing, as in the popup */
+  if (searches.count || searches.unpublished) {
+    const extra = el("span", { className: "ap-sec-meta" });
+    if (searches.breadth) extra.append(apPill(searches.breadth.short, searches.breadth.band === "narrow" ? "warn" : searches.breadth.band === "broad" ? "good" : "neutral", `Breadth: ${searches.breadth.label}`));
+    const sec = atSection("at-searches", "Searches it ran", searches.count || "", extra);
+    const steps = el("ol", { className: "at-steps", "aria-label": "How the answer was built" });
+    [[searches.count || "?", "searches it ran"], [rec.sources.length, "pages it read"], [pages.rows.length, "pages it cited"], [mentions.filter((b) => b.count > 0).length, kind.id === "local" ? "places it named" : "brands it named"]]
+      .forEach(([v, l]) => steps.append(el("li", {}, el("b", {}, String(v)), el("span", {}, l))));
+    sec.append(steps);
+    if (searches.count) {
+      const lanes = el("div", { className: "at-lanes" });
+      [["web", "Web searches"], ["shopping", "Shopping searches"], ["image", "Image searches"]].forEach(([lane, label]) => {
+        const qs = searches.rows.filter((q) => q.lane === lane);
+        if (!qs.length) return;
+        const col = el("div", { className: "at-lane" }, el("h3", { className: "at-h3" }, `${label} · ${qs.length}`));
+        const ol = el("ol", { className: "ap-fan" });
+        qs.forEach((q) => ol.append(el("li", { className: "ap-fan-row at-fan-row" }, el("span", { className: "ap-fan-text" }, q.text), q.tag ? el("span", { className: "ap-tag" }, q.tag) : el("span", {}))));
+        col.append(ol);
+        lanes.append(col);
+      });
+      sec.append(lanes);
+      sec.append(el("p", { className: "ap-muted at-foot" }, `Average ${searches.avgWords} words a search · ${searches.namingBrand} name${searches.namingBrand === 1 ? "s" : ""} a brand · the published average is 6–12 searches a prompt`));
+    } else {
+      sec.append(el("p", { className: "ap-note" }, `${engineLabel} confirms it searched the web but doesn't publish what it searched for, so there is no list to show. That's the engine, not a failed capture.`));
+    }
+    main.append(sec);
+  }
+  if (kind.id === "memory") {
+    const sec = atSection("at-memory", "Answered from memory", "");
+    sec.classList.add("ap-memory");
+    sec.append(el("p", { className: "ap-note" }, `${engineLabel} didn't search the web, so nothing was read or cited. Every brand below comes from what the model learned in training. Memory answers change when the model is updated, not when pages change.`));
+    main.append(sec);
+  }
+
+  /* 2. your brand */
+  if (you) {
+    const extra = you.since ? el("span", { className: "ap-muted" }, `vs ${apDate(you.previousAt)}: ${you.since}`) : null;
+    const sec = atSection("at-you", "Your brand", "", extra);
+    sec.classList.add("ap-you");
+    sec.querySelector(".at-h").append(el("span", { className: "ap-you-name" }, ` · ${you.name}`));
+    const tiles = el("div", { className: "ap-tiles at-tiles" });
+    you.tiles.forEach((t) => tiles.append(el("div", { className: "ap-tile" },
+      el("span", { className: "ap-tile-label" }, t.label), el("span", { className: `ap-tile-value tone-${t.tone}` }, t.value), el("span", { className: "ap-tile-sub" }, t.sub))));
+    sec.append(tiles);
+    main.append(sec);
+  }
+
+  /* 3. what led the answer */
+  if ((rec.products || []).length) main.append(atProductsSection(rec, own, pages));
+  if ((rec.places || []).length) main.append(atPlacesSection(rec, own));
+  // On a shopping answer the images are the product cards' own pictures.
+  if ((rec.images || []).length >= 3 && !(rec.products || []).length) main.append(atImagesSection(rec, own));
+  if (kind.id === "info" && answerPanel.blocks.length) {
+    const sec = atSection("at-parts", "Which page backs each part of the answer", "", el("span", { className: "ap-muted" }, "for explainers, the pages behind the text are the prize"));
+    answerPanel.blocks.slice(0, 12).forEach((b) => sec.append(el("div", { className: "at-part" },
+      el("span", { className: "at-part-text" }, b.text.length > 160 ? b.text.slice(0, 158) + "…" : b.text),
+      el("span", { className: "ap-chips" }, ...(b.cites.length ? b.cites.map((c) => el("span", { className: "ap-bchip" }, c)) : [el("span", { className: "ap-muted" }, "no page cited for this part")])))));
+    main.append(sec);
+  }
+
+  /* 4. every brand, and what backs it */
+  if (brands.rows.length) {
+    const sec = atSection("at-brands", kind.id === "local" ? "Places named" : "Brands named", brands.rows.filter((r) => !r.shownOnly).length,
+      el("span", { className: "ap-muted" }, "click one to see it in the answer"));
+    const table = el("div", { className: `at-table at-brand-table${brands.hasPrevious ? " has-change" : ""}`, role: "table", "aria-labelledby": "at-brands-h" });
+    table.append(el("div", { className: "at-tr at-th", role: "row" },
+      el("span", { role: "columnheader", className: "ap-sr" }, "Position"),
+      el("span", { role: "columnheader" }, kind.id === "local" ? "Place" : "Brand"),
+      el("span", { role: "columnheader", className: "num" }, "Mentions"),
+      el("span", { role: "columnheader" }, "Backed by"),
+      el("span", { role: "columnheader" }, "Cited pages that mention it"),
+      brands.hasPrevious ? el("span", { role: "columnheader" }, `vs ${apDate(previous.capturedAt).replace(/^\w+,?\s*/, "")}`) : null));
+    brands.rows.forEach((r) => {
+      const m = mentions.find((x) => x.brand === r.name);
+      const models = [...new Set([...(m && m.skus) || [], ...extractBrandModels(r.name, rec.products, rec.answerText || "")])].slice(0, 3);
+      const aspects = r.count > 0 && m ? extractBrandAspects(m.passages || []).slice(0, 3) : [];
+      const ch = r.change;
+      const chText = !ch ? "—" : ch.kind === "added" ? "New" : ch.kind === "same" ? "= Same" : ch.kind === "up" ? `↑ from ${apOrd(ch.from)}` : `↓ from ${apOrd(ch.from)}`;
+      const backers = el("span", { className: "ap-chips" });
+      r.backing.backers.forEach((b) => backers.append(el("span", { className: `ap-bchip${b.own ? " own" : ""}` }, b.domain + (b.own ? " · own site" : ""))));
+      if (!r.backing.backers.length) backers.append(el("span", { className: "ap-muted" }, r.backing.readOnly ? `only in ${r.backing.readOnly} page${r.backing.readOnly === 1 ? "" : "s"} it read without citing` : "none"));
+      const nameBtn = el("button", { className: "ap-brand-name at-name-btn", type: "button", "data-focus-brand": r.name, "aria-pressed": "false", title: `Show ${r.name} in the answer` }, r.name + (r.isYou ? " · you" : ""));
+      nameBtn.onclick = () => { atFocusBrand = atFocusBrand === r.name ? null : r.name; atFocusCite = null; atApplyHighlights(); };
+      const tr = el("div", { className: `at-tr${r.isYou ? " mine" : ""}${r.shownOnly ? " shown-only" : ""}`, role: "row" },
+        el("span", { role: "cell", className: `ap-rank${r.position === 1 ? " first" : ""}` }, r.position ? String(r.position) : "–"),
+        el("span", { role: "cell", className: "ap-brand-cell" }, nameBtn,
+          [...models, ...aspects].length ? el("span", { className: "ap-brand-sub" }, [...models, ...aspects].join(" · ")) : null),
+        el("span", { role: "cell", className: "num" }, r.shownOnly ? "card only" : `×${r.count}`),
+        el("span", { role: "cell" }, apPill(r.backing.label, r.backing.tone)),
+        el("span", { role: "cell" }, backers),
+        brands.hasPrevious ? el("span", { role: "cell", className: `ap-change ch-${ch ? ch.kind : "none"}` }, chText) : null);
+      table.append(tr);
+    });
+    brands.dropped.forEach((d) => table.append(el("div", { className: "at-tr dropped", role: "row" },
+      el("span", { role: "cell", className: "ap-rank" }, "–"),
+      el("span", { role: "cell", className: "ap-brand-cell" }, el("span", { className: "ap-brand-name" }, d.name), el("span", { className: "ap-brand-sub" }, `was ${apOrd(d.was)} last time`)),
+      el("span", { role: "cell", className: "num" }, "×0"),
+      el("span", { role: "cell" }, apPill("Not named", "neutral")),
+      el("span", { role: "cell" }, ""),
+      el("span", { role: "cell", className: "ap-change ch-dropped" }, "Dropped"))));
+    sec.append(table);
+    sec.append(el("p", { className: "ap-muted at-foot" }, "Brands backed by independent pages — reviews, listings, forums — tend to keep their place. Brands with only their own site, or nothing, behind them can drop out next time."));
+    main.append(sec);
+  }
+
+  /* 5. pages cited */
+  if (pages.rows.length) {
+    const fnByUrl = new Map(answerPanel.footnotes.map((f) => [f.source.url, String(f.n)]));
+    const sec = atSection("at-pages", "Pages cited", `${pages.rows.length} of ${pages.sourceCount} read`, el("span", { className: "ap-muted" }, "click one to see where the answer cites it"));
+    const bar = el("div", { className: "ap-kindbar", role: "img", "aria-label": "Cited pages by kind: " + pages.kinds.map((k) => `${k.n} ${k.label.toLowerCase()}`).join(", ") });
+    pages.kinds.forEach((k) => bar.append(el("span", { title: `${k.label} · ${k.n}`, style: `flex:${k.n} 1 0; background:var(${AP_KIND_VAR[k.label]})` })));
+    const legend = el("div", { className: "ap-legend" });
+    pages.kinds.forEach((k) => legend.append(el("span", {}, el("i", { style: `background:var(${AP_KIND_VAR[k.label]})` }), `${k.label} · ${k.n}`)));
+    sec.append(bar, legend);
+    const list = el("div", { className: "at-pagelist" });
+    pages.rows.forEach((p) => {
+      const n = fnByUrl.get(p.url) || null;
+      const brandsCell = el("span", { className: "ap-page-brands" });
+      if (p.brands.length) p.brands.forEach((b) => brandsCell.append(el("span", { className: `ap-bchip${b.isYou ? " mine" : ""}` }, b.name)));
+      else brandsCell.append(el("span", { className: "ap-muted" }, "no brand named"));
+      const row = el("div", { className: `at-page${p.kind === "Your site" ? " mine" : ""}` },
+        el("span", { className: "ap-num", title: n ? `Citation ${n} in the answer` : "Cited, but not placed in the answer text" }, n || "·"),
+        el("span", { className: "ap-page-main" },
+          el("a", { className: "ap-page-domain", href: p.url || "#", target: "_blank", rel: "noreferrer" }, p.domain),
+          el("span", { className: "at-page-title" }, p.title || ""),
+          el("span", { className: "ap-page-kind" }, el("i", { style: `background:var(${AP_KIND_VAR[p.kind]})` }), p.kind)),
+        brandsCell,
+        n ? el("button", { className: "at-btn sm", type: "button", "data-focus-cite": n, "aria-pressed": "false" }, "Show in answer") : el("span", {}));
+      const btn = row.querySelector("button.at-btn");
+      if (btn) btn.onclick = () => { atFocusCite = atFocusCite === n ? null : n; atFocusBrand = null; atApplyHighlights(); };
+      list.append(row);
+    });
+    sec.append(list);
+    if (pages.readOnly.length) sec.append(el("p", { className: "ap-foot warn" }, `Also read, not cited: ${pages.readOnly.join(", ")}`));
+    if (own && pages.silent.length) sec.append(el("p", { className: "ap-foot accent" }, `Cited but silent about ${own.name}: ${pages.silent.join(", ")} — the pages to get onto.`));
+    main.append(sec);
+  }
+
+  /* 6. since last time, and kinds of sites */
+  const pair = el("div", { className: "at-pair" });
+  const ch = atSection("at-changes", "Since you last asked this", "", el("span", { className: "ap-muted" }, changes ? apDate(changes.at) : ""));
+  if (changes) {
+    const SIGN = { added: "+", dropped: "−", up: "↑", down: "↓", same: "=", site: "↻" };
+    const ul = el("ul", { className: "ap-changes" });
+    changes.items.forEach((x) => ul.append(el("li", {}, el("span", { className: `ap-sign s-${x.kind}`, "aria-hidden": "true" }, SIGN[x.kind] || "•"), x.text)));
+    ch.append(ul);
+  } else {
+    ch.append(el("p", { className: "ap-note" }, `First time this prompt was captured on ${engineLabel}. Ask it again later and the changes will show here.`));
+  }
+  pair.append(ch);
+  const kinds = atSection("at-kinds", "Kinds of sites it used", "", el("span", { className: "ap-legend" }, el("span", {}, el("i", { className: "k-cited" }), "cited"), el("span", {}, el("i", { className: "k-read" }), "read only")));
+  const ctxKinds = { ownBrand: own ? own.name : "", ownUrl: own ? own.url : "", brands: mentions.map((b) => b.brand) };
+  const counts = new Map(KIND_GROUPS_UI.map((k) => [k, { c: 0, r: 0 }]));
+  const seen = new Set();
+  rec.sources.forEach((s) => {
+    const d = (s.domain || s.url || "").replace(/^www\./, "");
+    const k = siteKindOf(d, ctxKinds);
+    const key = `${s.url}|${s.outcome}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    counts.get(k)[s.outcome === "cited" ? "c" : "r"]++;
+  });
+  const max = Math.max(1, ...[...counts.values()].map((v) => v.c + v.r));
+  const kb = el("div", { className: "at-kinds" });
+  [...counts.entries()].filter(([, v]) => v.c + v.r).forEach(([k, v]) => kb.append(el("div", { className: "at-kind-row" },
+    el("span", {}, k),
+    el("span", { className: "at-kind-bar" }, el("span", { className: "c", style: `width:${(v.c / max) * 100}%` }), el("span", { className: "r", style: `width:${(v.r / max) * 100}%` })),
+    el("span", { className: "num" }, `${v.c} · ${v.r}`))));
+  if (!kb.childNodes.length) kb.append(el("p", { className: "ap-note" }, "No pages — the engine didn't search."));
+  kinds.append(kb);
+  pair.append(kinds);
+  main.append(pair);
+
+  /* 7. details: the detailed cards, one at a time */
+  const DET = [
+    ["pages", "Every page it read", ["card-sources", "card-top-domains"]],
+    ["search", "Search details", ["card-fanout"]],
+    ["matrix", "Brand & page matrix", ["card-omitted-analysis"]],
+    ["ground", "Grounding check", ["card-grounding-integrity"]],
+    ["tech", "Technical", ["card-general", "card-technical", "card-global-stats", "card-summary"]],
+    ["reasoning", "Reasoning", ["card-reasoning"]],
+    ["entities", "Entities", ["card-entities"]],
+  ].filter(([, , ids]) => ids.some((id) => legacyCard(id)));
+  if (DET.length) {
+    if (!DET.some((d) => d[0] === atDetails)) atDetails = DET[0][0];
+    const sec = atSection("at-details", "Details", "");
+    const tl = el("div", { className: "ap-sheet-tabs at-det-tabs", role: "tablist", "aria-label": "Details" });
+    DET.forEach(([id, label]) => {
+      const b = el("button", { className: `ap-sheet-tab${id === atDetails ? " on" : ""}`, type: "button", role: "tab", "aria-selected": id === atDetails ? "true" : "false" }, label);
+      b.onclick = () => { atDetails = id; renderAnalyze(); };
+      tl.append(b);
+    });
+    sec.querySelector(".at-sec-head").append(tl);
+    const panel = el("div", { className: "at-det-panel", role: "tabpanel" });
+    DET.find((d) => d[0] === atDetails)[2].forEach((id) => { const c = legacyCard(id); if (c) panel.append(c); });
+    sec.append(panel);
+    main.append(sec);
+  }
+}
+
+const KIND_GROUPS_UI = ["Your site", "Rival brand sites", "Review sites", "Retailers", "Forums & social", "Other"];
+
+function atProductsSection(rec, own, pages) {
+  const ps = rec.products;
+  const sec = atSection("at-products", "Product cards shown", ps.length, el("span", { className: "ap-muted" }, "in the order the carousel showed them · click one"));
+  const wrap = el("div", { className: "at-products" });
+  const table = el("div", { className: "at-table at-prod-table", role: "table", "aria-labelledby": "at-products-h" });
+  table.append(el("div", { className: "at-tr at-th", role: "row" },
+    el("span", { role: "columnheader" }, "#"), el("span", { role: "columnheader" }, "Product"), el("span", { role: "columnheader" }, "Price"),
+    el("span", { role: "columnheader" }, "Rating"), el("span", { role: "columnheader" }, "Stores")));
+  const sel = Math.min(atProduct, ps.length - 1);
+  ps.forEach((p, i) => {
+    const mine = own && new RegExp(`^${escapeRegExp(own.name)}\\b`, "i").test(String(p.name || ""));
+    const pick = el("button", { className: "ap-brand-name at-name-btn", type: "button", "aria-pressed": i === sel ? "true" : "false", title: "Show where to buy it" }, p.name || "—");
+    pick.onclick = () => { atProduct = i; renderAnalyze(); };
+    const tr = el("div", { className: `at-tr${i === sel ? " on" : ""}${mine ? " mine" : ""}`, role: "row" },
+      el("span", { role: "cell", className: "ap-muted" }, String(i + 1)),
+      el("span", { role: "cell", className: "ap-brand-cell" }, pick, mine ? el("span", { className: "ap-brand-sub" }, "your brand") : null),
+      el("span", { role: "cell" }, p.price || "—"),
+      el("span", { role: "cell" }, p.rating != null ? `★ ${p.rating}${p.reviews ? ` (${Number(p.reviews).toLocaleString()})` : ""}` : "—"),
+      el("span", { role: "cell", className: "at-ellipsis", title: p.merchant || "" }, p.merchant || "none named"));
+    table.append(tr);
+  });
+  const p = ps[sel];
+  const aside = el("aside", { className: "at-buy", "aria-labelledby": "at-buy-h" }, el("span", { className: "at-eyebrow" }, "Where to buy"), el("h3", { className: "at-h3", id: "at-buy-h" }, p.name || "—"));
+  const kv = el("dl", { className: "ap-kv" });
+  const add = (k, v) => { if (v) kv.append(el("div", {}, el("dt", {}, k), el("dd", {}, v))); };
+  add("Price on the card", p.price || "not shown");
+  add("Stores the card names", p.merchant || "none named");
+  const sup = supplierOf(p.supplier);
+  add("Listing feed", sup ? sup.code : "");
+  aside.append(kv, el("p", { className: "ap-muted" }, "The capture holds the card's own price and the stores it names, not each store's price."));
+  const word = String(p.name || "").split(/\s+/).slice(0, 2).join(" ").toLowerCase();
+  const about = word ? rec.sources.filter((s) => `${s.title || ""} ${s.snippet || ""}`.toLowerCase().includes(word)) : [];
+  if (about.length) {
+    aside.append(el("span", { className: "at-eyebrow" }, `Pages that mention it · ${about.length}`));
+    about.slice(0, 6).forEach((s) => aside.append(el("a", { className: "ap-sheet-link", href: s.url, target: "_blank", rel: "noreferrer" }, `${normDomainLabel(s.domain || s.url)} — ${s.title || ""}`)));
+  }
+  wrap.append(table, aside);
+  sec.append(wrap);
+  return sec;
+}
+
+function atPlacesSection(rec, own) {
+  const sec = atSection("at-places", "Places on the map", rec.places.length, el("span", { className: "ap-muted" }, "pin order as shown"));
+  const table = el("div", { className: "at-table at-place-table", role: "table", "aria-labelledby": "at-places-h" });
+  table.append(el("div", { className: "at-tr at-th", role: "row" },
+    el("span", { role: "columnheader" }, "Pin"), el("span", { role: "columnheader" }, "Place"), el("span", { role: "columnheader" }, "Rating"),
+    el("span", { role: "columnheader" }, "Kind"), el("span", { role: "columnheader" }, "Links on its card"), el("span", { role: "columnheader" }, "Named in the text")));
+  const answer = String(rec.answerText || "").toLowerCase();
+  rec.places.forEach((p, i) => {
+    const mine = own && String(p.name || "").toLowerCase().startsWith(own.name.toLowerCase());
+    const links = el("span", { className: "ap-chips" });
+    [["Website", p.website], ["Directions", p.mapsUrl], ["Call", p.phone]].forEach(([k, v]) => links.append(el("span", { className: `ap-bchip${v ? "" : " missing"}`, title: v ? "" : `No ${k.toLowerCase()} on this listing` }, k)));
+    const inText = p.name && answer.includes(String(p.name).toLowerCase());
+    table.append(el("div", { className: `at-tr${mine ? " mine" : ""}`, role: "row" },
+      el("span", { role: "cell" }, el("span", { className: "ap-pin" }, String(i + 1))),
+      el("span", { role: "cell", className: "ap-brand-cell" }, el("span", { className: "ap-brand-name" }, p.name || "—"), el("span", { className: "ap-brand-sub" }, p.address || p.hours || "")),
+      el("span", { role: "cell" }, p.rating != null ? `★ ${p.rating}${p.reviews ? ` (${Number(p.reviews).toLocaleString()})` : ""}` : "—"),
+      el("span", { role: "cell", className: "at-ellipsis" }, [p.category, p.priceRange].filter(Boolean).join(" · ") || "—"),
+      el("span", { role: "cell" }, links),
+      el("span", { role: "cell", className: inText ? "ap-tile-value tone-good at-small" : "ap-muted" }, inText ? "Yes" : "No")));
+  });
+  sec.append(table);
+  return sec;
+}
+
+function atImagesSection(rec, own) {
+  const sec = atSection("at-images", "Images shown", rec.images.length, el("span", { className: "ap-muted" }, "who supplied each image"));
+  const grid = el("div", { className: "at-imgs" });
+  const kinds = new Map();
+  rec.images.forEach((im) => {
+    let host = "";
+    try { host = new URL(im.url).hostname.replace(/^www\./, ""); } catch (_) {}
+    const k = siteKindOf(host, { ownBrand: own ? own.name : "", ownUrl: own ? own.url : "", brands: [] });
+    kinds.set(k, (kinds.get(k) || 0) + 1);
+    const img = el("img", { src: im.url, alt: im.title || "", loading: "lazy" });
+    img.onerror = () => img.replaceWith(el("span", { className: "ap-img-ph" }, im.title || host || "image"));
+    grid.append(el("a", { className: "at-img", href: im.url, target: "_blank", rel: "noreferrer" }, img,
+      el("span", { className: "ap-brand-name" }, im.attribution || host), el("span", { className: "ap-muted" }, [im.title, im.price].filter(Boolean).join(" · "))));
+  });
+  sec.append(grid, el("p", { className: "ap-muted at-foot" }, "Images by kind of site: " + [...kinds.entries()].map(([k, n]) => `${k} ${n}`).join(" · ")));
+  return sec;
+}
+
+/* "Compare engines": the answers to this prompt, side by side. */
+function atRenderCompare(main, cv, answers) {
+  const diffs = atSection("at-cmp-diffs", `How the ${answers.length} answers differ`, "");
+  const ul = el("ul", { className: "at-diffs" });
+  cv.diffs.forEach((d) => ul.append(el("li", {}, el("span", { className: "at-diff-k" }, d.k), el("span", {}, d.v))));
+  diffs.append(ul);
+  main.append(diffs);
+
+  const t = atSection("at-cmp-table", "Each engine in numbers", "");
+  const table = el("div", { className: "at-table at-cmp-engines", role: "table", "aria-labelledby": "at-cmp-table-h" });
+  table.append(el("div", { className: "at-tr at-th", role: "row" }, ...["Engine", "Named first", "Answer had", "Brands", "Searches", "Read", "Cited"].map((h, i) => el("span", { role: "columnheader", className: i >= 3 ? "num" : "" }, h))));
+  cv.engines.forEach((e) => {
+    const ic = engineIconEl(e.id);
+    ic.classList.add("ap-engine-icon");
+    table.append(el("div", { className: "at-tr", role: "row" },
+      el("span", { role: "rowheader", className: "ap-brand-name" }, ic, ` ${e.label}`),
+      el("span", { role: "cell" }, e.first),
+      el("span", { role: "cell", className: "ap-muted" }, e.had.length ? e.had.join(", ") : "text only"),
+      el("span", { role: "cell", className: "num" }, String(e.brands)),
+      el("span", { role: "cell", className: "num" }, String(e.searches)),
+      el("span", { role: "cell", className: "num" }, String(e.read)),
+      el("span", { role: "cell", className: "num" }, String(e.cited))));
+  });
+  t.append(table);
+  main.append(t);
+
+  const pair = el("div", { className: "at-pair" });
+  const head = (label) => cv.engines.map((e) => { const ic = engineIconEl(e.id); ic.classList.add("ap-engine-icon"); return el("span", { role: "columnheader", className: "c", title: e.label, "aria-label": e.label }, ic); });
+  const cols = `minmax(0, 1fr) repeat(${cv.engines.length}, 44px) 64px`;
+  const bsec = atSection("at-cmp-brands", "Where each brand came", "", el("span", { className: "ap-muted" }, "1st = named first in that answer"));
+  const bg = el("div", { className: "at-grid-table", role: "table", style: `grid-template-columns:${cols}` });
+  // Rows are display:contents, so the cells sit on the one grid while a
+  // screen reader still gets rows.
+  const gridRow = (...cells) => el("div", { className: "at-grid-row", role: "row" }, ...cells);
+  bg.append(gridRow(el("span", { role: "columnheader" }, "Brand"), ...head(), el("span", { role: "columnheader", className: "num" }, "Named by")));
+  cv.brandGrid.forEach((b) => bg.append(gridRow(
+    el("span", { role: "rowheader", className: `ap-brand-name${b.isYou ? " you" : ""}` }, b.name + (b.isYou ? " · you" : "")),
+    ...b.cells.map((c, i) => el("span", { role: "cell", className: `c pos${c === 1 ? " first" : c ? "" : " none"}`, "aria-label": `${cv.engines[i].label}: ${c ? apOrd(c) : "not named"}` }, c ? apOrd(c) : "—")),
+    el("span", { role: "cell", className: "num" }, `${b.namedBy} of ${cv.engines.length}`))));
+  bsec.append(bg);
+  const ssec = atSection("at-cmp-sites", "Which sites each engine used", "", el("span", { className: "ap-legend" }, el("span", {}, el("i", { className: "k-cited" }), "cited"), el("span", {}, el("i", { className: "k-read" }), "read")));
+  const sg = el("div", { className: "at-grid-table", role: "table", style: `grid-template-columns:${cols}` });
+  sg.append(gridRow(el("span", { role: "columnheader" }, "Site"), ...head(), el("span", { role: "columnheader", className: "num" }, "Cited by")));
+  cv.siteGrid.slice(0, 16).forEach((s) => sg.append(gridRow(
+    el("span", { role: "rowheader", className: "at-ellipsis" }, s.domain),
+    ...s.cells.map((c, i) => el("span", { role: "cell", className: "c", "aria-label": `${cv.engines[i].label}: ${c || "not used"}` }, el("i", { className: c === "cited" ? "dot cited" : c === "read" ? "dot read" : "dot none" }))),
+    el("span", { role: "cell", className: "num" }, String(s.citedBy)))));
+  if (cv.siteGrid.length > 16) ssec.append(el("p", { className: "ap-muted" }, `+ ${cv.siteGrid.length - 16} more sites used by one engine`));
+  ssec.append(sg);
+  pair.append(bsec, ssec);
+  main.append(pair);
+
+  const q = atSection("at-cmp-searches", "Searches each engine ran", "", el("span", { className: "ap-muted" }, "highlighted = another engine ran the same search"));
+  cv.searchRows.forEach((r) => {
+    const ic = engineIconEl(r.id);
+    ic.classList.add("ap-engine-icon");
+    const chips = el("div", { className: "ap-chips" });
+    if (r.queries.length) r.queries.forEach((x) => chips.append(el("span", { className: `ap-bchip${x.shared ? " shared" : ""}` }, x.text)));
+    else chips.append(el("span", { className: "ap-muted" }, r.searched ? "searched, but didn't publish what for" : "didn't search"));
+    q.append(el("div", { className: "at-cmp-q" }, el("span", { className: "ap-brand-name" }, ic, ` ${r.label} · ${r.queries.length}`), chips));
+  });
+  main.append(q);
+}
+
+/* The card-by-card Analyze that both views used up to 0.46.0. Since 0.48.0
+ * it is built into a detached container and the full tab's Details panel
+ * takes the cards it wants from it by id (renderAnalyzeTab), so none of their
+ * behaviour — pipeline chips, title-mismatch tags, site: scoping, the
+ * brand/page matrix, claim grounding — had to be rewritten to move. */
+function renderAnalyzeLegacy(rec, root) {
   // Sticky prompt/engine identity bar — the first thing in #analyze, before
   // even the context banner below. On a long Analyze view (Verbatim
   // Grounding is now the LAST card, so this page can run long) scrolling
@@ -3105,6 +3812,64 @@ function renderAnalyze() {
   if (brandCard) grid.append(brandCard);
   grid.append(mainCol);
   root.append(grid);
+}
+
+function renderAnalyze() {
+  try {
+    const root = $("#analyze");
+    root.textContent = "";
+    // A specifically-requested, already-hydrated capture (viewingId) wins
+    // outright — even a TRACKED one not present in the ad-hoc RECORDS list
+    // (e.g. opened via Prompt Performance's "click a prompt" link). Without
+    // this, RECORDS.find() below would silently miss it (tracked captures
+    // are deliberately excluded from RECORDS — see the isolation note in
+    // load()) and fall back to RECORDS[0], opening the wrong, most-recent
+    // AD-HOC capture instead of the one actually clicked.
+    let rec = viewingId ? FULL.get(viewingId) : null;
+    if (!rec) {
+      // Prefer the hydrated full record (carries answerText, which drives brand rank,
+      // "cited for" aspects and hero-product detection). Falls back to the light row.
+      const targetId = viewingId || defaultRecordId();
+      const light = targetId ? RECORDS.find((r) => r.captureId === targetId) || RECORDS[0] : RECORDS[0];
+      rec = light ? FULL.get(light.captureId) || light : null;
+    }
+    if (!rec) {
+      /* Two different empty states, because they need different answers.
+       *
+       * RECORDS deliberately excludes campaign captures (see the isolation
+       * note in load()), so a user who only ever runs campaigns has an empty
+       * RECORDS and used to be told "No captures yet — run a prompt", while
+       * a thousand captures sat in storage. Telling someone their data does
+       * not exist when it does is worse than showing nothing, and it is the
+       * reported "I ran a campaign, where did my results go".
+       */
+      if (TRACKED_COUNT > 0) {
+        const box = el("div", { className: "empty" },
+          el("div", {}, `Nothing selected to analyse — but ${TRACKED_COUNT} capture${TRACKED_COUNT === 1 ? "" : "s"} ${TRACKED_COUNT === 1 ? "is" : "are"} stored against your campaigns.`),
+          el("div", { className: "muted small", style: "margin-top:6px" },
+            "Campaign captures are kept separate from ad-hoc browsing so a tracking run can't skew your ad-hoc numbers. Open one from the Dashboard's campaign view — click any prompt in the performance table."));
+        const go = el("button", { className: "btn sm primary", style: "margin-top:10px" }, "Go to campaign results →");
+        go.onclick = () => { showTab("dashboard"); renderDashboard(); };
+        box.append(go);
+        root.append(box);
+        return;
+      }
+      root.append(
+        el("div", { className: "empty" },
+          "No captures yet. Open ChatGPT, Gemini, Perplexity or Grok in a tab, run a prompt, then reopen this panel.")
+      );
+      return;
+    }
+
+  // Each view has its own layout: the popup since 0.47.0 (renderAnalyzePopup),
+  // the full tab since 0.48.0 (renderAnalyzeTab). The full tab reuses the
+  // detailed cards renderAnalyzeLegacy() builds — every page read, search
+  // details, the brand/page matrix, grounding, technical — in its Details.
+  if (document.body.classList.contains("popup")) {
+    renderAnalyzePopup(rec, root);
+    return;
+  }
+  renderAnalyzeTab(rec, root);
   } catch (err) {
     console.error("renderAnalyze failed:", err);
     const root = $("#analyze");
@@ -6725,7 +7490,7 @@ document.querySelectorAll("[data-tab]").forEach((btn) =>
     // openCapture() no longer applies once they've navigated on their own.
     returnTab = null;
     // clicking the Analyze tab directly returns to the latest capture
-    if (btn.dataset.tab === "analyze") { viewingId = null; apSheet = null; apMenuOpen = false; apFanAll = false; apPromptOpen = false; renderAnalyze(); }
+    if (btn.dataset.tab === "analyze") { viewingId = null; apSheet = null; apMenuOpen = false; apFanAll = false; apPromptOpen = false; atResetState(); renderAnalyze(); }
     if (btn.dataset.tab === "loader") loadGeo();
     showTab(btn.dataset.tab);
   })

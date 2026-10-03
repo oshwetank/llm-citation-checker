@@ -123,7 +123,7 @@ try {
   const menuHasCompare = await page.evaluate(() => !!document.querySelector('.nav-tabs [data-tab="compare"]'));
   check("Compare is no longer a top-menu tab", !menuHasCompare);
   const opener = await page.evaluate(() => document.querySelector('#analyze [data-open="compare"]')?.textContent || "");
-  check("the answer offers to compare its two answers", /Compare 2 answers/.test(opener), opener);
+  check("the answer offers to compare its two answers", /All 2 answers to this prompt/.test(opener), opener);
   await page.evaluate(() => document.querySelector('#analyze [data-open="compare"]')?.click());
   await page.waitForTimeout(900);
   const preselected = await page.evaluate(() => document.querySelector("#cmpPrompt")?.value || "");

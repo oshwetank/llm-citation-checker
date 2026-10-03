@@ -196,13 +196,23 @@ try {
 
   console.log("\nDetails sheet");
   {
+    // Opened from part-way down, where the links are. Up to 0.47.0 the panel
+    // kept a transform from its fade-in, which made it the sheet's containing
+    // block: the "bottom sheet" sat at the bottom of the whole Analyze panel,
+    // half below the popup's footer.
+    await page.evaluate(() => { document.querySelector(".app-content").scrollTop = 400; });
+    await page.waitForTimeout(200);
     await page.evaluate(() => [...document.querySelectorAll(".ap-links .ap-btn")].find((b) => b.textContent === "Technical")?.click());
     await page.waitForTimeout(300);
     const open = await page.evaluate(() => {
       const s = document.querySelector(".ap-sheet");
-      return s ? { text: s.innerText, tabs: s.querySelectorAll(".ap-sheet-tab").length } : null;
+      const r = s && s.getBoundingClientRect();
+      const scrim = document.querySelector(".ap-scrim")?.getBoundingClientRect();
+      return s ? { text: s.innerText, tabs: s.querySelectorAll(".ap-sheet-tab").length, top: Math.round(r.top), bottom: Math.round(r.bottom), vh: innerHeight, scrimTop: scrim ? Math.round(scrim.top) : null } : null;
     });
     check("Technical opens the sheet", !!open && /Capture id/.test(open.text), open && open.text.slice(0, 80));
+    check("the sheet sits on the bottom of the window, all of it on screen", !!open && Math.abs(open.bottom - open.vh) <= 1 && open.top > 0, open && `${open.top}..${open.bottom} of ${open.vh}`);
+    check("its backdrop covers the whole popup", !!open && open.scrimTop === 0, open && open.scrimTop);
     await page.evaluate(() => document.querySelector(".ap-sheet-close")?.click());
     await page.waitForTimeout(200);
     check("× closes it", await page.evaluate(() => !document.querySelector(".ap-sheet")));
@@ -242,14 +252,15 @@ try {
 
   check("no page error anywhere above", pageErrors.length === 0, pageErrors.join(" | "));
 
-  console.log("\nFull tab: unchanged layout, and it can open a given capture");
+  console.log("\nFull tab: its own layout, and it can open a given capture");
   {
     const tab = await context.newPage();
     await tab.setViewportSize({ width: 1280, height: 900 });
     await tab.goto(`chrome-extension://${extId}/ui/panel.html?mode=tab`);
     await tab.waitForTimeout(1500);
-    const r = await tab.evaluate(() => ({ popupLayout: !!document.querySelector("#analyze .ap"), brandCard: !!document.getElementById("card-brand-mentions") }));
-    check("the full tab still uses the card layout", !r.popupLayout && r.brandCard, JSON.stringify(r));
+    // Since 0.48.0 the full tab has its own two-column layout (analyze-tab.test.mjs).
+    const r = await tab.evaluate(() => ({ popupLayout: !!document.querySelector("#analyze .ap"), tabLayout: !!document.querySelector("#analyze .at-grid #at-answer") }));
+    check("the full tab uses its own layout, not the popup's", !r.popupLayout && r.tabLayout, JSON.stringify(r));
     const target = local;
     await tab.goto(`chrome-extension://${extId}/ui/panel.html?mode=tab&capture=${encodeURIComponent(target.id)}`);
     await tab.waitForTimeout(1500);

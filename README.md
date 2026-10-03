@@ -10,12 +10,28 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.47.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.48.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - Analyze in the full browser tab is redesigned. The analysis sits on the left and the
+>   answer, as the engine showed it, stays pinned on the right while you scroll: product
+>   cards or map pins first, then the text with every brand and citation marked. Click a
+>   brand or "Show in answer" on a cited page to light it up in the answer. The searches the
+>   engine ran come first, then your brand, the products or places, every brand, every cited
+>   page, what changed since last time and the kinds of sites it used. The older detailed
+>   cards are under Details, one at a time. The header shrinks to one line as you scroll, and
+>   a long prompt is cut to two lines with "Show the whole prompt".
+> - When the same prompt was answered by more than one engine, tabs under the prompt switch
+>   between their answers, and "Compare N engines" shows how they differ: who came first,
+>   which brands every engine named, which sites each one cited, each engine in numbers and
+>   the searches each one ran. You can read each engine's answer beside the comparison.
+> - Fixed: in the popup, the details sheet (Technical, Where to buy and the rest) opened
+>   half below the footer if you had scrolled down first. It now always sits at the bottom
+>   of the window. In the full tab, text scrolling under the top menu no longer shows
+>   through it.
 > - A new typeface, IBM Plex, chosen for this kind of screen: "I", "l" and "1" never look
 >   alike in site names and model numbers, digits line up in columns, and it has the ₹ sign
 >   and a matching Hindi version. It ships inside the extension, so nothing is downloaded.
@@ -28,7 +44,7 @@ of its own**; nothing leaves your device.
 >   where to buy, places, images, search details, technical) open in a sheet. No box is
 >   cut off at the bottom any more: the popup scrolls instead.
 > - Compare has left the top menu. It opens from an answer instead ("All N answers to
->   this prompt" in the popup, "Compare N answers" in the full tab), on that prompt.
+>   this prompt"), on that prompt.
 > - The campaign setup screen is redesigned. Save draft and Save & start tracking sit in a bar
 >   pinned at the top, which lists the five things a campaign needs and turns any missing one
 >   red. Prompts are added with two clear buttons (Upload a file / Add manually). Competitors

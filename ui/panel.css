@@ -100,6 +100,15 @@
 
 
 :root {
+  /* The page's backdrop: saturated colour blobs — the layer every glass
+     surface refracts (see html, body). A token since 0.48.0, so the full
+     tab's Analyze header can paint the same backdrop above itself. */
+  --page-backdrop: radial-gradient(at 8% 0%, rgba(129, 178, 255, 0.55) 0px, transparent 45%),
+                   radial-gradient(at 100% 4%, rgba(126, 231, 191, 0.42) 0px, transparent 42%),
+                   radial-gradient(at 92% 92%, rgba(255, 214, 137, 0.42) 0px, transparent 45%),
+                   radial-gradient(at 0% 100%, rgba(178, 168, 255, 0.5) 0px, transparent 45%),
+                   radial-gradient(at 50% 45%, rgba(255, 255, 255, 0.55) 0px, transparent 60%),
+                   #eaf0f8;
   --font-sans: "IBM Plex Sans", "IBM Plex Sans Devanagari", system-ui, -apple-system,
                "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
@@ -296,11 +305,16 @@
    page reads as a single calm material and the lower canvas stays clean.
    The glass surfaces above it supply the depth; the backdrop shouldn't
    compete with them. */
+:root[data-theme="dark"] {
+  /* A token (since 0.48.0) so the full tab's Analyze header can paint the
+     same backdrop above itself — see .at-hero::before. */
+  --page-backdrop: radial-gradient(at 10% -5%, rgba(37, 99, 235, 0.18) 0px, transparent 55%),
+                   radial-gradient(at 95% 0%, rgba(79, 70, 229, 0.14) 0px, transparent 50%),
+                   #070b12;
+}
 :root[data-theme="dark"],
 [data-theme="dark"] body {
-  background: radial-gradient(at 10% -5%, rgba(37, 99, 235, 0.18) 0px, transparent 55%),
-              radial-gradient(at 95% 0%, rgba(79, 70, 229, 0.14) 0px, transparent 50%),
-              #070b12;
+  background: var(--page-backdrop);
   background-attachment: fixed;
 }
 
@@ -361,12 +375,7 @@ html, body {
   /* Saturated colour blobs — this is the layer every glass surface refracts.
      Deliberately stronger than the old near-white wash: at the previous
      opacity there was effectively nothing behind the glass to see. */
-  background: radial-gradient(at 8% 0%, rgba(129, 178, 255, 0.55) 0px, transparent 45%),
-              radial-gradient(at 100% 4%, rgba(126, 231, 191, 0.42) 0px, transparent 42%),
-              radial-gradient(at 92% 92%, rgba(255, 214, 137, 0.42) 0px, transparent 45%),
-              radial-gradient(at 0% 100%, rgba(178, 168, 255, 0.5) 0px, transparent 45%),
-              radial-gradient(at 50% 45%, rgba(255, 255, 255, 0.55) 0px, transparent 60%),
-              #eaf0f8;
+  background: var(--page-backdrop);
   background-attachment: fixed;
   color: var(--fg-primary);
   /* IBM Plex, bundled (see the @font-face block at the top). The system
@@ -720,10 +729,16 @@ body.tab .app-content {
    panel stayed fully transparent — the whole UI rendered blank for anyone
    with the OS "reduce motion" accessibility setting enabled. The animation
    is decoration on top of an already-visible panel. */
+/* No `forwards`: the last frame is the panel's resting state anyway, and a
+   held translateY(0) is still a transform. It made every panel the
+   containing block for its position:fixed descendants and switched off their
+   fixed backgrounds: the popup's details sheet (.ap-sheet, fixed to the
+   bottom) was pinned to the bottom of the whole Analyze panel instead of the
+   window, so on a scrolled popup it opened half below the footer. */
 .panel.active {
   display: block;
   opacity: 1;
-  animation: panelFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: panelFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* TRANSFORM ONLY — deliberately no opacity.
@@ -5335,3 +5350,202 @@ body.popup #analyze .ap > * { flex-shrink: 0; min-width: 0; }
 .ap-sheet-img span { display: flex; flex-direction: column; min-width: 0; }
 
 .cmp-back { margin: 0 0 10px; }
+
+/* ════════════════════════════════════════════════════════════════════════
+   Analyze, full tab (0.48.0) — see renderAnalyzeTab() in panel.js.
+   A prompt header, then the analysis on the left and the answer, as the
+   engine showed it, pinned on the right. Shares the popup's .ap-* pieces
+   (pills, tags, kind bar, chips, tiles) so the two views read as one tool.
+   ════════════════════════════════════════════════════════════════════════ */
+.at-hero.analyze-context-bar {
+  flex-direction: column; align-items: stretch; gap: 8px; padding: 12px 16px; margin-bottom: 0;
+  /* Solid, not glass: answers scroll under it and must not show through. */
+  background: var(--surface-solid); backdrop-filter: none; -webkit-backdrop-filter: none;
+}
+/* The page scrolls under the pinned app header, which is glass, so the
+   answer's text showed through it and in the gap above this header. This
+   strip, painted with the page's own fixed backdrop, covers that band
+   (behind the app header, z-index 100) with exactly what was there at the
+   top of the page. Two layers, because html and body each paint the
+   backdrop and their translucent blobs add up. */
+body.tab .at-hero::before, body.tab .at-hero::after {
+  content: ""; position: absolute; z-index: -1; pointer-events: none;
+  left: -100vw; right: -100vw; bottom: calc(100% + 1px); height: calc(var(--analyze-bar-top, 64px) + 24px);
+  background: var(--page-backdrop); background-attachment: fixed;
+}
+.at-hero.compact { gap: 4px; padding-top: 8px; padding-bottom: 8px; }
+.at-hero.compact .at-strip, .at-hero.compact .at-engines, .at-hero.compact > .ap-link { display: none; }
+.at-hero.compact .at-prompt.analyze-context-prompt { font-size: 15px; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+.at-hero-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; }
+.at-asked { font-size: 13px; font-weight: 600; white-space: nowrap; }
+.at-hero .at-prompt.analyze-context-prompt {
+  flex: none; margin: 0; text-align: left; font-size: 20px; line-height: 1.3; font-weight: 600;
+  white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere;
+}
+.at-hero .at-prompt.clamped { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.at-strip { align-items: center; }
+.at-overtime { margin-left: auto; height: 22px; }
+.at-btn {
+  height: 30px; padding: 0 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-solid);
+  color: var(--fg-primary); font: inherit; font-size: 12px; font-weight: 500; white-space: nowrap; cursor: pointer;
+}
+.at-btn:hover { border-color: var(--border-hover); }
+.at-btn.sm { height: 24px; padding: 0 8px; font-size: 11px; }
+.at-btn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.at-btn:focus-visible, .at-name-btn:focus-visible, .at-engine-tab:focus-visible, .at-hl-btn:focus-visible,
+.at-cite:focus-visible, .at-hl-clear:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.at-menu { position: absolute; right: 16px; top: 48px; z-index: 60; }
+.at-engines { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px; }
+.at-engine-tab {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px; min-width: 0; padding: 7px 10px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface-solid);
+  color: var(--fg-primary); font: inherit; text-align: left; cursor: pointer;
+}
+.at-engine-tab.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: var(--accent-subtle); }
+.at-engine-tab.cmp.on { background: var(--accent); color: var(--accent-fg); }
+.at-engine-tab-label { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 600; }
+.at-engine-tab-sub { max-width: 100%; font-size: 11px; color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.at-engine-tab.cmp.on .at-engine-tab-sub { color: inherit; opacity: 0.85; }
+
+.demo-banner.at-demo { margin: 12px 0 0; }
+.at-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(380px, 540px); gap: 14px; align-items: start; margin-top: 12px; }
+.at-main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.at-main > * { flex-shrink: 0; min-width: 0; }
+.at-lead { margin: 0 2px; font-size: 13px; color: var(--fg-secondary); }
+.at-sec {
+  display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 14px 16px; border-radius: 14px;
+  background: var(--surface-solid); border: 1px solid var(--border); box-shadow: var(--glass-shadow);
+}
+.at-sec-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.at-sec-head > .ap-muted, .at-sec-head > .ap-sec-meta, .at-sec-head > .ap-legend, .at-sec-head > .at-det-tabs { margin-left: auto; }
+.at-h { margin: 0; font-size: 15px; font-weight: 600; color: var(--fg-primary); }
+.at-h3 { margin: 4px 0 2px; font-size: 13px; font-weight: 600; }
+.at-foot { margin: 0; }
+.at-steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.at-steps li { display: flex; flex-direction: column; padding: 8px 10px; border-radius: 10px; background: var(--bg-subtle); border: 1px solid var(--border); }
+.at-steps b { font-size: 20px; line-height: 1.2; font-weight: 600; }
+.at-steps span { font-size: 12px; color: var(--fg-secondary); }
+.at-lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 4px 18px; }
+.ap-fan-row.at-fan-row { grid-template-columns: minmax(0, 1fr) auto; }
+.ap-fan-row.at-fan-row .ap-fan-text { font-size: 13px; }
+.at-tiles { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+
+.at-table { display: flex; flex-direction: column; min-width: 0; }
+.at-tr { display: grid; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--border); font-size: 13px; text-align: left; }
+.at-tr.at-th { border-top: none; padding: 0 0 4px; font-size: 11px; font-weight: 500; color: var(--fg-muted); }
+.at-tr .num { text-align: right; }
+.at-brand-table .at-tr { grid-template-columns: 22px minmax(140px, 1.1fr) 70px 130px minmax(0, 1.4fr); }
+.at-brand-table.has-change .at-tr { grid-template-columns: 22px minmax(140px, 1.1fr) 70px 130px minmax(0, 1.4fr) 86px; }
+.at-prod-table .at-tr { grid-template-columns: 22px minmax(0, 2fr) 76px 104px minmax(0, 1fr); }
+.at-place-table .at-tr { grid-template-columns: 34px minmax(0, 1.5fr) 110px minmax(0, 1fr) 210px 70px; }
+.at-cmp-engines .at-tr { grid-template-columns: minmax(110px, 1fr) minmax(0, 1fr) minmax(0, 1.2fr) 60px 90px 50px 50px; }
+.at-tr.mine { background: var(--accent-subtle); box-shadow: -16px 0 0 var(--accent-subtle), 16px 0 0 var(--accent-subtle); }
+.at-tr.on { background: var(--bg-subtle); box-shadow: -16px 0 0 var(--bg-subtle), 16px 0 0 var(--bg-subtle); }
+.at-tr.dropped { border-top-style: dashed; color: var(--fg-muted); }
+.at-tr.dropped .ap-brand-name { text-decoration: line-through; font-weight: 500; }
+.at-name-btn { padding: 0; border: none; background: transparent; color: inherit; font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
+.at-name-btn:hover { text-decoration: underline; }
+.at-name-btn[aria-pressed="true"] { color: var(--accent); text-decoration: underline; }
+.at-tr.mine .at-name-btn { color: var(--accent); }
+.at-ellipsis { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.at-small { font-size: 12px; }
+
+.at-products { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 12px; align-items: start; }
+.at-buy { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 10px; background: var(--bg-subtle); border: 1px solid var(--border); }
+.at-eyebrow { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--fg-muted); }
+.at-imgs { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; }
+.at-img { display: flex; flex-direction: column; gap: 2px; min-width: 0; color: inherit; text-decoration: none; font-size: 12px; }
+.at-img img, .at-img .ap-img-ph { width: 100%; height: 90px; object-fit: cover; border-radius: 8px; background: var(--bg-subtle); }
+.at-part { display: flex; flex-direction: column; gap: 4px; padding: 7px 0; border-top: 1px solid var(--border); font-size: 13px; }
+.at-pagelist { display: flex; flex-direction: column; }
+.at-page { display: grid; grid-template-columns: 22px minmax(0, 1.5fr) minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 7px 0; border-top: 1px solid var(--border); }
+.at-page.mine .ap-page-domain { color: var(--accent); }
+.at-page-title { font-size: 12px; color: var(--fg-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.at-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; align-items: start; }
+.at-kinds { display: flex; flex-direction: column; gap: 6px; }
+.at-kind-row { display: grid; grid-template-columns: 130px minmax(0, 1fr) 54px; gap: 8px; align-items: center; font-size: 12px; }
+.at-kind-row .num { text-align: right; color: var(--fg-secondary); }
+.at-kind-bar { display: flex; gap: 2px; height: 9px; }
+.at-kind-bar .c { background: var(--green-fg); border-radius: 4px 0 0 4px; }
+.at-kind-bar .r { background: var(--amber-border); border-radius: 0 4px 4px 0; }
+.ap-legend i.k-cited { background: var(--green-fg); }
+.ap-legend i.k-read { background: var(--amber-border); }
+.at-det-panel { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.at-det-panel > .card { margin: 0; }
+
+/* The answer, pinned under the prompt header; its body scrolls on its own. */
+.at-answer {
+  position: sticky; top: calc(var(--analyze-bar-top, 64px) + var(--at-hero-h, 140px) + 12px);
+  max-height: calc(100vh - var(--analyze-bar-top, 64px) - var(--at-hero-h, 140px) - 24px);
+  min-height: 320px; display: flex; flex-direction: column; overflow: hidden;
+  border-radius: 14px; background: var(--surface-solid); border: 1px solid var(--border); box-shadow: var(--glass-shadow);
+}
+.at-answer-head { flex-shrink: 0; display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.at-answer-icon { display: inline-flex; width: 26px; height: 26px; flex-shrink: 0; }
+.at-answer-icon svg { width: 26px; height: 26px; }
+.at-answer-title { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+.at-open { font-size: 12px; font-weight: 600; color: var(--accent); text-decoration: none; white-space: nowrap; }
+.at-open:hover { text-decoration: underline; }
+.at-ans-tabs { flex-shrink: 0; display: flex; gap: 2px; margin: 8px 12px 0; padding: 3px; border-radius: 9px; background: var(--bg-subtle); overflow-x: auto; }
+.at-hl { flex-shrink: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 14px; border-bottom: 1px solid var(--border); }
+.at-hl-btn { height: 24px; padding: 0 9px; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: var(--fg-secondary); font: inherit; font-size: 12px; cursor: pointer; }
+.at-hl-btn.on { background: var(--accent-subtle); border-color: var(--blue-border); color: var(--fg-primary); font-weight: 600; }
+.at-hl-clear { margin-left: auto; height: 24px; padding: 0 9px; border: none; border-radius: 999px; background: var(--amber-bg); color: var(--amber-fg); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.at-hl-clear[hidden] { display: none; }
+.at-answer-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 12px 16px 18px; font-size: 14px; line-height: 1.65; color: var(--fg-primary); }
+.at-answer-body > * + * { margin-top: 10px; }
+.at-answer-text h1, .at-answer-text h2, .at-answer-text h3, .at-answer-text h4 { margin: 14px 0 6px; font-size: 15px; line-height: 1.4; font-weight: 600; }
+.at-answer-text p { margin: 0 0 10px; }
+.at-answer-text ul, .at-answer-text ol { margin: 0 0 10px; padding-left: 20px; }
+.at-answer-text table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; font-size: 13px; }
+.at-answer-text th, .at-answer-text td { padding: 4px 6px; border: 1px solid var(--border); text-align: left; vertical-align: top; }
+mark.at-mark { padding: 0 1px; border-radius: 3px; background: transparent; color: inherit; cursor: pointer; }
+.hl-brands mark.at-mark { background: rgba(251, 191, 36, 0.28); box-shadow: inset 0 -2px 0 rgba(217, 119, 6, 0.6); }
+.has-focus mark.at-mark:not(.focus) { background: transparent; box-shadow: none; }
+mark.at-mark.focus { background: #fde68a; box-shadow: inset 0 -2px 0 #d97706; color: #111827; }
+.at-cite {
+  display: none; vertical-align: 1px; margin-left: 3px; padding: 0 6px; border: none; border-radius: 999px;
+  background: var(--bg-subtle); color: var(--fg-secondary); font: inherit; font-size: 11px; line-height: 18px; font-weight: 600; cursor: pointer;
+}
+.hl-cites .at-cite, .at-cite.focus { display: inline-block; }
+.at-cite.focus { background: var(--accent); color: var(--accent-fg); }
+.has-focus .at-cite:not(.focus) { opacity: 0.45; }
+.at-ans-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px; }
+.at-ans-card { display: flex; flex-direction: column; gap: 2px; padding: 7px 8px; border: 1px solid var(--border); border-radius: 9px; font-size: 12px; line-height: 1.35; }
+.at-ans-card.mine { border: 2px solid var(--accent); background: var(--accent-subtle); }
+.ap-imgs.at-ans-imgs { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.at-ans-places .ap-place { font-size: 13px; }
+/* Ratings stay on one line beside a long listing name. */
+.ap-place > .ap-muted { flex: 0 0 auto; white-space: nowrap; }
+.at-fn-list { margin: 0; padding-left: 22px; font-size: 12px; line-height: 1.5; }
+.at-fn-list a { color: var(--accent); text-decoration: none; font-weight: 600; }
+.at-fn-list li.focus { background: var(--accent-subtle); border-radius: 6px; }
+
+/* Compare engines */
+.at-diffs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.at-diffs li { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 10px; font-size: 13px; line-height: 1.45; }
+.at-diff-k { font-weight: 600; color: var(--accent); }
+.at-grid-table { display: grid; gap: 4px 6px; align-items: center; font-size: 12px; }
+.at-grid-row { display: contents; }
+.at-grid-table [role="columnheader"] { font-size: 11px; font-weight: 500; color: var(--fg-muted); }
+.at-grid-table .c { display: flex; justify-content: center; align-items: center; }
+.at-grid-table .pos { padding: 1px 0; border-radius: 6px; background: var(--bg-subtle); font-weight: 600; text-align: center; }
+.at-grid-table .pos.first { background: var(--accent); color: var(--accent-fg); }
+.at-grid-table .pos.none { background: transparent; color: var(--fg-muted); font-weight: 400; }
+.at-grid-table .you { color: var(--accent); }
+.at-grid-table .num { text-align: right; }
+i.dot { display: inline-block; width: 10px; height: 10px; border-radius: 999px; }
+i.dot.cited { background: var(--green-fg); }
+i.dot.read { box-sizing: border-box; border: 2px solid var(--amber-border); }
+i.dot.none { width: 4px; height: 4px; background: var(--border); }
+.at-cmp-q { display: flex; flex-direction: column; gap: 4px; padding: 7px 0; border-top: 1px solid var(--border); }
+.ap-bchip.shared { background: var(--blue-bg); color: var(--blue-fg); font-weight: 600; }
+
+@media (max-width: 1300px) { .at-products { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 1100px) {
+  .at-grid { grid-template-columns: minmax(0, 1fr); }
+  .at-answer { position: static; max-height: none; }
+  .at-brand-table .at-tr, .at-brand-table.has-change .at-tr { grid-template-columns: 22px minmax(120px, 1fr) 60px 120px; }
+  .at-brand-table .at-tr > :nth-child(n+5) { display: none; }
+  .at-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

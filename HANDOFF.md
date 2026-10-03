@@ -10,7 +10,7 @@ Last updated 2 October 2026, at v0.47.0.
   - **Campaigns** (the "Loader") send a list of prompts to several engines in background tabs and compute visibility metrics across them.
   - See `README.md` for the user-facing description and `ARCHITECTURE.md` / `RESEARCH.md` for the original design.
 - **Branch.** Work happens on `claude/blank-screen-prompts-issue-qnma6w`. **PR #26** targets `master`, is **open**; check its CI before building on it. If it has since been merged, start from `master`.
-- **Version.** 0.47.0: the bundled IBM Plex typeface, the popup's new Analyze screen, and Compare moved out of the top menu (see below). It is release 1 of the owner's canvas redesign; the rest is planned release by release (see "UI redesign, release by release"). 0.46.0 redesigned the campaign setup screen. 0.45.1 was never released; 0.45.2 was another model's commit (`c866508`) whose Grok change is undone in 0.45.3 — see open problem 1.
+- **Version.** 0.48.0: the full tab's new Analyze screen, with engine tabs and an engine comparison (see below). It is release 2 of the owner's canvas redesign; 0.47.0 was release 1 (the bundled IBM Plex typeface, the popup's new Analyze screen, Compare out of the top menu); the rest is planned release by release (see "UI redesign, release by release"). 0.46.0 redesigned the campaign setup screen. 0.45.1 was never released; 0.45.2 was another model's commit (`c866508`) whose Grok change is undone in 0.45.3 — see open problem 1.
 - **Tests.** 46 unit and 31 browser test files, all passing locally and in CI.
 - **Last real run: v0.45.4 (Gemini + Grok only), 10/20.** Gemini 10/10; Grok 0/10, fixed in 0.45.5, not yet run (0.46.0 carries the same fix). The last real run was on v0.43.0 (see the run history).
 
@@ -82,13 +82,16 @@ for t in test/*.test.mjs; do node "$t" || echo "FAILED: $t"; done
 **UI redesign, release by release (from 0.47.0).** The owner designed and approved a full redesign on a design canvas (popup and full-tab Analyze, Dashboard, Campaigns, About, Excel/PDF exports) and asked for it to be built "release by release". Each release is its own version, tested and zipped:
 
 1. **0.47.0 (done):** IBM Plex bundled and the type scale tidied (sizes 11/12/13/14/16, weights 400/500/600); the popup Analyze rebuilt (`renderAnalyzePopup`; tests `analyze-view`, `analyze-popup`); Compare out of the top menu, opened from an answer instead.
-2. Full-tab Analyze: the answer as the engine showed it on the right, the analysis on the left, adapting to the kind of answer; comparing engines inside Analyze.
+2. **0.48.0 (done):** full-tab Analyze rebuilt (`renderAnalyzeTab`; test `analyze-tab`): the analysis on the left, the answer as the engine showed it pinned on the right (`atRenderAnswer`, from `buildExportModel(rec).bodyHtml`, brands marked, citations as site chips), adapting to the kind of answer. Engine tabs and "Compare N engines" when one prompt has answers from several engines (`src/lib/compareView.js`; test `compare-view`). The old cards are still built, by `renderAnalyzeLegacy` into a detached div, and the Details tabs take them by id, so their behaviour didn't have to be rewritten.
 3. Dashboard (tab and popup): search-first prompt history, periods, answer-type facets, fan-out view.
 4. Campaigns and the brand-vs-competitor detail, adapting to the kinds of answer.
 5. About: overview, glossary, diagnostics.
 6. Exports: a real .xlsx workbook with charts and formulas, designed PDF reports, and the export dialog (today's export is a chart-less SpreadsheetML .xls and a browser-printed PDF).
 
 - The popup's details sheet says what the capture can't: a product card names its stores but not each store's price, and Gemini doesn't publish its searches. Keep it that way; don't fill gaps.
+- Engine comparison: a campaign answer is compared within its own run (same campaign, prompt and run); an ad-hoc answer with each engine's latest ad-hoc answer to the same prompt (`answersToPrompt`). The "All N answers to this prompt" link still opens the run-by-run Compare panel.
+- Panels must not keep a transform. `.panel.active`'s fade-in used `forwards`, which held `translateY(0)`; any transform makes the panel the containing block for `position: fixed` descendants and turns fixed backgrounds into scrolling ones. The popup's details sheet opened half below the footer, and the full tab's header strip (`.at-hero::before/::after`, painted with `--page-backdrop`, two layers because html and body each paint it) couldn't match the page. Both are tested (`analyze-popup`, `analyze-tab`).
+- Brand marks in the answer use a `/u` regex. `escapeRegExp()` escapes "-", which is a syntax error under `/u`; a place called "X - Y" crashed the page until `atMarkBrands` got its own escape.
 - "Your brand" in an ad-hoc answer comes from the campaigns (`ownBrandFor`): the capture's own campaign, a brand tagged as yours, a tracked brand the answer names, or the only campaign.
 
 **Engine specifics worth knowing**

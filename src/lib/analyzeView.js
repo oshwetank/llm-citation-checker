@@ -31,6 +31,27 @@ export function normPrompt(p) {
   return String(p || "").toLowerCase().replace(/\s+/g, " ").replace(/[.?!,]+$/, "").trim();
 }
 
+/**
+ * Vendor names the capture knows for certain: ChatGPT's "Product Vendor"
+ * entities and the first word of each product card ("Realme P4 5G" ->
+ * "Realme"). normalizeMentions folds model names onto these, so a capture that
+ * named "Realme P4" and "Realme" counts one brand. Moved here from panel.js in
+ * 0.48.0 so the compare view can use the same rule.
+ */
+export function knownVendors(rec) {
+  const out = [];
+  for (const e of rec.entities || []) {
+    if (e && e.text && /vendor|manufacturer|brand/i.test(e.category || "")) out.push(e.text);
+  }
+  for (const p of rec.products || []) {
+    // Only the first word, and only when it looks like a name rather than a
+    // spec, so a product called "5G Router" can't invent a vendor called "5G".
+    const first = String(p.name || "").trim().split(/\s+/)[0];
+    if (first && first.length > 1 && /^[A-Za-z][A-Za-z.&'-]*$/.test(first)) out.push(first);
+  }
+  return [...new Set(out)];
+}
+
 /** What led the answer, from what the capture actually holds. */
 export function answerKind(rec) {
   if (!rec.searched && !(rec.sources || []).length) return { id: "memory", label: "From memory" };
@@ -220,7 +241,7 @@ export function ownBrandFor(rec, profiles = []) {
 }
 
 /** Four numbers for your brand: where it was named, cited pages, cards, map or images. */
-export function yourBrandView(rec, own, { knownBrands, previous } = {}) {
+export function yourBrandView(rec, own, { knownBrands, previous, max = 4 } = {}) {
   if (!own) return null;
   const list = cleanBrands(rec, knownBrands);
   const named = namedOrder(list);
@@ -265,7 +286,7 @@ export function yourBrandView(rec, own, { knownBrands, previous } = {}) {
     since = was === pos ? (pos ? `still named ${pos === 1 ? "first" : ORD(pos)}` : "still not named")
       : !was ? "newly named" : !pos ? `dropped out (was ${ORD(was)})` : pos < was ? `up from ${ORD(was)}` : `down from ${ORD(was)}`;
   }
-  return { name: own.name, campaign: own.campaign || "", tiles: tiles.slice(0, 4), since, previousAt: previous ? previous.capturedAt : null };
+  return { name: own.name, campaign: own.campaign || "", tiles: tiles.slice(0, max), since, previousAt: previous ? previous.capturedAt : null };
 }
 
 function productBrandIs(p, brand) {
