@@ -10,12 +10,20 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.52.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.53.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - PDF reports. In a campaign's Export…, choose PDF report and a run: up to seven A4 pages
+>   with the headline numbers and what they say, brands, every prompt on every engine,
+>   sources, kinds of answer and product cards, the engines' searches, and what to do next.
+>   Pick which pages to include. In Analyze, Save as PDF now gives a two-page report on the
+>   answer: how your brand did, the product cards and where they send buyers, what backs
+>   each brand, what changed since you last asked, then the answer itself and every page the
+>   engine opened. Both open in a tab and Chrome's print dialog saves them ("Save as PDF");
+>   a long table carries over onto the next page instead of being cut off.
 > - Export… on a campaign's board opens one dialog for every way out of it. Choose an Excel
 >   workbook (.xlsx) or CSV tables, all runs or the latest one, which engines, and which
 >   tables to include; it shows how many rows each holds before you export. The workbook
@@ -423,6 +431,8 @@ src/
     grounding-score.js  verbatim grounding score
     xlsxWrite.js        dependency-free .xlsx writer: styles, formulas, charts, tables
     campaignXlsx.js     the campaign workbook and CSV tables the export dialog builds
+    campaignReport.js   the campaign PDF report's numbers (ui/report.html lays it out)
+    answerReport.js     one answer's PDF report, from Analyze's own views
     exportDoc.js        conversation → HTML/PDF renderer
     feedbackBundle.js   builds the problem-report archive
     zipWrite.js         dependency-free zip writer (CompressionStream, STORED fallback)

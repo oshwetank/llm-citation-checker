@@ -108,7 +108,7 @@ jobs:
           for f in test/about-view.test.mjs test/adapter.test.mjs test/ai-brands.test.mjs test/analyze-view.test.mjs test/auth-check.test.mjs \
                    test/brand-context.test.mjs test/build-id.test.mjs test/chatgpt-retrieval.test.mjs test/compare-view.test.mjs test/history-view.test.mjs \
                    test/auto-competitors.test.mjs \
-                   test/behaviour.test.mjs test/brands.test.mjs test/campaign-board.test.mjs test/campaign-xlsx.test.mjs \
+                   test/behaviour.test.mjs test/brands.test.mjs test/campaign-board.test.mjs test/campaign-xlsx.test.mjs test/pdf-report.test.mjs \
                    test/concurrency.test.mjs test/diagnostics-summary.test.mjs \
                    test/dom-harvest-multiturn.test.mjs test/engine-submit-signal.test.mjs test/errorlog.test.mjs \
                    test/fanout.test.mjs test/feedback-bundle.test.mjs \
@@ -166,7 +166,7 @@ jobs:
                    test/analyze-layout.test.mjs test/analyze-tab.test.mjs test/brand-detail.test.mjs test/build-mismatch.test.mjs \
                    test/campaign-diagnostics-export.test.mjs test/capture-attribution.test.mjs \
                    test/campaign-board-ui.test.mjs test/campaign-drilldown.test.mjs test/campaign-setup.test.mjs test/capture-latency.test.mjs \
-                   test/compare-tab.test.mjs test/concurrency-live.test.mjs test/dashboard.test.mjs test/duplicate-capture.test.mjs test/export-dialog.test.mjs \
+                   test/compare-tab.test.mjs test/concurrency-live.test.mjs test/dashboard.test.mjs test/duplicate-capture.test.mjs test/export-dialog.test.mjs test/pdf-report-ui.test.mjs \
                    test/full-audit.test.mjs test/long-answer.test.mjs \
                    test/funnel-omitted.test.mjs test/grok-navigation-timeout.test.mjs test/live-run-toast.test.mjs test/loader-status-stability.test.mjs \
                    test/mention-list.test.mjs \

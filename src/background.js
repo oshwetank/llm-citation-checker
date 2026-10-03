@@ -23,6 +23,8 @@ import { BUILD } from "./lib/build.js";
 import { checkEnginesAuth, AUTH_COOKIES } from "./lib/auth-check.js";
 import { buildDemoRecords, isDemoRecord } from "./lib/demo-data.js";
 import { buildCampaignXlsx, campaignCsvFiles, campaignExportCounts } from "./lib/campaignXlsx.js";
+import { campaignReport } from "./lib/campaignReport.js";
+import { findPrevious } from "./lib/analyzeView.js";
 import { summarizeRunDiagnostics } from "./lib/diagnosticsSummary.js";
 import { gzipString, gunzipToString } from "./lib/gzip.js";
 import { searchAnswers } from "./lib/answerSearch.js";
@@ -2633,6 +2635,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
 
+        /* The campaign PDF report (0.53.0): one run, laid out by
+         * ui/report.html. Worked out here for the same reason as the board:
+         * positions need the answer text. */
+        case "campaign-report": {
+          const profile = await db.get("profiles", msg.profileId);
+          if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
+          const engines = msg.engines && msg.engines.length ? msg.engines : undefined;
+          const records = selectTracked(await db.getAll("derived"), { profileId: msg.profileId, engines });
+          const runs = (await db.getAll("geoRuns")).filter((r) => r.profileId === msg.profileId);
+          const prompts = (await db.getAll("trackedPrompts")).filter((t) => t.profileId === msg.profileId);
+          const report = campaignReport({
+            profile, prompts, runs, records, brands: effectiveTrackedBrands(profile, records),
+            runId: msg.runId, sections: msg.sections, engines, generatedAt: Date.now(),
+          });
+          sendResponse(report.ok ? { ok: true, report } : report);
+          break;
+        }
+
         /* Everything about one campaign, in one message — "share all the
          * issues and data of a campaign with you in one go." Built here
          * rather than the panel fetching pieces one at a time (as the old
@@ -3286,6 +3306,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "get-record": {
           const rec = await db.get("derived", msg.captureId);
           sendResponse({ ok: true, record: rec || null });
+          break;
+        }
+
+        // One answer's PDF report (0.53.0): the answer, the previous answer
+        // to the same prompt on the same engine (for "since you last
+        // asked"), and the campaigns (for "your brand"). ui/report.js lays
+        // it out with src/lib/answerReport.js.
+        case "answer-report-data": {
+          const rec = await db.get("derived", msg.captureId);
+          if (!rec) { sendResponse({ ok: false, error: "That answer is no longer stored." }); break; }
+          const previous = findPrevious(rec, await db.getAll("derived"));
+          sendResponse({ ok: true, record: rec, previous: previous || null, profiles: await db.getAll("profiles") });
           break;
         }
 

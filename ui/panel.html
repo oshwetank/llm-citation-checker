@@ -13,8 +13,9 @@
          the About tab and the README. A privacy tool that phones home for a
          typeface is not a privacy tool.
          Since 0.47.0 the typeface (IBM Plex) ships inside the extension, in
-         /fonts, and panel.css's @font-face rules load it from there. Still no
+         /fonts, and fonts.css's @font-face rules load it from there. Still no
          request leaves the browser for it; analyze-popup.test.mjs checks. -->
+    <link rel="stylesheet" href="fonts.css" />
     <link rel="stylesheet" href="panel.css" />
   </head>
   <body>
@@ -27,7 +28,7 @@
             </div>
             <div class="brand-text">
               <span class="brand-title">CitoSkeleton</span>
-              <span class="version-badge">v0.52.0</span>
+              <span class="version-badge">v0.53.0</span>
               <span class="brand-sub">ChatGPT, Gemini, Perplexity &amp; Grok</span>
             </div>
           </div>

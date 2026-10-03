@@ -1320,7 +1320,7 @@ function renderAnalyzePopup(rec, root) {
       menu.append(b);
     };
     item("Copy the prompt", async () => { try { await navigator.clipboard.writeText(rec.userPrompt || ""); showToast("Prompt copied"); } catch (_) { showToast("Couldn't copy — select the prompt text instead", "error"); } renderAnalyze(); });
-    item("Save as PDF", () => { exportRecordsAsPdf([rec]); renderAnalyze(); });
+    item("Save as PDF", () => { openAnswerReport(rec); renderAnalyze(); });
     item("Save as HTML", () => { exportRecordsAsHtml([rec]); renderAnalyze(); });
     item("Download raw payload", () => { downloadRaw(rec.captureId, "analyze"); renderAnalyze(); });
     item("Report a wrong reading", () => { renderAnalyze(); openFeedbackModal(rec); });
@@ -1813,8 +1813,8 @@ function renderAnalyzeTab(rec, root) {
     older.onclick = () => go(idx + 1);
     row.append(newer, el("span", { className: "ap-paging" }, `${idx + 1} of ${RECORDS.length}`), older);
   }
-  const pdf = el("button", { className: "at-btn", type: "button" }, "Save as PDF");
-  pdf.onclick = () => exportRecordsAsPdf([rec]);
+  const pdf = el("button", { className: "at-btn", type: "button", title: "A two-page report on this answer, to print or save as PDF" }, "Save as PDF");
+  pdf.onclick = () => openAnswerReport(rec);
   const raw = el("button", { className: "at-btn", type: "button", title: "The engine's response exactly as captured" }, "Raw data");
   raw.onclick = () => downloadRaw(rec.captureId, "analyze");
   const menuBtn = el("button", { className: "ap-icon-btn", type: "button", title: "More actions", "aria-label": "More actions", "aria-expanded": atMenuOpen ? "true" : "false" }, "⋯");
@@ -4374,6 +4374,13 @@ async function exportRecordsAsHtml(records) {
   download(name, html, "text/html");
 }
 
+// One answer's designed report (0.53.0, release 6b): ui/report.html lays
+// out two A4 pages and opens the print dialog, where "Save as PDF" writes
+// the file. Several answers at once still go to export.html below.
+function openAnswerReport(rec) {
+  chrome.tabs.create({ url: chrome.runtime.getURL(`ui/report.html?kind=answer&captureId=${encodeURIComponent(rec.captureId)}&print=1`) });
+}
+
 // "Print / Save as PDF" — opens ui/export.html in a new tab, which fetches
 // its own full records via captureId (see ui/export.js); no need to hydrate
 // here. Bulk-composes into one document with a table of contents.
@@ -5032,7 +5039,11 @@ async function renderCampaignBoard(box, profile) {
   });
   picker.onchange = () => { const x = r.brands.find((y) => y.name === picker.value); cbViewAs = x && x.isOwn ? null : picker.value; rerender(); };
   const wb = el("button", { className: "btn sm ghost", type: "button", id: "cbExport", title: "The campaign as an Excel workbook or CSV tables" }, "Export…");
-  wb.onclick = () => openExportDialog(profile, { engines: b.engines, runs: runsWithAnswers.length, answers: r.answers, latestDate: runsWithAnswers[0] ? runDate(runsWithAnswers[0].startedAt) : "" });
+  wb.onclick = () => openExportDialog(profile, {
+    engines: b.engines, runs: runsWithAnswers.length, answers: r.answers, latestDate: runsWithAnswers[0] ? runDate(runsWithAnswers[0].startedAt) : "",
+    // Newest first, as the run picker lists them; the PDF reports on one.
+    runList: runsWithAnswers.map((x) => ({ id: x.id, no: runNo(x.id), date: runDate(x.startedAt) })),
+  });
   controls.append(
     el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Run"), runSel),
     el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Engine"), engine),
@@ -5596,6 +5607,16 @@ const EX_SUMMARY = [
   ["Searches", "Searches per engine; every distinct search", "searches"], ["Run over run", "Your position per prompt and engine, run by run", "multi"],
   ["Actions", "Missing prompts, gap sites, store fixes", null],
 ];
+// The PDF report's pages (src/lib/campaignReport.js's REPORT_PAGES).
+const EX_PDF_PAGES = [
+  ["summary", "Summary", "Headline numbers, visibility by run, findings"],
+  ["brands", "Brands", "Scorecard, visibility per engine, head to head, backing"],
+  ["prompts", "Prompts", "Position on every prompt and engine; where you are missing"],
+  ["sources", "Sources", "Kinds of site, most-cited sites and pages, gaps"],
+  ["products", "Kinds of answer and products", "Card share, where cards send buyers, images"],
+  ["searches", "Engine searches", "Searches per engine and the most repeated ones"],
+  ["actions", "Actions and method", "Next steps, definitions, runs and the full prompt list"],
+];
 const EX_RAW = [["Answers", "answers", "tAnswers"], ["Mentions", "mentions", "tMentions"], ["Sources data", "pages", "tSources"], ["Engine searches", "searches", "tSearches"],
   ["Product cards", "products", "tProducts"], ["Store offers", "stores", "tOffers"], ["Images", "images", "tImages"], ["Head to head", "h2h", "tH2H"]];
 const EX_CSV = [["answers.csv", "answers", "One row per prompt × engine × run"], ["mentions.csv", "mentions", "One row per tracked brand an answer named"],
@@ -5604,7 +5625,11 @@ const EX_CSV = [["answers.csv", "answers", "One row per prompt × engine × run"
 
 function openExportDialog(profile, ctx) {
   document.getElementById("export-modal-backdrop")?.remove();
-  const st = { format: "xlsx", scope: "all", engines: new Set(ctx.engines.map((e) => e.id)), inc: { pages: true, searches: true, products: true, images: true, h2h: true }, text: "excerpt", counts: null, filename: null, done: false };
+  const runList = ctx.runList || [];
+  const st = {
+    format: "xlsx", scope: "all", engines: new Set(ctx.engines.map((e) => e.id)), inc: { pages: true, searches: true, products: true, images: true, h2h: true }, text: "excerpt", counts: null, filename: null, done: false,
+    pdfRun: runList[0] ? runList[0].id : null, sec: new Set(EX_PDF_PAGES.map(([k]) => k)),
+  };
   const backdrop = el("div", { id: "export-modal-backdrop", className: "modal-backdrop" });
   const modal = el("div", { className: "modal-content modal-wide ex-modal", role: "dialog", "aria-modal": "true", "aria-labelledby": "ex-title" });
   const closeBtn = el("button", { className: "modal-close-btn", type: "button", title: "Close", "aria-label": "Close" }, "×");
@@ -5654,6 +5679,7 @@ function openExportDialog(profile, ctx) {
     fmtCol.textContent = "";
     const fmts = [
       ["xlsx", "XLSX", "Excel workbook", ".xlsx · for analysts", "Charts, breakdowns and every raw row. Pick a run or engine inside the file and every sheet follows.", true],
+      ["pdf", "PDF", "PDF report", "A4 pages · to share", "Headline numbers, brands, prompts, sources, products, searches and next steps, for one run.", false],
       ["csv", "CSV", "CSV tables", ".zip · one file per table", "The raw rows for BI tools, Python or R.", false],
     ];
     fmtCol.append(el("h4", { className: "ex-eyebrow" }, "Format"), el("div", { className: "ex-format-list", role: "radiogroup", "aria-label": "Format" }, ...fmts.map(([id, ext, name, subt, text, best]) => {
@@ -5666,10 +5692,27 @@ function openExportDialog(profile, ctx) {
 
     // Options.
     left.textContent = "";
-    left.append(group("Runs", seg("Runs", [["all", `All ${ctx.runs} run${ctx.runs === 1 ? "" : "s"}`], ["latest", "Latest run only"]], st.scope, (id) => { st.scope = id; st.done = false; refreshCounts(); }),
-      note(st.format === "xlsx"
-        ? (st.scope === "all" && runs > 1 ? "Trends and Run over run compare the runs." : "Trends and Run over run need more than one run, so they are left out.")
-        : (st.scope === "all" ? "Every run, with a Run column to tell them apart." : `Only the latest run${ctx.latestDate ? `, ${ctx.latestDate}` : ""}.`))));
+    const pdf = st.format === "pdf";
+    if (pdf) {
+      // One run per report. A few runs fit as buttons; more go in a list.
+      const pick = (id) => { st.pdfRun = id; st.done = false; render(); };
+      const label = (x, i) => `Run ${x.no} · ${x.date}${i === 0 ? " (latest)" : ""}`;
+      const picker = runList.length <= 3
+        ? seg("Report on", runList.map((x, i) => [x.id, label(x, i)]), st.pdfRun, pick)
+        : (() => {
+          const sel = el("select", { className: "filter ex-run-select", "aria-label": "Report on" }, ...runList.map((x, i) => el("option", { value: x.id }, label(x, i))));
+          sel.value = st.pdfRun;
+          sel.onchange = () => pick(sel.value);
+          return sel;
+        })();
+      const first = runList.length && runList[runList.length - 1].id === st.pdfRun;
+      left.append(group("Report on", picker, note(first ? "The first run has nothing to compare with, so changes are left out." : "Each number is compared with the run before it.")));
+    } else {
+      left.append(group("Runs", seg("Runs", [["all", `All ${ctx.runs} run${ctx.runs === 1 ? "" : "s"}`], ["latest", "Latest run only"]], st.scope, (id) => { st.scope = id; st.done = false; refreshCounts(); }),
+        note(st.format === "xlsx"
+          ? (st.scope === "all" && runs > 1 ? "Trends and Run over run compare the runs." : "Trends and Run over run need more than one run, so they are left out.")
+          : (st.scope === "all" ? "Every run, with a Run column to tell them apart." : `Only the latest run${ctx.latestDate ? `, ${ctx.latestDate}` : ""}.`))));
+    }
 
     const engWrap = el("div", { className: "ex-chips", role: "group", "aria-label": "Engines" });
     ctx.engines.forEach((e) => {
@@ -5681,8 +5724,20 @@ function openExportDialog(profile, ctx) {
     left.append(group("Engines", engWrap,
       note(st.engines.size === ctx.engines.length ? `All ${ctx.engines.length} engine${ctx.engines.length === 1 ? "" : "s"}.` : st.engines.size === 1 ? "At least one engine stays on." : `${st.engines.size} of ${ctx.engines.length} engines.`)));
 
+    if (pdf) {
+      const list = el("div", { className: "ex-tables" });
+      EX_PDF_PAGES.forEach(([id, name, text]) => {
+        const locked = id === "summary";
+        const on = locked || st.sec.has(id);
+        const b = el("button", { type: "button", className: `ex-table${locked ? " locked" : ""}`, role: "checkbox", "aria-checked": on ? "true" : "false", "aria-disabled": locked ? "true" : "false", "data-page": id },
+          tick(on, locked), el("span", { className: "ex-table-text" }, el("b", {}, name), el("span", { className: "muted small" }, text)), el("span", { className: "ex-rows" }, locked ? "always" : on ? "" : "left out"));
+        if (!locked) b.onclick = () => { if (on) st.sec.delete(id); else st.sec.add(id); st.done = false; render(); };
+        list.append(b);
+      });
+      left.append(group("Pages in the report", list));
+    }
     const tbl = el("div", { className: "ex-tables" });
-    EX_TABLES.forEach(([id, name, text, locked]) => {
+    if (!pdf) EX_TABLES.forEach(([id, name, text, locked]) => {
       const on = locked || st.inc[id];
       const rows = id === "products" ? (st.counts ? `${n("products")} cards · ${n("stores")} stores` : "…") : `${n(id)} rows`;
       const b = el("button", { type: "button", className: `ex-table${locked ? " locked" : ""}`, role: "checkbox", "aria-checked": on ? "true" : "false", "aria-disabled": locked ? "true" : "false", "data-table": id },
@@ -5691,9 +5746,11 @@ function openExportDialog(profile, ctx) {
       if (!locked) b.onclick = () => { st.inc[id] = !st.inc[id]; st.done = false; render(); };
       tbl.append(b);
     });
-    left.append(group("Data to include", tbl));
-    left.append(group("Answer text", seg("Answer text", [["excerpt", "First 300 characters"], ["full", "Full answer"]], st.text, (id) => { st.text = id; st.done = false; render(); }),
-      note(st.text === "full" ? "Full text makes the file larger; Excel shows the first 32,767 characters of a cell." : "Enough to recognise the answer; open it in Analyze for the rest.")));
+    if (!pdf) {
+      left.append(group("Data to include", tbl));
+      left.append(group("Answer text", seg("Answer text", [["excerpt", "First 300 characters"], ["full", "Full answer"]], st.text, (id) => { st.text = id; st.done = false; render(); }),
+        note(st.text === "full" ? "Full text makes the file larger; Excel shows the first 32,767 characters of a cell." : "Enough to recognise the answer; open it in Analyze for the rest.")));
+    }
 
     // What you get.
     right.textContent = "";
@@ -5701,7 +5758,15 @@ function openExportDialog(profile, ctx) {
     const incOf = (k) => k === "answers" || k === "mentions" || (k === "stores" ? st.inc.products : st.inc[k]);
     const head = (text) => el("div", { className: "ex-get-head" }, el("h4", { className: "ex-eyebrow" }, "What you get"), el("span", { className: "ex-get-sum" }, text));
     const rowsOf = (keys) => (st.counts ? keys.reduce((a, k) => a + (st.counts[k] || 0), 0) : null);
-    if (st.format === "xlsx") {
+    if (pdf) {
+      const pages = EX_PDF_PAGES.filter(([id]) => id === "summary" || st.sec.has(id));
+      const r = runList.find((x) => x.id === st.pdfRun) || runList[0] || { no: 1 };
+      right.append(head(`${pages.length} section${pages.length === 1 ? "" : "s"}`),
+        el("ol", { className: "ex-pages" }, ...pages.map(([, name, text], i) => el("li", {}, el("span", { className: "ex-page-no", "aria-hidden": "true" }, String(i + 1)), el("b", {}, name), el("span", { className: "ex-li-text" }, text)))),
+        note("Each section starts on a new A4 page; a long table carries on over the next one. The report opens in a new tab and your browser’s print dialog saves it: choose “Save as PDF”."));
+      fileName.textContent = `${(st.filename && st.filename.xlsx ? st.filename.xlsx.replace(/-\d{4}-\d{2}-\d{2}\.xlsx$/, "") : "citoskeleton")}-run${r.no}.pdf`;
+      fileMeta.textContent = `Run ${r.no} · ${pages.length} section${pages.length === 1 ? "" : "s"} · A4`;
+    } else if (st.format === "xlsx") {
       const sum = EX_SUMMARY.filter(([, , need]) => need === null || (need === "multi" ? multi : need === "productsOrImages" ? st.inc.products || st.inc.images : st.inc[need]));
       const raw = EX_RAW.filter(([, k]) => incOf(k));
       const total = rowsOf(raw.map(([, k]) => k));
@@ -5723,13 +5788,20 @@ function openExportDialog(profile, ctx) {
       fileName.textContent = (st.filename && st.filename.csv) || "citoskeleton-….zip";
       fileMeta.textContent = `${files.length} files and a README${total === null ? "" : ` · ${num(total)} rows`}`;
     }
-    done.textContent = st.done ? "✓ Exported. Chrome saved it to your Downloads folder." : "";
+    done.textContent = !st.done ? "" : pdf ? "✓ Opened in a new tab. Choose “Save as PDF” in the print dialog." : "✓ Exported. Chrome saved it to your Downloads folder.";
     done.hidden = !st.done;
-    go.textContent = st.format === "xlsx" ? "Export workbook" : "Export CSV files";
+    go.textContent = st.format === "xlsx" ? "Export workbook" : pdf ? "Open PDF report" : "Export CSV files";
     go.disabled = !!(st.counts && st.counts.answers === 0);
   }
 
   go.onclick = withBusy(go, "Building…", async () => {
+    if (st.format === "pdf") {
+      const q = new URLSearchParams({ kind: "campaign", profileId: profile.id, runId: st.pdfRun || "", engines: [...st.engines].join(","), sections: [...st.sec].join(","), print: "1" });
+      await chrome.tabs.create({ url: chrome.runtime.getURL(`ui/report.html?${q}`) });
+      st.done = true;
+      render();
+      return;
+    }
     const x = await send({ type: "geo-export", format: st.format, profileId: profile.id, scope: st.scope, engines: [...st.engines], include: st.inc, text: st.text });
     if (!x || !x.ok) { showToast((x && x.error) || "Couldn't build the export.", "error"); return; }
     const zip = await makeZip(x.files);
