@@ -263,7 +263,18 @@ try {
     // the footer floated mid-popup over an empty band. The frame is overflow:
     // hidden, which is still a scroll container that scrollIntoView() moves.
     await page.evaluate(() => [...document.querySelectorAll(".cb-nav-btn")].find((b) => b.textContent === "Prompts")?.click());
-    await page.waitForTimeout(1500);
+    // The jump is a smooth scroll; on a slow runner it was still moving after
+    // a fixed 1.5s (CI measured the section 332px down). Wait until it stops.
+    await page.evaluate(() => new Promise((resolve) => {
+      const c = document.querySelector(".app-content");
+      let last = -1, still = 0;
+      const tick = () => {
+        if (c.scrollTop === last) still++; else { still = 0; last = c.scrollTop; }
+        if (still >= 5) resolve(); else setTimeout(tick, 100);
+      };
+      setTimeout(tick, 200);
+      setTimeout(resolve, 10000);
+    }));
     const g = await page.evaluate(() => {
       const w = document.querySelector(".app-wrapper"), c = document.querySelector(".app-content"), f = document.querySelector(".credit-footer");
       const wr = w.getBoundingClientRect(), cr = c.getBoundingClientRect(), fr = f.getBoundingClientRect(), pr = document.getElementById("cb-prompts").getBoundingClientRect();

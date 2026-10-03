@@ -10,12 +10,20 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.50.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.51.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - About is five pages: an overview, a searchable glossary of every metric (formula, how to
+>   use it, what to keep in mind), settings that say when a change isn't saved yet and can be
+>   undone, data & tools (reprocess, sample data, the tour), and diagnostics (whether every
+>   part is the same version, the two things to send when reporting a problem, and the
+>   activity log with a count for each kind). The full tab has a side menu; the popup opens
+>   on a "Get started" checklist that ticks itself off as you capture an answer, read it in
+>   Analyze and set up a campaign.
+> - Fixed: after Load sample or Remove sample, the button kept its old label.
 > - A campaign's results are one board under the campaign. Pick a run (it's compared with
 >   the run before), an engine, tags, and the brand you're looking at (yours or any
 >   competitor). The headline numbers come in five groups: mentions, citations, product

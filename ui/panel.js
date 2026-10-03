@@ -13,7 +13,8 @@ import { parseCsv, parseXlsx, rowsToPrompts } from "../src/lib/xlsxLite.js";
 import { makeZip } from "../src/lib/zipWrite.js";
 import { BUNDLE_PARTS, buildFeedbackFiles, bundleFilename } from "../src/lib/feedbackBundle.js";
 import { computeSearchFunnel, computeBrandMatrix } from "../src/lib/funnel-omitted.js";
-import { GLOSSARY, glossaryGroups } from "../src/lib/glossary.js";
+import { GLOSSARY, glossaryEntries } from "../src/lib/glossary.js";
+import { ABOUT_STEPS, ABOUT_NEWS, glossaryView, pickedTerm, startProgress, settingsState, settingValue, SETTING_LIMITS, storageMeter, logView, buildStatus } from "../src/lib/aboutView.js";
 import { normalizeMentions } from "../src/lib/mention-list.js";
 import {
   answerKind, searchesView, brandsView, pagesView, ownBrandFor, yourBrandView, findPrevious, changesView, knownVendors,
@@ -72,6 +73,9 @@ const send = (msg) =>
  */
 async function checkBuildMatch() {
   const r = await send({ type: "build-info" });
+  // About shows the same check, as a status on every page (0.51.0).
+  abBuildReply = r || { ok: false };
+  if ($("#about")?.classList.contains("active")) renderAbout(); else renderAboutBuild();
   const stale = (r && r.ok && r.build !== BUILD) || (r && r.error === "unknown message type");
   if (!stale) return;
   const host = document.querySelector(".app-content");
@@ -224,7 +228,10 @@ function withBusy(btn, busyLabel, fn) {
       return await fn(...args);
     } finally {
       btn.disabled = false;
-      btn.textContent = original;
+      // Put the label back only if it still says the busy text: an action
+      // that relabels its own button ("Load sample" -> "Remove sample") used
+      // to have its new label overwritten here with the old one.
+      if (!busyLabel || btn.textContent === busyLabel) btn.textContent = original;
     }
   };
 }
@@ -345,6 +352,9 @@ let RECORDS = [];
 // Every capture's light row, campaign ones included. Analyze reads it to find
 // the previous answer to a campaign prompt, which RECORDS (ad-hoc only) lacks.
 let ALL_RECORDS = [];
+// The record Analyze last drew, so opening the tab can tell About's
+// "Get started" that a real answer was read (see abNoteAnalyzed).
+let ANALYZE_SHOWN = null;
 let PROJECTS = [];
 let viewingId = (() => {
   // ?capture=<id>: the popup's "Full analysis" link opens the full tab on the
@@ -656,6 +666,8 @@ function showTab(name) {
   if (btn) btn.classList.add("active");
   const panel = document.getElementById(name);
   if (panel) panel.classList.add("active");
+  if (name === "about") aboutEnter();
+  if (name === "analyze") abNoteAnalyzed(ANALYZE_SHOWN);
 
   // Switching tabs changes the document's total scrollable height (each
   // tab's content is a different length), so the browser clamps whatever
@@ -781,14 +793,10 @@ async function load() {
   renderCompare();
 }
 
+// The storage meter lives in About's Settings (see renderStorageMeter).
 function renderStorageInfo(s) {
-  const box = $("#storageInfo");
-  if (!box) return;
-  if (!s || !s.ok) { box.textContent = ""; return; }
-  const mb = (n) => (n / 1024 / 1024).toFixed(1) + " MB";
-  box.textContent = s.usage
-    ? `Storage: ${mb(s.usage.usedBytes)} used of ~${mb(s.usage.quotaBytes)} available · ${s.raw} raw / ${s.derived} derived captures`
-    : `${s.raw} raw / ${s.derived} derived captures`;
+  abStats = s;
+  renderStorageMeter();
 }
 
 function projectName(id) {
@@ -3734,6 +3742,8 @@ function renderAnalyze() {
       const light = targetId ? RECORDS.find((r) => r.captureId === targetId) || RECORDS[0] : RECORDS[0];
       rec = light ? FULL.get(light.captureId) || light : null;
     }
+    ANALYZE_SHOWN = rec;
+    abNoteAnalyzed(rec);
     if (!rec) {
       /* Two different empty states, because they need different answers.
        *
@@ -3820,6 +3830,14 @@ const GLYPH_PATHS = {
   task: '<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4.5V3h6v1.5"/><path d="M8.5 11l2 2 4-4"/><path d="M8.5 17h7"/>',
   trash: '<path d="M4.5 7h15"/><path d="M9.5 7V4.5h5V7"/><path d="M6.5 7l1 13h9l1-13"/><path d="M10.5 11v5.5"/><path d="M13.5 11v5.5"/>',
   search: '<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4-4"/>',
+  // About's pages (0.51.0)
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5"/><path d="M12 7.5h.01"/>',
+  sliders: '<path d="M4 7h10"/><path d="M18 7h2"/><circle cx="16" cy="7" r="2"/><path d="M4 17h4"/><path d="M12 17h8"/><circle cx="10" cy="17" r="2"/>',
+  tools: '<ellipse cx="12" cy="6" rx="7" ry="2.6"/><path d="M5 6v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6V6"/><path d="M5 12v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6v-6"/>',
+  pulse: '<path d="M3 12h4l2.5-6 4 12 2.5-6H21"/>',
+  spark: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 16l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  lock: '<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/>',
 };
 function glyphEl(name, size = 16) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -7264,10 +7282,15 @@ $("#diagReport")?.addEventListener("click", () => openDiagnosticReportModal());
 
 const reprocessBtn = $("#reprocess");
 reprocessBtn?.addEventListener("click", withBusy(reprocessBtn, "Reprocessing…", async () => {
-  const st = $("#setStatus"); // was "#status" — that id doesn't exist, so this never showed
-  if (st) st.textContent = "Reprocessing…";
+  const st = $("#reprocessStatus");
+  if (st) st.textContent = "";
   const r = await send({ type: "reprocess-all" });
-  if (st) st.textContent = r.ok ? `Reprocessed ${r.reprocessed}/${r.total} captures.` : "Reprocess failed";
+  if (st) {
+    st.textContent = !r.ok ? "Reprocessing failed." : r.reprocessed === r.total
+      ? `Done. ${r.reprocessed.toLocaleString("en-US")} capture${r.reprocessed === 1 ? "" : "s"} re-read.`
+      : `Done. ${r.reprocessed.toLocaleString("en-US")} of ${r.total.toLocaleString("en-US")} captures re-read.`;
+    st.classList.toggle("bad", !r.ok);
+  }
   FULL.clear(); // records were re-derived; drop stale hydrated copies
   load();
 }));
@@ -7557,34 +7580,44 @@ function diagLogText(entries) {
   }).join("\n\n");
 }
 
+// The whole log, fetched once per visit; the chips filter it here, so each
+// chip can say how many entries it would show.
 async function renderDiagLog() {
-  const box = $("#diagLog");
-  if (!box) return;
-  box.textContent = "Loading…";
-  const cat = $("#diagCatFilter")?.value || undefined;
-  const r = await send({ type: "error-log", cat, limit: 300 });
-  const entries = (r && r.ok && r.entries) || [];
-  const countEl = $("#diagCount");
-  if (countEl) countEl.textContent = entries.length ? `— ${entries.length} recorded` : "— nothing recorded";
-  // Open itself when there is a real error to see, so a user who has hit a
-  // problem doesn't have to know this disclosure exists to find it — but
-  // not for every routine "turn ok" breadcrumb, which would defeat the
-  // point of starting closed.
-  const details = $("#diagBox");
-  if (details && !cat && entries.some((e) => (e.cat || "error") === "error")) details.open = true;
+  if (!$("#diagLog")) return;
+  const r = await send({ type: "error-log", limit: 300 });
+  abLogEntries = (r && r.ok && r.entries) || [];
+  abLogLoaded = true;
+  renderAboutNav(abCurrent());
+  renderDiagRows();
+}
 
+function renderDiagRows() {
+  const box = $("#diagLog");
+  const chipsBox = $("#diagChips");
+  if (!box || !chipsBox) return;
+  const v = logView(abLogEntries, abLogFilter);
+  chipsBox.textContent = "";
+  v.chips.forEach((c) => {
+    const b = el("button", { type: "button", className: `ab-chip-btn${c.on ? " on" : ""}`, "aria-pressed": c.on ? "true" : "false" }, c.label, el("span", { className: "ab-chip-n" }, String(c.count)));
+    b.onclick = () => { abLogFilter = c.id; renderDiagRows(); };
+    chipsBox.append(b);
+  });
   box.textContent = "";
-  if (!entries.length) {
-    box.append(el("div", { className: "muted small" }, "Nothing recorded yet."));
+  if (!abLogLoaded) { box.append(el("p", { className: "ab-sub ab-log-empty" }, "Loading…")); return; }
+  if (!v.rows.length) {
+    box.append(el("p", { className: "ab-sub ab-log-empty" }, abLogEntries.length ? "Nothing of this kind recorded." : "The log is empty. New events appear here as they happen."));
     return;
   }
-  entries.forEach((e) => {
+  v.rows.forEach((e) => {
     const catKey = e.cat || "error";
-    const head = `${new Date(e.at).toLocaleString()}  [${DIAG_CAT_LABEL[catKey] || "Error"}]  [${e.where}]  ${e.message}`;
-    const line = el("div", { className: "dbgline" }, el("div", {}, head));
+    const line = el("div", { className: `ab-log-row cat-${catKey}` },
+      el("time", { className: "ab-log-time", dateTime: new Date(e.at).toISOString(), title: new Date(e.at).toLocaleString() }, new Date(e.at).toLocaleTimeString()),
+      el("span", { className: `ab-log-cat cat-${catKey}` }, DIAG_CAT_LABEL[catKey] || "Error"),
+      el("span", { className: "ab-log-msg" }, e.message),
+      el("code", { className: "ab-log-where" }, e.where));
+    const more = el("div", { className: "ab-log-more" });
     if (e.context && Object.keys(e.context).length) {
-      line.append(el("div", { className: "muted small" },
-        Object.entries(e.context).map(([k, v]) => `${k}=${v}`).join("  ·  ")));
+      more.append(el("div", { className: "muted small" }, Object.entries(e.context).map(([k, v]) => `${k}=${v}`).join("  ·  ")));
     }
     /* The turn timeline, spelled out.
      *
@@ -7592,41 +7625,29 @@ async function renderDiagLog() {
      * the composer was ever found, whether the text landed, whether the send
      * control was usable, and how far the sequence got before it stopped —
      * which is the difference between a fixable report and a shrug. */
-    if (e.trace) {
-      line.append(el("div", { className: "err-trace" },
-        el("span", { className: "muted small" }, "turn timeline: "),
-        el("code", {}, e.trace)));
-    }
-    if (e.stack) {
-      const st = el("details", { className: "err-stack" },
-        el("summary", { className: "muted small" }, "stack"),
-        el("pre", { className: "muted small" }, e.stack));
-      line.append(st);
-    }
-    // Raw capture data reachable straight from the diagnostics view, not
-    // only via a separate one-off button elsewhere.
+    if (e.trace) more.append(el("div", { className: "err-trace" }, el("span", { className: "muted small" }, "turn timeline: "), el("code", {}, e.trace)));
+    if (e.stack) more.append(el("details", { className: "err-stack" }, el("summary", { className: "muted small" }, "stack"), el("pre", { className: "muted small" }, e.stack)));
+    // Raw capture data reachable straight from the log.
     if (e.context && e.context.captureId) {
-      const viewRaw = el("button", { className: "btn sm ghost", style: "margin-top:4px;" }, "View raw capture");
+      const viewRaw = el("button", { type: "button", className: "btn sm ghost" }, "View raw capture");
       viewRaw.onclick = () => downloadRaw(e.context.captureId, "diag");
-      line.append(viewRaw);
+      more.append(viewRaw);
     }
+    if (more.childNodes.length) line.append(more);
     box.append(line);
   });
 }
 
-$("#diagCatFilter")?.addEventListener("change", renderDiagLog);
-$("#diagRefresh")?.addEventListener("click", renderDiagLog);
 $("#diagClear")?.addEventListener("click", async () => {
   await send({ type: "error-log-clear" });
+  abLogFilter = "all";
   renderDiagLog();
 });
 $("#diagCopy")?.addEventListener("click", async () => {
-  const cat = $("#diagCatFilter")?.value || undefined;
-  const r = await send({ type: "error-log", cat, limit: 300 });
-  const text = diagLogText((r && r.ok && r.entries) || []);
+  const text = diagLogText(logView(abLogEntries, abLogFilter).rows);
   try {
     await navigator.clipboard.writeText(text);
-    showToast("Diagnostics log copied.");
+    showToast("Activity log copied.");
   } catch (_) {
     showToast("Couldn't copy — select the log text and copy manually.", "error");
   }
@@ -7747,31 +7768,384 @@ function buildCampaignDiagSummaryText(r) {
 renderDiagLog();
 populateDiagExportProfiles();
 
-/* ---------- Settings ---------- */
+/* ---------- About (0.51.0) ----------
+ * Release 5 of the canvas redesign. Five pages — Overview, Metric glossary,
+ * Settings, Data & tools, Diagnostics — one at a time. The full tab has a
+ * side menu; the popup opens on a home screen ("Get started", then a list of
+ * the pages) and goes one page deep, with a glossary term as a page of its
+ * own. What has rules in it (the glossary search, the checklist, unsaved
+ * settings, the storage meter, the log's counts, the version check) is in
+ * src/lib/aboutView.js; this file only draws it.
+ */
+const AB_TAB_SECTIONS = ["overview", "glossary", "settings", "data", "diagnostics"];
+const AB_PAGES = {
+  overview: { label: "Overview", glyph: "info" },
+  glossary: { label: "Metric glossary", glyph: "book", sub: "What every number means, and how to use it" },
+  settings: { label: "Settings", glyph: "sliders", sub: "How much is kept on this device" },
+  data: { label: "Data & tools", glyph: "tools", sub: "Reprocess captures, sample data, the tour" },
+  diagnostics: { label: "Diagnostics", glyph: "pulse", sub: "Version check, report a problem" },
+  news: { label: "What’s new", glyph: "spark", sub: `Changes in version ${BUILD}` },
+};
+const AB_POPUP_SUB = {
+  glossary: "What every number in the tool means. Hover a metric anywhere to see the same text.",
+  settings: "How much CitoSkeleton keeps on this device.",
+  data: "Housekeeping on what’s stored. None of it touches your campaigns.",
+};
+// Where each engine is asked — the first "Get started" step links to them.
+const AB_ENGINE_HOME = { chatgpt: "https://chatgpt.com/", gemini: "https://gemini.google.com/app", perplexity: "https://www.perplexity.ai/", grok: "https://grok.com/" };
+const AB_ANALYZED_KEY = "cito-analyzed-real";
+
+let abSection = null;   // null until picked: the layout's own first page
+let abGlossQuery = "";
+let abGlossGroup = "all";
+let abTerm = "visibility";
+let abLogFilter = "all";
+let abLogEntries = [];
+let abLogLoaded = false;
+let abBuildReply = null; // the build-info reply, from checkBuildMatch()
+let abStats = null;      // the "stats" reply, for the storage meter
+let abSaved = null;      // settings as stored
+let abJustSaved = false;
+let abDemo = null;       // the demo-status reply
+
+const abPopup = () => document.body.classList.contains("popup");
+const abIsDemo = (r) => !!(r && (r.isDemo || String(r.captureId || "").startsWith("demo-")));
+
+// The page to show, mapped onto what this layout has: the popup's home holds
+// the overview, and the tab shows a glossary term and what's new in place.
+function abCurrent() {
+  const s = abSection || (abPopup() ? "home" : "overview");
+  if (abPopup()) return s === "overview" ? "home" : s;
+  if (s === "home" || s === "news") return "overview";
+  return s === "term" ? "glossary" : s;
+}
+
+function abGo(section) {
+  abSection = section;
+  renderAbout();
+  const sc = activeScroller();
+  if (sc) sc.scrollTop = 0;
+}
+
+// Step two of "Get started" is done by reading a real answer in Analyze, not
+// by the sample, and not by Analyze rendering in the background.
+function abNoteAnalyzed(rec) {
+  if (!rec || abIsDemo(rec) || !$("#analyze")?.classList.contains("active")) return;
+  try { localStorage.setItem(AB_ANALYZED_KEY, "1"); } catch (_) { /* a per-viewer nicety */ }
+}
+function abAnalyzed() {
+  try { return localStorage.getItem(AB_ANALYZED_KEY) === "1"; } catch (_) { return false; }
+}
+
+// Opening About: draw it, then fetch what can have changed since.
+function aboutEnter() {
+  renderAbout();
+  renderDiagLog();
+  refreshDemoControls();
+  populateDiagExportProfiles();
+  send({ type: "stats" }).then(renderStorageInfo).catch(() => {});
+}
+
+function renderAbout() {
+  const root = $("#about");
+  if (!root) return;
+  const sec = abCurrent();
+  root.dataset.ab = sec;
+  root.querySelectorAll(".ab-sec").forEach((n) => { n.hidden = n.dataset.sec !== sec; });
+  renderAboutNav(sec);
+  renderAboutBuild();
+  renderAboutSubhead(sec);
+  if (sec === "home") renderAboutHome();
+  if (sec === "overview") renderAboutOverview();
+  if (sec === "news") { const box = $("#abNews"); box.textContent = ""; box.append(abNewsCard(false)); }
+  if (sec === "glossary") renderAboutGlossary();
+  if (sec === "term") renderAboutTerm();
+  if (sec === "settings") { renderStorageMeter(); updateSettingsStatus(); }
+  if (sec === "diagnostics") renderDiagRows();
+}
+
+function renderAboutNav(sec) {
+  const nav = $("#abNav");
+  if (!nav) return;
+  nav.textContent = "";
+  AB_TAB_SECTIONS.forEach((id) => {
+    const p = AB_PAGES[id];
+    const on = id === sec;
+    const b = el("button", { type: "button", className: `ab-nav-btn${on ? " on" : ""}`, "aria-current": on ? "page" : "false" }, glyphEl(p.glyph, 18), el("span", { className: "ab-nav-label" }, p.label));
+    if (id === "glossary") b.append(el("span", { className: "ab-nav-count" }, String(glossaryEntries().length)));
+    const errors = logView(abLogEntries).errors;
+    if (id === "diagnostics" && errors) b.append(el("span", { className: "ab-nav-badge", title: `${errors} error${errors === 1 ? "" : "s"} in the activity log` }, String(errors)));
+    b.onclick = () => abGo(id);
+    nav.append(b);
+  });
+}
+
+function renderAboutBuild() {
+  const st = buildStatus(abBuildReply, BUILD);
+  const mini = $("#abBuild");
+  if (mini) {
+    mini.className = `ab-build${st.stale ? " stale" : st.known ? " ok" : ""}`;
+    mini.textContent = "";
+    mini.append(el("span", { className: "ab-dot", "aria-hidden": "true" }), el("span", { className: "ab-build-text" }, el("b", {}, st.title), el("span", {}, st.sub)));
+    mini.onclick = st.stale ? () => abGo("diagnostics") : null;
+    mini.style.cursor = st.stale ? "pointer" : "";
+  }
+  const full = $("#abBuildFull");
+  if (full) {
+    full.className = `ab-buildline${st.stale ? " stale" : st.known ? " ok" : ""}`;
+    full.textContent = "";
+    if (st.stale) {
+      full.append(el("b", {}, "Part of CitoSkeleton is out of date"), el("p", {}, st.line),
+        el("ol", {},
+          el("li", {}, "Open chrome://extensions and press the reload ↻ icon on CitoSkeleton. Restarting Chrome is not enough."),
+          el("li", {}, "Still seeing this? Close Chrome, extract the update over the folder again so every file is replaced, reopen Chrome and press reload ↻ once more.")));
+    } else {
+      full.append(glyphEl(st.known ? "check" : "info", 16), el("span", {}, st.line || st.title));
+    }
+  }
+}
+
+function renderAboutSubhead(sec) {
+  const h = $("#abSubhead");
+  if (!h) return;
+  h.textContent = "";
+  h.hidden = !abPopup() || sec === "home";
+  if (h.hidden) return;
+  const back = el("button", { type: "button", className: "ab-back" }, el("span", { "aria-hidden": "true" }, "←"), sec === "term" ? " Glossary" : " About");
+  back.onclick = () => abGo(sec === "term" ? "glossary" : "home");
+  const t = sec === "term" ? GLOSSARY[abTerm] : null;
+  const title = t ? t.term : sec === "news" ? `What’s new in ${BUILD}` : AB_PAGES[sec].label;
+  // Element.append() would write a null out as the text "null".
+  h.append(...[back, t ? el("div", { className: "ab-eyebrow" }, t.group) : null, el("h2", { className: "ab-title" }, title),
+    AB_POPUP_SUB[sec] ? el("p", { className: "ab-sub" }, AB_POPUP_SUB[sec]) : null].filter(Boolean));
+}
+
+function abEngineChips(asLinks) {
+  return el("div", { className: "ab-engines" }, ...availableEngines().map((e) => (asLinks
+    ? el("a", { className: "ab-engine", href: AB_ENGINE_HOME[e.id] || "#", target: "_blank", rel: "noreferrer" }, engineIconEl(e.id), e.label)
+    : el("span", { className: "ab-engine" }, engineIconEl(e.id), e.label))));
+}
+
+function abGoTab(tab) {
+  document.querySelector(`[data-tab="${tab}"]`)?.click();
+}
+
+function abNewsCard(withTitle) {
+  const card = el("div", { className: "card ab-card" });
+  if (withTitle) card.append(el("div", { className: "ab-head" }, el("div", {}, el("h2", { className: "ab-title" }, `What’s new in ${BUILD}`))));
+  card.append(el("ul", { className: "ab-news" }, ...ABOUT_NEWS.map((w) => el("li", {}, el("b", {}, w.head), " ", el("span", {}, w.body)))));
+  return card;
+}
+
+function renderAboutHome() {
+  const box = $("#abHome");
+  box.textContent = "";
+  const real = ALL_RECORDS.filter((r) => !abIsDemo(r)).length;
+  const prog = startProgress({ realCaptures: real, analyzed: abAnalyzed(), campaigns: (GEO_PROFILES || []).length });
+  box.append(el("div", { className: "card ab-card ab-home" },
+    el("div", { className: "ab-home-top" }, el("img", { src: "../icons/icon128.png", width: 36, height: 36, alt: "", className: "ab-logo" }),
+      el("h2", { className: "ab-title", id: "abHomeTitle" }, prog.title), el("span", { className: "version-badge" }, `v${BUILD}`)),
+    el("p", { className: "ab-lead" }, "See what ChatGPT, Gemini, Perplexity and Grok read before they answer."),
+    el("p", { className: "ab-private" }, glyphEl("lock", 15), "Stays on this device. No account, no server.")));
+
+  if (abDemo && abDemo.ok && abDemo.present) {
+    const rm = el("button", { type: "button", className: "btn sm ghost" }, "Remove");
+    rm.onclick = withBusy(rm, "Removing…", abToggleSample);
+    box.append(el("div", { className: "card ab-card ab-sample" },
+      el("div", { className: "ab-tool-text" }, el("b", {}, "Sample data is on"), el("span", {}, "One example answer, labelled Sample, so every tab has something to show.")), rm));
+  }
+
+  const start = el("div", { className: "card ab-card ab-start" });
+  if (prog.allDone) {
+    start.append(el("p", { className: "ab-alldone" }, glyphEl("check", 16), "You’re all set. Replay the tour any time from Data & tools."));
+  } else {
+    start.append(el("div", { className: "ab-start-head" }, el("h3", { className: "ab-h3" }, "Get started"), el("span", { className: "ab-progress-text" }, prog.text)),
+      el("div", { className: "ab-progress", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": String(prog.steps.length), "aria-valuenow": String(prog.done), "aria-label": "Get started" },
+        ...prog.steps.map((s) => el("span", { className: s.done ? "done" : "" }))));
+    const list = el("ol", { className: "ab-steps-list" });
+    prog.steps.forEach((s, i) => {
+      const li = el("li", { className: `ab-step${s.done ? " done" : ""}`, "data-step": s.id },
+        el("span", { className: "ab-step-mark", "aria-hidden": "true" }, s.done ? glyphEl("check", 14) : String(i + 1)),
+        el("div", { className: "ab-step-body" }, el("b", {}, s.title), el("span", {}, s.done ? "Done." : s.text)));
+      if (!s.done) {
+        const body = li.querySelector(".ab-step-body");
+        if (s.id === "ask") body.append(abEngineChips(true));
+        if (s.id === "analyze") { const b = el("button", { type: "button", className: "btn sm ghost" }, "Open Analyze"); b.onclick = () => abGoTab("analyze"); body.append(b); }
+        if (s.id === "campaign") { const b = el("button", { type: "button", className: "btn sm ghost" }, "Set up a campaign"); b.onclick = () => abGoTab("loader"); body.append(b); }
+      }
+      list.append(li);
+    });
+    start.append(list);
+  }
+  box.append(start);
+
+  const st = buildStatus(abBuildReply, BUILD);
+  const more = el("div", { className: "card ab-card ab-more" }, el("h3", { className: "ab-h3" }, "More"));
+  ["glossary", "settings", "data", "diagnostics", "news"].forEach((id) => {
+    const p = AB_PAGES[id];
+    let trail = null;
+    if (id === "glossary") trail = el("span", { className: "ab-nav-count" }, String(glossaryEntries().length));
+    if (id === "diagnostics") trail = el("span", { className: `ab-pill${st.stale ? " stale" : st.known ? " ok" : ""}` }, el("span", { className: "ab-dot", "aria-hidden": "true" }), st.stale ? "Needs reload" : st.known ? "Up to date" : st.title);
+    const b = el("button", { type: "button", className: "ab-more-row", "data-go": id }, el("span", { className: "ab-more-ic" }, glyphEl(p.glyph, 18)),
+      el("span", { className: "ab-more-text" }, el("b", {}, p.label), el("span", {}, p.sub)), trail, el("span", { className: "ab-chev", "aria-hidden": "true" }, "›"));
+    b.onclick = () => abGo(id);
+    more.append(b);
+  });
+  box.append(more);
+}
+
+function renderAboutOverview() {
+  const box = $("#abOverview");
+  box.textContent = "";
+  box.append(el("div", { className: "card ab-card ab-hero" },
+    el("div", { className: "ab-hero-row" }, el("img", { src: "../icons/icon128.png", width: 56, height: 56, alt: "", className: "ab-logo lg" }),
+      el("div", { className: "ab-hero-text" },
+        el("h2", { className: "ab-hero-title" }, "CitoSkeleton ", el("span", { className: "version-badge" }, `v${BUILD}`)),
+        el("p", { className: "ab-lead" }, "See what ChatGPT, Gemini, Perplexity and Grok actually read before they answer: the searches they run, the pages they fetch, the sources they cite, and which brands make it into the reply."),
+        el("p", { className: "ab-sub" }, "Formerly listed as ", el("em", {}, "LLM Citation & Fan-Out Checker"), "."))),
+    el("div", { className: "ab-facts" },
+      el("div", { className: "ab-facts-text" }, glyphEl("lock", 18), el("span", {}, el("b", {}, "Everything stays on this device"), el("span", {}, "CitoSkeleton only reads what your browser already received."))),
+      el("div", { className: "ab-facts-chips" }, ...["No account", "No server", "No requests of its own"].map((t) => el("span", { className: "ab-fact" }, glyphEl("check", 13), t)))),
+    el("div", { className: "ab-works" }, el("span", { className: "ab-label" }, "Works with"), abEngineChips(false))));
+
+  const steps = el("ol", { className: "ab-how" });
+  ABOUT_STEPS.forEach((s) => {
+    const where = s.tab
+      ? el("button", { type: "button", className: "linkbtn ab-where" }, `${s.where} →`)
+      : el("span", { className: "ab-where muted" }, s.where);
+    if (s.tab) where.onclick = () => abGoTab(s.tab);
+    steps.append(el("li", {}, el("span", { className: "ab-num", "aria-hidden": "true" }, String(s.n)), el("b", {}, s.title), el("span", { className: "ab-how-text" }, s.text), where));
+  });
+  box.append(el("div", { className: "card ab-card" },
+    el("div", { className: "ab-head" }, el("div", {}, el("h2", { className: "ab-title" }, "How it works"), el("p", { className: "ab-sub" }, "Four tabs, one job each."))),
+    steps,
+    el("p", { className: "ab-sub" }, "Brand detection is automatic for every industry. Your brand, competitors, prompts and engines are set per campaign, in Campaigns.")));
+  box.append(abNewsCard(true));
+}
+
+/* The glossary: the same entries the hover definitions come from
+   (src/lib/glossary.js), so the reference and the tooltips can't disagree. */
+function abTermBody(t) {
+  const body = el("div", { className: "ab-term-body" }, el("p", { className: "ab-lead" }, t.what));
+  if (t.formula) body.append(el("div", { className: "ab-formula" }, el("span", { className: "ab-label" }, "Formula"), el("code", {}, t.formula)));
+  if (t.howToUse) body.append(el("div", { className: "ab-term-part" }, el("span", { className: "ab-label" }, "How to use it"), el("p", {}, t.howToUse)));
+  if (t.note) body.append(el("div", { className: "ab-term-part" }, el("span", { className: "ab-label" }, "Keep in mind"), el("p", {}, t.note)));
+  return body;
+}
+
+function renderAboutGlossary() {
+  const v = glossaryView(glossaryEntries(), { query: abGlossQuery, group: abGlossGroup });
+  const count = $("#abGlossCount");
+  if (count) count.textContent = `${v.total} terms`;
+  const inp = $("#abGlossSearch");
+  if (inp && inp.value !== abGlossQuery) inp.value = abGlossQuery;
+  const chips = $("#abGlossChips");
+  chips.textContent = "";
+  v.chips.forEach((c) => {
+    const b = el("button", { type: "button", className: `ab-chip-btn${c.on ? " on" : ""}`, "aria-pressed": c.on ? "true" : "false" }, c.label, el("span", { className: "ab-chip-n" }, String(c.count)));
+    b.onclick = () => { abGlossGroup = c.id; renderAboutGlossary(); };
+    chips.append(b);
+  });
+  const host = $("#glossaryList");
+  host.textContent = "";
+  if (!v.matches.length) {
+    const clear = el("button", { type: "button", className: "btn sm ghost" }, "Clear the search");
+    clear.onclick = () => { abGlossQuery = ""; abGlossGroup = "all"; renderAboutGlossary(); };
+    host.append(el("div", { className: "ab-empty" }, el("p", {}, `No terms match “${abGlossQuery}”`), clear));
+    return;
+  }
+  const picked = pickedTerm(v, abTerm);
+  const list = el("div", { className: "ab-gloss-list" });
+  v.groups.forEach((g) => {
+    list.append(el("h3", { className: "ab-gloss-group" }, g.name));
+    g.rows.forEach((t) => {
+      const on = !abPopup() && picked && t.key === picked.key;
+      const b = el("button", { type: "button", className: `ab-term-row${on ? " on" : ""}`, "aria-pressed": on ? "true" : "false", "data-key": t.key },
+        el("b", {}, t.term), el("span", {}, t.what), abPopup() ? el("span", { className: "ab-chev", "aria-hidden": "true" }, "›") : null);
+      b.onclick = () => { abTerm = t.key; if (abPopup()) abGo("term"); else renderAboutGlossary(); };
+      list.append(b);
+    });
+  });
+  if (abPopup()) { host.append(list); return; }
+  host.append(list, el("aside", { className: "ab-gloss-detail", "aria-live": "polite" },
+    el("div", { className: "ab-eyebrow" }, picked.group), el("h3", { className: "ab-detail-title" }, picked.term), abTermBody(picked)));
+}
+
+function renderAboutTerm() {
+  const box = $("#abTerm");
+  box.textContent = "";
+  const t = GLOSSARY[abTerm];
+  if (t) box.append(el("div", { className: "card ab-card" }, abTermBody(t)));
+}
+
+$("#abGlossSearch")?.addEventListener("input", (e) => { abGlossQuery = e.target.value; renderAboutGlossary(); });
+
+/* ---------- Settings: saved, or changed and not yet saved ---------- */
+function abDraft() {
+  return {
+    retentionMax: settingValue("retentionMax", $("#setRetention").value),
+    maxCaptureMB: settingValue("maxCaptureMB", $("#setMaxMB").value),
+    debugCapture: !!$("#setDebug").checked,
+  };
+}
+function abFillSettings(s) {
+  $("#setRetention").value = s.retentionMax;
+  $("#setMaxMB").value = s.maxCaptureMB;
+  $("#setDebug").checked = !!s.debugCapture;
+}
+function updateSettingsStatus() {
+  const status = $("#setStatus");
+  if (!status || !abSaved) return;
+  const st = settingsState(abSaved, abDraft(), { justSaved: abJustSaved });
+  status.textContent = st.status;
+  status.className = `ab-status ${st.tone}`;
+  $("#setUndo").disabled = !st.dirty;
+  $("#setSave").disabled = !st.dirty;
+  $("#setDebugText").textContent = $("#setDebug").checked ? "On" : "Off";
+}
 async function loadSettings() {
   const r = await send({ type: "settings-get" });
   // Guard the PAYLOAD, not just the ok flag. An {ok:true} reply that somehow
   // carries no settings object threw here, and because loadSettings() is
   // called without a catch during boot that surfaced as an unhandled
-  // rejection rather than a visible failure — the class of thing that leaves
-  // a user staring at a half-rendered panel with nothing in the console they
-  // would think to look at.
-  if (!r || !r.ok || !r.settings) return;
+  // rejection rather than a visible failure.
+  if (!r || !r.ok || !r.settings || !$("#setRetention")) return;
   const s = r.settings;
-  if ($("#setDebug")) $("#setDebug").checked = !!s.debugCapture;
-  if ($("#setRetention")) $("#setRetention").value = s.retentionMax;
-  if ($("#setMaxMB")) $("#setMaxMB").value = s.maxCaptureMB;
+  abSaved = { retentionMax: s.retentionMax, maxCaptureMB: s.maxCaptureMB, debugCapture: !!s.debugCapture };
+  abFillSettings(abSaved);
+  updateSettingsStatus();
+  renderStorageMeter();
 }
-if ($("#setSave")) {
-  $("#setSave").addEventListener("click", async () => {
-    const patch = {
-      debugCapture: $("#setDebug").checked,
-      retentionMax: Math.max(50, parseInt($("#setRetention").value, 10) || 2000),
-      maxCaptureMB: Math.max(1, parseInt($("#setMaxMB").value, 10) || 8),
-    };
-    const r = await send({ type: "settings-set", patch });
-    $("#setStatus").textContent = r.ok ? "Saved." : "Failed to save.";
-  });
+["#setRetention", "#setMaxMB", "#setDebug"].forEach((id) => $(id)?.addEventListener(id === "#setDebug" ? "change" : "input", () => { abJustSaved = false; updateSettingsStatus(); }));
+document.querySelectorAll(".ab-stepbtn[data-step]").forEach((b) => b.addEventListener("click", () => {
+  const input = document.getElementById(b.dataset.step);
+  const key = b.dataset.step === "setRetention" ? "retentionMax" : "maxCaptureMB";
+  const { step } = SETTING_LIMITS[key];
+  input.value = settingValue(key, (parseInt(input.value, 10) || 0) + step * Number(b.dataset.dir));
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}));
+$("#setUndo")?.addEventListener("click", () => { if (abSaved) { abFillSettings(abSaved); updateSettingsStatus(); } });
+$("#setSave")?.addEventListener("click", async () => {
+  const patch = abDraft();
+  const r = await send({ type: "settings-set", patch });
+  if (!r || !r.ok) { $("#setStatus").textContent = "Couldn't save the settings."; $("#setStatus").className = "ab-status warn"; return; }
+  abSaved = patch;
+  abJustSaved = true;
+  abFillSettings(patch);
+  updateSettingsStatus();
+  renderStorageMeter();
+});
+
+function renderStorageMeter() {
+  const box = $("#storageInfo");
+  if (!box) return;
+  box.textContent = "";
+  if (!abStats || !abStats.ok || !abSaved) return;
+  const m = storageMeter({ stored: abStats.derived, keep: abSaved.retentionMax, usedBytes: abStats.usage ? abStats.usage.usedBytes : null });
+  box.append(el("div", { className: "ab-meter-top" }, el("b", {}, "Captures stored"), el("span", { className: "ab-meter-num" }, m.text)),
+    el("div", { className: `ab-meter-bar${m.warn ? " warn" : ""}`, role: "meter", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(m.pct), "aria-label": "Captures stored, of the number kept" },
+      el("span", { style: `width:${Math.max(2, m.pct)}%` })),
+    el("div", { className: "ab-sub" }, m.sub));
 }
 
 /* ---------- Compare: one prompt across many timelines ----------
@@ -8310,29 +8684,7 @@ $("#cmpBack")?.addEventListener("click", () => showTab("analyze"));
 
 loadSettings();
 
-/* The metric reference in About, generated from the same glossary the hover
-   definitions come from — a reference that can drift from the tooltips is
-   worse than none. Rendered once; the table is static. */
-(function renderGlossary() {
-  const host = $("#glossaryList");
-  if (!host) return;
-  // Grouped, because two different things are legitimately both called
-  // "Citations" — a brand's own site being cited, and a source being cited.
-  // A flat list showed the same word twice with no way to tell them apart.
-  glossaryGroups().forEach(({ group, terms }) => {
-    host.append(el("div", { className: "glossary-group-title muted small" }, group));
-    const grid = el("div", { className: "glossary-list" });
-    terms.forEach((g) => {
-      const item = el("div", { className: "glossary-item" });
-      item.append(el("div", { className: "glossary-term" }, g.term));
-      item.append(el("div", { className: "glossary-what" }, g.what));
-      if (g.formula) item.append(el("div", { className: "glossary-formula" }, g.formula));
-      if (g.note) item.append(el("div", { className: "glossary-note muted small" }, g.note));
-      grid.append(item);
-    });
-    host.append(grid);
-  });
-})();
+
 // .catch() is the whole point here: load() is fired-and-forgotten (nothing
 // awaits it), so ANY exception anywhere in its chain — not just the
 // send()-throws case handled inside load() itself — becomes a silent
@@ -8496,22 +8848,24 @@ async function maybeFirstRun() {
 }
 
 /* About-tab controls for the sample data and the tour. */
+/* About's sample-data and tour controls. The popup's home also says when the
+   sample is on, with its own Remove. */
 async function refreshDemoControls() {
-  const btn = $("#demoToggle");
-  const status = $("#demoStatus");
-  if (!btn) return;
   let st = null;
   try { st = await send({ type: "demo-status" }); } catch (_) {}
+  abDemo = st;
   const present = !!(st && st.ok && st.present);
-  btn.textContent = present ? "Remove sample" : "Load sample";
-  if (status) {
-    status.textContent = present
-      ? `Sample data is loaded. You have ${st.real} real capture${st.real === 1 ? "" : "s"}.`
-      : "";
+  const btn = $("#demoToggle");
+  if (btn) btn.textContent = present ? "Remove sample" : "Load sample";
+  const chip = $("#demoStatus");
+  if (chip) {
+    chip.textContent = present ? "Loaded" : "Not loaded";
+    chip.className = `ab-chip${present ? " on" : ""}`;
   }
+  if (abCurrent() === "home" && $("#about")?.classList.contains("active")) renderAboutHome();
 }
 
-$("#demoToggle")?.addEventListener("click", withBusy($("#demoToggle"), "Working…", async () => {
+async function abToggleSample() {
   let st = null;
   try { st = await send({ type: "demo-status" }); } catch (_) {}
   const present = !!(st && st.ok && st.present);
@@ -8519,7 +8873,9 @@ $("#demoToggle")?.addEventListener("click", withBusy($("#demoToggle"), "Working�
   FULL.clear();
   await load();
   await refreshDemoControls();
-}));
+}
+
+$("#demoToggle")?.addEventListener("click", withBusy($("#demoToggle"), "Working…", abToggleSample));
 
 $("#replayTour")?.addEventListener("click", () => runTour(0));
 

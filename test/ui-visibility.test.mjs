@@ -244,95 +244,55 @@ async function runMode(reducedMotion) {
     );
 
     if (reducedMotion === "no-preference") {
-      // Reported: the About header's identity block and its diagnostic-report
-      // action read as two unrelated pieces of UI ("bifurcation") rather than
-      // one header — mismatched heights, no shared edge, no visual relation.
-      // This popup runs at 400px, so the header is in its STACKED layout
-      // (column direction, divider on top rather than the left); the same
-      // relationship — a bounded aside with a real divider tying it to the
-      // identity block — is checked in whichever orientation is active. See
-      // analyze-layout.test.mjs for the row-layout (wide tab) case.
-      console.log("\nAbout header reads as one connected header, not two");
+      // Reported on 0.40-era About: the header's identity block and its
+      // diagnostic-report action read as two unrelated pieces of UI
+      // ("bifurcation") — mismatched heights, no shared edge. Since 0.51.0
+      // About is five pages (see about.test.mjs) and the diagnostic report
+      // lives on the Diagnostics page, so that header no longer exists. What
+      // this still guards is the complaint underneath it: the blocks on screen
+      // line up as one layout. In this 400px popup that is the home screen's
+      // cards sharing one left edge with nothing pushed sideways; in the full
+      // tab, the side menu and the page sharing one top edge.
+      console.log("\nAbout's blocks line up as one layout");
+      await popup.evaluate(() => document.querySelector('[data-tab="about"]')?.click());
+      await popup.waitForTimeout(600);
       const geo = await popup.evaluate(() => {
-        const hero = document.querySelector(".about-hero");
-        const main = document.querySelector(".about-hero-main");
-        const diag = document.querySelector(".about-hero-diag");
-        if (!hero || !main || !diag) return null;
-        const m = main.getBoundingClientRect();
-        const d = diag.getBoundingClientRect();
-        const cs = getComputedStyle(diag);
-        const stacked = getComputedStyle(hero).flexDirection === "column";
+        const cards = [...document.querySelectorAll("#abHome > .card")].map((c) => c.getBoundingClientRect());
+        const content = document.querySelector(".app-content");
+        if (!cards.length) return null;
         return {
-          stacked,
-          leftDelta: Math.abs(m.left - d.left),
-          gap: stacked ? d.top - m.bottom : null,
-          borderLeft: parseFloat(cs.borderLeftWidth) || 0,
-          borderTop: parseFloat(cs.borderTopWidth) || 0,
-          diagWidth: d.width,
+          cards: cards.length,
+          leftSpread: Math.max(...cards.map((r) => r.left)) - Math.min(...cards.map((r) => r.left)),
+          widthSpread: Math.max(...cards.map((r) => r.width)) - Math.min(...cards.map((r) => r.width)),
+          overflow: content.scrollWidth - content.clientWidth,
         };
       });
-      check("the header's stacked layout is what's active at this width", !!geo && geo.stacked, geo && JSON.stringify(geo));
-      check(
-        "the diagnostic block shares the identity block's left edge (reads as one column, not a random offset)",
-        !!geo && geo.leftDelta < 2,
-        geo && `${geo.leftDelta}px apart`
-      );
-      check(
-        "the diagnostic block sits directly below the identity block, not floating with a big gap",
-        !!geo && geo.gap >= 0 && geo.gap < 30,
-        geo && `${geo.gap}px gap`
-      );
-      check(
-        "a visible divider ties the diagnostic block to the header above it",
-        !!geo && geo.borderTop >= 1,
-        geo && `border-top: ${geo.borderTop}px`
-      );
+      check("the popup's About opens on its home screen", !!geo && geo.cards >= 3, geo && JSON.stringify(geo));
+      check("its cards share one left edge and one width", !!geo && geo.leftSpread < 2 && geo.widthSpread < 2, geo && JSON.stringify(geo));
+      check("and nothing pushes the popup sideways", !!geo && geo.overflow <= 0, geo && `${geo.overflow}px`);
 
-      // Same relationship, wide layout: side by side with a left divider and
-      // a shared top edge, rather than stacked.
       const wide = await context.newPage();
       await wide.setViewportSize({ width: 1200, height: 700 });
       await wide.goto(`chrome-extension://${extId}/ui/panel.html?mode=tab`);
       await wide.waitForTimeout(900);
       // Driven through the page, not Playwright's own click: on a fresh
       // profile the first-run tour's #tour-backdrop covers the header, so an
-      // actionability-checked click silently times out into the catch below
-      // and every measurement then runs against a still-hidden #about panel
-      // (all-zero rects). The narrow block above already clicks this way.
+      // actionability-checked click silently times out and every measurement
+      // then runs against a still-hidden #about panel (all-zero rects).
       await wide.evaluate(() => document.querySelector('[data-tab="about"]')?.click());
       await wide.waitForTimeout(500);
       const wgeo = await wide.evaluate(() => {
-        const hero = document.querySelector(".about-hero");
-        const main = document.querySelector(".about-hero-main");
-        const diag = document.querySelector(".about-hero-diag");
-        if (!hero || !main || !diag) return null;
-        const m = main.getBoundingClientRect();
-        const d = diag.getBoundingClientRect();
-        const cs = getComputedStyle(diag);
-        return {
-          stacked: getComputedStyle(hero).flexDirection === "column",
-          topDelta: Math.abs(m.top - d.top),
-          borderLeft: parseFloat(cs.borderLeftWidth) || 0,
-          diagWidth: d.width,
-        };
+        const side = document.querySelector(".ab-side");
+        const main = document.querySelector(".ab-main");
+        if (!side || !main) return null;
+        const a = side.getBoundingClientRect(), m = main.getBoundingClientRect();
+        return { topDelta: Math.abs(a.top - m.top), beside: a.right <= m.left, sideWidth: a.width };
       });
       await wide.close();
-      check("at full-tab width the header runs as a row, not stacked", !!wgeo && !wgeo.stacked, wgeo && JSON.stringify(wgeo));
-      check(
-        "both zones share the same top edge in the row layout",
-        !!wgeo && wgeo.topDelta < 2,
-        wgeo && `${wgeo.topDelta}px apart`
-      );
-      check(
-        "the diagnostic aside has a visible left divider in the row layout",
-        !!wgeo && wgeo.borderLeft >= 1,
-        wgeo && `border-left: ${wgeo.borderLeft}px`
-      );
-      check(
-        "the diagnostic aside has a bounded width, not a stray full-width column",
-        !!wgeo && wgeo.diagWidth > 100 && wgeo.diagWidth < 400,
-        wgeo && `${wgeo.diagWidth}px`
-      );
+      check("at full-tab width the side menu sits beside the page", !!wgeo && wgeo.beside, wgeo && JSON.stringify(wgeo));
+      check("both share the same top edge", !!wgeo && wgeo.topDelta < 2, wgeo && `${wgeo.topDelta}px apart`);
+      check("the side menu has a bounded width, not a stray full-width column",
+        !!wgeo && wgeo.sideWidth > 100 && wgeo.sideWidth < 400, wgeo && `${wgeo.sideWidth}px`);
     }
   } finally {
     await context.close();
