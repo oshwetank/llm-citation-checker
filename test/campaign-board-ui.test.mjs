@@ -258,13 +258,32 @@ try {
     const gridScroll = await page.evaluate(() => { const s = document.querySelector("#cb-prompts .cb-scroll"); return s ? s.scrollWidth - s.clientWidth : null; });
     check("the prompt grid fits without scrolling sideways", gridScroll !== null && gridScroll <= 1, `${gridScroll}px`);
 
+    // CI (Chrome 153) measured the section 311–332px short however long the
+    // test waited: the scroll had stopped, not slowed. The Campaigns tab polls
+    // the run status every 1.5s and put the scroll position back after each
+    // poll even when nothing had moved, and in current Chrome writing
+    // scrollTop cancels a smooth scroll. Older Chrome ignored a write of the
+    // same value, so this counts the writes rather than relying on the
+    // browser to show the jump falling short.
+    {
+      const writes = await page.evaluate(() => new Promise((resolve) => {
+        const c = document.querySelector(".app-content");
+        const d = Object.getOwnPropertyDescriptor(Element.prototype, "scrollTop");
+        let n = 0;
+        Object.defineProperty(c, "scrollTop", { configurable: true, get() { return d.get.call(this); }, set(v) { n++; d.set.call(this, v); } });
+        setTimeout(() => { delete c.scrollTop; resolve(n); }, 3400);
+      }));
+      check("an idle Campaigns tab leaves the scroll position alone", writes === 0, `${writes} writes in 3.4s, about one per status poll`);
+    }
+
     // Reported in the screenshots for this release: after a section link, the
     // popup's frame itself had scrolled — the header slid over the content and
     // the footer floated mid-popup over an empty band. The frame is overflow:
     // hidden, which is still a scroll container that scrollIntoView() moves.
     await page.evaluate(() => [...document.querySelectorAll(".cb-nav-btn")].find((b) => b.textContent === "Prompts")?.click());
-    // The jump is a smooth scroll; on a slow runner it was still moving after
-    // a fixed 1.5s (CI measured the section 332px down). Wait until it stops.
+    // The jump is a smooth scroll; wait until it stops rather than a fixed
+    // time. (The 332px CI first put down to a slow runner was the status
+    // poll cancelling the scroll; see the check above.)
     await page.evaluate(() => new Promise((resolve) => {
       const c = document.querySelector(".app-content");
       let last = -1, still = 0;

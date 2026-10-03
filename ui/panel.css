@@ -5783,3 +5783,80 @@ body.popup .ab-row:first-child { padding-top: 0; }
 .ab-card h3.ab-h3 { font-size: 14px; font-weight: 600; }
 /* In a column the 260px basis would be a height, not a width. */
 .ab-report-item .ab-tool-text { flex: 0 0 auto; }
+
+/* ---------- Export dialog (0.52.0) ----------
+   Three columns in the tab, as on the canvas: the format, the options, and
+   what the file will hold. The popup stacks them. */
+.ex-modal.modal-content { max-width: 1120px; max-height: 90vh; background: var(--surface-solid); }
+.ex-modal .modal-body.ex-body { display: grid; grid-template-columns: 280px minmax(0, 1fr) 380px; padding: 0; min-height: 0; }
+.ex-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; padding: 16px 18px; }
+.ex-formats, .ex-get { background: var(--surface-sunken); }
+.ex-formats { border-right: 1px solid var(--border); }
+.ex-get { gap: 10px; border-left: 1px solid var(--border); }
+.ex-modal h4.ex-eyebrow { margin: 0; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-muted); }
+.ex-modal h4.ex-h { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--fg-primary); }
+.ex-group { display: flex; flex-direction: column; gap: 6px; }
+.ex-note { margin: 0; }
+.ex-format-list { display: flex; flex-direction: column; gap: 8px; }
+.ex-format { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; margin: 1px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-solid); color: var(--fg-primary); font: inherit; text-align: left; cursor: pointer; }
+.ex-format:hover { border-color: var(--border-hover); }
+.ex-format.on { margin: 0; border: 2px solid var(--accent-hover); box-shadow: 0 1px 3px rgba(0, 98, 204, 0.15); }
+.ex-ext { display: inline-flex; flex: none; align-items: flex-end; justify-content: center; width: 40px; height: 48px; padding-bottom: 6px; box-sizing: border-box; border-radius: 4px 12px 4px 4px; color: #fff; font-size: 11px; font-weight: 700; letter-spacing: 0.03em; }
+.ex-ext.ex-xlsx { background: #1d7a46; }
+.ex-ext.ex-csv { background: #475569; }
+.ex-format-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ex-format-text b { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; }
+.ex-format-sub { font-size: 12px; font-weight: 500; color: var(--fg-secondary); }
+.ex-best { padding: 0 6px; border-radius: 999px; background: var(--green-bg); color: var(--green-fg); font-size: 11px; font-weight: 600; }
+.ex-seg { display: inline-flex; flex-wrap: wrap; gap: 4px; align-self: flex-start; padding: 3px; border-radius: 10px; background: var(--bg-subtle); }
+.ex-seg-btn { height: 30px; padding: 0 12px; border: none; border-radius: 8px; background: transparent; color: var(--fg-secondary); font: inherit; font-size: 13px; cursor: pointer; }
+.ex-seg-btn.on { background: var(--surface-solid); color: var(--fg-primary); font-weight: 600; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12); }
+.ex-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.ex-chip { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-solid); color: var(--fg-muted); font: inherit; font-size: 13px; cursor: pointer; }
+.ex-chip.on { border-color: var(--blue-border); background: var(--blue-bg); color: var(--fg-primary); font-weight: 500; }
+.ex-chip img, .ex-chip svg { width: 16px; height: 16px; }
+.ex-tick { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 16px; height: 16px; box-sizing: border-box; border: 1px solid var(--fg-muted); border-radius: 4px; background: var(--surface-solid); color: transparent; font-size: 11px; font-weight: 700; line-height: 1; }
+.ex-tick.on { border-color: var(--accent-hover); background: var(--accent-hover); color: #fff; }
+.ex-tick.locked { border-color: var(--border); background: var(--fg-muted); opacity: 0.45; color: #fff; }
+.ex-tables { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.ex-table { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: none; border-bottom: 1px solid var(--border); background: transparent; color: var(--fg-primary); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.ex-table:last-child { border-bottom: none; }
+.ex-table:not(.locked):hover { background: var(--accent-subtle); }
+.ex-table.locked { cursor: default; }
+.ex-table-text { display: flex; flex-direction: column; min-width: 0; }
+.ex-table-text b { font-weight: 600; }
+.ex-rows { margin-left: auto; color: var(--fg-secondary); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ex-get-head { display: flex; align-items: baseline; gap: 8px; }
+.ex-get-sum { margin-left: auto; color: var(--fg-secondary); font-size: 12px; font-weight: 600; }
+.ex-list-h { margin-top: 4px; color: var(--fg-secondary); font-size: 12px; font-weight: 600; }
+.ex-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.ex-list li { display: grid; grid-template-columns: 10px 104px minmax(0, 1fr); align-items: baseline; gap: 8px; padding: 3px 0; font-size: 12px; }
+.ex-list.raw li { grid-template-columns: 10px 104px minmax(0, 1fr) auto; }
+.ex-list b { font-weight: 600; }
+.ex-li-text { overflow: hidden; color: var(--fg-secondary); text-overflow: ellipsis; white-space: nowrap; }
+.ex-dot { width: 10px; height: 10px; border-radius: 2px; }
+.ex-dot.sum { background: var(--kind-you); }
+.ex-dot.raw { background: var(--kind-other); }
+.ex-csv { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-solid); overflow: hidden; }
+.ex-csv li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.ex-csv li:last-child { border-bottom: none; }
+.ex-csv b { font-family: var(--font-mono); font-size: 13px; font-weight: 600; }
+.ex-csv-text { grid-column: 1 / -1; }
+.ex-footer.modal-footer { flex-wrap: wrap; gap: 10px 14px; padding: 12px 20px; }
+.ex-file-box { display: flex; flex-direction: column; min-width: 0; }
+.ex-file { overflow: hidden; font-family: var(--font-mono); font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.ex-done { display: inline-flex; align-items: center; padding: 5px 10px; border-radius: 999px; background: var(--green-bg); color: var(--green-fg); font-size: 12px; font-weight: 600; }
+.ex-done[hidden] { display: none; }
+.ex-actions { display: flex; gap: 8px; margin-left: auto; }
+.ex-format:focus-visible, .ex-seg-btn:focus-visible, .ex-chip:focus-visible, .ex-table:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+@media (max-width: 1100px) {
+  .ex-modal .modal-body.ex-body { grid-template-columns: 260px minmax(0, 1fr); }
+  .ex-get { grid-column: 1 / -1; border-left: none; border-top: 1px solid var(--border); }
+}
+@media (max-width: 720px) {
+  .ex-modal .modal-body.ex-body { grid-template-columns: minmax(0, 1fr); }
+  .ex-formats { border-right: none; border-bottom: 1px solid var(--border); }
+  .ex-format-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+  .ex-list li, .ex-list.raw li { grid-template-columns: 10px 96px minmax(0, 1fr) auto; }
+  .ex-li-text { white-space: normal; }
+}

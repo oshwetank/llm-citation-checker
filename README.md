@@ -10,12 +10,22 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.51.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.52.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - Export… on a campaign's board opens one dialog for every way out of it. Choose an Excel
+>   workbook (.xlsx) or CSV tables, all runs or the latest one, which engines, and which
+>   tables to include; it shows how many rows each holds before you export. The workbook
+>   has 11 summary sheets with charts and live formulas (pick a run or engine at the top of
+>   Overview and every sheet follows) and every raw row as an Excel table you can filter,
+>   sort and pivot. It opens in Excel, Google Sheets, Numbers and LibreOffice with every
+>   value already worked out. The CSV tables come as one .zip with a README. This replaces
+>   the old "Export workbook" (.xls) button.
+> - Fixed: on current Chrome, the section links at the top of a campaign's board stopped
+>   partway down instead of reaching the section.
 > - About is five pages: an overview, a searchable glossary of every metric (formula, how to
 >   use it, what to keep in mind), settings that say when a change isn't saved yet and can be
 >   undone, data & tools (reprocess, sample data, the tour), and diagnostics (whether every
@@ -411,7 +421,8 @@ src/
     mention-list.js     SKU → parent-brand collapsing for the mention list
     fanout.js           fan-out query classification
     grounding-score.js  verbatim grounding score
-    campaignWorkbook.js the multi-sheet campaign Excel export
+    xlsxWrite.js        dependency-free .xlsx writer: styles, formulas, charts, tables
+    campaignXlsx.js     the campaign workbook and CSV tables the export dialog builds
     exportDoc.js        conversation → HTML/PDF renderer
     feedbackBundle.js   builds the problem-report archive
     zipWrite.js         dependency-free zip writer (CompressionStream, STORED fallback)
@@ -419,7 +430,7 @@ src/
     errorlog.js         the one durable diagnostics log — errors, capture
                         breadcrumbs and per-turn outcomes, privacy-scrubbed
     diagnosticsSummary.js  per-run expected/stored/missing/failed counts,
-                        shared by the workbook and the campaign export
+                        shared by the campaign diagnostics export
     auth-check.js       pre-flight session check before a Campaign run submits
     pacing.js           human-paced submission timing
     glossary.js         the one definition per metric the UI's tooltips read from

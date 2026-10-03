@@ -644,11 +644,16 @@ function activeScroller() {
 // showTab() below, a related but distinct problem (there the scroll
 // position needs to be remembered PER TAB, not just held steady around one
 // tab's own re-render).
+//
+// Only written back when the render actually moved it. Writing scrollTop,
+// even to the value it already has, cancels a smooth scroll in progress in
+// current Chrome (153), and the Campaigns tab's 1.5s status poll runs
+// through here: a board section link stopped wherever the next poll landed.
 function withScrollPreserved(renderFn) {
   const scroller = activeScroller();
   const y = scroller ? scroller.scrollTop : 0;
   renderFn();
-  if (scroller) scroller.scrollTop = y;
+  if (scroller && scroller.scrollTop !== y) scroller.scrollTop = y;
 }
 
 function showTab(name) {
@@ -1192,7 +1197,7 @@ function refreshFromBroadcast() {
     const scroller = activeScroller();
     const y = scroller ? scroller.scrollTop : 0;
     await load(); // awaits geoP, so the Campaigns tab has rendered before we restore
-    if (scroller) scroller.scrollTop = y;
+    if (scroller && scroller.scrollTop !== y) scroller.scrollTop = y; // see withScrollPreserved
   }, 400);
 }
 
@@ -4978,7 +4983,7 @@ function renderCampaignResults(profile) {
   setTimeout(async () => {
     if (cbDetail) await renderCampaignBrandDetail(box, profile);
     else await renderCampaignBoard(box, profile);
-    if (scroller && y) scroller.scrollTop = y;
+    if (scroller && y && scroller.scrollTop !== y) scroller.scrollTop = y; // see withScrollPreserved
   }, 0);
   return box;
 }
@@ -5026,13 +5031,8 @@ async function renderCampaignBoard(box, profile) {
     picker.append(g);
   });
   picker.onchange = () => { const x = r.brands.find((y) => y.name === picker.value); cbViewAs = x && x.isOwn ? null : picker.value; rerender(); };
-  const wb = el("button", { className: "btn sm ghost", type: "button", title: "Every sheet of this campaign's data, for the run and filters shown, as an Excel workbook" }, "Export workbook");
-  wb.onclick = withBusy(wb, "Building…", async () => {
-    const x = await send({ type: "geo-export-workbook", profileId: profile.id, runId: r.runId === "all" ? undefined : r.runId, tags: cbTags, engines: geoEngineFilter });
-    if (!x || !x.ok) { showToast((x && x.error) || "Couldn't build the workbook.", "error"); return; }
-    download(x.filename || `citoskeleton-campaign-${Date.now()}.xls`, x.xml, "application/vnd.ms-excel");
-    showToast("Workbook downloaded.");
-  });
+  const wb = el("button", { className: "btn sm ghost", type: "button", id: "cbExport", title: "The campaign as an Excel workbook or CSV tables" }, "Export…");
+  wb.onclick = () => openExportDialog(profile, { engines: b.engines, runs: runsWithAnswers.length, answers: r.answers, latestDate: runsWithAnswers[0] ? runDate(runsWithAnswers[0].startedAt) : "" });
   controls.append(
     el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Run"), runSel),
     el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Engine"), engine),
@@ -5571,6 +5571,178 @@ async function renderCampaignBrandDetail(box, profile) {
       return el("span", { role: "cell", className: "c" }, btn);
     }))));
   box.append(cbSection("cb-vs-prompts", "Prompt by prompt: who came first", `${them} first in ${d.prompts.counts.them} · ${you} first in ${d.prompts.counts.you}`, el("div", { className: "cb-scroll" }, g)));
+}
+
+/* ---------- Export a campaign (0.52.0) ----------
+ * Release 6 of the canvas redesign: one dialog for every way out of a
+ * campaign. Left, the choices; right, what you will get, with row counts
+ * from the background (positions need the answer text). The file is built
+ * in the background as text parts and zipped here.
+ */
+const EX_TABLES = [
+  ["answers", "Answers", "One row per prompt × engine × run", true],
+  ["mentions", "Brand mentions", "Position, mentions, what it was picked for", true],
+  ["pages", "Pages opened", "Every page read or cited, with its kind of site", false],
+  ["searches", "Engine searches", "The searches behind each answer", false],
+  ["products", "Product cards and stores", "Cards, prices, ratings and every store listed", false],
+  ["images", "Images", "Who supplied each image", false],
+  ["h2h", "Head to head", "You against each rival in every answer", false],
+];
+const EX_SUMMARY = [
+  ["Start here", "Contents, definitions, how to use the pickers", null], ["Overview", "Headline numbers, brands, engines, findings", null],
+  ["Trends", "Every brand across runs, line charts", "multi"], ["Brands", "Scorecard, engine heatmap, head to head", null],
+  ["Prompts", "Every prompt × brand; best rival", null], ["Answer types", "Shopping, informational, images, memory, local", null],
+  ["Sources", "Kinds of site, gaps, top 25 pages", "pages"], ["Products", "Card share, stores, images", "productsOrImages"],
+  ["Searches", "Searches per engine; every distinct search", "searches"], ["Run over run", "Your position per prompt and engine, run by run", "multi"],
+  ["Actions", "Missing prompts, gap sites, store fixes", null],
+];
+const EX_RAW = [["Answers", "answers", "tAnswers"], ["Mentions", "mentions", "tMentions"], ["Sources data", "pages", "tSources"], ["Engine searches", "searches", "tSearches"],
+  ["Product cards", "products", "tProducts"], ["Store offers", "stores", "tOffers"], ["Images", "images", "tImages"], ["Head to head", "h2h", "tH2H"]];
+const EX_CSV = [["answers.csv", "answers", "One row per prompt × engine × run"], ["mentions.csv", "mentions", "One row per tracked brand an answer named"],
+  ["pages.csv", "pages", "Every page opened; Cited = 1 when linked"], ["searches.csv", "searches", "Every search an engine ran"], ["products.csv", "products", "One row per product card"],
+  ["stores.csv", "stores", "One row per store a card lists"], ["images.csv", "images", "One row per image"], ["head_to_head.csv", "h2h", "One row per answer × rival"]];
+
+function openExportDialog(profile, ctx) {
+  document.getElementById("export-modal-backdrop")?.remove();
+  const st = { format: "xlsx", scope: "all", engines: new Set(ctx.engines.map((e) => e.id)), inc: { pages: true, searches: true, products: true, images: true, h2h: true }, text: "excerpt", counts: null, filename: null, done: false };
+  const backdrop = el("div", { id: "export-modal-backdrop", className: "modal-backdrop" });
+  const modal = el("div", { className: "modal-content modal-wide ex-modal", role: "dialog", "aria-modal": "true", "aria-labelledby": "ex-title" });
+  const closeBtn = el("button", { className: "modal-close-btn", type: "button", title: "Close", "aria-label": "Close" }, "×");
+  const sub = el("div", { className: "muted small" });
+  modal.append(el("div", { className: "modal-header" }, el("div", {}, el("h3", { className: "modal-title", id: "ex-title" }, `Export ${profile.name || "campaign"}`), sub), closeBtn));
+  const fmtCol = el("section", { className: "ex-col ex-formats", "aria-label": "Format" });
+  const left = el("section", { className: "ex-col ex-choices", "aria-label": "Options" });
+  const right = el("section", { className: "ex-col ex-get", "aria-label": "What you get" });
+  modal.append(el("div", { className: "modal-body ex-body" }, fmtCol, left, right));
+  const fileName = el("span", { className: "ex-file" });
+  const fileMeta = el("span", { className: "muted small" });
+  const done = el("span", { className: "ex-done", role: "status" });
+  const cancel = el("button", { className: "btn sm ghost", type: "button" }, "Cancel");
+  const go = el("button", { className: "btn sm primary", type: "button", id: "ex-go" });
+  modal.append(el("div", { className: "modal-footer ex-footer" }, el("div", { className: "ex-file-box" }, fileName, fileMeta), done, el("div", { className: "ex-actions" }, cancel, go)));
+  backdrop.append(modal);
+  document.body.append(backdrop);
+  const close = wireModalDismiss(backdrop, modal);
+  closeBtn.onclick = close;
+  cancel.onclick = close;
+
+  const num = (v) => (v || 0).toLocaleString("en-US");
+  const n = (k) => (st.counts ? num(st.counts[k]) : "…");
+  const seg = (label, opts, cur, pick) => el("div", { className: "ex-seg", role: "radiogroup", "aria-label": label }, ...opts.map(([id, text]) => {
+    const b = el("button", { type: "button", className: `ex-seg-btn${cur === id ? " on" : ""}`, role: "radio", "aria-checked": cur === id ? "true" : "false" }, text);
+    b.onclick = () => pick(id);
+    return b;
+  }));
+  const tick = (on, locked) => el("span", { className: `ex-tick${on ? " on" : ""}${locked ? " locked" : ""}`, "aria-hidden": "true" }, on ? "✓" : "");
+  const group = (title, ...kids) => el("div", { className: "ex-group" }, el("h4", { className: "ex-h" }, title), ...kids);
+  const note = (text) => el("p", { className: "muted small ex-note" }, text);
+
+  async function refreshCounts() {
+    st.counts = null;
+    render();
+    const r = await send({ type: "geo-export", format: "counts", profileId: profile.id, scope: st.scope, engines: [...st.engines] });
+    st.counts = r && r.ok ? r.counts : null;
+    if (r && r.ok) st.filename = r.filename;
+    render();
+  }
+
+  function render() {
+    const runs = st.counts ? st.counts.runs : ctx.runs;
+    sub.textContent = `${ctx.engines.length} engine${ctx.engines.length === 1 ? "" : "s"} · ${ctx.runs} run${ctx.runs === 1 ? "" : "s"} · ${ctx.answers} answer${ctx.answers === 1 ? "" : "s"} in the run shown`;
+
+    // Format.
+    fmtCol.textContent = "";
+    const fmts = [
+      ["xlsx", "XLSX", "Excel workbook", ".xlsx · for analysts", "Charts, breakdowns and every raw row. Pick a run or engine inside the file and every sheet follows.", true],
+      ["csv", "CSV", "CSV tables", ".zip · one file per table", "The raw rows for BI tools, Python or R.", false],
+    ];
+    fmtCol.append(el("h4", { className: "ex-eyebrow" }, "Format"), el("div", { className: "ex-format-list", role: "radiogroup", "aria-label": "Format" }, ...fmts.map(([id, ext, name, subt, text, best]) => {
+      const b = el("button", { type: "button", className: `ex-format${st.format === id ? " on" : ""}`, role: "radio", "aria-checked": st.format === id ? "true" : "false", "data-format": id },
+        el("span", { className: `ex-ext ex-${id}`, "aria-hidden": "true" }, ext),
+        el("span", { className: "ex-format-text" }, el("b", {}, name, best ? el("span", { className: "ex-best" }, "Most complete") : null), el("span", { className: "ex-format-sub" }, subt), el("span", { className: "muted small" }, text)));
+      b.onclick = () => { st.format = id; st.done = false; render(); };
+      return b;
+    })));
+
+    // Options.
+    left.textContent = "";
+    left.append(group("Runs", seg("Runs", [["all", `All ${ctx.runs} run${ctx.runs === 1 ? "" : "s"}`], ["latest", "Latest run only"]], st.scope, (id) => { st.scope = id; st.done = false; refreshCounts(); }),
+      note(st.format === "xlsx"
+        ? (st.scope === "all" && runs > 1 ? "Trends and Run over run compare the runs." : "Trends and Run over run need more than one run, so they are left out.")
+        : (st.scope === "all" ? "Every run, with a Run column to tell them apart." : `Only the latest run${ctx.latestDate ? `, ${ctx.latestDate}` : ""}.`))));
+
+    const engWrap = el("div", { className: "ex-chips", role: "group", "aria-label": "Engines" });
+    ctx.engines.forEach((e) => {
+      const on = st.engines.has(e.id);
+      const b = el("button", { type: "button", className: `ex-chip${on ? " on" : ""}`, "aria-pressed": on ? "true" : "false", "data-engine": e.id }, tick(on), engineIconEl(e.id), e.label);
+      b.onclick = () => { if (on && st.engines.size === 1) return; if (on) st.engines.delete(e.id); else st.engines.add(e.id); st.done = false; refreshCounts(); };
+      engWrap.append(b);
+    });
+    left.append(group("Engines", engWrap,
+      note(st.engines.size === ctx.engines.length ? `All ${ctx.engines.length} engine${ctx.engines.length === 1 ? "" : "s"}.` : st.engines.size === 1 ? "At least one engine stays on." : `${st.engines.size} of ${ctx.engines.length} engines.`)));
+
+    const tbl = el("div", { className: "ex-tables" });
+    EX_TABLES.forEach(([id, name, text, locked]) => {
+      const on = locked || st.inc[id];
+      const rows = id === "products" ? (st.counts ? `${n("products")} cards · ${n("stores")} stores` : "…") : `${n(id)} rows`;
+      const b = el("button", { type: "button", className: `ex-table${locked ? " locked" : ""}`, role: "checkbox", "aria-checked": on ? "true" : "false", "aria-disabled": locked ? "true" : "false", "data-table": id },
+        tick(on, locked), el("span", { className: "ex-table-text" }, el("b", {}, name), el("span", { className: "muted small" }, locked ? `${text} · every summary needs it` : text)),
+        el("span", { className: "ex-rows" }, on ? rows : "left out"));
+      if (!locked) b.onclick = () => { st.inc[id] = !st.inc[id]; st.done = false; render(); };
+      tbl.append(b);
+    });
+    left.append(group("Data to include", tbl));
+    left.append(group("Answer text", seg("Answer text", [["excerpt", "First 300 characters"], ["full", "Full answer"]], st.text, (id) => { st.text = id; st.done = false; render(); }),
+      note(st.text === "full" ? "Full text makes the file larger; Excel shows the first 32,767 characters of a cell." : "Enough to recognise the answer; open it in Analyze for the rest.")));
+
+    // What you get.
+    right.textContent = "";
+    const multi = st.scope === "all" && runs > 1;
+    const incOf = (k) => k === "answers" || k === "mentions" || (k === "stores" ? st.inc.products : st.inc[k]);
+    const head = (text) => el("div", { className: "ex-get-head" }, el("h4", { className: "ex-eyebrow" }, "What you get"), el("span", { className: "ex-get-sum" }, text));
+    const rowsOf = (keys) => (st.counts ? keys.reduce((a, k) => a + (st.counts[k] || 0), 0) : null);
+    if (st.format === "xlsx") {
+      const sum = EX_SUMMARY.filter(([, , need]) => need === null || (need === "multi" ? multi : need === "productsOrImages" ? st.inc.products || st.inc.images : st.inc[need]));
+      const raw = EX_RAW.filter(([, k]) => incOf(k));
+      const total = rowsOf(raw.map(([, k]) => k));
+      right.append(head(`${sum.length} summaries · ${raw.length} raw tables`),
+        el("div", { className: "ex-list-h" }, "Summary sheets · charts and live formulas"),
+        el("ul", { className: "ex-list" }, ...sum.map(([name, text]) => el("li", {}, el("span", { className: "ex-dot sum", "aria-hidden": "true" }), el("b", {}, name), el("span", { className: "ex-li-text" }, text)))),
+        el("div", { className: "ex-list-h" }, "Raw tables · filter, sort, pivot"),
+        el("ul", { className: "ex-list raw" }, ...raw.map(([name, k, t]) => el("li", {}, el("span", { className: "ex-dot raw", "aria-hidden": "true" }), el("b", {}, name), el("span", { className: "ex-li-text" }, `Excel table ${t}`), el("span", { className: "ex-rows" }, n(k))))),
+        note("Every value is already calculated, so the file opens ready in Excel 2010 or later, Google Sheets, Numbers and LibreOffice."));
+      fileName.textContent = (st.filename && st.filename.xlsx) || "citoskeleton-….xlsx";
+      fileMeta.textContent = `${sum.length + raw.length} sheets${total === null ? "" : ` · ${num(total)} rows`} · opens in Excel, Google Sheets or Numbers`;
+    } else {
+      const files = EX_CSV.filter(([, k]) => incOf(k));
+      const total = rowsOf(files.map(([, k]) => k));
+      right.append(head(`${files.length} files`),
+        el("ul", { className: "ex-csv" }, ...files.map(([file, k, text]) => el("li", {}, el("b", {}, file),
+          el("span", { className: "ex-rows" }, st.counts ? `${n(k)} rows · ${st.counts.cols[k]} columns` : "…"), el("span", { className: "muted small ex-csv-text" }, text)))),
+        note("UTF-8 with a header row; 1 = yes and 0 = no in flag columns; dates in ISO format. Answer ID joins every file to answers.csv."));
+      fileName.textContent = (st.filename && st.filename.csv) || "citoskeleton-….zip";
+      fileMeta.textContent = `${files.length} files and a README${total === null ? "" : ` · ${num(total)} rows`}`;
+    }
+    done.textContent = st.done ? "✓ Exported. Chrome saved it to your Downloads folder." : "";
+    done.hidden = !st.done;
+    go.textContent = st.format === "xlsx" ? "Export workbook" : "Export CSV files";
+    go.disabled = !!(st.counts && st.counts.answers === 0);
+  }
+
+  go.onclick = withBusy(go, "Building…", async () => {
+    const x = await send({ type: "geo-export", format: st.format, profileId: profile.id, scope: st.scope, engines: [...st.engines], include: st.inc, text: st.text });
+    if (!x || !x.ok) { showToast((x && x.error) || "Couldn't build the export.", "error"); return; }
+    const zip = await makeZip(x.files);
+    const blob = st.format === "xlsx" ? new Blob([await zip.arrayBuffer()], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }) : zip;
+    const a = el("a", { href: URL.createObjectURL(blob), download: x.filename });
+    document.body.append(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+    st.done = true;
+    render();
+  });
+  render();
+  refreshCounts();
 }
 
 // A domain's drill-down, from the brand detail's source list: the same

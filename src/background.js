@@ -22,7 +22,7 @@ import { createErrorLog } from "./lib/errorlog.js";
 import { BUILD } from "./lib/build.js";
 import { checkEnginesAuth, AUTH_COOKIES } from "./lib/auth-check.js";
 import { buildDemoRecords, isDemoRecord } from "./lib/demo-data.js";
-import { buildCampaignWorkbook } from "./lib/campaignWorkbook.js";
+import { buildCampaignXlsx, campaignCsvFiles, campaignExportCounts } from "./lib/campaignXlsx.js";
 import { summarizeRunDiagnostics } from "./lib/diagnosticsSummary.js";
 import { gzipString, gunzipToString } from "./lib/gzip.js";
 import { searchAnswers } from "./lib/answerSearch.js";
@@ -2597,42 +2597,39 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
 
-        /* The whole campaign as one workbook.
-         *
-         * Assembled and rendered HERE rather than in the panel: the raw
-         * material is every derived record for the campaign, which for a
-         * thousand-prompt run is tens of megabytes of sources and mentions.
-         * Shipping that across the message boundary so the UI could format it
-         * would be slow and pointless — the worker already has the database
-         * open. One XML string goes back instead.
-         */
-        case "geo-export-workbook": {
+        /* The export dialog (0.52.0): an Excel workbook or CSV tables, or just
+         * the row counts its "What you get" shows. Built here because
+         * positions need the answer text the panel's rows don't carry. The
+         * reply is the file's parts as text — the panel zips them — so no
+         * binary has to cross the message channel. */
+        case "geo-export": {
           const profile = await db.get("profiles", msg.profileId);
           if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
-          const all = await db.getAll("derived");
-          const records = selectTracked(all, {
-            profileId: msg.profileId,
-            runId: msg.runId || undefined,
-            engines: msg.engines,
-            tags: msg.tags,
-            since: msg.since,
-            until: msg.until,
-          });
+          let records = selectTracked(await db.getAll("derived"), { profileId: msg.profileId, engines: msg.engines && msg.engines.length ? msg.engines : undefined });
+          let runs = (await db.getAll("geoRuns")).filter((r) => r.profileId === msg.profileId)
+            .filter((r) => records.some((x) => x.geo && x.geo.runId === r.id))
+            .sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
+          if (msg.scope === "latest" && runs.length) {
+            const last = runs[runs.length - 1];
+            runs = [last];
+            records = records.filter((x) => x.geo && x.geo.runId === last.id);
+          }
           const prompts = (await db.getAll("trackedPrompts")).filter((t) => t.profileId === msg.profileId);
-          const runs = (await db.getAll("geoRuns")).filter((r) => r.profileId === msg.profileId);
-          const brands = effectiveTrackedBrands(profile, records);
-          const metrics = computeMetrics(records, profile, brands);
-          // answerText is the single biggest field on a record and no sheet
-          // uses it, so it is dropped before aggregation rather than carried
-          // through and ignored.
-          const lite = records.map(({ answerText, platformSpecific, _extraction, ...rest }) => rest);
-          const xml = buildCampaignWorkbook({
-            profile, prompts, runs, records: lite, brands, metrics,
-            errors: await errorLog.summary(60),
-            generatedAt: Date.now(),
-          });
-          const slug = String(profile.name || "campaign").replace(/[^\w]+/g, "-").replace(/^-|-$/g, "").toLowerCase();
-          sendResponse({ ok: true, xml, filename: `citoskeleton-${slug || "campaign"}-${Date.now()}.xls` });
+          const bundle = {
+            profile, prompts, runs, records, brands: effectiveTrackedBrands(profile, records),
+            include: msg.include, answerText: msg.text === "full" ? "full" : "excerpt", generatedAt: Date.now(),
+          };
+          const slug = String(profile.name || "campaign").replace(/[^\w]+/g, "-").replace(/^-|-$/g, "").toLowerCase() || "campaign";
+          const day = new Date().toISOString().slice(0, 10);
+          const filename = { csv: `citoskeleton-${slug}-${day}-tables.zip`, xlsx: `citoskeleton-${slug}-${day}.xlsx` };
+          if (msg.format === "counts") { sendResponse({ ok: true, counts: campaignExportCounts(bundle), filename }); break; }
+          if (!records.length) { sendResponse({ ok: false, error: "No answers to export for these choices." }); break; }
+          if (msg.format === "csv") {
+            sendResponse({ ok: true, files: campaignCsvFiles(bundle), filename: filename.csv });
+          } else {
+            const { wb, stats } = buildCampaignXlsx(bundle);
+            sendResponse({ ok: true, files: wb.files(), filename: filename.xlsx, stats });
+          }
           break;
         }
 

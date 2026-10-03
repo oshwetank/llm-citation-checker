@@ -1,14 +1,7 @@
 /*
  * diagnostics-summary.test.mjs — the per-run expected/stored/missing/failed
- * arithmetic, pulled out of campaignWorkbook.js so the workbook's
- * Diagnostics sheet and the campaign-diagnostics export (get-campaign-
- * diagnostics in background.js) compute the same numbers from the same
- * code, instead of two implementations that could quietly drift apart.
- *
- * campaign-workbook.test.mjs already proves the workbook's OWN output is
- * correct after this extraction (same rows, same numbers). This file tests
- * the extracted function directly and in isolation, since it now has a
- * second caller with no workbook `idx` to hand it.
+ * arithmetic the campaign-diagnostics export (get-campaign-diagnostics in
+ * background.js) reports, tested directly and in isolation.
  */
 import { summarizeRunDiagnostics } from "../src/lib/diagnosticsSummary.js";
 
