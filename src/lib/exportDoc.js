@@ -46,6 +46,11 @@ import { normalizeMentions } from "./mention-list.js";
 const PLACEHOLDER_OPEN = "⟦P";
 const PLACEHOLDER_CLOSE = "⟧";
 const PLACEHOLDER_RE = /⟦P(\d+)⟧/g;
+const LINK_OPEN = "⟦L";
+const LINK_RE = /⟦L(\d+)⟧/g;
+// [label](http(s)://address), one level of parentheses allowed inside the
+// address (Wikipedia's "…_(disambiguation)").
+const MD_LINK_RE = /\[([^\[\]\n]{1,300})\]\((https?:\/\/[^\s()]+(?:\([^\s()]*\)[^\s()]*)*)\)/g;
 
 // Display name per engine. Kept in one place so a new engine can never again
 // inherit another engine's label by default — see the note on `model` in
@@ -102,6 +107,19 @@ function fmtDate(ts) {
  */
 function markdownToHtml(raw, placeholders) {
   let text = esc(raw).replace(/\r\n?/g, "\n");
+  // Links, "[Hotel Pinecrest](https://www.google.com/travel/…)": Gemini links
+  // every hotel it names. Left as text they printed as the bracket, the name
+  // and a 200-character address, which is not the answer as it was shown
+  // (reported: "the format in which the answer came, it was not captured").
+  // Only http(s) addresses become links; the text is already escaped, so
+  // neither part can open a tag or leave the attribute. Each link is set
+  // aside before the emphasis passes, which would otherwise read the "_" and
+  // "*" inside an address as markup.
+  const links = [];
+  text = text.replace(MD_LINK_RE, (_, label, url) => {
+    links.push(`<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`);
+    return `${LINK_OPEN}${links.length - 1}${PLACEHOLDER_CLOSE}`;
+  });
   text = text.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
   text = text.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");
   // Underscore emphasis (ChatGPT sometimes uses _x_ instead of *x*) — require a
@@ -217,6 +235,7 @@ function markdownToHtml(raw, placeholders) {
   flushPara();
 
   let html = blocks.join("\n");
+  if (links.length) html = html.replace(LINK_RE, (_, n) => links[Number(n)] ?? "");
   if (placeholders && placeholders.length) {
     html = html.replace(PLACEHOLDER_RE, (_, n) => placeholders[Number(n)] ?? "");
   }

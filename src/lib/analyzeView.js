@@ -80,13 +80,18 @@ export function searchesView(rec, brandNames = []) {
     for (const q of (rec.fanout && rec.fanout[key]) || []) {
       const text = typeof q === "string" ? q : q && q.query;
       if (typeof text !== "string" || !text.trim()) continue;
-      rows.push({ lane, laneLabel, text: text.trim(), tag: "" });
+      // A search run through one of the engine's own tools (Gemini's Google
+      // Hotels card) says which, and the dates and guests it searched for.
+      const via = (q && typeof q.tool === "string" && q.tool) || "";
+      const dates = q && q.checkIn ? [q.checkIn, q.checkOut].filter(Boolean).join(" – ") : "";
+      const detail = via ? [via, dates, (q && q.guests) || ""].filter(Boolean).join(" · ") : "";
+      rows.push({ lane, laneLabel, text: text.trim(), tag: "", via, detail });
     }
   }
   const fa = analyzeFanout(rows.map((r) => r.text), rec.sources || []);
   rows.forEach((r, i) => {
     const labels = (fa.perQuery[i] && fa.perQuery[i].intents) || [];
-    r.tag = r.lane === "shopping" ? "products" : r.lane === "image" ? "images" : (TAG_WORDS[labels[0]] || "");
+    r.tag = r.via || (r.lane === "shopping" ? "products" : r.lane === "image" ? "images" : (TAG_WORDS[labels[0]] || ""));
   });
   const firstWords = brandNames.map((b) => String(b).toLowerCase().split(/\s+/)[0]).filter((w) => w.length >= 3);
   const namingBrand = rows.filter((r) => {
@@ -358,4 +363,35 @@ export function changesView(rec, previous, { knownBrands } = {}) {
   if (lost.length) items.push({ kind: "site", text: `No longer cited: ${lost.slice(0, 4).join(", ")}${lost.length > 4 ? ` +${lost.length - 4}` : ""}` });
   if (!items.length) items.push({ kind: "same", text: "Same brands in the same order, citing the same sites" });
   return { at: previous.capturedAt, items };
+}
+
+/* ---------- ads shown with the answer ---------- */
+
+/* The sponsored cards shown with the answer (ChatGPT's ads), with what ties
+ * each to the answer: whether the answer itself names the advertiser, and
+ * whether the engine read or cited the advertiser's site. Analyze and the
+ * answer report both show it. */
+export function adsView(rec) {
+  const answer = String(rec.answerText || "").toLowerCase();
+  const sources = rec.sources || [];
+  const site = (d) => normDomain(d || "").split(".")[0];
+  return (rec.ads || []).map((a) => {
+    const domain = normDomain(a.targetDomain || a.advertiserUrl || "");
+    const name = String(a.advertiser || "").toLowerCase();
+    const onSite = sources.filter((s) => { const d = normDomain(s.domain || s.url); return d && domain && site(d) === site(domain); });
+    return {
+      advertiser: a.advertiser || domain || "Advertiser",
+      label: a.label || "Sponsored",
+      preamble: a.preamble || "",
+      title: a.title || "",
+      body: a.body || "",
+      domain,
+      url: a.targetUrl || "",
+      placement: a.placement || "",
+      format: a.format || "",
+      namedInAnswer: !!name && new RegExp(`(^|[^\\p{L}\\p{N}])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|[^\\p{L}\\p{N}])`, "u").test(answer),
+      siteRead: onSite.length,
+      siteCited: onSite.filter((s) => s.outcome === "cited").length,
+    };
+  });
 }

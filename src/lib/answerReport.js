@@ -12,7 +12,7 @@
  * exportDoc.js's, built from escaped text plus its own fixed set of tags.
  */
 
-import { answerKind, knownVendors, searchesView, brandsView, ownBrandFor, yourBrandView, changesView, pagesView } from "./analyzeView.js";
+import { answerKind, knownVendors, searchesView, brandsView, ownBrandFor, yourBrandView, changesView, pagesView, adsView } from "./analyzeView.js";
 import { buildExportModel } from "./exportDoc.js";
 import { computeBrandMatrix, sameBrand } from "./funnel-omitted.js";
 import { siteKindOf, normDomain } from "./siteKind.js";
@@ -55,6 +55,7 @@ export function answerReport(rec, { previous = null, profiles = [], generatedAt 
   const products = rec.products || [];
   const places = rec.places || [];
   const images = rec.images || [];
+  const ads = adsView(rec);
   const lanes = (lane) => searches.rows.filter((r) => r.lane === lane).length;
 
   const chips = [
@@ -67,6 +68,7 @@ export function answerReport(rec, { previous = null, profiles = [], generatedAt 
     places.length ? { text: `Map · ${plural(places.length, "place")}` } : { text: "No map", off: true },
     images.length ? { text: plural(images.length, "image") } : { text: "No images", off: true },
     rec.carousels && rec.carousels.news ? { text: "News" } : null,
+    ads.length ? { text: `Ad · ${[...new Set(ads.map((a) => a.advertiser || a.targetDomain))].join(", ")}` } : null,
   ].filter(Boolean);
 
   const named = brands.rows.filter((b) => b.position > 0).sort((a, b) => a.position - b.position);
@@ -139,8 +141,9 @@ export function answerReport(rec, { previous = null, profiles = [], generatedAt 
     changes: changes ? { at: dayLabel(changes.at), items: changes.items } : null,
     answer: { html: doc.bodyHtml, footnotes: doc.footnotes.map((f) => ({ n: f.n, domain: normDomain(f.source.domain || f.source.url), title: f.source.title || "", url: f.source.url || "" })), truncated: doc.truncated, hasText: !!rec.answerText },
     technical,
-    searches: { rows: searches.rows.map((r) => ({ lane: r.laneLabel.replace(" search", ""), text: r.text, tag: r.tag })), unpublished: searches.unpublished },
+    searches: { rows: searches.rows.map((r) => ({ lane: r.laneLabel.replace(" search", ""), text: r.text, tag: r.tag, detail: r.detail || "" })), unpublished: searches.unpublished },
     opened, silentRead: [...new Set(silentRead)],
+    ads,
     citedKinds: pages.kinds,
   };
 }

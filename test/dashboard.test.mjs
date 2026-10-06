@@ -71,13 +71,17 @@ try {
   await seedPage.goto(panel);
   await seedPage.evaluate(() => localStorage.setItem("cito-tour-seen", "1"));
   await seedPage.waitForTimeout(600);
-  for (const [f, body, url, secondsAgo] of [
+  // The second ChatGPT ask is its own conversation, as a real one is: the
+  // same stream twice in one conversation is one answer captured twice, and
+  // is stored once (lib/sameAnswer.js).
+  for (const [f, body, url, secondsAgo, conv] of [
     ["chatgpt-phone-under.txt", gpt(SHOP), "https://chatgpt.com/", 50],
     ["gemini-streamgenerate.txt", gem(SHOP), "https://gemini.google.com/app", 40],
     ["chatgpt-jewellery-wedding.txt", gpt(LOCAL), "https://chatgpt.com/", 30],
-    ["chatgpt-phone-under.txt", gpt(SHOP), "https://chatgpt.com/", 20],
+    ["chatgpt-phone-under.txt", gpt(SHOP), "https://chatgpt.com/", 20, "test-conversation-2"],
   ]) {
-    const raw = readFileSync(path.join(FIXDIR, f), "utf8");
+    let raw = readFileSync(path.join(FIXDIR, f), "utf8");
+    if (conv) raw = raw.replace(/("conversation_id":\s*")[^"]+"/g, (_, key) => `${key}${conv}"`);
     const res = await seedPage.evaluate(({ raw, body, url, at }) => new Promise((r) => chrome.runtime.sendMessage({ type: "raw-conversation", payload: { raw, reqBody: body, pageUrl: url, capturedAt: at } }, r)), { raw, body, url, at: Date.now() - secondsAgo * 1000 });
     if (!res || !res.captureId) throw new Error(`seeding ${f} stored nothing`);
     await seedPage.waitForTimeout(120);

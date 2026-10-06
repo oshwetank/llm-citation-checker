@@ -4712,6 +4712,7 @@ body.popup #analyze .ap > * { flex-shrink: 0; min-width: 0; }
 .ap-chip.on { border-style: solid; color: var(--fg-primary); background: var(--accent-subtle); border-color: var(--blue-border); }
 .ap-chip.searched { color: var(--blue-fg); font-weight: 600; }
 .ap-chip.memory { color: var(--amber-fg); background: var(--amber-bg); border-color: var(--amber-border); font-weight: 600; }
+.ap-chip.ad { color: var(--amber-fg); border-style: dashed; border-color: var(--amber-border); }
 
 .ap-sec {
   display: flex; flex-direction: column; gap: 4px;
@@ -5302,6 +5303,7 @@ button.at-backing-name:hover { text-decoration: underline; }
 .at-lane-q { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--at-line); font-size: 13px; }
 .at-lane-q > :first-child { flex: 1 1 auto; min-width: 0; }
 .at-lane-q .ap-tag { flex-shrink: 0; }
+.at-lane-detail { display: block; font-size: 12px; }
 
 /* details: a segmented switch, then tiles or lists */
 .at-seg { display: flex; flex-wrap: wrap; gap: 2px; margin-left: auto; padding: 3px; border-radius: 9px; background: var(--bg-subtle); }
@@ -6133,3 +6135,20 @@ body.popup .ab-row:first-child { padding-top: 0; }
 .ex-pages b { font-weight: 600; }
 .ex-page-no { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 4px; background: var(--surface-solid); border: 1px solid var(--border); color: var(--fg-secondary); font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
 @media (max-width: 720px) { .ex-pages li { grid-template-columns: 20px minmax(0, 1fr); } .ex-pages .ex-li-text { grid-column: 2; white-space: normal; } }
+
+/* An ad shown with the answer (0.57.0): set apart from the answer, labelled. */
+.ad-card { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px dashed var(--amber-border); border-radius: 8px; background: var(--surface-sunken); color: var(--fg-primary); font-size: 13px; }
+.ad-card + .ad-card { margin-top: 8px; }
+.ad-card.compact { margin-top: 14px; font-size: 12.5px; }
+.ad-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.ad-label { font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--amber-fg); }
+.ad-pre { margin: 0; color: var(--fg-muted); }
+.ad-body { display: flex; flex-direction: column; gap: 2px; }
+.ad-link { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px; min-width: 0; }
+.ad-url { flex-basis: 100%; font-size: 11.5px; color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* A page's full address (0.57.0), under its title and site. Selectable, so
+ * it can be copied; long ones wrap rather than push the layout sideways. */
+.src-url { display: block; font-size: 11.5px; color: var(--fg-muted); overflow-wrap: anywhere; user-select: text; }
+.ap-page-row { gap: 2px; }
+

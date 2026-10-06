@@ -305,18 +305,26 @@ function answerPage2(m) {
     : card(`The answer, as ${m.engine} showed it`, note("The answer text wasn’t captured for this answer; the rest of the report comes from its searches, pages and cards."));
   const tech = card("Technical details", html`<table class="tight"><tbody>${m.technical.map(([k, v]) => html`<tr><td class="small muted nw">${k}</td><td class="wrap">${v}</td></tr>`)}</tbody></table>`);
   const searches = card("Searches it ran", m.searches.rows.length
-    ? table(["Kind", "Search", "Looks for"], m.searches.rows.map((r) => html`<tr><td><span class="pill neutral">${r.lane}</span></td><td class="wrap">${r.text}</td><td class="small muted">${r.tag}</td></tr>`), { split: true })
+    ? table(["Kind", "Search", "Looks for"], m.searches.rows.map((r) => html`<tr><td><span class="pill neutral">${r.lane}</span></td><td class="wrap">${r.text}${r.detail ? html`<br><span class="small muted">${r.detail}</span>` : ""}</td><td class="small muted">${r.tag}</td></tr>`), { split: true })
     : note(m.searches.unpublished ? `${m.engine} searched the web but doesn’t show what it searched for.` : "It answered without searching."));
   const opened = card("Every page it opened", m.opened.length
-    ? table(["", "Page", "Site · kind", "Brands on the page"], m.opened.map((p) => html`<tr><td class="nw"><span class="pill ${p.cited ? "good" : "neutral"}">${p.cited ? "Cited" : "Read only"}</span></td><td class="wrap">${clip(p.title, 110)}</td><td class="small muted">${p.domain} · ${p.kind}</td><td class="small">${p.brands.join(", ") || "—"}</td></tr>`), { split: true })
+    ? table(["", "Page", "Site · kind", "Brands on the page"], m.opened.map((p) => html`<tr><td class="nw"><span class="pill ${p.cited ? "good" : "neutral"}">${p.cited ? "Cited" : "Read only"}</span></td><td class="wrap">${clip(p.title, 110)}${p.url ? html`<br><span class="small muted url">${clip(p.url, 120)}</span>` : ""}</td><td class="small muted">${p.domain} · ${p.kind}</td><td class="small">${p.brands.join(", ") || "—"}</td></tr>`), { split: true })
     : note("It opened no pages."), note(`Read only = ${m.engine} opened the page while searching but did not link it.${m.silentRead.length && m.own ? ` ${clip(m.silentRead.join(", "), 120)} ${m.silentRead.length === 1 ? "mentions" : "mention"} ${m.own.name} yet ${m.silentRead.length === 1 ? "was" : "were"} not cited.` : ""}`));
+  // The engine's ad sat with the answer, so it follows the answer here.
+  const ads = (m.ads || []).length ? [blk(adsCard(m))] : [];
   const short = !m.answer.hasText || words < 320;
   return {
     titles: null,
     blocks: short
-      ? [blk(html`<div class="grid32" style="align-items:start">${answerCard}<div style="display:flex;flex-direction:column;gap:4mm">${tech}${searches}</div></div>`), blk(opened, { split: true })]
-      : [blk(answerCard, { split: true }), blk(html`<div class="grid2" style="align-items:start">${tech}${searches}</div>`), blk(opened, { split: true })],
+      ? [blk(html`<div class="grid32" style="align-items:start">${answerCard}<div style="display:flex;flex-direction:column;gap:4mm">${tech}${searches}</div></div>`), ...ads, blk(opened, { split: true })]
+      : [blk(answerCard, { split: true }), ...ads, blk(html`<div class="grid2" style="align-items:start">${tech}${searches}</div>`), blk(opened, { split: true })],
   };
+}
+
+function adsCard(m) {
+  const rows = m.ads.map((a) => html`<tr><td class="nw"><b>${a.advertiser}</b><br><span class="pill warn">${a.label}</span></td><td class="wrap">${a.preamble ? html`<span class="small muted">${a.preamble}</span><br>` : ""}${a.title ? html`<b>${a.title}</b>` : ""}${a.body ? html`<br>${a.body}` : ""}</td><td class="wrap small">${a.domain || "—"}${a.url ? html`<br><span class="muted url">${clip(a.url, 90)}</span>` : ""}</td><td class="small">${[a.placement, a.namedInAnswer ? "named in the answer too" : "not named in the answer", a.siteCited ? `its site cited ${a.siteCited}×` : a.siteRead ? `its site read ${a.siteRead}×, not cited` : ""].filter(Boolean).join(" · ")}</td></tr>`);
+  return card(`Ad shown with the answer`, table(["Advertiser", "What it said", "Links to", "Where · ties to the answer"], rows),
+    note(`${m.engine} placed this paid card with its answer. It isn’t part of the answer: the ad alone doesn’t count as the answer naming its advertiser.`));
 }
 
 /* Citations become site chips and brand names are marked, as in Analyze. */

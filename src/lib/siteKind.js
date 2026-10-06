@@ -37,6 +37,17 @@ const RETAIL_DOMAINS = new Set([
   "bigbasket.com", "blinkit.com", "zeptonow.com", "swiggy.com", "zomato.com",
 ]);
 
+// Booking and travel sites: where a hotel, flight or stay is booked, so
+// counted with the stores. Matched by name, whatever the country suffix
+// (trivago.in, trivago.com). On a real "budget hotels" answer every one of
+// these was "Other", or "Rival brand sites" once the answer named it, which
+// read as if MakeMyTrip were a hotel chain competing with the owner's.
+const BOOKING_SLUGS = new Set([
+  "makemytrip", "goibibo", "booking", "agoda", "trivago", "ixigo", "oyorooms", "momondo", "hotelscombined",
+  "hotels", "kayak", "cleartrip", "easemytrip", "expedia", "yatra", "airbnb", "skyscanner", "priceline",
+  "hostelworld", "travelguru", "orbitz", "travelocity", "hotwire", "vrbo",
+]);
+
 export function normDomain(d) {
   return String(d || "")
     .toLowerCase()
@@ -90,7 +101,7 @@ export function siteKindOf(domain, ctx = {}) {
   if (!d) return "Other";
   if (ctx.ownBrand && isBrandSite(d, ctx.ownBrand, ctx.ownUrl)) return "Your site";
   if (inSet(FORUM_DOMAINS, d)) return "Forums & social";
-  if (inSet(MARKETPLACE_DOMAINS, d) || inSet(RETAIL_DOMAINS, d)) return "Retailers";
+  if (inSet(MARKETPLACE_DOMAINS, d) || inSet(RETAIL_DOMAINS, d) || BOOKING_SLUGS.has(siteSlug(d))) return "Retailers";
   if (inSet(EDITORIAL_DOMAINS, d)) return "Review sites";
   if ((ctx.brands || []).some((b) => b && b !== ctx.ownBrand && isBrandSite(d, b))) return "Rival brand sites";
   if (/(^|[.-])(forum|forums|community|discuss)\./.test(d)) return "Forums & social";

@@ -28,6 +28,7 @@ import { findPrevious } from "./lib/analyzeView.js";
 import { summarizeRunDiagnostics } from "./lib/diagnosticsSummary.js";
 import { gzipString, gunzipToString } from "./lib/gzip.js";
 import { searchAnswers } from "./lib/answerSearch.js";
+import { answerKey, sameAnswer, mergeAnswers, SAME_ANSWER_WINDOW_MS } from "./lib/sameAnswer.js";
 import { campaignBoard, brandDetail } from "./lib/campaignBoard.js";
 import { adapt as adaptChatGpt, cleanPassage } from "./adapters/chatgpt.js";
 import { enrichBrandsWithAI, enrichBrandStance } from "./lib/ai-brands.js";
@@ -231,7 +232,10 @@ async function storeCapture(payload, meta) {
   };
   await db.put("raw", rawRow);
 
-  const record = await deriveAndStore(rawRow, rawText, settings);
+  // Not yet merged with other copies of this answer: a campaign capture is
+  // judged and attributed on its own first (rejectCapture, attributeGeo),
+  // then settled.
+  let record = await deriveAndStore(rawRow, rawText, settings, { settle: false });
 
   // A campaign capture the adapter could read nothing from is dropped by
   // deriveAndStore as 0-signal — and until now that was silent. It is how
@@ -282,7 +286,9 @@ async function storeCapture(payload, meta) {
   // itself, and its question text doesn't exist until the adapter has run —
   // so meta.geo arrives as a guess from the tab's position and is corrected
   // here. The raw row is rewritten too: reprocessing rebuilds geo from it,
-  // and would otherwise quietly restore the wrong prompt.
+  // and would otherwise quietly restore the wrong prompt. Done on this
+  // capture alone, before it merges with other copies of its answer, so
+  // every raw copy carries its own corrected prompt.
   if (record && record.geo && meta && typeof meta.attributeGeo === "function") {
     const fixed = meta.attributeGeo(record);
     if (fixed && fixed.promptId !== record.geo.promptId) {
@@ -293,8 +299,12 @@ async function storeCapture(payload, meta) {
     }
   }
 
+  if (record) record = await settleSameAnswer(record);
+
   await enforceRetention(settings);
-  return { captureId, record };
+  // A copy of an answer already stored is merged into that record, which
+  // keeps its id; that is the capture the panel should show.
+  return { captureId: record ? record.captureId : captureId, record };
 }
 
 // Build a derived record from a raw row. `rawText` optional (avoids re-gunzip).
@@ -350,7 +360,7 @@ async function enrichCaptureWithAI(record) {
   }
 }
 
-async function deriveAndStore(rawRow, rawText, settings) {
+async function deriveAndStore(rawRow, rawText, settings, { settle = true } = {}) {
   const raw = rawText ?? (await gunzipToString(rawRow.gz));
   const cfg = settings || (await getSettings());
   const adapter = ADAPTERS[rawRow.platform] || ADAPTERS.chatgpt;
@@ -374,7 +384,31 @@ async function deriveAndStore(rawRow, rawText, settings) {
   }
 
   await db.put("derived", record);
-  return record;
+  return settle ? settleSameAnswer(record) : record;
+}
+
+/* One answer, one record (lib/sameAnswer.js). Another copy of this answer
+ * captured within a few minutes (same reply id, or same conversation,
+ * question and opening words) is merged with this one into a single record
+ * under the earliest copy's id; the copies it absorbed are dropped from
+ * "derived". Every raw copy stays, so a reprocess rebuilds the same merge,
+ * and deleting or pruning the record removes them with it (dropCapture). */
+async function settleSameAnswer(record) {
+  if (!answerKey(record) || !record.capturedAt) return record;
+  const near = await db.getByTimeRange("derived", record.capturedAt - SAME_ANSWER_WINDOW_MS, record.capturedAt + SAME_ANSWER_WINDOW_MS);
+  const same = near.filter((r) => r.captureId !== record.captureId && sameAnswer(r, record));
+  if (!same.length) return record;
+  const merged = mergeAnswers([...same, record]);
+  for (const r of [...same, record]) if (r.captureId !== merged.captureId) await db.delete("derived", r.captureId);
+  await db.put("derived", merged);
+  return merged;
+}
+
+// A record and every raw copy it holds (see settleSameAnswer).
+async function dropCapture(captureId) {
+  const rec = await db.get("derived", captureId);
+  for (const id of [captureId, ...((rec && rec.mergedFrom) || [])]) await db.delete("raw", id);
+  await db.delete("derived", captureId);
 }
 
 // Keep the store bounded: prune the oldest AD-HOC captures beyond the
@@ -388,17 +422,18 @@ async function enforceRetention(settings) {
   const count = await db.count("derived");
   if (count <= limit) return;
   const keys = await db.getOldestPrunableKeys("derived", count - limit, isPrunableCapture);
-  for (const id of keys) {
-    await db.delete("raw", id);
-    await db.delete("derived", id);
-  }
+  for (const id of keys) await dropCapture(id);
 }
 
 // Re-derive every stored capture. Uses a cursor + chunking so a large store
 // doesn't pull every gzipped blob into memory at once (SW OOM risk).
 async function reprocessAll() {
   const settings = await getSettings();
-  const ids = await db.getAllKeys("raw");
+  // Oldest first, so copies of one answer merge in the order they arrived
+  // (a row without a capture time isn't in that index; it goes last).
+  const timed = await db.getAllKeysSortedByTime("raw", Number.MAX_SAFE_INTEGER);
+  const seen = new Set(timed);
+  const ids = [...timed, ...(await db.getAllKeys("raw")).filter((k) => !seen.has(k))];
   let ok = 0;
   for (const id of ids) {
     try {
@@ -3377,8 +3412,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
         case "delete-record":
-          await db.delete("raw", msg.captureId);
-          await db.delete("derived", msg.captureId);
+          await dropCapture(msg.captureId);
           sendResponse({ ok: true });
           break;
         case "clear-all":

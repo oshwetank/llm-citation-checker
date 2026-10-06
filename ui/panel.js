@@ -17,7 +17,7 @@ import { GLOSSARY, glossaryEntries } from "../src/lib/glossary.js";
 import { ABOUT_STEPS, ABOUT_NEWS, glossaryView, pickedTerm, startProgress, settingsState, settingValue, SETTING_LIMITS, storageMeter, logView, buildStatus } from "../src/lib/aboutView.js";
 import { normalizeMentions } from "../src/lib/mention-list.js";
 import {
-  answerKind, searchesView, brandsView, pagesView, ownBrandFor, yourBrandView, findPrevious, changesView, knownVendors,
+  answerKind, searchesView, brandsView, pagesView, ownBrandFor, yourBrandView, findPrevious, changesView, knownVendors, adsView,
 } from "../src/lib/analyzeView.js";
 import { answersToPrompt, compareView } from "../src/lib/compareView.js";
 import { historyRows, historyView, highlightRuns, dayDiff, shortDate, PERIODS, KINDS, ENGINE_ORDER } from "../src/lib/historyView.js";
@@ -1375,6 +1375,7 @@ function renderAnalyzePopup(rec, root) {
   if ((rec.products || []).length) chip(`${rec.products.length} products`, true, "Product cards in the answer");
   if ((rec.places || []).length) chip(`Map · ${rec.places.length}`, true, "Places on a map");
   if ((rec.images || []).length) chip(`${rec.images.length} images`, true, "Images from the web");
+  if ((rec.ads || []).length) chip(`Ad · ${adAdvertisers(rec)}`, true, "A sponsored card shown with the answer", "ad");
   head.append(strip);
   wrap.append(head);
 
@@ -1453,6 +1454,12 @@ function renderAnalyzePopup(rec, root) {
         el("span", { className: "ap-img-from" }, im.attribution || host)));
     });
     sec.append(grid);
+    wrap.append(sec);
+  }
+  if ((rec.ads || []).length) {
+    const ads = adsView(rec);
+    const sec = apSection("ap-ads", "Ad shown with the answer", ads.length > 1 ? ads.length : "", apPill("Sponsored", "warn", "Paid placement, not part of the answer"));
+    ads.forEach((a) => sec.append(adCardEl(a)));
     wrap.append(sec);
   }
   if (kind.id === "memory") {
@@ -1605,6 +1612,7 @@ function apSheetTabs(rec) {
   if ((rec.products || []).length) t.push({ id: "buy", label: "Where to buy" });
   if ((rec.places || []).length) t.push({ id: "places", label: "All places" });
   if ((rec.images || []).length) t.push({ id: "images", label: "All images" });
+  if ((rec.sources || []).length) t.push({ id: "pages", label: "Every page it opened" });
   if (((rec.fanout?.search?.length || 0) + (rec.fanout?.shopping?.length || 0) + (rec.fanout?.image?.length || 0)) > 0) t.push({ id: "searches", label: "Search details" });
   t.push({ id: "tech", label: "Technical" });
   return t;
@@ -1668,7 +1676,7 @@ function renderApSheet(rec, wrap, tabs, ctx) {
   } else if (apSheet === "places") {
     rec.places.forEach((p, i) => {
       const links = el("div", { className: "ap-chips" });
-      [["Website", p.website], ["Directions", p.mapsUrl], ["Call", p.phone]].forEach(([k, v]) => links.append(el("span", { className: `ap-bchip${v ? "" : " missing"}`, title: v ? "" : `No ${k.toLowerCase()} on this listing` }, k)));
+      placeLinkChips(p, links);
       col.append(el("div", { className: "ap-sheet-row" },
         el("div", { className: "ap-sheet-row-head" }, el("span", { className: "ap-pin" }, String(i + 1)), el("b", {}, p.name || "—")),
         el("span", { className: "ap-muted" }, [p.rating != null ? `★ ${p.rating}${p.reviews ? ` (${Number(p.reviews).toLocaleString()})` : ""}` : "", p.category, p.priceRange, p.hours].filter(Boolean).join(" · ")),
@@ -1685,6 +1693,12 @@ function renderApSheet(rec, wrap, tabs, ctx) {
         img,
         el("span", {}, el("b", {}, im.title || "Untitled image"), el("span", { className: "ap-muted" }, [im.attribution || host, im.price].filter(Boolean).join(" · ")))));
     });
+  } else if (apSheet === "pages") {
+    // Every page, cited first, with its full address: reported "i am not
+    // able to see all the cited, fetched domain and there urls".
+    const rows = [...rec.sources].sort((a, b) => (b.outcome === "cited") - (a.outcome === "cited"));
+    col.append(el("p", { className: "ap-note" }, `${plural(rows.length, "page")} opened · ${rows.filter((s) => s.outcome === "cited").length} cited. Read only = opened while searching, not linked in the answer.`));
+    rows.forEach((s) => col.append(sourceRowEl(s, { pill: (t, tone) => apPill(t, tone), cls: "ap-sheet-row ap-page-row" })));
   } else if (apSheet === "searches") {
     const all = [].concat(rec.fanout.search || [], rec.fanout.shopping || [], rec.fanout.image || []);
     const fa = analyzeFanout(all, rec.sources || []);
@@ -1875,6 +1889,7 @@ function renderAnalyzeTab(rec, root) {
   if ((rec.products || []).length) chip(`${rec.products.length} product cards`, true, "Product cards in the answer");
   if ((rec.places || []).length) chip(`Map · ${rec.places.length} places`, true, "Places on a map");
   if ((rec.images || []).length) chip(`${rec.images.length} images`, true, "Images from the web");
+  if ((rec.ads || []).length) chip(`Ad · ${adAdvertisers(rec)}`, true, "A sponsored card shown with the answer", "ad");
   const key = normPrompt(rec.userPrompt);
   const overTime = key && RECORDS.some((r) => r.captureId === rec.captureId) ? RECORDS.filter((r) => normPrompt(r.userPrompt) === key).length : 0;
   if (overTime > 1) {
@@ -2156,6 +2171,8 @@ function atRenderAnswer(rec, { loading, tabs, currentId, brandNames, own }) {
       el("span", { className: "ap-muted" }, ` ${f.source.title || ""}`))));
     body.append(el("h3", { className: "at-h3" }, rec.platform === "gemini" ? "Sources and related content" : "Sources"), list);
   }
+  // The engine's ad, where it showed it: under the answer.
+  if ((rec.ads || []).length) adsView(rec).forEach((a) => body.append(adCardEl(a, { compact: true })));
   // Blocks with the citations inside them, for "which page backs each part".
   const blocks = [...text.querySelectorAll("p, li")].map((b) => ({
     text: b.textContent.replace(/\s+/g, " ").trim(),
@@ -2177,7 +2194,9 @@ function atMarkBrands(container, names) {
   const reEsc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const re = new RegExp(`(^|[^\\p{L}\\p{N}])(${list.map(reEsc).join("|")})(?=$|[^\\p{L}\\p{N}])`, "giu");
   const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
-    acceptNode: (n) => (n.parentElement && n.parentElement.closest("a, button, mark") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+    // Inside the answer's own links too (Gemini links every hotel it names);
+    // not inside citation chips, footnotes or a mark already made.
+    acceptNode: (n) => (n.parentElement && n.parentElement.closest("button, mark, sup, .at-fn-list") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
   });
   const nodes = [];
   while (walker.nextNode()) nodes.push(walker.currentNode);
@@ -2193,7 +2212,8 @@ function atMarkBrands(container, names) {
       frag.append(document.createTextNode(t.slice(last, start)));
       const canon = list.find((n) => n.toLowerCase() === m[2].toLowerCase()) || m[2];
       const mark = el("mark", { className: "at-mark", "data-brand": canon, title: `${canon} — click to show only this brand` }, m[2]);
-      mark.onclick = () => { atFocusBrand = atFocusBrand === canon ? null : canon; atFocusCite = null; atApplyHighlights(); };
+      // In a link, the click picks the brand rather than leaving the page.
+      mark.onclick = (e) => { e.preventDefault(); atFocusBrand = atFocusBrand === canon ? null : canon; atFocusCite = null; atApplyHighlights(); };
       frag.append(mark);
       last = start + m[2].length;
     }
@@ -2292,6 +2312,12 @@ function atRenderSingle(main, rec, ctx) {
   if ((rec.products || []).length) main.append(atProductsSection(rec, own, engineLabel));
   if ((rec.places || []).length) main.append(atPlacesSection(rec, own));
   if ((rec.images || []).length >= 3 && (rec.images.length > (rec.products || []).length || kind.id === "images")) main.append(atImagesSection(rec, own, ctxKinds));
+  if ((rec.ads || []).length) {
+    const ads = adsView(rec);
+    const sec = atSection("at-ads", "Ad shown with the answer", ads.length > 1 ? ads.length : "", apPill("Sponsored", "warn", "Paid placement, not part of the answer"));
+    ads.forEach((a) => sec.append(adCardEl(a)));
+    main.append(sec);
+  }
   if (kind.id === "info" && answerPanel.blocks.length) {
     const sec = atSection("at-parts", "Which page backs each part of the answer", "", el("span", { className: "ap-muted" }, "for explainers, the pages behind the text are the prize"));
     atPartsRows(answerPanel.blocks.slice(0, 12)).forEach((r) => sec.append(r));
@@ -2446,7 +2472,7 @@ function atBuiltSection(rec, { searches, pages, mentions, kind, engineLabel }) {
       const qs = searches.rows.filter((q) => q.lane === lane);
       if (!qs.length) return;
       const col = el("div", { className: "at-lane" }, el("h3", { className: "at-lane-h" }, glyphEl(g, 13), `${label} · ${qs.length}`));
-      qs.forEach((q) => col.append(el("span", { className: "at-lane-q" }, el("span", {}, q.text), q.tag ? el("span", { className: "ap-tag" }, q.tag) : null)));
+      qs.forEach((q) => col.append(el("span", { className: "at-lane-q" }, el("span", {}, q.text, q.detail ? el("span", { className: "ap-muted at-lane-detail" }, q.detail) : null), q.tag ? el("span", { className: "ap-tag" }, q.tag) : null)));
       lanes.append(col);
     });
     sec.append(lanes);
@@ -2535,7 +2561,8 @@ function atDetailsSection(rec, { searches, pages, kind, engineLabel, answerPanel
       list.append(el("div", { className: "at-allpage" },
         apPill(s.outcome === "cited" ? (n ? `Cited · ${n}` : "Cited") : "Read only", s.outcome === "cited" ? "good" : "neutral"),
         el("a", { className: "at-allpage-title", href: s.url || "#", target: "_blank", rel: "noreferrer" }, s.title || d || s.url),
-        el("span", { className: "ap-muted" }, `${d} · ${siteKindOf(d, ctxKinds).toLowerCase()}`)));
+        el("span", { className: "ap-muted" }, `${d} · ${siteKindOf(d, ctxKinds).toLowerCase()}`),
+        s.url ? el("span", { className: "src-url", title: s.url }, displayUrl(s.url)) : null));
     });
     panel.append(list);
   }
@@ -2634,6 +2661,62 @@ function atImagesSection(rec, own, ctxKinds) {
 }
 
 
+/* A page's address as people read it: no scheme, no "www.", no tracking
+ * tags. The full address stays on the element's title and its link. */
+function displayUrl(u) {
+  return String(u || "").replace(/^https?:\/\/(www\.)?/, "").replace(/([?&])utm_[^&#]*&?/g, "$1").replace(/[?&]$/, "");
+}
+
+// One page the engine opened: cited or read only, its title linked, its
+// site and its full address.
+function sourceRowEl(s, { cls = "", pill = apPill } = {}) {
+  const d = (s.domain || s.url || "").replace(/^www\./, "");
+  const cited = s.outcome === "cited";
+  return el("div", { className: cls },
+    el("div", { className: "ap-sheet-row-head" }, pill(cited ? "Cited" : "Read only", cited ? "good" : "neutral"),
+      el("a", { href: s.url || "#", target: "_blank", rel: "noreferrer" }, s.title || d || s.url || "—")),
+    el("span", { className: "ap-muted" }, d),
+    s.url ? el("span", { className: "src-url", title: s.url }, displayUrl(s.url)) : null);
+}
+
+/* An ad shown with the answer (adsView): who paid, what the card said,
+ * where it sends people, and what ties it to the answer. Compact is the
+ * version under the answer text, as the engine showed it. */
+function adAdvertisers(rec) {
+  return [...new Set((rec.ads || []).map((a) => a.advertiser || a.targetDomain).filter(Boolean))].join(", ") || "sponsored";
+}
+function adCardEl(a, { compact = false } = {}) {
+  const card = el("div", { className: `ad-card${compact ? " compact" : ""}` });
+  card.append(el("div", { className: "ad-head" },
+    el("b", {}, a.advertiser),
+    el("span", { className: "ad-label" }, a.label),
+    a.placement && !compact ? el("span", { className: "ap-muted" }, a.placement) : null));
+  if (a.preamble) card.append(el("p", { className: "ad-pre" }, a.preamble));
+  if (a.title || a.body) card.append(el("div", { className: "ad-body" }, a.title ? el("b", {}, a.title) : null, a.body ? el("span", {}, a.body) : null));
+  if (a.url || a.domain) {
+    const link = /^https?:\/\//.test(a.url) ? el("a", { href: a.url, target: "_blank", rel: "noopener noreferrer", title: a.url }, a.domain || a.url) : el("span", {}, a.domain);
+    card.append(el("div", { className: "ad-link" }, el("span", { className: "ap-muted" }, "Links to "), link,
+      !compact && a.url ? el("span", { className: "ad-url", title: a.url }, a.url) : null));
+  }
+  if (!compact) {
+    const site = a.siteCited ? [`Its site cited ${a.siteCited}×`, "good"] : a.siteRead ? [`Its site read ${a.siteRead}×, not cited`, "neutral"] : ["Its site not opened", "neutral"];
+    card.append(el("div", { className: "ap-chips" },
+      apPill(a.namedInAnswer ? "Also named in the answer" : "Not named in the answer", a.namedInAnswer ? "good" : "neutral"),
+      apPill(site[0], site[1]),
+      a.format ? el("span", { className: "ap-muted" }, a.format.replace(/_/g, " ")) : null));
+  }
+  return card;
+}
+
+// The links a place's card carries. A hotel from Gemini's Google Hotels card
+// has its listing there (rates and booking) rather than a website or phone.
+function placeLinkChips(p, links) {
+  if (p.listingUrl && /^https:\/\//.test(p.listingUrl)) {
+    links.append(el("a", { className: "ap-bchip", href: p.listingUrl, target: "_blank", rel: "noopener noreferrer", title: "Its listing on the card, with rates" }, "Listing"));
+  }
+  [["Website", p.website], ["Directions", p.mapsUrl], ["Call", p.phone]].forEach(([k, v]) => links.append(el("span", { className: `ap-bchip${v ? "" : " missing"}`, title: v ? "" : `No ${k.toLowerCase()} on this listing` }, k)));
+}
+
 function atPlacesSection(rec, own) {
   const sec = atSection("at-places", "Places on the map", rec.places.length, el("span", { className: "ap-muted" }, "pin order as shown"));
   const table = el("div", { className: "at-table at-place-table", role: "table", "aria-labelledby": "at-places-h" });
@@ -2644,7 +2727,7 @@ function atPlacesSection(rec, own) {
   rec.places.forEach((p, i) => {
     const mine = own && String(p.name || "").toLowerCase().startsWith(own.name.toLowerCase());
     const links = el("span", { className: "ap-chips" });
-    [["Website", p.website], ["Directions", p.mapsUrl], ["Call", p.phone]].forEach(([k, v]) => links.append(el("span", { className: `ap-bchip${v ? "" : " missing"}`, title: v ? "" : `No ${k.toLowerCase()} on this listing` }, k)));
+    placeLinkChips(p, links);
     const inText = p.name && answer.includes(String(p.name).toLowerCase());
     table.append(el("div", { className: `at-tr${mine ? " mine" : ""}`, role: "row" },
       el("span", { role: "cell" }, el("span", { className: "ap-pin" }, String(i + 1))),
@@ -3649,6 +3732,9 @@ function renderAnalyzeLegacy(rec, root) {
           meta.append(el("span", { className: "src-dot" }, "·"), el("span", {}, dateStr));
         }
         li.append(meta);
+        // The page's own address, not just its site: which page on
+        // makemytrip.com was read is the actionable part.
+        if (s.url) li.append(el("span", { className: "src-url", title: s.url }, displayUrl(s.url)));
 
         const sm = brandMatrixData && brandMatrixData.sources && brandMatrixData.sources.find((src) => src.url === s.url || src.sourceIdx === rec.sources.indexOf(s));
         if (sm && ((sm.presentBrands && sm.presentBrands.length) || (showSnippets && sm.missingBrands && sm.missingBrands.length))) {
@@ -4644,15 +4730,28 @@ function sanitizeXML(s) {
 
 function downloadDetailedFormat(records, format) {
   if (format === "csv") {
-    let output = `CitoSkeleton Audit Log,,,,,,,,,,\n"Prompt-level tracking of ChatGPT search behaviour, cited vs. fetched sources, and query fan-out",,,,,,,,,,\n,,,,,,,,,,\n#,Date,Time,Platform,User Prompt,Search Used,Cited Sources,Cited Count,Fetched Sources,Fetched Count,Total Sources,Fan-Out Query\n`;
+    // Domains alone didn't say which page: reported "i am not able to see all
+    // the cited, fetched domain and their urls". Each page's full address is
+    // in its own column now, one per line inside the cell, with the brands
+    // the answer named, the places on its map and any ad shown with it.
+    const HEAD = ["#", "Date", "Time", "Platform", "User Prompt", "Search Used", "Cited Sources", "Cited Count", "Cited URLs", "Fetched Sources", "Fetched Count", "Fetched URLs", "Total Sources", "Fan-Out Query", "Brands Named", "Places", "Ad Shown"];
+    const q = (v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`;
+    const pad = ",".repeat(HEAD.length - 1);
+    let output = `CitoSkeleton Audit Log${pad}\n"Prompt-level tracking of AI search behaviour, cited vs. fetched sources, and query fan-out"${pad}\n${pad}\n${HEAD.join(",")}\n`;
     records.forEach((r, i) => {
       const d = new Date(r.capturedAt);
       const dateStr = d.toLocaleDateString("en-GB", {day:"2-digit", month:"short", year:"numeric"}).replace(/ /g, '-');
       const timeStr = d.toLocaleTimeString("en-GB");
-      const cited = r.sources.filter(s => s.outcome === "cited").map(s => s.domain).join("; ");
-      const fetched = r.sources.filter(s => s.outcome === "fetched" || s.outcome === "news").map(s => s.domain).join("; ");
+      const citedS = r.sources.filter(s => s.outcome === "cited");
+      const fetchedS = r.sources.filter(s => s.outcome !== "cited");
       const fan = [...(r.fanout?.search||[]), ...(r.fanout?.shopping||[]), ...(r.fanout?.image||[])].map(f => typeof f === "string" ? f : f?.query || "").filter(Boolean).join(" | ");
-      const row = [i + 1, dateStr, timeStr, r.platform || "chatgpt", `"${(r.userPrompt || "").replace(/"/g, '""')}"`, r.searched ? "Yes" : "No", `"${cited}"`, r.sources.filter(s => s.outcome === "cited").length, `"${fetched}"`, r.sources.filter(s => s.outcome === "fetched" || s.outcome === "news").length, r.sources.length, `"${fan.replace(/"/g, '""')}"`];
+      const brands = (r.brandMentions || []).filter((b) => b.count > 0).map((b) => b.brand).join("; ");
+      const places = (r.places || []).map((p) => [p.name, p.priceRange].filter(Boolean).join(" ")).join("; ");
+      const ads = (r.ads || []).map((a) => [a.advertiser, a.title, a.targetUrl || a.targetDomain].filter(Boolean).join(" — ")).join("; ");
+      const row = [i + 1, dateStr, timeStr, r.platform || "chatgpt", q(r.userPrompt), r.searched ? "Yes" : "No",
+        q(citedS.map(s => s.domain).join("; ")), citedS.length, q(citedS.map(s => s.url || s.domain).join("\n")),
+        q(fetchedS.map(s => s.domain).join("; ")), fetchedS.length, q(fetchedS.map(s => s.url || s.domain).join("\n")),
+        r.sources.length, q(fan), q(brands), q(places), q(ads)];
       output += row.join(",") + "\n";
     });
     download(`citoskeleton-audit-${Date.now()}.csv`, output, "text/csv");

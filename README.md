@@ -10,12 +10,39 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.56.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.57.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - One question, one answer. Grok sends the same reply several times (while it streams,
+>   when it finishes, and again when the page re-reads it), and each copy was stored as its
+>   own answer: one question showed up to six times, and the newest copy, which had no pages
+>   and only one search, was the one Analyze and the report opened. Copies of one reply are
+>   now merged into a single answer that keeps every page, cited page and search any copy
+>   had (the `site:` searches included). A regenerated answer stays separate. Use About →
+>   Data & tools → Reprocess to merge the copies already stored.
+> - Brands in local answers (hotels, places to stay, shops). The detector picked the wrong
+>   column of an answer's table, so neighbourhoods, roads and words like "near" and
+>   "Central" were listed as brands and the hotels were missed. It now reads the column the
+>   table names as hotels, stays, places or shops, keeps a name whole ("Hotel Summit 9", not
+>   "Hotel"), reads names Gemini links, and stops counting the plain words "booking" or
+>   "hotels" as mentions of Booking.com or Hotels.com.
+> - Gemini's Google Hotels card is read: each hotel with its rating, reviews, price a night,
+>   photo and listing link becomes a place, and the hotel search it ran (with dates and
+>   guests) is listed. Before, such an answer said "From memory · no search" and "No map".
+> - ChatGPT's ads. When ChatGPT shows a sponsored card with its answer, Analyze (full tab and
+>   popup), the answer report and the CSV export now show it: who advertised, what the card
+>   said, where it links, where it sat, and whether the answer itself names the advertiser
+>   or cites its site.
+> - Every page's address. Analyze's "Every page it read", a new "Every page it opened" sheet
+>   in the popup, and the answer report list each page with its full address, not only its
+>   site. The detailed CSV has the cited and read addresses, the brands named, the places
+>   and any ad.
+> - Links in answers are links, in Analyze, the report and the exports, instead of
+>   "[name](address)" text; booking sites (MakeMyTrip, Booking.com, Trivago, Goibibo,
+>   ixigo…) count with the stores instead of "Other".
 > - The last pieces of the design. In the full tab, Analyze's top bar has "Find a captured
 >   prompt" (type a few words, pick a match or press Enter) and the newer/older arrows. A
 >   competitor's page shows mentions too. Light or dark is now in About → Settings and

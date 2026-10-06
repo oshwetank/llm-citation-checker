@@ -23,7 +23,7 @@ import { isKnownRetrievalName, enginesNamedIn } from "../lib/retrieval.js";
 import { walk, collectByKey, collectObjects, firstPath, isHttpUrl, domainOf } from "../lib/deep.js";
 import { detectBrands } from "../lib/brands.js";
 
-export const ADAPTER_VERSION = "chatgpt@0.3.0";
+export const ADAPTER_VERSION = "chatgpt@0.4.0";
 
 function parseSse(raw) {
   const nodes = [];
@@ -595,6 +595,52 @@ function extractImages(nodes, products) {
   return out;
 }
 
+// Ads: ChatGPT can follow an answer with a sponsored card, sent as its own
+// SSE event { type: "ads", content: { type: "single_advertiser_ad_unit",
+// preamble, advertiser_brand: { name, url }, ad_cards: [{ title, body,
+// target: { value }, image_url, card_header: { subtitle: "Sponsored" },
+// format }] }, placement_name: "conversational_bottom" }. Reported: "The
+// chatgpt pushed an ad in the bottom, we should have a section to show that
+// and its data." Kept: who advertised, what the card said, where it links,
+// where it sat. Dropped: the inline logos (data: URLs, ~20 KB each) and the
+// tracking tokens, which say nothing about the answer.
+const AD_PLACEMENT = { conversational_bottom: "Below the answer", conversational_top: "Above the answer" };
+function extractAds(nodes) {
+  const out = [];
+  const seen = new Set();
+  const str = (v, max = 400) => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : null);
+  for (const ev of collectObjects({ nodes }, (o) => o.type === "ads" && o.content && typeof o.content === "object")) {
+    if (ev.visibility && ev.visibility.status && ev.visibility.status !== "allowed") continue;
+    const c = ev.content;
+    const brand = c.advertiser_brand || {};
+    const cards = Array.isArray(c.ad_cards) && c.ad_cards.length ? c.ad_cards : Array.isArray(c.carousel_cards) ? c.carousel_cards : [];
+    for (const card of cards.length ? cards : [{}]) {
+      const target = card.target && isHttpUrl(card.target.value) ? card.target.value : null;
+      const header = card.card_header || {};
+      const ad = {
+        advertiser: str(brand.name, 80) || str(card.company_name, 80) || str(header.title, 80),
+        advertiserUrl: str(brand.url, 200),
+        label: str(header.subtitle, 40) || "Sponsored",
+        preamble: str(c.preamble),
+        title: str(card.title, 200),
+        body: str(card.body),
+        targetUrl: target,
+        targetDomain: target ? domainOf(target) : brand.url ? domainOf(`https://${String(brand.url).replace(/^https?:\/\//, "")}`) : null,
+        imageUrl: isHttpUrl(card.image_url) ? card.image_url : null,
+        format: str(card.format, 60),
+        unit: str(c.type, 60),
+        placement: AD_PLACEMENT[ev.placement_name] || str(ev.placement_name, 60),
+      };
+      if (!ad.advertiser && !ad.title) continue;
+      const key = `${ad.advertiser}|${ad.title}|${ad.targetDomain}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(ad);
+    }
+  }
+  return out;
+}
+
 export async function adapt(rawCapture, opts = {}) {
   const diag = { adapterVersion: ADAPTER_VERSION, usedFallback: false, notes: [] };
   const nodes = parseSse(rawCapture.raw || "");
@@ -603,6 +649,7 @@ export async function adapt(rawCapture, opts = {}) {
   const sources = extractSources(nodes, diag);
   const products = extractProducts(nodes);
   const places = extractPlaces(nodes);
+  const ads = extractAds(nodes);
   const searched =
     fanout.search.length + fanout.shopping.length + fanout.image.length > 0 ||
     sources.some((s) => s.outcome !== "unknown") ||
@@ -680,6 +727,7 @@ export async function adapt(rawCapture, opts = {}) {
     brandMentions,
     carousels,
     referenceTypes,
+    ads,
     answerChars: answerText.length,
     answerText, // capped by makeRecord; the UI needs this for rank/aspect analysis
     platformSpecific,

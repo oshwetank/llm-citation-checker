@@ -22,6 +22,11 @@
  *   - B's page then receives ANOTHER answer to A (the late-arrival case)
  * That second capture must be filed under A. Before the fix it was filed
  * under B.
+ *
+ * Since 0.57.0 the two are copies of one answer (same conversation, same
+ * question, same text), so they are one record that lists the late copy in
+ * mergedFrom (lib/sameAnswer.js). The late copy's own raw row must still say
+ * A: a reprocess rebuilds the record from both.
  */
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -156,12 +161,14 @@ try {
       r.onsuccess = () => res(r.result);
       r.onerror = () => rej(r.error);
     });
-    return all.filter((r) => r.userPrompt === A).map((r) => ({ promptId: r.geo && r.geo.promptId, at: r.capturedAt }));
+    return all.filter((r) => r.userPrompt === A).map((r) => ({ promptId: r.geo && r.geo.promptId, at: r.capturedAt, copies: 1 + (r.mergedFrom || []).length }));
   }, A);
 
   console.log("\nA late answer is filed under the prompt it answers");
+  const copies = answersToA.reduce((n, r) => n + r.copies, 0);
   check("both answers to A were captured — the one on A's page and the late one on B's",
-    answersToA.length === 2, `${answersToA.length} captured`);
+    copies === 2, `${copies} captured`);
+  check("as one record, since they are copies of one answer", answersToA.length === 1, `${answersToA.length} records`);
   check("every answer to A is filed under A — none under B",
     answersToA.length > 0 && answersToA.every((r) => r.promptId === seeded.ids[A]),
     JSON.stringify(answersToA.map((r) => r.promptId === seeded.ids[A] ? "A" : r.promptId === seeded.ids[B] ? "B" : r.promptId)));
@@ -179,11 +186,12 @@ try {
       r.onsuccess = () => res(r.result);
       r.onerror = () => rej(r.error);
     });
-    const derived = (await get("derived")).filter((r) => r.userPrompt === A).map((r) => r.captureId);
+    // Every raw copy the record holds, the late one included.
+    const derived = (await get("derived")).filter((r) => r.userPrompt === A).flatMap((r) => [r.captureId, ...(r.mergedFrom || [])]);
     return (await get("raw")).filter((r) => derived.includes(r.captureId)).map((r) => r.geo && r.geo.promptId);
   }, A);
-  check("the correction survives a reprocess — the raw row agrees",
-    rawGeo.length > 0 && rawGeo.every((id) => id === seeded.ids[A]),
+  check("the correction survives a reprocess — both raw rows agree",
+    rawGeo.length === 2 && rawGeo.every((id) => id === seeded.ids[A]),
     JSON.stringify(rawGeo.map((id) => id === seeded.ids[A] ? "A" : id === seeded.ids[B] ? "B" : id)));
 } finally {
   await context.close();

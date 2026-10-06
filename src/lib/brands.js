@@ -184,8 +184,28 @@ const SEPARATOR_CELL = /^:?-+:?$/;
 // already cover most comparison tables regardless of topic) — a much
 // stronger signal than guessing from position when it's present, and
 // harmless when it isn't (falls straight back to the old rule below).
-const NAME_HEADER_RE = /^(phones?|products?|items?|models?|devices?|names?|brands?|picks?|winners?|recommendations?|options?|choices?)$/i;
+const NAME_HEADER_RE = /^(phones?|products?|items?|models?|devices?|names?|brands?|picks?|winners?|recommendations?|options?|choices?|hotels?|hostels?|resorts?|homestays?|stays?|propert(?:y|ies)|accommodations?|lodg(?:e|es|ings?)|places?|restaurants?|cafes?|venues?|stores?|shops?|showrooms?|dealers?|sellers?|retailers?|merchants?|compan(?:y|ies)|providers?|vendors?|apps?|tools?|services?|platforms?|software|schools?|colleges?|universit(?:y|ies)|institutes?|courses?|clinics?|hospitals?|doctors?|banks?|cards?|brokers?|funds?|insurers?|plans?|policies|cars?|bikes?|scooters?|laptops?|airlines?|operators?|agenc(?:y|ies)|websites?|sites?)$/i;
 const cleanHeaderCell = (s) => String(s || "").replace(/[*_`]/g, "").trim();
+// "Hotel / Stay", "Hotel name", "Property (area)": the header names its
+// column when any one of its words does.
+const headerNamesColumn = (h) => {
+  const c = cleanHeaderCell(h).replace(/\([^)]*\)/g, " ");
+  if (NAME_HEADER_RE.test(c)) return true;
+  return c.split(/\s*(?:\/|&|\bor\b|,)\s*|\s+name\b/i).map((x) => x.trim()).filter(Boolean).some((x) => NAME_HEADER_RE.test(x));
+};
+// Columns that are about something else (where, how much, why). Reported on
+// a hotel table: with no header the code knew, the AREA column (the town's
+// neighbourhoods and its main road) won the prose vote over the hotel names
+// and every neighbourhood was reported as a brand. Such a column is never the names.
+const NOT_NAME_HEADER_RE = /\b(areas?|locations?|localit(?:y|ies)|neighbou?rhoods?|address(?:es)?|cit(?:y|ies)|regions?|distance|near|price|prices|pricing|rates?|cost|costs|fees?|tariff|budget|ratings?|reviews?|stars?|why|reason|notes?|highlights?|amenities|features?|pros|cons|best for|good for|ideal for|verdict|type|kind|category|specs?|size|duration|timings?|hours|contact|phone|website|link|book(?:ing)?)\b/i;
+
+// A table cell's name: ChatGPT writes some names as entity markers
+// (entity["turn0business4","Hotel Pinecrest"]), whose name is what the
+// prose repeats.
+function cellName(cell) {
+  const m = String(cell || "").match(/\u{E200}entity\u{E202}\[\s*"[^"]*"\s*,\s*"([^"]+)"/u);
+  return cleanHeaderCell(m ? m[1] : cell);
+}
 
 // Returns the first-column text of every DATA row (header/separator rows
 // excluded) in every real table found in `text`. Previously this signal was
@@ -223,13 +243,14 @@ function parseTableCells(text) {
           for (let k = i + 2; k < lines.length && lines[k].trim() && lines[k].includes("|"); k++) {
             rows.push(splitTableRow(lines[k]));
           }
-          let nameColIdx = headerCells.findIndex((h) => NAME_HEADER_RE.test(cleanHeaderCell(h)));
+          let nameColIdx = headerCells.findIndex((h) => headerNamesColumn(h));
           if (nameColIdx === -1) {
             let bestScore = 0;
             for (let c = 0; c < headerCells.length; c++) {
+              if (NOT_NAME_HEADER_RE.test(cleanHeaderCell(headerCells[c]))) continue;
               let score = 0;
               for (const cells of rows) {
-                const cell = cleanHeaderCell(cells[c] || "");
+                const cell = cellName(cells[c] || "");
                 if (cell && namedInProse(text, cell)) score++;
               }
               if (score > bestScore) { bestScore = score; nameColIdx = c; }
@@ -873,7 +894,27 @@ function isEditorialOrReviewDomain(domain) {
   return false;
 }
 
+// A cited site's name counts as a mention only where the answer writes it as
+// a name: "Booking.com" or "Booking", not "the current booking listings";
+// "Hotels.com", not "budget hotels". Any capital letter will do ("boAt").
+function writtenAsName(text, h) {
+  const word = text.slice(h.start, h.end);
+  if (/[A-Z0-9]/.test(word) || /[^\x00-\x7F]/.test(word)) return true;
+  return /^\.(com|in|co|net|org|io|ai|app)\b/i.test(text.slice(h.end, h.end + 6));
+}
+
+// Places people stay, eat, shop or are treated at. A name with one of these
+// in it is kept whole; the word alone is only the category.
+const VENUE_WORD_RE = /\b(hotels?|hostels?|inns?|guest ?houses?|resorts?|home ?stays?|lodges?|motels?|villas?|cottages?|camps?|retreats?|residency|suites|b&b|bnb|cafes?|café|restaurants?|dhaba|bakery|bistro|pub|clinics?|hospitals?|schools?|colleges?|academy|institute|salon|spa|gym|studio|stores?|mart|showroom|jewell?ers?|pharmacy)\b/i;
+const GENERIC_VENUE_RE = /^(the\s+)?(hotels?|hostels?|inns?|guest ?houses?|resorts?|home ?stays?|lodges?|motels?|cafes?|restaurants?|clinics?|hospitals?|stores?|stays?)$/i;
+
+// Markdown links keep their text: "**[Hotel Summit 9](https://…)**" is the
+// name Hotel Summit 9 in bold, not a 120-character label with a URL in it.
+const unlinkMarkdown = (s) => String(s || "").replace(/\[([^\]\n]+)\]\((?:https?:\/\/|www\.)[^)\s]*\)/g, "$1");
+
 export function detectBrands(answerText, plainText, ctx = {}) {
+  answerText = answerText ? unlinkMarkdown(answerText) : answerText;
+  plainText = plainText ? unlinkMarkdown(plainText) : plainText;
   const text = plainText || answerText || "";
   if (!text) return { brands: [], entities: [] };
 
@@ -910,6 +951,11 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     if (!n || n.length < 2 || n.length > cap) return;
     if (isNoise(n) || isNoise(n.split(/\s+/)[0])) return;
     if (trust !== "trusted" && isComponentOrChip(n)) return;
+    // A name read off the answer's layout is written as a name: "near",
+    // "hotels" and "the jetty" are table fragments, not brands.
+    if (trust === "structural" && /^[a-z][a-z\s'’.-]*$/.test(n)) return;
+    // "Hotel" on its own is the category, never the business.
+    if (trust !== "trusted" && GENERIC_VENUE_RE.test(n)) return;
     const k = n.toLowerCase();
     const prev = candidates.get(k);
     const keepWhole = trust === "trusted";
@@ -998,6 +1044,9 @@ export function detectBrands(answerText, plainText, ctx = {}) {
       // in every table whose products the prose never re-narrates.
       const needsProse = weak;
       if (looksLikeProperName(part)) { addCand(part, null, null, "structural", false, weak, needsProse); continue; }
+      // A venue is named whole: "Trekkers Hostel 12" and "Hotel Summit 9"
+      // are businesses, not the maker "Trekkers" plus a model number.
+      if (VENUE_WORD_RE.test(part) && /[A-Z]/.test(part)) { addCand(part, null, null, "structural", false, weak, needsProse); continue; }
       const hasDigit = /\d/.test(part);
       // vendorFromProductName only makes sense on a multi-word phrase — it
       // extracts the LEADING token of a longer name ("Vivo V70" → "Vivo"). On
@@ -1099,7 +1148,7 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     const hits = isDomain
       ? matchCompressedLabel(text, cand.name).filter(
           (h) => !claimed.some(([cs, ce]) => h.start >= cs && h.end <= ce)
-        )
+        ).filter((h) => writtenAsName(text, h))
       : [...text.matchAll(new RegExp(`\\b${escapeRegExp(cand.name)}\\b`, "gi"))]
           .map((m) => ({ start: m.index, end: m.index + cand.name.length }))
           .filter((h) => !claimed.some(([cs, ce]) => h.start >= cs && h.end <= ce));

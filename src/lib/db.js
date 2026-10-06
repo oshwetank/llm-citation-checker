@@ -172,6 +172,21 @@ export const db = {
     });
   },
 
+  // Records captured between two times, via the capturedAt index. Used to
+  // find other copies of the same answer (lib/sameAnswer.js) without loading
+  // the whole store.
+  getByTimeRange(store, from, to) {
+    return tx(store, "readonly", (os) => {
+      let idx;
+      try {
+        idx = os.index("capturedAt");
+      } catch (_) {
+        return Promise.resolve([]);
+      }
+      return reqToPromise(idx.getAll(IDBKeyRange.bound(from, to)));
+    });
+  },
+
   getAllKeysSortedByTime(store, limit) {
     return tx(store, "readonly", (os) => {
       return new Promise((resolve, reject) => {

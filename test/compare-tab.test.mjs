@@ -97,8 +97,11 @@ try {
   await page.goto(`chrome-extension://${extId}/ui/panel.html?mode=tab`);
   await page.waitForTimeout(800);
 
-  // Same prompt twice -> a two-run timeline for Compare to work with.
+  // Same prompt twice -> a two-run timeline for Compare to work with. Asked
+  // twice means two conversations: the same stream twice in one conversation
+  // is one answer captured twice, which is stored once (lib/sameAnswer.js).
   for (let i = 0; i < 2; i++) {
+    const raw = i ? RAW.replace(/("conversation_id":\s*")[^"]+"/g, (_, key) => `${key}test-conversation-${i}"`) : RAW;
     await page.evaluate(
       async ({ raw, reqBody }) =>
         new Promise((resolve) => {
@@ -107,7 +110,7 @@ try {
             payload: { raw, reqBody, pageUrl: "https://chatgpt.com/", capturedAt: Date.now() },
           }, resolve);
         }),
-      { raw: RAW, reqBody: REQ_BODY }
+      { raw, reqBody: REQ_BODY }
     );
     await page.waitForTimeout(900);
   }
