@@ -52,6 +52,9 @@ await context.addInitScript(() => {
   try { localStorage.setItem("cito-tour-seen", "1"); } catch (_) { /* private mode */ }
 });
 
+// In page coordinates: filling a field can scroll the page, which is not the
+// layout moving.
+const docTop = (page, sel) => page.evaluate((s) => { const n = document.querySelector(s); return n ? { top: n.getBoundingClientRect().top + window.scrollY } : null; }, sel);
 const rect = (page, sel) => page.evaluate((s) => {
   const n = document.querySelector(s);
   if (!n) return null;
@@ -150,11 +153,11 @@ try {
   check("its checklist item is done", (await reqStates(page)).brand === "done");
 
   console.log("\nCompetitors don't push the AI engines down");
-  const enginesBefore = await rect(page, "#cs-engines");
+  const enginesBefore = await docTop(page, "#cs-engines");
   for (const [n, s] of [["Contoso", "contoso.com"], ["Fabrikam", "fabrikam.com"], ["Litware", ""], ["Tailspin", "tailspin.com"], ["Adventure Works", "adventure-works.com"], ["Proseware", "proseware.com"]]) {
     await addCompetitor(page, n, s);
   }
-  const enginesAfter = await rect(page, "#cs-engines");
+  const enginesAfter = await docTop(page, "#cs-engines");
   check("six competitors were added", (await page.$$(".cs-comp-chip")).length === 6);
   check("the engine picker did not move", enginesBefore && enginesAfter && Math.abs(enginesBefore.top - enginesAfter.top) < 1,
     `${enginesBefore && enginesBefore.top} → ${enginesAfter && enginesAfter.top}`);
@@ -193,6 +196,19 @@ try {
   check("adding prompts kept the competitors typed in so far", (await page.$$(".cs-comp-chip")).length === 5);
   check("and the prompt item is done now", (await reqStates(page)).prompt === "done");
 
+  // 0.55.0, from the canvas: which views the campaign's board leads with.
+  console.log("\nWhat this campaign should measure");
+  const ms = await page.evaluate(() => [...document.querySelectorAll("#cs-measure .cs-measure")].map((b) => ({
+    v: b.dataset.value, on: b.getAttribute("aria-pressed") === "true", tag: b.querySelector(".cs-measure-tag")?.textContent, off: b.disabled })));
+  check("five views to pick from", ms.map((m) => m.v).join() === "mentions,citations,products,images,local", ms.map((m) => m.v).join());
+  check("brand mentions are always on", ms[0] && ms[0].on && ms[0].off && ms[0].tag === "Always on", JSON.stringify(ms[0]));
+  check("a new campaign starts on mentions and citations", ms.filter((m) => m.on).map((m) => m.v).join() === "mentions,citations", ms.filter((m) => m.on).map((m) => m.v).join());
+  await page.click('#cs-measure .cs-measure[data-value="products"]');
+  check("a view turns on with a click, and says so", await page.evaluate(() => {
+    const b = document.querySelector('#cs-measure .cs-measure[data-value="products"]');
+    return b.getAttribute("aria-pressed") === "true" && b.querySelector(".cs-measure-tag").textContent === "On";
+  }));
+
   console.log("\nSave draft stores everything without locking");
   await page.click(".cs-draft");
   await page.waitForTimeout(600);
@@ -200,6 +216,7 @@ try {
   check("brand saved", p && p.brand.name === "Northwind", JSON.stringify(p && p.brand));
   check("competitors saved", p && p.competitors.length === 5 && p.competitors.some((c) => c.name === "Contoso" && c.url === "contoso.com"), JSON.stringify(p && p.competitors));
   check("not locked", p && !p.locked);
+  check("what it measures is saved", p && p.measure && p.measure.citations && p.measure.products && !p.measure.images && !p.measure.local, JSON.stringify(p && p.measure));
 
   console.log("\nThe bar stays on screen while scrolling");
   await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
@@ -220,7 +237,7 @@ try {
   check("and the competitors", p && p.competitors.length === 5);
 
   console.log("\nA locked campaign's setup opens read-only");
-  await page.click('button:has-text("Manage setup & prompts")');
+  await page.click('#cpHead button:has-text("Edit setup")');
   await page.waitForTimeout(300);
   check("it uses the same layout, read-only", await page.evaluate(() => {
     const cs = document.querySelector(".cs.cs-readonly");

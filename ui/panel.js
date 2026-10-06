@@ -169,7 +169,25 @@ function applyMode() {
   const header = document.querySelector(".app-header");
   if (header) {
     document.documentElement.style.setProperty("--analyze-bar-top", `${header.offsetHeight}px`);
+    // The bar's right-hand slot changes with the page (setHeaderPage) and
+    // can wrap it onto a second line, so keep measuring.
+    if (!headerObs && "ResizeObserver" in window) {
+      headerObs = new ResizeObserver(() => document.documentElement.style.setProperty("--analyze-bar-top", `${header.offsetHeight}px`));
+      headerObs.observe(header);
+    }
   }
+}
+let headerObs = null;
+/* The page's own items in the app bar's right-hand slot (full tab only, as
+   on the canvas; the popup's bar has no room). Cleared on every tab switch,
+   so a page that has nothing to add leaves it empty. */
+function setHeaderPage(tab, ...nodes) {
+  const slot = document.getElementById("headerPage");
+  if (!slot) return;
+  const active = document.querySelector(".panel.active")?.id;
+  if (tab !== active) return;
+  slot.textContent = "";
+  if (document.body.classList.contains("tab")) slot.append(...nodes.filter(Boolean));
 }
 applyMode();
 window.addEventListener("resize", applyMode);
@@ -671,6 +689,10 @@ function showTab(name) {
   if (btn) btn.classList.add("active");
   const panel = document.getElementById(name);
   if (panel) panel.classList.add("active");
+  const slot = document.getElementById("headerPage");
+  if (slot) slot.textContent = "";
+  if (name === "dashboard") setHeaderPage("dashboard", el("span", { className: "header-note" }, "Everything you’ve captured · stored on this computer"));
+  if (name === "loader" && cbHeaderNav) setHeaderPage("loader", cbHeaderNav);
   if (name === "about") aboutEnter();
   if (name === "analyze") abNoteAnalyzed(ANALYZE_SHOWN);
 
@@ -5053,12 +5075,45 @@ function renderCampaignsImpl() {
   if (!root) return;
   root.textContent = "";
   const profile = geoActive();
+  cbHeaderNav = null;
+  setHeaderPage("loader");
 
-  const bar = el("div", { className: "card" });
-  const barHead = el("div", { className: "card-header" }, el("h3", {}, "Campaigns"));
-  barHead.append(el("span", { className: "muted small" }, `${GEO_PROFILES.length} of ${MAX_PROFILES} used`));
-  bar.append(barHead);
+  // A set-up campaign opens on its own header card (renderCampaignHead), which
+  // carries the switcher; the chooser card is for setting one up.
+  if (profile && profile.locked) {
+    // A brand's page against yours stands on its own, with a way back.
+    const detail = cbDetail && cbProfileId === profile.id;
+    if (!detail && TRASHED_PROFILES.length) root.append(renderTrashedCampaigns());
+    if (!detail) root.append(renderCampaignHead(profile));
+    if (!detail && campaignManageOpen) root.append(renderCampaignSetup(profile, true));
+    if (profile.lastRunAt || ALL_RECORDS.some((r) => r.geo && r.geo.profileId === profile.id)) root.append(renderCampaignResults(profile));
+    return;
+  }
 
+  if (!profile) {
+    const bar = el("div", { className: "card" });
+    const barHead = el("div", { className: "card-header" }, el("h3", {}, "Campaigns"));
+    barHead.append(el("span", { className: "muted small" }, `${GEO_PROFILES.length} of ${MAX_PROFILES} used`));
+    bar.append(barHead, renderCampaignSwitcher());
+    root.append(bar);
+    if (TRASHED_PROFILES.length) root.append(renderTrashedCampaigns());
+    root.append(renderCampaignEmptyState());
+    return;
+  }
+
+  if (TRASHED_PROFILES.length) root.append(renderTrashedCampaigns());
+  if (!campaignOnboardDismissed) root.append(renderOnboardingBanner());
+  // As on the canvas: a breadcrumb in the setup's own bar, with the other
+  // campaigns beside it, instead of a chooser card above.
+  const setup = renderCampaignSetup(profile, false);
+  setup.querySelector(".cs-bar-title")?.prepend(el("div", { className: "cs-crumb" },
+    el("nav", { className: "cs-crumb-path", "aria-label": "Breadcrumb" }, el("span", {}, "Campaigns"), el("span", { "aria-hidden": "true" }, "/"), el("span", { "aria-current": "page" }, profile.createdAt && profile.lastRunAt ? "Edit campaign" : "New campaign")),
+    renderCampaignSwitcher()));
+  root.append(setup);
+  if (profile.lastRunAt || ALL_RECORDS.some((r) => r.geo && r.geo.profileId === profile.id)) root.append(renderCampaignResults(profile));
+}
+
+function renderCampaignSwitcher() {
   const switcher = el("div", { className: "geo-switcher" });
   GEO_PROFILES.forEach((p) => {
     const b = el("button", { className: `geo-chip${p.id === geoActiveId ? " active" : ""}` }, p.name || "Untitled");
@@ -5074,25 +5129,7 @@ function renderCampaignsImpl() {
     };
     switcher.append(add);
   }
-  bar.append(switcher);
-  root.append(bar);
-
-  if (TRASHED_PROFILES.length) root.append(renderTrashedCampaigns());
-
-  if (!profile) {
-    root.append(renderCampaignEmptyState());
-    return;
-  }
-
-  if (!profile.locked) {
-    if (!campaignOnboardDismissed) root.append(renderOnboardingBanner());
-    root.append(renderCampaignSetup(profile, false));
-  } else {
-    root.append(renderCampaignSummary(profile));
-    if (campaignManageOpen) root.append(renderCampaignSetup(profile, true));
-    root.append(renderRunCard(profile));
-  }
-  if (profile.lastRunAt || ALL_RECORDS.some((r) => r.geo && r.geo.profileId === profile.id)) root.append(renderCampaignResults(profile));
+  return switcher;
 }
 
 /* ---------- A campaign's results (0.50.0) ----------
@@ -5116,7 +5153,16 @@ let cbPromptFilter = "all";
 let cbOpenPrompts = new Set();
 let cbDetail = null;         // brand whose detail is open
 let cbProfileId = null;      // the campaign the state above belongs to
+let cbHeaderNav = null;      // the board's section links, shown in the app bar
 
+// Setup's names for the board's views ("What this campaign should measure").
+const CS_MEASURE = {
+  mentions: ["Brand named in answers", "Visibility, share of voice, position"],
+  citations: ["Your site cited", "Pages the engines cite, and the gaps"],
+  products: ["Product cards and stores", "Card share, card position, where cards send buyers"],
+  images: ["Images", "Which sites supply images, where clicks land"],
+  local: ["Map listings", "Pin position and listing details, for places"],
+};
 const CB_FOCUS = [
   ["mentions", "Mentions", "book", "Named in the answer text"],
   ["citations", "Citations", "pages", "Its site used as a source"],
@@ -5169,15 +5215,17 @@ async function renderCampaignBoard(box, profile) {
   const view = b.view;
   const you = view.isOwn ? "you" : view.name;
 
-  /* --- header: what this is, and the filters --- */
-  const head = el("div", { className: "card cb-head" });
+  /* --- the filters, under the campaign's header (renderCampaignHead) --- */
+  // A campaign that isn't set up has no header card; the filters get one.
+  const slot = document.getElementById("cpFilters");
+  const head = slot || el("div", { className: "card cb-head" });
+  if (slot) slot.textContent = "";
   const runsWithAnswers = r.runs.filter((x) => x.hasAnswers);
   const runsAsc = [...r.runs].sort((a, c) => (a.startedAt || 0) - (c.startedAt || 0));
   const runNo = (id) => runsAsc.findIndex((x) => x.id === id) + 1;
   const runDate = (t) => new Date(t).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
-  head.append(el("div", { className: "card-header" },
-    el("h3", { id: "campaignResultsH" }, "Results"),
-    el("span", { className: "muted small" }, `${r.answers} answer${r.answers === 1 ? "" : "s"} · ${b.runLabel}${b.previousLabel ? ` · compared with ${b.previousLabel}` : ""}`)));
+  const scope = el("span", { className: "muted small cp-scope", id: "campaignResultsH" }, `${r.answers} answer${r.answers === 1 ? "" : "s"} · ${b.runLabel}${b.previousLabel ? ` · compared with ${b.previousLabel}` : ""}`);
+  if (!slot) head.append(el("div", { className: "card-header" }, el("h3", {}, "Results"), scope));
   const controls = el("div", { className: "cb-controls" });
   const runSel = el("select", { className: "filter", id: "cbRun", "aria-label": "Run", title: "One run, or every run combined" });
   runsWithAnswers.forEach((x, i) => runSel.append(el("option", { value: x.id }, `Run ${runNo(x.id)} · ${runDate(x.startedAt)}${i === 0 ? " (latest)" : ""}`)));
@@ -5203,7 +5251,8 @@ async function renderCampaignBoard(box, profile) {
     picker.append(g);
   });
   picker.onchange = () => { const x = r.brands.find((y) => y.name === picker.value); cbViewAs = x && x.isOwn ? null : picker.value; rerender(); };
-  const wb = el("button", { className: "btn sm ghost", type: "button", id: "cbExport", title: "The campaign as an Excel workbook or CSV tables" }, "Export…");
+  const wb = document.getElementById("cbExport") || el("button", { className: "btn sm ghost", type: "button", id: "cbExport", title: "The campaign as an Excel workbook or CSV tables" }, "Export…");
+  wb.disabled = false;
   wb.onclick = () => openExportDialog(profile, {
     engines: b.engines, runs: runsWithAnswers.length, answers: r.answers, latestDate: runsWithAnswers[0] ? runDate(runsWithAnswers[0].startedAt) : "",
     // Newest first, as the run picker lists them; the PDF reports on one.
@@ -5212,8 +5261,8 @@ async function renderCampaignBoard(box, profile) {
   controls.append(
     el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Run"), runSel),
     el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Engine"), engine),
-    el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Viewing as"), picker),
-    wb);
+    el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Viewing as"), picker));
+  if (!wb.isConnected) controls.append(wb);
   head.append(controls);
   if (geoEngineFilter.length) head.append(el("span", { className: "scope-note muted small" }, `${(availableEngines().find((e) => e.id === geoEngineFilter[0]) || {}).label || geoEngineFilter[0]} only`));
   if (r.tags.length) {
@@ -5227,15 +5276,17 @@ async function renderCampaignBoard(box, profile) {
     if (cbTags.length) { const c = el("button", { className: "linkbtn", type: "button" }, "Clear"); c.onclick = () => { cbTags = []; rerender(); }; tw.append(c); }
     head.append(tw);
   }
-  // Jump links to the board's sections.
+  // Jump links to the board's sections: in the app bar in the full tab, as
+  // on the canvas; under the filters in the popup, whose bar has no room.
   const nav = el("nav", { className: "cb-nav", "aria-label": "Sections" });
   [["cb-brands", "Brands"], ["cb-kinds", "By kind of answer"], ["cb-runs", "Breakdowns"], ["cb-prompts", "Prompts"], ["cb-sources", "Sources"], ["cb-collected", "Data collected"]].forEach(([id, label]) => {
     const a = el("button", { className: "cb-nav-btn", type: "button" }, label);
     a.onclick = () => document.getElementById(id)?.scrollIntoView({ block: "start", behavior: "smooth" });
     nav.append(a);
   });
-  head.append(nav);
-  box.append(head);
+  if (slot) head.append(scope);
+  if (document.body.classList.contains("tab")) { cbHeaderNav = nav; setHeaderPage("loader", nav); } else head.append(nav);
+  if (!slot) box.append(head);
 
   if (!r.answers) {
     box.append(el("div", { className: "card" }, el("div", { className: "empty" }, "No answers for these filters yet. Run the campaign, or widen the filters above.")));
@@ -5243,10 +5294,13 @@ async function renderCampaignBoard(box, profile) {
   }
 
   /* --- KPIs, five ways --- */
-  if (!b.available[cbFocus]) cbFocus = "mentions";
+  // The views the campaign measures (setup); all of them for one set up
+  // before the choice existed.
+  const offered = CB_FOCUS.filter(([id]) => id === "mentions" || !profile.measure || profile.measure[id]);
+  if (!b.available[cbFocus] || !offered.some(([id]) => id === cbFocus)) cbFocus = "mentions";
   const kp = el("section", { className: "card cb-kpis", id: "cb-kpis", "aria-labelledby": "cb-kpis-h" });
   const focusTabs = el("div", { className: "cb-focus", role: "tablist", "aria-label": "What matters for this campaign" });
-  CB_FOCUS.forEach(([id, label, glyph]) => {
+  offered.forEach(([id, label, glyph]) => {
     const on = cbFocus === id;
     const t = el("button", { className: `cb-focus-tab${on ? " on" : ""}${b.available[id] ? "" : " empty"}`, type: "button", role: "tab", "aria-selected": on ? "true" : "false", title: b.available[id] ? "" : "No answer in this view had any" }, glyphEl(glyph, 14), label);
     t.onclick = () => { cbFocus = id; rerender(); };
@@ -5433,7 +5487,8 @@ async function renderCampaignBoard(box, profile) {
       el("div", {}, el("b", {}, String(c.answers)), el("span", { className: "muted small", "data-term": "responses" }, `Answers captured${c.runs > 1 ? `, ${c.runs} runs` : ""}`)),
       el("div", {}, el("b", {}, String(c.searched)), el("span", { className: "muted small", "data-term": "withSearch" }, "Searched the web")),
       el("div", {}, el("b", {}, String(c.searches)), el("span", { className: "muted small", "data-term": "fanout" }, "Searches the engines ran")),
-      el("div", {}, el("b", {}, String(c.domains)), el("span", { className: "muted small", "data-term": "uniqueDomains" }, "Unique domains")))));
+      el("div", {}, el("b", {}, String(c.domains)), el("span", { className: "muted small", "data-term": "uniqueDomains" }, "Unique domains"))),
+    renderRunHistory(profile)));
 
   /* --- run by run, and brand by engine --- */
   const pair2 = el("div", { className: "cb-pair" });
@@ -5646,11 +5701,16 @@ async function renderCampaignSources(sec, profile, { runId, focusBrand } = {}) {
  * the engines read when they named it, and prompt by prompt who came first.
  * Background: "campaign-brand-detail" (brandDetail() + brandSourceDomains()).
  */
+/* A brand's page against yours (0.50.0; laid out as the canvas's
+ * TabBrandDetail in 0.55.0): the two brands' numbers, one head-to-head bar,
+ * where each is placed on each engine, which kinds of site and which sites
+ * back each, and every prompt's verdict per engine with a score. The figures
+ * are campaignBoard.js's brandDetail(); this only draws them. */
 async function renderCampaignBrandDetail(box, profile) {
   const r = await send({ type: "campaign-brand-detail", profileId: profile.id, brand: cbDetail, runId: cbRun || undefined, engines: geoEngineFilter, tags: cbTags });
   box.textContent = "";
-  const back = el("button", { className: "analyze-context-back", type: "button" }, el("span", { "aria-hidden": "true" }, "←"), ` ${profile.name || "Campaign"}`);
-  back.onclick = () => { cbDetail = null; renderCampaigns(); };
+  const back = el("button", { className: "analyze-context-back", type: "button", title: "Back to the campaign" }, el("span", { "aria-hidden": "true" }, "‹"), ` ${profile.name || "Campaign"}`);
+  back.onclick = () => { cbDetail = null; cbVsFilter = "all"; renderCampaigns(); };
   if (!r || !r.ok || !r.detail) {
     box.append(el("div", { className: "card" }, back, el("div", { className: "empty" }, (r && r.error) || "That brand has no detail on this campaign.")));
     return;
@@ -5658,96 +5718,162 @@ async function renderCampaignBrandDetail(box, profile) {
   const d = r.detail;
   const them = d.them.name, you = d.you.name;
   const youLabel = d.you.isOwn ? `${you} (you)` : you;
-  // Switch to another brand without going back.
-  const others = el("div", { className: "cb-tags", role: "group", "aria-label": "Another brand" });
+  const pct = (v) => (v == null ? "—" : `${Math.round(v)}%`);
+
+  /* --- header: back, "X against Y", the other brands as tabs, the numbers --- */
+  const others = el("div", { className: "cb-vs-switch", role: "tablist", "aria-label": "Another brand" });
   r.brands.filter((x) => !x.isOwn).forEach((x) => {
     const on = x.name === them;
-    const c = el("button", { className: `db-chip${on ? " on scope" : ""}`, type: "button", "aria-pressed": on ? "true" : "false" }, x.name);
-    c.onclick = () => { cbDetail = x.name; renderCampaigns(); };
+    const c = el("button", { className: `cb-vs-tab${on ? " on" : ""}`, type: "button", role: "tab", "aria-selected": on ? "true" : "false" }, x.name);
+    c.onclick = () => { cbDetail = x.name; cbVsFilter = "all"; renderCampaigns(); };
     others.append(c);
   });
-  const head = el("div", { className: "card cb-head cb-detail-head" },
-    el("div", { className: "cb-detail-top" }, back, el("span", { className: "muted small" }, `${r.answers} answers · ${r.runLabel}`)),
-    el("div", { className: "cb-detail-name" },
+  const head = el("section", { className: "card cb-head cb-detail-head", "aria-labelledby": "cb-detail-h" },
+    el("div", { className: "cb-detail-top" }, back,
       el("h2", { className: "cb-detail-title", id: "cb-detail-h" }, them, el("span", { className: "muted" }, " against "), youLabel),
-      el("span", { className: `cb-tag${d.them.auto ? " found auto-tag" : ""}` }, d.them.auto ? "found by us" : d.them.isOwn ? "you" : "competitor")),
-    others);
+      el("span", { className: `cb-tag${d.them.auto ? " found auto-tag" : ""}` }, d.them.auto ? "found by us" : "competitor"),
+      others),
+    el("span", { className: "muted small cb-detail-scope" }, `${r.answers} answers · ${r.runLabel}`));
+  const fmt = (k, v) => (v == null ? "—" : k.unit === "%" ? `${Math.round(v)}%` : k.unit === "rank" ? v.toFixed(1) : String(v));
+  const kp = el("div", { className: "cb-vs" });
+  d.kpis.forEach((k) => kp.append(el("div", { className: "cb-vs-kpi" },
+    el("div", { className: "k-label", ...(CB_TERMS[k.label] ? { "data-term": CB_TERMS[k.label] } : {}) }, k.label),
+    el("div", { className: "k-value" }, fmt(k, k.them)),
+    el("div", { className: `k-sub${k.better === "them" ? " t-bad" : ""}` }, `${you} ${fmt(k, k.you)}${k.better === "them" ? ` · ${them} ahead` : ""}`))));
+  head.append(kp);
   box.append(head);
 
-  // Headline numbers, side by side.
-  const fmt = (k, v) => (v == null ? "—" : k.unit === "%" ? `${Math.round(v)}%` : k.unit === "rank" ? v.toFixed(1) : String(v));
-  const kp = el("div", { className: "cb-tiles cb-vs" });
-  d.kpis.forEach((k) => kp.append(el("div", { className: "cb-kpi geo-kpi" },
-    el("div", { className: "k-label", ...(CB_TERMS[k.label] ? { "data-term": CB_TERMS[k.label] } : {}) }, k.label),
-    el("div", { className: "k-value" }, el("span", { className: k.better === "them" ? "ahead" : "" }, fmt(k, k.them)), el("span", { className: "muted vs" }, " vs "), el("span", { className: k.better === "you" ? "ahead" : "" }, fmt(k, k.you))),
-    el("div", { className: "k-sub muted" }, `${them} vs ${you}`))));
-  head.append(kp);
-
-  // Head to head.
+  /* --- head to head: one bar --- */
   const h = d.h2h;
-  const seg = (n, cls, label, term) => el("div", { className: `cb-h2h-row ${cls}` }, el("span", { "data-term": term }, label), cbBar(h.answers ? (n / h.answers) * 100 : 0, cls), el("span", { className: "num" }, String(n)));
-  const h2h = el("div", { className: "cb-h2h head-to-head" },
-    seg(h.both, "both", "Both named", "bothNamed"), seg(h.themOnly, "them", `Only ${them}`, "onlyThem"), seg(h.youOnly, "you", `Only ${you}`, "onlyYou"), seg(h.neither, "none", "Neither", "neitherNamed"));
-  const first = el("div", { className: "cb-first" }, el("span", { className: "muted small", "data-term": "namedFirst" }, `Named first, when both appear · ${them} ${h.firstThem} vs ${you} ${h.firstYou}`),
-    el("div", { className: "cb-first-bar" }, el("span", { className: "them", style: `flex:${h.firstThem || 0.0001} 1 0` }), el("span", { className: "you", style: `flex:${h.firstYou || 0.0001} 1 0` })));
-  box.append(cbSection("cb-h2h", `Head to head, across ${h.answers} answers`, h.line, h2h, h.both ? first : null));
+  const parts = [["them", h.themOnly, `Only ${them}`, `${you} missing from these answers`, "onlyThem"], ["both", h.both, "Both named", "shared answers", "bothNamed"],
+    ["you", h.youOnly, `Only ${you}`, `${them} missing`, "onlyYou"], ["none", h.neither, "Neither", "other brands only", "neitherNamed"]];
+  const bar = el("div", { className: "cb-stack", role: "img", "aria-label": parts.map(([, n, l]) => `${l}: ${n}`).join(", ") });
+  parts.forEach(([cls, n]) => { if (n) bar.append(el("span", { className: `vs-${cls}`, style: `flex:${n} 1 0` }, String(n))); });
+  const legend = el("div", { className: "cb-stack-legend" });
+  parts.forEach(([cls, n, label, sub, term]) => legend.append(el("div", { className: `cb-h2h-row ${cls}` },
+    el("span", { className: "cb-leg-l", "data-term": term }, el("i", { className: `vs-${cls}` }), label), el("span", { className: "num" }, String(n)), el("span", { className: "muted small" }, sub))));
+  if (h.both) legend.append(el("div", { className: "cb-h2h-first" }, el("span", { className: "cb-leg-l", "data-term": "namedFirst" }, el("i", { className: "vs-first" }), `Named first · ${h.firstThem} vs ${h.firstYou}`), el("span", { className: "muted small" }, `${them} vs ${you}, when both appear`)));
+  box.append(cbSection("cb-h2h", `Head to head, across ${h.answers} answers`, h.line, bar, legend));
 
-  // On each engine.
-  const et = el("div", { className: "cb-table cb-vs-engine", role: "table", "aria-label": "On each engine" });
-  et.append(el("div", { className: "cb-tr cb-th", role: "row" }, ...["Engine", `Named in · ${them}`, `Named in · ${you}`, `Avg position · ${them}`, `Avg position · ${you}`].map((x) => el("span", { role: "columnheader" }, x))));
-  d.byEngine.forEach((e) => et.append(el("div", { className: "cb-tr", role: "row" },
-    el("span", { role: "rowheader", className: "cb-engine-name" }, engineIconEl(e.id), e.label),
-    el("span", { role: "cell", className: "cb-num-bar" }, el("span", { className: "num" }, fmtPct(e.them.visibility)), cbBar(e.them.visibility, "them")),
-    el("span", { role: "cell", className: "cb-num-bar" }, el("span", { className: "num" }, fmtPct(e.you.visibility)), cbBar(e.you.visibility, "own")),
-    el("span", { role: "cell", className: "num" }, cbPos(e.them.avgPosition)),
-    el("span", { role: "cell", className: "num" }, cbPos(e.you.avgPosition)))));
-  box.append(cbSection("cb-vs-engines", "On each engine", d.engineLine, el("div", { className: "cb-scroll" }, et)));
-
-  // Where each brand's citations come from, and who cites whom.
+  /* --- on each engine: where each is placed, and how often named --- */
   const pair = el("div", { className: "cb-pair" });
+  const maxPos = Math.max(5, ...d.byEngine.flatMap((e) => [e.them.avgPosition || 0, e.you.avgPosition || 0]).map(Math.ceil));
+  const at = (v) => `${((v - 1) / (maxPos - 1)) * 100}%`;
+  const et = el("div", { className: "cb-dots", role: "table", "aria-label": "On each engine" });
+  et.append(el("div", { className: "cb-tr cb-th", role: "row" }, el("span", { role: "columnheader" }, "Engine"), el("span", { role: "columnheader" }, "Named in"),
+    el("span", { role: "columnheader", className: "cb-dots-axis" }, el("span", {}, "Average position · 1st"), el("span", {}, ORDINAL(maxPos))), el("span", { role: "columnheader" })));
+  d.byEngine.forEach((e) => {
+    const tp = e.them.avgPosition, yp = e.you.avgPosition;
+    const track = el("span", { className: "cb-dots-track", "aria-hidden": "true" });
+    if (tp && yp) track.append(el("span", { className: "cb-dots-line", style: `left:${at(Math.min(tp, yp))};width:calc(${at(Math.max(tp, yp))} - ${at(Math.min(tp, yp))})` }));
+    if (tp) track.append(el("span", { className: "cb-dot vs-them", style: `left:${at(tp)}`, title: `${them} ${tp.toFixed(1)}` }));
+    if (yp) track.append(el("span", { className: "cb-dot vs-you", style: `left:${at(yp)}`, title: `${you} ${yp.toFixed(1)}` }));
+    const themAhead = tp && (!yp || tp < yp);
+    et.append(el("div", { className: "cb-tr", role: "row" },
+      el("span", { role: "rowheader", className: "cb-engine-name" }, engineIconEl(e.id), e.label),
+      el("span", { role: "cell", className: "cb-named" }, el("b", { className: "you" }, `${you} ${pct(e.you.visibility)}`), el("span", {}, `${them} ${pct(e.them.visibility)}`)),
+      el("span", { role: "cell" }, track),
+      el("span", { role: "cell", className: `num small ${themAhead ? "t-bad" : "t-good"}` }, `${you} ${cbPos(yp)} · ${them} ${cbPos(tp)}`)));
+  });
+  pair.append(cbSection("cb-vs-engines", "On each engine", el("span", { className: "ap-legend" }, el("span", {}, el("i", { className: "vs-you" }), you), el("span", {}, el("i", { className: "vs-them" }), them)),
+    et, d.engineLine ? el("p", { className: "muted small" }, `${d.engineLine} Further left is better.`) : null));
+
+  /* --- where each brand's citations come from: mirrored bars --- */
   if (d.kinds.length) {
     const max = Math.max(1, ...d.kinds.flatMap((k) => [k.them, k.you]));
-    const list = el("div", { className: "cb-barlist" });
-    d.kinds.forEach((k) => list.append(el("div", { className: "cb-barrow two" }, el("span", {}, el("i", { className: "cb-swatch", style: `background:var(${AP_KIND_VAR[k.label]})` }), k.label),
-      el("span", { className: "cb-two" }, cbBar((k.them / max) * 100, "them"), cbBar((k.you / max) * 100, "own")), el("span", { className: "num" }, `${k.them} · ${k.you}`))));
-    pair.append(cbSection("cb-vs-kinds", "Where each brand’s citations come from", `cited pages that mention ${them} · ${you}`, list, d.kindsLine ? el("p", { className: "muted small" }, d.kindsLine) : null));
+    const list = el("div", { className: "cb-mirror", role: "table", "aria-label": "Cited pages that mention each brand, by kind of site" });
+    list.append(el("div", { className: "cb-mirror-row cb-th", role: "row" }, el("span", { role: "columnheader" }, "Kind of site"), el("span", { role: "columnheader", className: "num" }, them), el("span", { role: "columnheader" }, you)));
+    d.kinds.forEach((k) => list.append(el("div", { className: "cb-mirror-row", role: "row" },
+      el("span", { role: "rowheader" }, k.label),
+      el("span", { role: "cell", className: "cb-mirror-l" }, el("span", { className: "num" }, String(k.them)), el("span", { className: "cb-mbar vs-them", style: `width:${(k.them / max) * 100}%` })),
+      el("span", { role: "cell", className: "cb-mirror-r" }, el("span", { className: "cb-mbar vs-you", style: `width:${(k.you / max) * 100}%` }), el("span", { className: "num" }, String(k.you))))));
+    pair.append(cbSection("cb-vs-kinds", "Where each brand’s citations come from", "pages that mention the brand", list, d.kindsLine ? el("p", { className: "muted small" }, d.kindsLine) : null));
   }
-  const st = el("div", { className: "cb-table cb-whom", role: "table", "aria-label": "Who cites whom" });
-  st.append(el("div", { className: "cb-tr cb-th", role: "row" }, ...["Site", "Kind", `Cites ${them}`, `Cites ${you}`, "Verdict"].map((x) => el("span", { role: "columnheader" }, x))));
-  d.sites.forEach((s) => st.append(el("div", { className: "cb-tr", role: "row" },
-    el("span", { role: "rowheader" }, el("b", {}, s.site)), el("span", { role: "cell", className: "muted small" }, s.kind),
-    el("span", { role: "cell", className: "num" }, String(s.them)), el("span", { role: "cell", className: "num" }, String(s.you)),
-    el("span", { role: "cell", className: `small ${s.them && !s.you ? "t-bad" : s.you && !s.them ? "t-good" : ""}` }, s.verdict))));
-  pair.append(cbSection("cb-whom", "Who cites whom", d.gapLine, d.sites.length ? st : el("p", { className: "ap-note" }, "No cited page mentions either brand.")));
   box.append(pair);
 
-  // What the engines were reading when they named this brand.
+  /* --- who cites whom: a diverging bar per site, and a verdict --- */
+  const smax = Math.max(1, ...d.sites.flatMap((x) => [x.them, x.you]));
+  const VERDICT = (x) => (x.them && !x.you ? [`Only ${them}`, "bad"] : x.you && !x.them ? [`Only ${you}`, "good"] : x.them > x.you ? [`${them} ahead`, "warn"] : x.you > x.them ? [`${you} ahead`, "good"] : ["Even", "neutral"]);
+  const st = el("div", { className: "cb-whom", role: "table", "aria-label": "Who cites whom" });
+  st.append(el("div", { className: "cb-whom-row cb-th", role: "row" }, ...["Site", "Kind", `Cites ${them}`, `${them} ◂▸ ${you}`, `Cites ${you}`, "Verdict"].map((x, i) => el("span", { role: "columnheader", className: i === 2 || i === 4 ? "num" : i === 3 ? "c" : "" }, x))));
+  d.sites.forEach((x) => {
+    const [v, tone] = VERDICT(x);
+    const own = !!(profile.brand && profile.brand.url && x.site.includes(normDomainLabel(profile.brand.url).replace(/^www\./, "")));
+    st.append(el("div", { className: "cb-whom-row", role: "row" },
+      el("span", { role: "rowheader" }, el("b", {}, x.site), own ? el("span", { className: "cb-tag you-tag" }, "your site") : null),
+      el("span", { role: "cell", className: "muted small" }, atKindOne(x.kind)),
+      el("span", { role: "cell", className: "num" }, String(x.them)),
+      el("span", { role: "cell", className: "cb-div" }, el("span", { className: "cb-div-l" }, el("span", { className: "cb-mbar vs-them", style: `width:${(x.them / smax) * 100}%` })), el("span", { className: "cb-div-r" }, el("span", { className: "cb-mbar vs-you", style: `width:${(x.you / smax) * 100}%` }))),
+      el("span", { role: "cell", className: "num" }, String(x.you)),
+      el("span", { role: "cell" }, apPill(v, tone))));
+  });
+  box.append(cbSection("cb-whom", "Who cites whom", d.gapLine, d.sites.length ? el("div", { className: "cb-scroll" }, st) : el("p", { className: "ap-note" }, "No cited page mentions either brand.")));
+
+  /* --- what the engines read when they named it --- */
   if (r.sourceDomains && r.sourceDomains.length) {
     const list = el("div", { className: "cb-barlist brand-sources", "data-term": "brandSources" });
-    r.sourceDomains.forEach((s) => {
-      const btn = el("button", { className: "linkbtn td-domain-btn", type: "button", title: `${s.domain}: its pages and the prompts that cited them` }, s.domain);
-      btn.onclick = () => openCampaignDomain(profile, s.domain);
-      list.append(el("div", { className: "cb-barrow" }, btn, cbBar(s.visibility, "src"), el("span", { className: "num" }, `${cbPct(s.visibility)} · ${s.citations}`)));
+    r.sourceDomains.forEach((x) => {
+      const btn = el("button", { className: "linkbtn td-domain-btn", type: "button", title: `${x.domain}: its pages and the prompts that cited them` }, x.domain);
+      btn.onclick = () => openCampaignDomain(profile, x.domain);
+      list.append(el("div", { className: "cb-barrow" }, btn, cbBar(x.visibility, "src"), el("span", { className: "num" }, `${cbPct(x.visibility)} · ${x.citations}`)));
     });
     box.append(cbSection("cb-vs-sources", `What the engines read when they named ${them}`, "share of the answers naming it that cited the site · citations", list));
   }
 
-  // Prompt by prompt, who came first.
-  const cols = `28px minmax(0, 1fr) repeat(${d.engines.length}, 74px)`;
-  const g = el("div", { className: "cb-grid cb-prompt-grid", role: "table", style: `grid-template-columns:${cols};min-width:${28 + d.engines.length * 74 + 180}px`, "aria-label": "Prompt by prompt: who came first" });
+  /* --- prompt by prompt: a verdict per engine, and a score --- */
+  const ORD = (n) => (n === "shown" ? "shown" : ORDINAL(n));
+  const verdictOf = (c) => {
+    if (!c) return null;
+    const pos = [c.you ? `${you} ${ORD(c.you)}` : "", c.them ? `${them} ${ORD(c.them)}` : ""].filter(Boolean).join(", ");
+    if (c.winner === "neither") return { k: "none", label: "Neither", sub: "not named" };
+    if (c.winner === "both") return { k: "both", label: "Both, no order", sub: pos };
+    const only = c.winner === "them" ? !c.you : !c.them;
+    const who = c.winner === "them" ? them : you;
+    return { k: c.winner, label: only ? `Only ${who}` : `${who} ahead`, sub: pos };
+  };
+  const rows = d.prompts.rows.map((p) => {
+    const v = p.cells.map(verdictOf);
+    return { p, v, you: v.filter((x) => x && x.k === "you").length, them: v.filter((x) => x && x.k === "them").length, none: v.some((x) => x && x.k === "none") };
+  });
+  const cells = rows.flatMap((x) => x.v.filter(Boolean));
+  const tally = { you: cells.filter((x) => x.k === "you").length, them: cells.filter((x) => x.k === "them").length, both: cells.filter((x) => x.k === "both").length, none: cells.filter((x) => x.k === "none").length };
+  const FILTERS = [["all", "All prompts", rows.length], ["them", `Where ${them} beats ${you}`, rows.filter((x) => x.them > 0).length], ["none", "Where neither is named", rows.filter((x) => x.none).length]];
+  if (!FILTERS.some((f) => f[0] === cbVsFilter)) cbVsFilter = "all";
+  const chips = el("div", { className: "cb-vs-filters", role: "group", "aria-label": "Show prompts" });
+  FILTERS.forEach(([id, label, n]) => {
+    const c = el("button", { className: `db-chip${cbVsFilter === id ? " on scope" : ""}`, type: "button", "aria-pressed": cbVsFilter === id ? "true" : "false" }, `${label} `, el("b", {}, String(n)));
+    c.onclick = () => { cbVsFilter = id; renderCampaigns(); };
+    chips.append(c);
+  });
+  const sbar = el("div", { className: "cb-stack thin", role: "img", "aria-label": `${you} ahead in ${tally.you}, ${them} ahead in ${tally.them}, neither named in ${tally.none}` });
+  [["you", tally.you], ["them", tally.them], ["both", tally.both], ["none", tally.none]].forEach(([k, n]) => { if (n) sbar.append(el("span", { className: `vv-${k}`, style: `flex:${n} 1 0` }, String(n))); });
+  const sleg = el("div", { className: "cb-stack-legend inline" },
+    el("span", {}, el("i", { className: "vv-you" }), el("b", {}, `${you} ahead`), ` in ${tally.you} of ${cells.length} answers`),
+    el("span", {}, el("i", { className: "vv-them" }), el("b", {}, `${them} ahead`), ` in ${tally.them}`),
+    tally.both ? el("span", {}, el("i", { className: "vv-both" }), el("b", {}, "Both, no order"), ` in ${tally.both}`) : null,
+    el("span", {}, el("i", { className: "vv-none" }), el("b", {}, "Neither named"), ` in ${tally.none}`));
+  const shown = rows.filter((x) => cbVsFilter === "all" || (cbVsFilter === "them" ? x.them > 0 : x.none));
+  const cols = `28px minmax(200px, 1fr) repeat(${d.engines.length}, 112px) 64px`;
+  const g = el("div", { className: "cb-grid cb-prompt-grid cb-verdicts", role: "table", style: `grid-template-columns:${cols};min-width:${28 + d.engines.length * 112 + 64 + 220}px`, "aria-label": "Prompt by prompt: who came first" });
   g.append(el("div", { className: "cb-grid-row", role: "row" }, el("span", { role: "columnheader" }, "#"), el("span", { role: "columnheader" }, "Prompt"),
-    ...d.engines.map((e) => el("span", { role: "columnheader", className: "c", title: e.label }, engineIconEl(e.id), el("span", { className: "ap-sr" }, e.label)))));
-  d.prompts.rows.forEach((p) => g.append(el("div", { className: "cb-grid-row", role: "row" },
+    ...d.engines.map((e) => el("span", { role: "columnheader", className: "c" }, engineIconEl(e.id), ` ${e.label}`)), el("span", { role: "columnheader", className: "num" }, "Score")));
+  shown.forEach(({ p, v, you: yw, them: tw }) => g.append(el("div", { className: "cb-grid-row", role: "row" },
     el("span", { role: "cell", className: "muted" }, String(p.n)), el("span", { role: "cell", className: "cb-ptitle", title: p.text }, p.text),
-    ...p.cells.map((c, i) => {
-      if (!c) return el("span", { role: "cell", className: "c" }, el("span", { className: "cb-pos none" }, "·"));
-      const label = c.winner === "them" ? them : c.winner === "you" ? you : c.winner === "both" ? "both" : "neither";
-      const btn = el("button", { className: `cb-win ${c.winner}`, type: "button", title: `${d.engines[i].label}: ${c.winner === "neither" ? "neither named" : c.winner === "both" ? "both shown, no order" : `${label} came first`} — open the answer` }, label);
-      btn.onclick = () => openCapture(c.captureId);
+    ...v.map((x, i) => {
+      if (!x) return el("span", { role: "cell", className: "c" }, el("span", { className: "cb-pos none" }, "·"));
+      const btn = el("button", { className: `cb-win ${x.k}`, type: "button", title: `${d.engines[i].label}: ${x.label}${x.sub ? ` (${x.sub})` : ""} — open the answer` }, el("b", {}, x.label), el("span", {}, x.sub));
+      btn.onclick = () => openCapture(p.cells[i].captureId);
       return el("span", { role: "cell", className: "c" }, btn);
-    }))));
-  box.append(cbSection("cb-vs-prompts", "Prompt by prompt: who came first", `${them} first in ${d.prompts.counts.them} · ${you} first in ${d.prompts.counts.you}`, el("div", { className: "cb-scroll" }, g)));
+    }),
+    el("span", { role: "cell", className: "num cb-score" }, el("b", {}, `${yw} – ${tw}`), el("span", { className: "cb-score-dots", "aria-hidden": "true" }, ...v.map((x) => el("i", { className: `vv-${x ? x.k : "na"}` })))))));
+  if (!shown.length) g.append(el("div", { className: "cb-grid-row", role: "row" }, el("span", { role: "cell", className: "muted small", style: "grid-column:1/-1" }, "No prompt matches.")));
+  const per = d.engines.map((e, i) => { const c = rows.map((x) => x.v[i]).filter(Boolean); return `${c.filter((x) => x.k === "you").length} · ${c.filter((x) => x.k === "them").length}`; });
+  g.append(el("div", { className: "cb-grid-row cb-foot", role: "row" }, el("span", { role: "cell" }), el("span", { role: "cell" }, el("b", {}, "Per engine")),
+    ...per.map((x) => el("span", { role: "cell", className: "c" }, x)), el("span", { role: "cell", className: "num muted small" }, `${you} · ${them}`)));
+  box.append(cbSection("cb-vs-prompts", "Prompt by prompt: who came first", chips, sbar, sleg, el("div", { className: "cb-scroll" }, g)));
 }
+let cbVsFilter = "all";     // the brand page's prompt filter
+const ORDINAL = (n) => { const x = Math.round(n); const s = ["th", "st", "nd", "rd"], v = x % 100; return x + (s[(v - 20) % 10] || s[v] || s[0]); };
 
 /* ---------- Export a campaign (0.52.0) ----------
  * Release 6 of the canvas redesign: one dialog for every way out of a
@@ -6270,6 +6396,31 @@ function renderCampaignSetup(profile, dis) {
   engGroup.append(engGrid, engMsg);
   details.append(engGroup);
 
+  // What the board leads with (0.55.0, the canvas's setup). Optional: every
+  // answer is captured in full whatever is picked. A new campaign starts on
+  // brand mentions and citations; one from before the choice shows every
+  // view, so its board doesn't change under it.
+  const startMeasure = start.measure || (profile.locked ? { citations: true, products: true, images: true, local: true } : { citations: true });
+  const msGroup = el("div", { className: "cs-group", id: "cs-measure", role: "group", "aria-labelledby": "cs-ms-label" },
+    el("div", { className: "cs-block-head" },
+      el("div", { className: "cs-label-row" }, el("span", { className: "cs-label cs-label-lg", id: "cs-ms-label" }, "What this campaign should measure"), el("span", { className: "cs-pill" }, "Optional")),
+      el("p", { className: "cs-help" }, "Sets the headline numbers on the campaign’s board. Every answer is still captured in full, and you can switch later.")));
+  const msGrid = el("div", { className: "cs-measure-grid" });
+  CB_FOCUS.forEach(([id, , glyph]) => {
+    const fixed = id === "mentions";
+    const on = fixed || !!startMeasure[id];
+    const [label, sub] = CS_MEASURE[id];
+    const tag = el("span", { className: "cs-measure-tag" }, fixed ? "Always on" : on ? "On" : "Off");
+    const b = el("button", { type: "button", className: "cs-measure", disabled: dis || fixed, "aria-pressed": String(on) },
+      el("span", { className: "cs-measure-icon" }, glyphEl(glyph, 18)),
+      el("span", { className: "cs-measure-text" }, el("span", { className: "cs-measure-name" }, label), el("span", { className: "cs-measure-sub" }, sub)), tag);
+    b.dataset.value = id;
+    if (!dis && !fixed) b.onclick = () => { const v = b.getAttribute("aria-pressed") !== "true"; b.setAttribute("aria-pressed", String(v)); tag.textContent = v ? "On" : "Off"; changed(); };
+    msGrid.append(b);
+  });
+  msGroup.append(msGrid);
+  details.append(msGroup);
+
   /* ---- prompts ---- */
   const promptsCard = el("section", { className: "card cs-card cs-card-prompts", "aria-labelledby": "cs-prompts-h" });
   promptsCard.append(renderPromptManager(profile, dis, persistDetails));
@@ -6347,6 +6498,7 @@ function renderCampaignSetup(profile, dis) {
     brand: { name: brandF.input.value.trim(), url: siteF.input.value.trim() },
     competitors: comps.map((c) => ({ ...c })),
     engines: [...engGrid.querySelectorAll('.cs-engine[aria-pressed="true"]')].map((t) => t.dataset.value),
+    measure: Object.fromEntries(["citations", "products", "images", "local"].map((k) => [k, msGrid.querySelector(`.cs-measure[data-value="${k}"]`)?.getAttribute("aria-pressed") === "true"])),
   });
   [nameF, brandF, siteF].forEach((f) => { f.input.oninput = changed; });
 
@@ -6865,43 +7017,33 @@ function renderPromptManager(profile, dis, persistDetails) {
   return wrap;
 }
 
-function renderCampaignSummary(profile) {
-  const card = el("div", { className: "card campaign-summary" });
-  const delBtn = el("button", { className: "btn sm ghost danger" }, "🗑 Delete");
-  delBtn.onclick = trashCampaign(profile);
-  card.append(el("div", { className: "card-header" }, el("h3", {}, profile.name || "Campaign"), el("span", { className: "muted small" }, "🔒 locked"), delBtn));
-  const meta = el("div", { className: "campaign-meta" });
-  const engLabels = ENGINES.filter((e) => (profile.engines || []).includes(e.id)).map((e) => e.label);
-  meta.append(
-    el("span", {}, `Brand: ${profile.brand?.name || "—"}`),
-    el("span", {}, `${GEO_PROMPTS.filter((p) => p.active !== false).length} active prompts`),
-    el("span", {}, `LLMs: ${engLabels.join(", ") || "—"}`),
-    el("span", {}, `Last run: ${profile.lastRunAt ? new Date(profile.lastRunAt).toLocaleDateString() : "never"}`),
-  );
-  card.append(meta);
-  const toggle = el("button", { className: "linkbtn" }, campaignManageOpen ? "Hide setup & prompts" : "Manage setup & prompts");
-  toggle.onclick = () => { campaignManageOpen = !campaignManageOpen; renderCampaigns(); };
-  card.append(el("div", { style: "margin-top:8px" }, toggle));
-  return card;
-}
+/* A set-up campaign's header (0.55.0, the canvas's TabCampaign): its name
+ * and what it covers, Edit setup / Export… / Run again, and under them the
+ * board's filters (renderCampaignBoard fills #cpFilters once it loads). It
+ * replaces three stacked cards — the chooser, a summary and the run card —
+ * that pushed the results below the fold. The run controls and the live
+ * status are the run card's, unchanged: Pause / Resume / Stop show only while
+ * a run is going (renderLoaderStatus sets .live and .paused), and the run
+ * history moved down to "Data collected". */
+function renderCampaignHead(profile) {
+  const head = el("section", { className: "card cp-head", id: "cpHead", "aria-labelledby": "cpName" });
+  head.append(el("div", { className: "cp-switch" }, el("span", { className: "muted small" }, `Campaigns · ${GEO_PROFILES.length} of ${MAX_PROFILES}`), renderCampaignSwitcher()));
 
-function renderRunCard(profile) {
-  const rc = el("div", { className: "card" });
-  rc.append(el("div", { className: "card-header" }, el("h3", {}, "Run")));
   const vol = runVolume(GEO_PROMPTS, profile.engines || []);
   const due = runDue(profile);
+  const fmtWhen = (t) => new Date(t).toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+  const brand = profile.brand && profile.brand.name;
+  const sub = [
+    brand ? `Tracking ${brand}` : "",
+    `${plural(vol.prompts, "prompt")} × ${plural(vol.engines, "engine")}`,
+    profile.lastRunAt ? `last run ${fmtWhen(profile.lastRunAt)}` : "not run yet",
+  ].filter(Boolean).join(" · ");
 
-  if (due && vol.submissions) {
-    rc.append(el("div", { className: "geo-due" },
-      `Today's run hasn't happened yet — last run ${profile.lastRunAt ? new Date(profile.lastRunAt).toLocaleDateString() : "never"}.`));
-  }
-  rc.append(el("p", { className: "muted" },
-    `This run will submit ${vol.submissions} prompt${vol.submissions === 1 ? "" : "s"} (${vol.prompts} prompt${vol.prompts === 1 ? "" : "s"} × ${vol.engines} engine${vol.engines === 1 ? "" : "s"}) through your logged-in accounts, paced with human-like gaps.`));
-  if (vol.submissions > 60) {
-    rc.append(el("div", { className: "warn-box" },
-      el("span", {}, `${vol.submissions} automated submissions in one run is a lot of activity on one account. Consider splitting your prompts across campaigns or pausing some, and keep an eye on the run rather than leaving it unattended.`)));
-  }
-  const runBtn = el("button", { className: "btn primary" }, "▶ Start run");
+  const edit = el("button", { className: "btn ghost cp-btn", type: "button", "aria-expanded": campaignManageOpen ? "true" : "false" }, campaignManageOpen ? "Close setup" : "Edit setup");
+  edit.onclick = () => { campaignManageOpen = !campaignManageOpen; renderCampaigns(); };
+  // Filled with the board's figures once it loads (renderCampaignBoard).
+  const exp = el("button", { className: "btn ghost cp-btn", type: "button", id: "cbExport", disabled: true, title: "The campaign as an Excel workbook, CSV tables or a PDF report" }, "Export…");
+  const runBtn = el("button", { className: "btn primary cp-btn cp-run", type: "button" }, profile.lastRunAt ? "Run again" : "Start run");
   runBtn.onclick = withBusy(runBtn, "Starting…", async () => {
     if (!confirm(`Run tracking now?\n\n${vol.submissions} submissions (${vol.prompts} prompts × ${vol.engines} engines) will be sent through your logged-in sessions at a human pace.`)) return;
     // The auth gate can bounce this back (authBlocked) before any tab opens.
@@ -6921,12 +7063,12 @@ function renderRunCard(profile) {
     };
     await attempt(false);
   });
-  const pauseBtn = el("button", { className: "btn ghost" }, "⏸ Pause");
+  const pauseBtn = el("button", { className: "btn ghost cp-btn cp-live cp-pause", type: "button" }, "Pause");
   pauseBtn.onclick = async () => {
     const r = await send({ type: "loader-pause" });
     withScrollPreserved(() => renderLoaderStatus(r));
   };
-  const resumeBtn = el("button", { className: "btn ghost" }, "▶ Resume");
+  const resumeBtn = el("button", { className: "btn primary cp-btn cp-live cp-resume", type: "button" }, "Resume");
   // Resume can genuinely fail now — a run interrupted by the browser closing
   // has no tab left, so resuming has to open one, and Chrome can refuse.
   // Rendering that {ok:false} reply as a status would blank the live panel and
@@ -6936,21 +7078,34 @@ function renderRunCard(profile) {
     if (!r || r.ok === false) { showToast(r?.error || "Couldn't resume the run.", "error"); return; }
     withScrollPreserved(() => renderLoaderStatus(r));
   };
-  const stopBtn = el("button", { className: "btn danger" }, "■ Stop");
+  const stopBtn = el("button", { className: "btn danger cp-btn cp-live", type: "button" }, "Stop");
   stopBtn.onclick = async () => {
     const r = await send({ type: "loader-stop" });
     withScrollPreserved(() => renderLoaderStatus(r));
   };
-  rc.append(el("div", { className: "ft-actions" }, runBtn, pauseBtn, resumeBtn, stopBtn));
-  rc.append(el("div", { id: "loaderStatus", className: "status-msg" }));
+  const actions = el("div", { className: "cp-actions" }, edit, exp, runBtn, pauseBtn, resumeBtn, stopBtn);
+  if (campaignManageOpen) {
+    const del = el("button", { className: "btn ghost danger cp-btn", type: "button" }, "Delete campaign");
+    del.onclick = trashCampaign(profile);
+    actions.prepend(del);
+  }
+  head.append(el("div", { className: "cp-title" },
+    el("div", { className: "cp-name" }, el("h1", { id: "cpName" }, profile.name || "Campaign"), el("span", { className: "cp-sub" }, sub)),
+    actions));
+
+  const notes = [];
+  if (due && vol.submissions) notes.push(el("div", { className: "geo-due" }, `Today's run hasn't happened yet — last run ${profile.lastRunAt ? new Date(profile.lastRunAt).toLocaleDateString() : "never"}.`));
+  if (vol.submissions > 60) notes.push(el("div", { className: "warn-box" }, el("span", {}, `${vol.submissions} automated submissions in one run is a lot of activity on one account. Consider splitting your prompts across campaigns or pausing some, and keep an eye on the run rather than leaving it unattended.`)));
+  head.append(...notes);
+  head.append(el("div", { id: "loaderStatus", className: "status-msg" }));
+  head.append(el("div", { className: "cp-filters", id: "cpFilters" }));
   // Paint status immediately rather than waiting for the next 1.5s poll tick
   // — this card is rebuilt from scratch (root.textContent = "" in
   // renderCampaignsImpl) every time the Campaigns tab re-renders, so
   // without this the status box would flash empty for up to 1.5s on every
   // switch back to this tab while a run is in flight.
-  send({ type: "loader-status" }).then((s) => { if (s.ok) renderLoaderStatus(s); });
-  rc.append(renderRunHistory(profile));
-  return rc;
+  send({ type: "loader-status" }).then((st) => { if (st.ok) renderLoaderStatus(st); });
+  return head;
 }
 
 // Durable per-run history — reads geoRuns, which background.js now keeps in
@@ -6958,8 +7113,8 @@ function renderRunCard(profile) {
 // completion; previously that store was written once at creation and never
 // updated again, so this had nothing real to show and wasn't called at all.
 function renderRunHistory(profile) {
-  const box = el("div", { className: "card loader-history", id: "runHistory" });
-  box.append(el("div", { className: "card-header" }, el("h3", {}, "Run history")));
+  const box = el("div", { className: "loader-history", id: "runHistory" });
+  box.append(el("h4", { className: "cb-sub-h" }, "Run history"));
   const list = el("div", { className: "muted small" }, "Loading…");
   box.append(list);
   send({ type: "geo-run-list", profileId: profile.id }).then((r) => {
@@ -7770,6 +7925,11 @@ function renderLoaderStatus(s) {
   // first appears; a refresh of one already showing keeps it still.
   const hadCooldownBanner = !!box.querySelector(".cooldown-banner");
   box.textContent = "";
+  const cpHead = document.getElementById("cpHead");
+  if (cpHead) {
+    cpHead.classList.toggle("live", !!(s && s.total && s.running));
+    cpHead.classList.toggle("paused", !!(s && s.running && s.paused));
+  }
   if (!s || !s.total) { loaderWasRunning = false; return; }
 
   if (!s.running) {

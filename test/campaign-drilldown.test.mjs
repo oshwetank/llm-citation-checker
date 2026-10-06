@@ -289,7 +289,7 @@ try {
     // campaign, and a wrapping chip row would push the numbers off screen at
     // exactly the point the campaign gets interesting.
     const sw = await page.evaluate(() => {
-      const sel = document.querySelector("#campaignResults .brand-picker");
+      const sel = document.querySelector("#loader .brand-picker");
       if (!sel) return null;
       return {
         options: [...sel.options].map((o) => o.textContent),
@@ -309,7 +309,7 @@ try {
     check("it starts on the own brand", /\(you\)/.test(sw?.selected || ""), sw?.selected);
 
     const target = await page.evaluate(() => {
-      const sel = document.querySelector("#campaignResults .brand-picker");
+      const sel = document.querySelector("#loader .brand-picker");
       const opt = [...sel.options].find((o) => !/\(you\)/.test(o.textContent));
       if (!opt) return null;
       sel.value = opt.value;
@@ -320,7 +320,7 @@ try {
     if (target) {
       await settle();
       const after = await page.evaluate(() => ({
-        active: document.querySelector("#campaignResults .brand-picker")?.value || "",
+        active: document.querySelector("#loader .brand-picker")?.value || "",
         title: document.getElementById("cb-kpis-h")?.textContent || "",
         hint: document.querySelector("#cb-kpis .cb-hint")?.textContent || "",
         focusedRow: document.querySelector("#cb-brands .cb-brand-row.focused-brand")?.getAttribute("data-brand") || "",
@@ -350,7 +350,7 @@ try {
 
       // Back to your own brand for everything after this.
       await page.evaluate(() => {
-        const sel = document.querySelector("#campaignResults .brand-picker");
+        const sel = document.querySelector("#loader .brand-picker");
         sel.value = [...sel.options].find((o) => /\(you\)/.test(o.textContent)).value;
         sel.dispatchEvent(new Event("change", { bubbles: true }));
       });
@@ -432,7 +432,10 @@ try {
           engines: document.querySelectorAll('#cb-vs-engines .cb-tr:not(.cb-th)').length,
           sources: !!document.getElementById("cb-vs-sources"),
           sourceBtns: document.querySelectorAll("#cb-vs-sources button.td-domain-btn").length,
-          prompts: [...document.querySelectorAll("#cb-vs-prompts .cb-win")].map((x) => x.textContent),
+          prompts: [...document.querySelectorAll("#cb-vs-prompts .cb-win b")].map((x) => x.textContent),
+          scores: [...document.querySelectorAll("#cb-vs-prompts .cb-score b")].map((x) => x.textContent),
+          bar: document.querySelectorAll("#cb-h2h .cb-stack > span").length,
+          dots: document.querySelectorAll("#cb-vs-engines .cb-dot").length,
         };
       });
       check("the detail opens", !!m);
@@ -459,8 +462,12 @@ try {
         // Per prompt and engine, which of the two came first — a row is a
         // comparison, not an isolated fact.
         check("a prompt-by-prompt comparison is present", m.prompts.length > 0, String(m.prompts.length));
-        check("each cell names who came first",
-          m.prompts.every((x) => [clicked, seeded.ownBrand, "both", "neither"].includes(x)), m.prompts.join(", "));
+        // Since 0.55.0, as on the canvas: a verdict, not just a name.
+        const verdicts = [`${clicked} ahead`, `Only ${clicked}`, `${seeded.ownBrand} ahead`, `Only ${seeded.ownBrand}`, "Both, no order", "Neither"];
+        check("each cell gives a verdict", m.prompts.every((x) => verdicts.includes(x)), m.prompts.join(", "));
+        check("each prompt has a score, yours first", m.scores.length > 0 && m.scores.every((x) => /^\d+ – \d+$/.test(x)), m.scores.join(", "));
+        check("head to head is one stacked bar", m.bar >= 1 && m.bar <= 4, String(m.bar));
+        check("each engine places the two brands as dots on a position track", m.dots >= m.engines, `${m.dots} dots, ${m.engines} engines`);
       }
       // Clicking one must land in the domain drill-down, not just look like a
       // link — the two paths derive the row through the same aggregation, so
@@ -500,14 +507,14 @@ try {
       kpis: [...document.querySelectorAll("#cb-kpis .k-value")].map((k) => k.textContent),
       // One engine control for the results, not two with the same word on
       // them. Other selects (the run, the brand) are legitimately there.
-      engineSelects: [...document.querySelectorAll("#campaignResults select")]
+      engineSelects: [...document.querySelectorAll("#loader select")]
         .filter((sel) => [...sel.options].some((o) => /all engines|all models|chatgpt|gemini/i.test(o.textContent)))
         .length,
     }));
     check("the results have exactly one engine filter", before.engineSelects === 1, `${before.engineSelects} engine select(s)`);
 
     const switched = await page.evaluate(() => {
-      const sel = document.querySelector('#campaignResults select[aria-label="Engine"]');
+      const sel = document.querySelector('#loader select[aria-label="Engine"]');
       const opt = sel && [...sel.options].find((o) => o.value === "chatgpt");
       if (!opt) return false;
       sel.value = opt.value;
@@ -519,7 +526,7 @@ try {
       await settle(1800);
       const after = await page.evaluate(() => ({
         kpis: [...document.querySelectorAll("#cb-kpis .k-value")].map((k) => k.textContent),
-        scope: document.querySelector("#campaignResults .scope-note")?.textContent || "",
+        scope: document.querySelector("#loader .scope-note")?.textContent || "",
         engineSplit: document.querySelectorAll("#cb-by-engine .cb-engine-row").length,
       }));
       check("the campaign's numbers actually change",
@@ -531,7 +538,7 @@ try {
 
       // Put it back so the sections after this measure the full data set.
       await page.evaluate(() => {
-        const sel = document.querySelector('#campaignResults select[aria-label="Engine"]');
+        const sel = document.querySelector('#loader select[aria-label="Engine"]');
         sel.value = "";
         sel.dispatchEvent(new Event("change", { bubbles: true }));
       });

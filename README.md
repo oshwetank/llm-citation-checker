@@ -10,12 +10,28 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.54.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.55.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - Campaigns now follow the design too. A set-up campaign opens on one header: its name and
+>   what it covers, Edit setup, Export… and Run again, and the run, engine, brand and tag
+>   filters right under them, with the results straight below (no more separate summary,
+>   run and results cards). Pause, Resume and Stop appear only while a run is going; the
+>   run history is under "Data collected". In the full tab the section links sit in the
+>   top bar.
+> - A competitor's page is laid out as designed: their numbers with yours under each, one
+>   head-to-head bar, each engine's average position as two dots on a track, mirrored bars
+>   for where each brand's citations come from, a bar per site in "who cites whom" with a
+>   verdict, and every prompt's verdict per engine ("Sony ahead", "Only boAt", "Neither")
+>   with a score, a summary bar and filters.
+> - Setup has "What this campaign should measure": brand mentions (always on), your site
+>   cited, product cards, images and map listings. The campaign's board offers the views you
+>   pick. Campaigns set up before this keep every view.
+> - The top bar is one row: the logo, the four pages as words in a pill, and in the popup a
+>   pop-out icon. New campaigns show a breadcrumb in their setup bar.
 > - Analyze in the full tab now follows the design properly. It opens on one "at a glance"
 >   card: the brands named (with a dot for what backs each), the pages cited and the
 >   searches it ran. Product cards are a table with "where to buy" beside it; click a card

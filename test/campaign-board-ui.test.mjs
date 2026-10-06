@@ -142,7 +142,7 @@ try {
   await page.evaluate(() => document.querySelector('[data-tab="loader"]')?.click());
   await page.waitForTimeout(2500);
   const settle = (ms = 1600) => page.waitForTimeout(ms);
-  const header = () => page.evaluate(() => document.querySelector("#campaignResults .cb-head .card-header .muted")?.textContent || "");
+  const header = () => page.evaluate(() => document.querySelector("#cpHead .cp-scope")?.textContent || "");
 
   console.log("\nthe board, in the full tab");
   check("the campaign's results are a board under the campaign",
@@ -153,10 +153,73 @@ try {
       "cb-topics", "cb-recommend", "cb-sitekinds", "cb-gaps", "cb-searches", "cb-prompts", "cb-sources"];
     const missing = want.filter((x) => !ids.includes(x));
     check("every section has a place on it", missing.length === 0, `missing: ${missing.join(", ") || "none"}`);
-    const nav = await page.evaluate(() => [...document.querySelectorAll("#campaignResults .cb-nav-btn")].map((b) => b.textContent));
+    const nav = await page.evaluate(() => [...document.querySelectorAll(".cb-nav-btn")].map((b) => b.textContent));
     check("with links to jump between them", nav.length >= 5, nav.join(" | "));
     const overflow = await page.evaluate(() => document.scrollingElement.scrollWidth - document.scrollingElement.clientWidth);
     check("and nothing on it widens the page", overflow <= 0, `${overflow}px wider than the window`);
+  }
+
+  // Reported: "the new layout has not completily and properly been
+  // implemented at all." On the canvas a set-up campaign opens on one header
+  // card — its name, what it covers, Edit setup / Export… / Run again, and the
+  // filters — with the board straight under it. Until 0.54.0 three cards
+  // came first (the chooser, a summary, a run card with its run history) and
+  // the filters were a fourth, so the board started about a screen down.
+  console.log("\nthe campaign's header, as on the canvas");
+  {
+    await page.evaluate(() => window.scrollTo(0, 0));
+    const h = await page.evaluate(() => {
+      const head = document.getElementById("cpHead");
+      const cards = [...document.querySelectorAll("#loader > *")].map((x) => x.id || x.className);
+      const btns = head ? [...head.querySelectorAll(".cp-actions button")].filter((b) => getComputedStyle(b).display !== "none").map((b) => b.textContent) : [];
+      const name = head?.querySelector("h1")?.getBoundingClientRect();
+      const acts = head?.querySelector(".cp-actions")?.getBoundingClientRect();
+      return {
+        first: cards[0], cards,
+        name: head?.querySelector("h1")?.textContent || "",
+        sub: head?.querySelector(".cp-sub")?.textContent || "",
+        btns,
+        beside: !!(name && acts) && acts.left > name.right && Math.abs(acts.top - name.top) < 30,
+        filters: head ? ["#cbRun", 'select[aria-label="Engine"]', ".brand-picker"].every((q) => head.querySelector(`#cpFilters ${q}`)) : false,
+        oldCards: !!document.querySelector("#loader .campaign-summary") || [...document.querySelectorAll("#loader .card-header h3")].some((x) => /^(Run|Results)$/.test(x.textContent)),
+        kpisTop: Math.round(document.getElementById("cb-kpis").getBoundingClientRect().top),
+        history: document.querySelectorAll("#cb-collected .loader-history-row").length,
+        headNav: [...document.querySelectorAll("#headerPage .cb-nav-btn")].map((x) => x.textContent),
+      };
+    });
+    check("the page opens on the campaign's own header", h.first === "cpHead", h.cards.join(" > "));
+    check("named, with what it covers", h.name === "Board Test" && /\d+ prompts × 2 engines/.test(h.sub) && /last run/.test(h.sub), `${h.name} — ${h.sub}`);
+    check("Edit setup, Export… and Run again beside the name", h.btns.join("|") === "Edit setup|Export…|Run again" && h.beside, `${h.btns.join("|")} beside=${h.beside}`);
+    check("Pause, Resume and Stop only while a run is going", !h.btns.some((x) => /Pause|Resume|Stop/.test(x)), h.btns.join("|"));
+    check("the run, engine and brand filters are in it", h.filters);
+    check("no separate summary, run or results card", !h.oldCards);
+    check("the board starts right under it", h.kpisTop < 420, `${h.kpisTop}px down`);
+    check("run history moved under Data collected", h.history === 2, `${h.history} rows`);
+    check("the section links sit in the app bar", h.headNav.length >= 5, h.headNav.join(" | "));
+    // Setup's "What this campaign should measure" picks the views; this one
+    // predates the choice, so its board keeps all five.
+    const views = await page.evaluate(() => [...document.querySelectorAll("#cb-kpis .cb-focus-tab")].map((t) => t.textContent));
+    check("a campaign set up before the choice keeps every view", views.length === 5, views.join(" | "));
+    const setMeasure = (m) => page.evaluate((m) => new Promise((res) => {
+      const r = indexedDB.open("lcfc");
+      r.onsuccess = () => {
+        const st = r.result.transaction("profiles", "readwrite").objectStore("profiles");
+        const all = st.getAll();
+        all.onsuccess = () => { const p = all.result.find((x) => x.name === "Board Test"); p.measure = m; st.put(p).onsuccess = () => res(); };
+      };
+    }), m);
+    await setMeasure({ citations: false, products: true, images: false, local: false });
+    await page.reload();
+    await page.waitForTimeout(1200);
+    await page.evaluate(() => document.querySelector('[data-tab="loader"]')?.click());
+    await settle(2500);
+    const picked = await page.evaluate(() => [...document.querySelectorAll("#cb-kpis .cb-focus-tab")].map((t) => t.textContent));
+    check("one that picked mentions and product cards offers just those", picked.join("|") === "Mentions|Product cards", picked.join(" | "));
+    await setMeasure(null);
+    await page.reload();
+    await page.waitForTimeout(1200);
+    await page.evaluate(() => document.querySelector('[data-tab="loader"]')?.click());
+    await settle(2500);
   }
 
   console.log("\none run at a time, compared with the one before");
@@ -192,15 +255,15 @@ try {
   console.log("\nscoped by tag");
   {
     const before = await header();
-    const tags = await page.evaluate(() => [...document.querySelectorAll('#campaignResults .cb-tags[aria-label="Tags"] .db-chip')].map((c) => c.textContent));
+    const tags = await page.evaluate(() => [...document.querySelectorAll('#loader .cb-tags[aria-label="Tags"] .db-chip')].map((c) => c.textContent));
     check("the campaign's tags are filters", ["buying", "tv", "watches"].every((t) => tags.includes(t)), tags.join(", "));
-    await page.evaluate(() => [...document.querySelectorAll('#campaignResults .cb-tags[aria-label="Tags"] .db-chip')].find((c) => c.textContent === "watches")?.click());
+    await page.evaluate(() => [...document.querySelectorAll('#loader .cb-tags[aria-label="Tags"] .db-chip')].find((c) => c.textContent === "watches")?.click());
     await settle();
     const after = await header();
     check("a tag narrows every number to its prompts", after.startsWith("1 answer ") && before !== after, `${before} -> ${after}`);
     const rows = await page.evaluate(() => document.querySelectorAll("#cb-prompts .cb-grid-row:not(:first-child):not(.sub)").length);
     check("including the prompt grid", rows === 1, String(rows));
-    await page.evaluate(() => [...document.querySelectorAll('#campaignResults .cb-tags[aria-label="Tags"] .linkbtn')].find((c) => c.textContent === "Clear")?.click());
+    await page.evaluate(() => [...document.querySelectorAll('#loader .cb-tags[aria-label="Tags"] .linkbtn')].find((c) => c.textContent === "Clear")?.click());
     await settle();
     check("and clearing it puts them back", (await header()) === before, await header());
   }
@@ -252,6 +315,7 @@ try {
     await page.evaluate(() => document.querySelector('[data-tab="loader"]')?.click());
     await page.waitForTimeout(2500);
     check("the board renders in the popup", await page.evaluate(() => document.body.classList.contains("popup") && !!document.getElementById("cb-kpis")));
+    check("its section links are under the filters, not in the popup's bar", await page.evaluate(() => document.querySelectorAll("#cpHead .cb-nav-btn").length >= 5 && !document.querySelector("#headerPage .cb-nav-btn")));
     const wide = await page.evaluate(() => { const c = document.querySelector(".app-content"); return c.scrollWidth - c.clientWidth; });
     check("nothing on it widens the popup", wide <= 0, `${wide}px`);
     // Two engines leave the prompt room, so the grid needn't scroll sideways.

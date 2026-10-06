@@ -482,5 +482,16 @@ console.log("\nbrand presence still finds a brand after mergeAiNames upgrades it
     countCompletedForRun(records, "run-C", "chatgpt") === 0);
 }
 
+// 0.55.0: setup's "What this campaign should measure". Saving a campaign
+// goes through makeProfile, which used to drop the choice on the floor.
+console.log("\nwhat a campaign measures survives a save");
+{
+  const p = makeProfile({ name: "M", measure: { citations: true, products: 1, images: false, local: false, junk: true } });
+  check("the choice is kept", p.measure && p.measure.citations === true && p.measure.products === true && p.measure.images === false && p.measure.local === false, JSON.stringify(p.measure));
+  check("only the known views, as booleans", p.measure && Object.keys(p.measure).join() === "citations,products,images,local", JSON.stringify(p.measure));
+  check("a campaign from before the choice has none (every view offered)", makeProfile({ name: "Old" }).measure === null);
+  check("a save of an old campaign doesn't invent one", makeProfile({ ...makeProfile({ name: "Old" }), locked: true }).measure === null);
+}
+
 console.log(failures ? `\nFAILED (${failures})` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);

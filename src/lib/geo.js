@@ -126,6 +126,12 @@ export function makeProfile(base = {}) {
     // Soft-delete: set to a timestamp instead of removing the profile outright,
     // so a campaign can be restored for a window before it's purged for real.
     deletedAt: base.deletedAt || null,
+    // What the campaign's board leads with (0.55.0): its headline views, set
+    // in setup. Brand mentions are always measured. null means the campaign
+    // predates the choice, so every view stays offered.
+    measure: base.measure && typeof base.measure === "object"
+      ? { citations: !!base.measure.citations, products: !!base.measure.products, images: !!base.measure.images, local: !!base.measure.local }
+      : null,
   };
 }
 
