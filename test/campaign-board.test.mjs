@@ -172,6 +172,9 @@ console.log("\nA competitor against you (the brand detail)");
   const d = brandDetail(r2, { profile, brands, them: "Kovo", you: "Zento", prompts });
   const k = Object.fromEntries(d.kpis.map((x) => [x.label, x]));
   check("headline numbers side by side, with who is ahead", Math.round(k.Visibility.them) === 67 && Math.round(k.Visibility.you) === 67 && k["Avg position"].better === "them" && k["Share of voice"].better === "you", JSON.stringify(k));
+  // 0.56.0: the canvas's competitor page shows mentions too. Kovo 1+2+2+1,
+  // Zento 3+1+2+2 across run 2's answers.
+  check("mentions side by side, in the canvas's order", d.kpis.map((x) => x.label).join() === "Visibility,Share of voice,Avg position,Mentions,Citations,Source visibility" && k.Mentions && k.Mentions.them === 6 && k.Mentions.you === 8 && k.Mentions.better === "you", JSON.stringify(k.Mentions));
   check("head to head: both named in 3, Kovo first in 2", d.h2h.both === 3 && d.h2h.firstThem === 2 && d.h2h.firstYou === 1 && d.h2h.themOnly === 1 && d.h2h.youOnly === 1, JSON.stringify(d.h2h));
   const g = d.byEngine.find((e) => e.id === "gemini");
   check("on each engine", g.them.visibility === 100 && g.you.visibility === 50, JSON.stringify(g));

@@ -693,6 +693,7 @@ function showTab(name) {
   if (slot) slot.textContent = "";
   if (name === "dashboard") setHeaderPage("dashboard", el("span", { className: "header-note" }, "Everything you’ve captured · stored on this computer"));
   if (name === "loader" && cbHeaderNav) setHeaderPage("loader", cbHeaderNav);
+  if (name === "analyze" && atHeaderNodes && document.getElementById("at-answer")) setHeaderPage("analyze", ...atHeaderNodes);
   if (name === "about") aboutEnter();
   if (name === "analyze") abNoteAnalyzed(ANALYZE_SHOWN);
 
@@ -1824,17 +1825,10 @@ function renderAnalyzeTab(rec, root) {
   const isLong = words > 40 || promptText.length > 260;
   if (isLong) row.append(el("span", { className: "ap-tag" }, `${words}-word prompt`));
   row.append(el("span", { className: "ap-head-spacer" }));
-  const idx = RECORDS.findIndex((r) => r.captureId === rec.captureId);
-  if (idx >= 0 && RECORDS.length > 1) {
-    const go = (j) => { const t = RECORDS[j]; if (t) { atResetState(); openCapture(t.captureId); } };
-    const newer = el("button", { className: "ap-icon-btn", type: "button", title: "Newer capture", "aria-label": "Newer capture" }, "‹");
-    newer.disabled = idx === 0;
-    newer.onclick = () => go(idx - 1);
-    const older = el("button", { className: "ap-icon-btn", type: "button", title: "Older capture", "aria-label": "Older capture" }, "›");
-    older.disabled = idx === RECORDS.length - 1;
-    older.onclick = () => go(idx + 1);
-    row.append(newer, el("span", { className: "ap-paging" }, `${idx + 1} of ${RECORDS.length}`), older);
-  }
+  // Finding another capture and paging through them live in the app bar,
+  // as on the canvas (atHeaderTools).
+  atHeaderNodes = atHeaderTools(rec);
+  setHeaderPage("analyze", ...atHeaderNodes);
   const pdf = el("button", { className: "at-btn", type: "button", title: "A two-page report on this answer, to print or save as PDF" }, "Save as PDF");
   pdf.onclick = () => openAnswerReport(rec);
   const raw = el("button", { className: "at-btn", type: "button", title: "The engine's response exactly as captured" }, "Raw data");
@@ -1958,6 +1952,67 @@ function renderAnalyzeTab(rec, root) {
 // actions) so it doesn't take a fifth of the screen; scrolling back up
 // restores the chips and engine tabs.
 let atScrollBound = false;
+/* The app bar's Analyze tools (0.56.0, the canvas's TabAnalyze): "Find a
+ * captured prompt" and Newer / Older with "n of N". The search looks through
+ * every capture's prompt, campaign captures included, newest first; arrow
+ * keys move through the matches and Enter opens one. Paging steps through
+ * your own captures, as the popup's arrows do. */
+let atHeaderNodes = null;
+function atHeaderTools(rec) {
+  const wrap = el("div", { className: "at-find", role: "search" });
+  const input = el("input", { type: "search", className: "at-find-input", placeholder: "Find a captured prompt", "aria-label": "Find a captured prompt", autocomplete: "off", "aria-expanded": "false", "aria-controls": "at-find-list", role: "combobox", "aria-autocomplete": "list" });
+  const list = el("div", { className: "at-find-list", id: "at-find-list", role: "listbox", hidden: true });
+  wrap.append(glyphEl("search", 14), input, list);
+  let hits = [], sel = -1;
+  const open = (r) => { list.hidden = true; input.setAttribute("aria-expanded", "false"); atResetState(); openCapture(r.captureId); };
+  const paint = () => {
+    list.textContent = "";
+    hits.forEach((r, i) => {
+      const ic = engineIconEl(r.platform);
+      ic.classList.add("ap-engine-icon");
+      const o = el("button", { className: `at-find-item${i === sel ? " on" : ""}`, type: "button", role: "option", id: `at-find-${i}`, "aria-selected": String(i === sel), tabindex: "-1" },
+        ic, el("span", { className: "at-find-text" }, r.userPrompt || "(no prompt text)"),
+        el("span", { className: "at-find-meta" }, [r.geo ? "campaign" : "", apDate(r.capturedAt)].filter(Boolean).join(" · ")));
+      o.onmousedown = (e) => e.preventDefault();
+      o.onclick = () => open(r);
+      list.append(o);
+    });
+    if (!hits.length && input.value.trim()) list.append(el("div", { className: "at-find-none" }, "No captured prompt matches."));
+    const show = !!input.value.trim();
+    list.hidden = !show;
+    input.setAttribute("aria-expanded", String(show));
+    if (sel >= 0) input.setAttribute("aria-activedescendant", `at-find-${sel}`); else input.removeAttribute("aria-activedescendant");
+  };
+  input.oninput = () => {
+    const words = input.value.toLowerCase().split(/\s+/).filter(Boolean);
+    const pool = (ALL_RECORDS.length ? ALL_RECORDS : RECORDS);
+    hits = words.length ? pool.filter((r) => { const t = String(r.userPrompt || "").toLowerCase(); return words.every((w) => t.includes(w)); })
+      .sort((a, b) => (b.capturedAt || 0) - (a.capturedAt || 0)).slice(0, 8) : [];
+    sel = hits.length ? 0 : -1;
+    paint();
+  };
+  input.onkeydown = (e) => {
+    if (e.key === "ArrowDown" && hits.length) { sel = (sel + 1) % hits.length; paint(); e.preventDefault(); }
+    else if (e.key === "ArrowUp" && hits.length) { sel = (sel - 1 + hits.length) % hits.length; paint(); e.preventDefault(); }
+    else if (e.key === "Enter" && hits[sel]) { open(hits[sel]); e.preventDefault(); }
+    else if (e.key === "Escape") { input.value = ""; hits = []; sel = -1; paint(); }
+  };
+  input.onblur = () => setTimeout(() => { list.hidden = true; input.setAttribute("aria-expanded", "false"); }, 120);
+  const nodes = [wrap];
+  const idx = RECORDS.findIndex((r) => r.captureId === rec.captureId);
+  if (idx >= 0 && RECORDS.length > 1) {
+    const go = (j) => { const t = RECORDS[j]; if (t) { atResetState(); openCapture(t.captureId); } };
+    const newer = el("button", { className: "at-page-btn", type: "button", title: "Newer capture", "aria-label": "Newer capture" }, "‹");
+    newer.disabled = idx === 0;
+    newer.onclick = () => go(idx - 1);
+    const older = el("button", { className: "at-page-btn", type: "button", title: "Older capture", "aria-label": "Older capture" }, "›");
+    older.disabled = idx === RECORDS.length - 1;
+    older.onclick = () => go(idx + 1);
+    nodes.push(el("div", { className: "at-pager" }, newer, el("span", { className: "ap-paging" }, `${idx + 1} of ${RECORDS.length}`), older));
+  }
+  return nodes;
+}
+
 function atCompactOnScroll() {
   const apply = () => {
     const hero = document.querySelector("#analyze .at-hero");
@@ -3917,6 +3972,10 @@ function renderAnalyze() {
   try {
     const root = $("#analyze");
     root.textContent = "";
+    // The full tab's single-answer view puts its tools back (atHeaderTools);
+    // every other state of Analyze leaves the bar empty.
+    atHeaderNodes = null;
+    setHeaderPage("analyze");
     // A specifically-requested, already-hydrated capture (viewingId) wins
     // outright — even a TRACKED one not present in the ad-hoc RECORDS list
     // (e.g. opened via Prompt Performance's "click a prompt" link). Without
@@ -5289,7 +5348,9 @@ async function renderCampaignBoard(box, profile) {
   if (!slot) box.append(head);
 
   if (!r.answers) {
-    box.append(el("div", { className: "card" }, el("div", { className: "empty" }, "No answers for these filters yet. Run the campaign, or widen the filters above.")));
+    // Run history lives under "Data collected", which needs answers; a run
+    // that captured nothing is exactly when it matters, so it shows here too.
+    box.append(el("div", { className: "card" }, el("div", { className: "empty" }, "No answers for these filters yet. Run the campaign, or widen the filters above."), renderRunHistory(profile)));
     return;
   }
 
@@ -7025,8 +7086,12 @@ function renderPromptManager(profile, dis, persistDetails) {
  * status are the run card's, unchanged: Pause / Resume / Stop show only while
  * a run is going (renderLoaderStatus sets .live and .paused), and the run
  * history moved down to "Data collected". */
+// The run's state as last reported, so a header rebuilt mid-run (every
+// capture re-renders the tab) shows Pause / Stop straight away rather than
+// "Run again" until the next status reply.
+let cpLive = { live: false, paused: false };
 function renderCampaignHead(profile) {
-  const head = el("section", { className: "card cp-head", id: "cpHead", "aria-labelledby": "cpName" });
+  const head = el("section", { className: `card cp-head${cpLive.live ? " live" : ""}${cpLive.paused ? " paused" : ""}`, id: "cpHead", "aria-labelledby": "cpName" });
   head.append(el("div", { className: "cp-switch" }, el("span", { className: "muted small" }, `Campaigns · ${GEO_PROFILES.length} of ${MAX_PROFILES}`), renderCampaignSwitcher()));
 
   const vol = runVolume(GEO_PROMPTS, profile.engines || []);
@@ -7430,28 +7495,25 @@ $("#openTab").addEventListener("click", () =>
   chrome.tabs.create({ url: chrome.runtime.getURL("ui/panel.html") })
 );
 
-function updateThemeIcon(theme) {
-  const btn = $("#themeToggle");
-  if (!btn) return;
-  const label = btn.querySelector(".theme-label");
-  if (label) label.textContent = theme === "dark" ? "Dark" : "Light";
+// Light or dark, kept in this browser (the popup and the full tab share it).
+// Picked in About → Settings since 0.56.0; the top bar's button went, as on
+// the canvas.
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  document.querySelectorAll("#setTheme [data-theme-pick]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.themePick === theme)));
 }
-
 function initTheme() {
-  try {
-    const current = localStorage.getItem("cito-theme") || "light";
-    document.documentElement.setAttribute("data-theme", current);
-    updateThemeIcon(current);
-  } catch (_) {}
+  let current = "light";
+  try { current = localStorage.getItem("cito-theme") || "light"; } catch (_) {}
+  applyTheme(current);
 }
-
-$("#themeToggle")?.addEventListener("click", () => {
-  const current = document.documentElement.getAttribute("data-theme") || "light";
-  const next = current === "dark" ? "light" : "dark";
-  document.documentElement.setAttribute("data-theme", next);
+document.querySelectorAll("#setTheme [data-theme-pick]").forEach((b) => b.addEventListener("click", () => {
+  const next = b.dataset.themePick;
+  applyTheme(next);
   try { localStorage.setItem("cito-theme", next); } catch (_) {}
-  updateThemeIcon(next);
-});
+}));
+// The other view (popup or tab) follows a change made here.
+window.addEventListener("storage", (e) => { if (e.key === "cito-theme" && e.newValue) applyTheme(e.newValue); });
 initTheme();
 
 $("#exportJson")?.addEventListener("click", () =>
@@ -7925,10 +7987,19 @@ function renderLoaderStatus(s) {
   // first appears; a refresh of one already showing keeps it still.
   const hadCooldownBanner = !!box.querySelector(".cooldown-banner");
   box.textContent = "";
+  const wasLive = cpLive.live;
+  cpLive = { live: !!(s && s.total && s.running), paused: !!(s && s.running && s.paused) };
+  // The run history is drawn once per render; when a run ends, redraw it so
+  // it doesn't keep saying "Running".
+  if (wasLive && !cpLive.live) {
+    const old = document.getElementById("runHistory");
+    const p = geoActive();
+    if (old && p) old.replaceWith(renderRunHistory(p));
+  }
   const cpHead = document.getElementById("cpHead");
   if (cpHead) {
-    cpHead.classList.toggle("live", !!(s && s.total && s.running));
-    cpHead.classList.toggle("paused", !!(s && s.running && s.paused));
+    cpHead.classList.toggle("live", cpLive.live);
+    cpHead.classList.toggle("paused", cpLive.paused);
   }
   if (!s || !s.total) { loaderWasRunning = false; return; }
 

@@ -604,6 +604,7 @@ export function brandDetail(recs, { profile, brands, them, you, prompts = [], ta
     { label: "Visibility", unit: "%", ...side("visibility") },
     { label: "Share of voice", unit: "%", ...side("shareOfVoice") },
     { label: "Avg position", unit: "rank", ...side("avgPosition", true) },
+    { label: "Mentions", unit: "n", ...side("mentions") },
     { label: "Citations", unit: "n", ...side("citations") },
     { label: "Source visibility", unit: "%", ...side("sourceVisibility") },
   ];

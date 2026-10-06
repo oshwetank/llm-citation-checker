@@ -11,6 +11,9 @@
  *
  * On 0.54.0 this fails: the popup's bar is two rows and ~90px tall, the tabs
  * carry icons, and in the full tab the pill sits at the far end of the bar.
+ * Since 0.56.0 the theme button is gone from the bar too (the canvas has
+ * none); Light / Dark is in About → Settings, and applies everywhere. On
+ * 0.55.0 those checks fail: the button is there and Settings has no choice.
  */
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -90,6 +93,8 @@ try {
     check("each page gets an equal share of the pill", Math.max(...m.tabWidths) - Math.min(...m.tabWidths) <= 1, m.tabWidths.join(", "));
     check("the name is left to the full tab", !m.title);
     check("pop-out is an icon that still says what it does", m.openLabel === "none" && /full tab/i.test(m.openAria), `${m.openLabel} · ${m.openAria}`);
+    // 0.56.0: the canvas's bar has no theme button; Appearance is in Settings.
+    check("nothing else in the bar: no theme button", await page.evaluate(() => !document.getElementById("themeToggle") && document.querySelectorAll(".header-actions button").length === 1));
   }
 
   console.log("\nThe full tab: the logo and name, the pages beside them, the page's own items at the right");
@@ -101,7 +106,11 @@ try {
     check("one row", m.header && m.header.h <= 56, m.header && `${m.header.h}px tall`);
     check("the pages sit right after the name, not at the far end", m.title && m.nav && m.nav.l - m.title.r < 140 && m.nav.l < 500, JSON.stringify({ title: m.title, nav: m.nav }));
     check("words, no icons", m.tabIcons === 0, `${m.tabIcons} icons`);
-    check("Analyze adds nothing to the bar", !m.page, m.pageText);
+    // Analyze adds its search and pager (analyze-tab covers them) when an
+    // answer is on screen; the sample capture can arrive on a fresh install
+    // before this runs, so check against what Analyze is showing.
+    const az = await page.evaluate(() => ({ answer: !!document.getElementById("at-answer"), find: !!document.querySelector("#headerPage .at-find"), items: document.getElementById("headerPage").childElementCount }));
+    check("Analyze adds its search to the bar only when it shows an answer", az.answer ? az.find : az.items === 0, JSON.stringify(az));
 
     await page.evaluate(() => document.querySelector('[data-tab="dashboard"]').click());
     await page.waitForTimeout(800);
@@ -110,6 +119,25 @@ try {
     await page.evaluate(() => document.querySelector('[data-tab="about"]').click());
     await page.waitForTimeout(800);
     check("and it goes again on the next page", !(await measure()).page);
+  }
+
+  console.log("\nLight or dark, from About → Settings");
+  {
+    await page.evaluate(() => document.querySelector('[data-tab="about"]').click());
+    await page.waitForTimeout(500);
+    await page.evaluate(() => [...document.querySelectorAll(".ab-nav-btn, .ab-more-row")].find((b) => b.textContent.includes("Settings"))?.click());
+    await page.waitForTimeout(500);
+    const seg = await page.evaluate(() => [...document.querySelectorAll("#setTheme [role=radio]")].map((b) => `${b.textContent}:${b.getAttribute("aria-checked")}`));
+    check("Settings has Appearance: Light or Dark, Light picked", seg.join("|") === "Light:true|Dark:false", seg.join("|"));
+    await page.click('#setTheme [data-theme-pick="dark"]');
+    const dark = await page.evaluate(() => ({ attr: document.documentElement.getAttribute("data-theme"), stored: localStorage.getItem("cito-theme"), bg: getComputedStyle(document.body).backgroundColor }));
+    check("Dark applies at once and is kept", dark.attr === "dark" && dark.stored === "dark", JSON.stringify(dark));
+    check("without touching Save", await page.evaluate(() => !document.getElementById("setStatus").textContent.includes("Unsaved")));
+    await page.setViewportSize({ width: 540, height: 600 });
+    await page.goto(`chrome-extension://${extId}/ui/panel.html`);
+    await page.waitForTimeout(800);
+    check("the popup opens dark too", await page.evaluate(() => document.documentElement.getAttribute("data-theme") === "dark"));
+    await page.evaluate(() => localStorage.setItem("cito-theme", "light"));
   }
 
   check("no page error anywhere above", pageErrors.length === 0, pageErrors.join(" | "));

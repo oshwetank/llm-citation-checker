@@ -28,20 +28,14 @@
             </div>
             <div class="brand-text">
               <span class="brand-title">CitoSkeleton</span>
-              <span class="version-badge">v0.55.0</span>
+              <span class="version-badge">v0.56.0</span>
               <span class="brand-sub">ChatGPT, Gemini, Perplexity &amp; Grok</span>
             </div>
           </div>
-          <!-- Was a bare 14px icon with the .nav-tab class, which gave it a tab's
-               padding but none of a button's affordance, so it read as a stray
-               glyph floating in the header. Now it's a labelled pill: same
-               action, but it looks pressable and says what it does. Tab wiring
-               keys off [data-tab], which this deliberately does not have. -->
+          <!-- Pop-out to the full tab: a square icon in the popup's one-row bar
+               (0.55.0), hidden in the tab itself. Tab wiring keys off
+               [data-tab], which this deliberately does not have. -->
           <div class="header-actions" style="display: flex; align-items: center; gap: 6px;">
-            <button id="themeToggle" class="popout-btn" title="Toggle Light / Dark Theme" aria-label="Toggle theme">
-              <svg class="theme-icon-sun" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
-              <span class="popout-label theme-label">Theme</span>
-            </button>
             <button id="openTab" class="popout-btn" title="Open CitoSkeleton in a full browser tab" aria-label="Open in a full tab">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
               <span class="popout-label">Full tab</span>
@@ -166,11 +160,24 @@
                   <div class="ab-head ab-tab-only">
                     <div>
                       <h2 class="ab-title">Settings</h2>
-                      <p class="ab-sub">How much CitoSkeleton keeps on this device.</p>
+                      <p class="ab-sub">How CitoSkeleton looks, and how much it keeps on this device.</p>
                     </div>
                   </div>
                   <div class="ab-meter" id="storageInfo"></div>
                   <div class="ab-rows">
+                    <!-- Appearance (0.56.0): moved here from the top bar, which the
+                         canvas keeps to the logo, the pages and pop-out. It applies
+                         at once, so it sits outside Save / Undo. -->
+                    <div class="ab-row">
+                      <div class="ab-row-text" id="setThemeLabel">
+                        <b>Appearance</b>
+                        <span>Applies straight away, in the popup and the full tab.</span>
+                      </div>
+                      <div class="ab-seg" role="radiogroup" aria-labelledby="setThemeLabel" id="setTheme">
+                        <button type="button" role="radio" class="ab-seg-btn" data-theme-pick="light" aria-checked="false">Light</button>
+                        <button type="button" role="radio" class="ab-seg-btn" data-theme-pick="dark" aria-checked="false">Dark</button>
+                      </div>
+                    </div>
                     <div class="ab-row">
                       <label class="ab-row-text" for="setRetention">
                         <b>Captures to keep</b>

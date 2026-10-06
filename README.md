@@ -10,12 +10,22 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.55.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.56.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - The last pieces of the design. In the full tab, Analyze's top bar has "Find a captured
+>   prompt" (type a few words, pick a match or press Enter) and the newer/older arrows. A
+>   competitor's page shows mentions too. Light or dark is now in About → Settings and
+>   applies everywhere (the top bar keeps only the logo, the pages and, in the popup, the
+>   pop-out icon).
+> - Checked that the campaign runner still works from the new Campaigns header: Start run,
+>   the sign-in check, Pause, Resume and Stop all reach the background and the header
+>   follows. Two fixes from that check: during a run, the header no longer flashes "Run
+>   again" when it redraws, and the run history refreshes when a run ends and still shows
+>   when a run captured nothing.
 > - Campaigns now follow the design too. A set-up campaign opens on one header: its name and
 >   what it covers, Edit setup, Export… and Run again, and the run, engine, brand and tag
 >   filters right under them, with the results straight below (no more separate summary,

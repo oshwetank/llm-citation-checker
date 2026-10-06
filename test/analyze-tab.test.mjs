@@ -420,6 +420,47 @@ try {
     check("the Gemini tab opens Gemini's answer, analysed", asked.asked === "Asked Gemini" && !asked.cmp, JSON.stringify(asked));
   }
 
+  // 0.56.0, from the canvas: the app bar holds "Find a captured prompt" and
+  // Newer / Older. Until then the pager sat in the prompt header and there
+  // was no way to find a capture without going back to the Dashboard.
+  console.log("\nFind a captured prompt, and page through them, from the top bar");
+  {
+    await open(ids.shop);
+    const bar = await page.evaluate(() => {
+      const slot = document.getElementById("headerPage");
+      return {
+        find: !!slot?.querySelector('input[type="search"][placeholder="Find a captured prompt"]'),
+        paging: slot?.querySelector(".ap-paging")?.textContent || "",
+        inHero: !!document.querySelector("#analyze .at-hero .ap-paging"),
+      };
+    });
+    check("the search box is in the top bar", bar.find, JSON.stringify(bar));
+    check("with the pager beside it, not in the prompt header", /^\d+ of 5$/.test(bar.paging) && !bar.inHero, JSON.stringify(bar));
+    await page.fill("#headerPage .at-find-input", "jewellery wedding");
+    await page.waitForTimeout(200);
+    const hits = await page.evaluate(() => [...document.querySelectorAll("#headerPage .at-find-item .at-find-text")].map((x) => x.textContent));
+    check("typing lists the captures whose prompt has those words", hits.length === 1 && /jewellery shops near me/.test(hits[0]), hits.join(" | "));
+    await page.press("#headerPage .at-find-input", "Enter");
+    await page.waitForTimeout(1500);
+    const now = await page.evaluate(() => ({ prompt: document.querySelector("#analyze .at-prompt")?.textContent || "", kind: document.querySelector("#analyze .at-hero .ap-kind")?.textContent }));
+    check("Enter opens it", /jewellery shops near me/.test(now.prompt) && now.kind === "Local", JSON.stringify(now));
+    await page.fill("#headerPage .at-find-input", "no such prompt anywhere");
+    await page.waitForTimeout(200);
+    check("and says so when nothing matches", await page.evaluate(() => /No captured prompt matches/.test(document.querySelector("#headerPage .at-find-list")?.textContent || "")));
+    await page.press("#headerPage .at-find-input", "Escape");
+    const p0 = await page.evaluate(() => document.querySelector("#headerPage .ap-paging")?.textContent);
+    await page.evaluate(() => document.querySelector('#headerPage [aria-label="Older capture"]')?.click());
+    await page.waitForTimeout(1500);
+    const p1 = await page.evaluate(() => document.querySelector("#headerPage .ap-paging")?.textContent);
+    check("Older moves one capture on", p0 && p1 && Number(p1.split(" ")[0]) === Number(p0.split(" ")[0]) + 1, `${p0} → ${p1}`);
+    await page.evaluate(() => document.querySelector('[data-tab="dashboard"]').click());
+    await page.waitForTimeout(500);
+    check("the tools leave the bar with the page", await page.evaluate(() => !document.querySelector("#headerPage .at-find")));
+    await page.evaluate(() => document.querySelector('[data-tab="analyze"]').click());
+    await page.waitForTimeout(500);
+    check("and come back with it", await page.evaluate(() => !!document.querySelector("#headerPage .at-find")));
+  }
+
   console.log("\nA long, paragraph-length prompt");
   {
     await open(ids.long);

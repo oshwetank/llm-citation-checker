@@ -442,7 +442,7 @@ try {
       if (m) {
         check("titled for the brand, against yours", m.title.startsWith(clicked) && m.title.includes(seeded.ownBrand), m.title);
         check("it leads with the two brands' numbers side by side",
-          ["Visibility", "Share of voice", "Avg position"].every((x) => m.stats.includes(x)), m.stats.join(" | "));
+          ["Visibility", "Share of voice", "Avg position", "Mentions"].every((x) => m.stats.includes(x)), m.stats.join(" | "));
 
         // The comparison the table behind it cannot express.
         check("it counts answers that named them and not you — the gap",
