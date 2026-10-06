@@ -12,9 +12,18 @@
  *      "Compare N engines" view (src/lib/compareView.js).
  *   3. "how properly large paragraph-level prompts are displayed" — a long
  *      prompt is clamped to two lines with "Show the whole prompt".
- * The searches it ran come first, as in the popup; clicking a brand or a
- * cited page lights it up in the answer; the old detailed cards live under
- * Details, one at a time.
+ * Clicking a brand or a cited page lights it up in the answer.
+ *
+ * Since 0.54.0 the left column is the canvas's TabAnalyze board, reported as
+ * "the new layout has not completily and properly been implemented at all": an "at a
+ * glance" card (brands named, pages cited, searches it ran) heads it; product
+ * cards are a table with where to buy beside it; every named brand gets a row
+ * in "what backs each brand" with a verdict and "what to do"; Details is a
+ * switch between technical tiles, the grounding check, the page behind each
+ * part and every page it read. The page keeps the canvas's narrow gutters.
+ * On 0.53.0 the "at a glance", products, backing and Details checks fail:
+ * the column opened on a "Searches it ran" card, the products were a plain
+ * table, and Details held the old cards.
  *
  * On 0.47.0 this fails at the first checks: there is no .at-grid, no answer
  * panel and no engine tabs.
@@ -133,22 +142,90 @@ try {
     }
   }
 
-  console.log("\nSearches it ran come first, every one in full");
+  console.log("\nAt a glance first: brands named, pages cited, searches it ran");
   {
     const r = await page.evaluate(() => {
-      const secs = [...document.querySelectorAll("#analyze .at-main > .at-sec")];
-      const rows = [...document.querySelectorAll("#at-searches .ap-fan-text")];
+      const secs = [...document.querySelectorAll("#analyze .at-main > section")];
+      const g = document.getElementById("at-glance");
+      const cols = g ? [...g.querySelectorAll(".at-glance-col")].map((c) => { const b = c.getBoundingClientRect(); return { h: c.querySelector("h2")?.textContent || "", top: Math.round(b.top), left: Math.round(b.left) }; }) : [];
+      const built = [...document.querySelectorAll("#at-built .at-lane-q > :first-child")];
       return {
-        first: secs[0]?.id,
-        order: secs.map((s) => s.id),
-        rows: rows.length,
-        cut: rows.filter((x) => x.scrollWidth > x.clientWidth + 1 || getComputedStyle(x).textOverflow === "ellipsis").map((x) => x.textContent),
+        order: secs.map((x) => x.id),
+        cols,
+        brands: g ? g.querySelectorAll(".at-glance-brand").length : 0,
+        pages: g ? g.querySelectorAll(".at-glance-page").length : 0,
+        searches: g ? g.querySelectorAll(".at-glance-q").length : 0,
+        built: built.length,
+        cut: built.filter((x) => x.scrollWidth > x.clientWidth + 1).map((x) => x.textContent),
       };
     });
-    check("the first section is the searches", r.first === "at-searches", r.order.join(" > "));
-    check("the searches are listed", r.rows > 0, r.rows);
-    check("no search is cut off", r.cut.length === 0, r.cut.join(" | "));
-    check("then products, brands and pages", ["at-products", "at-brands", "at-pages"].every((id) => r.order.includes(id)) && r.order.indexOf("at-products") < r.order.indexOf("at-brands"), r.order.join(" > "));
+    check("the first section is the at-a-glance card", r.order[0] === "at-glance", r.order.join(" > "));
+    check("three columns side by side", r.cols.length === 3 && r.cols.every((c) => c.top === r.cols[0].top) && r.cols[1].left > r.cols[0].left && r.cols[2].left > r.cols[1].left, JSON.stringify(r.cols));
+    check("headed brands, pages cited, searches", /^Brands named/.test(r.cols[0]?.h) && /^Pages cited/.test(r.cols[1]?.h) && /^Searches it ran/.test(r.cols[2]?.h), r.cols.map((c) => c.h).join(" | "));
+    check("it lists the brands, the cited pages and the searches", r.brands === 5 && r.pages === 2 && r.searches > 0, `${r.brands} brands, ${r.pages} pages, ${r.searches} searches`);
+    check("every search is under how the answer was built", r.built === r.searches, `${r.built} vs ${r.searches}`);
+    check("no search is cut off there", r.cut.length === 0, r.cut.join(" | "));
+    check("then products, what backs each brand, how it was built, Details",
+      ["at-products", "at-backing", "at-built", "at-details"].every((id) => r.order.includes(id)) && r.order.indexOf("at-products") < r.order.indexOf("at-backing") && r.order.indexOf("at-backing") < r.order.indexOf("at-built") && r.order.at(-1) === "at-details", r.order.join(" > "));
+  }
+
+  console.log("\nThe canvas's spacing: narrow gutters, a wide analysis column");
+  {
+    const r = await page.evaluate(() => {
+      const hero = document.querySelector("#analyze .at-hero").getBoundingClientRect();
+      const m = document.querySelector("#analyze .at-main").getBoundingClientRect();
+      const a = document.getElementById("at-answer").getBoundingClientRect();
+      return { left: Math.round(hero.left), right: Math.round(window.innerWidth - hero.right), main: Math.round(m.width), ans: Math.round(a.width) };
+    });
+    // 0.53.0 left ~70px a side and a 740px column; the canvas has 20px.
+    check("the page's side margins are narrow", r.left <= 30 && r.right <= 40, JSON.stringify(r));
+    check("the analysis column gets most of the width", r.main >= 760, JSON.stringify(r));
+    check("the answer panel is as wide as the canvas's", r.ans >= 540, JSON.stringify(r));
+  }
+
+  console.log("\nProduct cards: a table, with where to buy beside it");
+  {
+    const r = await page.evaluate(() => {
+      const sec = document.getElementById("at-products");
+      const rows = sec ? [...sec.querySelectorAll(".at-prod-row:not(.at-th)")] : [];
+      const t = sec?.querySelector(".at-prod-table")?.getBoundingClientRect();
+      const buy = sec?.querySelector(".at-buy")?.getBoundingClientRect();
+      return {
+        rows: rows.length,
+        thumbs: sec ? sec.querySelectorAll(".at-prod-row .at-thumb").length : 0,
+        heads: sec ? [...sec.querySelectorAll(".at-prod-row.at-th > span")].map((x) => x.textContent).filter(Boolean) : [],
+        beside: !!(t && buy) && buy.left >= t.right - 1 && buy.top <= t.top,
+        buyFor: sec?.querySelector("#at-buy-h")?.textContent || "",
+        first: rows[0]?.querySelector(".at-prod-name b")?.textContent || "",
+        second: rows[1]?.querySelector(".at-prod-name b")?.textContent || "",
+        stores: sec ? sec.querySelectorAll(".at-store:not(.more)").length : 0,
+      };
+    });
+    check("one row per card, each with a picture tile", r.rows === 5 && r.thumbs === 5, `${r.rows} rows, ${r.thumbs} tiles`);
+    check("the canvas's columns", r.heads.join("|") === "#|Product|Price|Rating|Card leads to|Image from", r.heads.join("|"));
+    check("where to buy sits beside the table", r.beside);
+    check("it starts on the first card, with its stores", r.buyFor === r.first && r.stores > 0, `${r.buyFor} / ${r.first} · ${r.stores} stores`);
+    await page.evaluate(() => document.querySelectorAll("#at-products .at-prod-row:not(.at-th)")[1]?.click());
+    await page.waitForTimeout(500);
+    const after = await page.evaluate(() => ({ h: document.getElementById("at-buy-h")?.textContent || "", on: document.querySelectorAll("#at-products .at-prod-row.on").length }));
+    check("clicking a card shows where to buy that one", after.h === r.second && after.on === 1, `${after.h} (${after.on} selected)`);
+  }
+
+  console.log("\nWhat backs each brand: a verdict per brand, then what to do");
+  {
+    const r = await page.evaluate(() => {
+      const sec = document.getElementById("at-backing");
+      const rows = sec ? [...sec.querySelectorAll(".at-backing-row:not(.dropped)")] : [];
+      return {
+        rows: rows.length,
+        verdicts: rows.map((x) => x.querySelector(".ap-pill")?.textContent || ""),
+        firstName: rows[0]?.querySelector(".at-backing-name")?.textContent || "",
+        todo: sec?.querySelector(".at-todo")?.textContent || "",
+      };
+    });
+    check("a row for each named brand, in order", r.rows === 5 && r.firstName === "OnePlus", `${r.rows} rows, first ${r.firstName}`);
+    check("each with a plain verdict", r.verdicts.every((v) => /^(Backed by independent pages|Backed only by its own site|Read, not cited|Nothing behind it|From memory)$/.test(v)), r.verdicts.join(" | "));
+    check("and a 'what to do' line", /^What to do/.test(r.todo) && r.todo.length > 30, r.todo);
   }
 
   console.log("\nThe answer, as the engine showed it, with brands and citations marked");
@@ -165,6 +242,9 @@ try {
         fnList: ans.querySelectorAll(".at-fn-list li").length,
         rawMarkers: /[-]|\[\[cite:|cite│|turn\d+(search|product)/.test(text?.innerText || ""),
         open: ans.querySelector(".at-open")?.textContent || "",
+        step: ans.querySelector(".at-ans-step")?.textContent || "",
+        thumbs: ans.querySelectorAll(".at-ans-card .at-ans-thumb").length,
+        perRow: (() => { const c = [...ans.querySelectorAll(".at-ans-card")]; return c.filter((x) => Math.round(x.getBoundingClientRect().top) === Math.round(c[0]?.getBoundingClientRect().top)).length; })(),
       };
     });
     check("headed with the engine's name", /as ChatGPT showed it/.test(r.title), r.title);
@@ -175,16 +255,18 @@ try {
     check("the sources it cited are listed under the answer", r.fnList > 0, r.fnList);
     check("no raw citation markers leak into the text", !r.rawMarkers);
     check("a link back to the conversation", /Open on chatgpt\.com/.test(r.open), r.open);
+    check("the line ChatGPT shows above its answer", r.step === "Searched 12 sites", r.step);
+    check("product cards with a picture tile, three to a row", r.thumbs === 5 && r.perRow === 3, `${r.thumbs} tiles, ${r.perRow} a row`);
   }
 
   console.log("\nClicking a brand or a cited page lights it up in the answer");
   {
     // From part-way down the page, as when reading the brand table.
     await page.evaluate(() => { window.scrollTo(0, 0); document.querySelector("#at-answer .at-answer-body").scrollTop = 0; });
-    await page.evaluate(() => window.scrollTo(0, document.getElementById("at-brands").getBoundingClientRect().top + window.scrollY - 200));
+    await page.evaluate(() => window.scrollTo(0, document.getElementById("at-backing").getBoundingClientRect().top + window.scrollY - 200));
     await page.waitForTimeout(400);
     const y0 = await page.evaluate(() => window.scrollY);
-    await page.evaluate(() => document.querySelector('#at-brands [data-focus-brand="Samsung"]')?.click());
+    await page.evaluate(() => document.querySelector('#at-backing [data-focus-brand="Samsung"]')?.click());
     await page.waitForTimeout(900);
     const moved = await page.evaluate(() => {
       const body = document.querySelector("#at-answer .at-answer-body").getBoundingClientRect();
@@ -197,12 +279,12 @@ try {
     await page.evaluate(() => { window.scrollTo(0, 0); document.querySelector("#at-answer .at-answer-body").scrollTop = 0; });
     await page.waitForTimeout(300);
 
-    await page.evaluate(() => document.querySelector('#at-brands [data-focus-brand="OnePlus"]')?.click());
+    await page.evaluate(() => document.querySelector('#at-glance [data-focus-brand="OnePlus"]')?.click());
     await page.waitForTimeout(500);
     const a = await page.evaluate(() => ({
       focused: [...document.querySelectorAll("#at-answer .at-mark.focus")].map((m) => m.dataset.brand),
       dimmed: document.querySelector("#at-answer .at-answer-body")?.classList.contains("has-focus"),
-      pressed: document.querySelector('#at-brands [data-focus-brand="OnePlus"]')?.getAttribute("aria-pressed"),
+      pressed: document.querySelector('#at-glance [data-focus-brand="OnePlus"]')?.getAttribute("aria-pressed"),
       clear: document.querySelector("#at-answer .at-hl-clear")?.textContent || "",
     }));
     check("only that brand's marks are lit", a.focused.length > 0 && a.focused.every((b) => b === "OnePlus"), a.focused.join());
@@ -213,13 +295,13 @@ try {
     await page.waitForTimeout(200);
     check("clear turns it off", await page.evaluate(() => !document.querySelector("#at-answer .at-mark.focus") && !document.querySelector("#at-answer .has-focus")));
 
-    await page.evaluate(() => document.querySelector("#at-pages [data-focus-cite]")?.click());
+    await page.evaluate(() => document.querySelector("#at-glance [data-focus-cite]")?.click());
     await page.waitForTimeout(500);
     const c = await page.evaluate(() => ({
-      n: document.querySelector("#at-pages [data-focus-cite]")?.dataset.focusCite,
+      n: document.querySelector("#at-glance [data-focus-cite]")?.dataset.focusCite,
       lit: [...document.querySelectorAll("#at-answer .at-cite.focus")].map((x) => x.dataset.n),
     }));
-    check("'Show in answer' lights that citation", c.lit.length > 0 && c.lit.every((n) => n === c.n), `${c.n}: ${c.lit.join()}`);
+    check("a cited page lights that citation", c.lit.length > 0 && c.lit.every((n) => n === c.n), `${c.n}: ${c.lit.join()}`);
     await page.evaluate(() => document.querySelector("#at-answer .at-hl-clear")?.click());
 
     await page.evaluate(() => [...document.querySelectorAll("#at-answer .at-hl-btn")].find((b) => b.textContent === "Brands")?.click());
@@ -248,6 +330,14 @@ try {
     check("the answer is still on screen", r.ansTop >= 0 && r.ansTop < 300 && r.ansBottom <= r.vh + 1, `${Math.round(r.ansTop)}..${Math.round(r.ansBottom)} of ${r.vh}`);
     check("the header went compact and got shorter", r.compact && r.heroH < before - 30, `${Math.round(before)} → ${Math.round(r.heroH)}`);
     check("the answer starts below the header, not under it", r.ansTop >= r.heroBottom, `${Math.round(r.heroBottom)} / ${Math.round(r.ansTop)}`);
+    // At the very end the grid stops above the footer; the pinned panel used
+    // to be pushed up under the header there (0.53.0: by ~110px).
+    await page.evaluate(() => window.scrollTo(0, document.scrollingElement.scrollHeight));
+    await page.waitForTimeout(400);
+    const end = await page.evaluate(() => ({ hero: document.querySelector("#analyze .at-hero").getBoundingClientRect().bottom, top: document.getElementById("at-answer").getBoundingClientRect().top }));
+    check("even at the very end of the page", end.top >= end.hero, `${Math.round(end.hero)} / ${Math.round(end.top)}`);
+    await page.evaluate(() => window.scrollTo(0, 1200));
+    await page.waitForTimeout(300);
     // The app header above it is glass, and scrolled text used to show
     // through it. Now the band behind it is painted with the page's own
     // (fixed) backdrop, so the pinned header looks the same whatever is
@@ -265,22 +355,30 @@ try {
       await page.evaluate(() => getComputedStyle(document.getElementById("analyze")).transform === "none"));
   }
 
-  console.log("\nDetails: the detailed cards, one at a time");
+  console.log("\nDetails: one switch, technical details first");
   {
-    const r = await page.evaluate(() => ({
-      tabs: [...document.querySelectorAll("#at-details .at-det-tabs .ap-sheet-tab")].map((t) => t.textContent),
-      sources: !!document.querySelector("#at-details .at-det-panel #card-sources"),
-      cards: document.querySelectorAll("#at-details .at-det-panel > .card").length,
-    }));
-    check("Details has tabs", r.tabs.length >= 3 && r.tabs[0] === "Every page it read", r.tabs.join(" | "));
-    check("it opens on every page it read", r.sources);
-    await page.evaluate(() => [...document.querySelectorAll("#at-details .ap-sheet-tab")].find((t) => t.textContent === "Technical")?.click());
+    const r = await page.evaluate(() => {
+      const tiles = [...document.querySelectorAll("#at-details dl.at-tech > div")];
+      return {
+        tabs: [...document.querySelectorAll("#at-details .at-seg [role=tab]")].map((t) => t.textContent),
+        tiles: tiles.map((x) => x.querySelector("dt")?.textContent),
+        perRow: tiles.filter((x) => Math.round(x.getBoundingClientRect().top) === Math.round(tiles[0].getBoundingClientRect().top)).length,
+      };
+    });
+    check("Details has the canvas's tabs first", r.tabs.slice(0, 4).join(" | ") === "Technical details | Grounding check | Page behind each part | Every page it read", r.tabs.join(" | "));
+    // The detailed cards the 0.53.0 Details held stay reachable after them;
+    // 0.54.0 first dropped them (caught by source-pipeline-ui).
+    check("then the search breakdown and the brand & page matrix", r.tabs.includes("Search details") && r.tabs.includes("Brand & page matrix"), r.tabs.join(" | "));
+    check("it opens on technical details, as tiles three to a row", r.tiles.length === 12 && r.perRow === 3 && r.tiles[0] === "Captured", `${r.tiles.length} tiles, ${r.perRow} a row: ${r.tiles.join(", ")}`);
+    await page.evaluate(() => [...document.querySelectorAll("#at-details .at-seg [role=tab]")].find((t) => t.textContent === "Every page it read")?.click());
     await page.waitForTimeout(500);
     const t = await page.evaluate(() => ({
-      general: !!document.querySelector("#at-details .at-det-panel #card-general"),
-      sources: !!document.querySelector("#at-details .at-det-panel #card-sources"),
+      card: !!document.querySelector("#at-details #card-sources"),
+      pages: document.querySelectorAll("#at-details #card-sources .src-item").length,
+      tech: !!document.querySelector("#at-details dl.at-tech"),
+      on: document.querySelector("#at-details .at-seg [aria-selected=true]")?.textContent,
     }));
-    check("Technical swaps in the technical cards", t.general && !t.sources, JSON.stringify(t));
+    check("'Every page it read' is the full sources card, with its pages", t.card && t.pages > 0 && !t.tech && t.on === "Every page it read", JSON.stringify(t));
   }
 
   console.log("\nOne prompt, two engines: engine tabs and a comparison");
@@ -301,7 +399,7 @@ try {
         brandRows: document.querySelectorAll("#at-cmp-brands [role=row]:has([role=rowheader])").length,
         sites: document.querySelectorAll("#at-cmp-sites [role=row]:has([role=rowheader])").length,
         ansTabs: [...document.querySelectorAll("#at-answer .at-ans-tabs [role=tab]")].map((b) => b.textContent.trim()),
-        singleGone: !document.getElementById("at-searches"),
+        singleGone: !document.getElementById("at-glance") && !document.getElementById("at-backing"),
       };
     });
     check("how the answers differ, in sentences", /ChatGPT named OnePlus first/.test(c.diffs["Who came first"] || ""), JSON.stringify(c.diffs).slice(0, 200));
@@ -381,7 +479,7 @@ try {
     await open(ids.shop);
     const r = await page.evaluate(() => {
       const lum = (c) => { const m = c.match(/\d+(\.\d+)?/g).map(Number); return (0.2126 * m[0] + 0.7152 * m[1] + 0.0722 * m[2]) / 255; };
-      const sec = getComputedStyle(document.querySelector("#at-searches"));
+      const sec = getComputedStyle(document.querySelector("#at-glance"));
       const ans = getComputedStyle(document.getElementById("at-answer"));
       const txt = getComputedStyle(document.querySelector("#at-answer .at-answer-text"));
       return { sec: lum(sec.backgroundColor), ans: lum(ans.backgroundColor), txt: lum(txt.color) };

@@ -114,26 +114,26 @@ try {
 
   // Since 0.48.0 the full tab has its own layout too (renderAnalyzeTab;
   // analyze-tab.test.mjs covers it in depth): the analysis in a left column,
-  // the answer pinned on the right. The same reading order holds there — the
-  // searches, then the brands, and the search funnel's brand & page matrix
-  // only after them, under Details.
-  console.log("\nFULL SCREEN (1280px) — searches, then brands; the funnel matrix after them");
+  // the answer pinned on the right. Since 0.54.0 it follows the canvas: an
+  // "at a glance" card (brands named, pages cited, searches) heads it, then
+  // what led the answer, then what backs each brand, and Details last.
+  console.log("\nFULL SCREEN (1280px) — at a glance first, then what backs each brand, Details last");
   {
     const page = await context.newPage();
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.goto(`chrome-extension://${extId}/ui/panel.html?mode=tab`);
     await page.waitForTimeout(1200);
-    const order = await page.evaluate(() => [...document.querySelectorAll("#analyze .at-main > .at-sec, #analyze .at-main > .at-pair > .at-sec")]
+    const order = await page.evaluate(() => [...document.querySelectorAll("#analyze .at-main > section, #analyze .at-main > .at-pair > .at-sec")]
       .map((n) => ({ id: n.id, top: Math.round(n.getBoundingClientRect().top + window.scrollY) }))
       .sort((a, b) => a.top - b.top).map((n) => n.id));
     console.log("  painted order: " + order.join(" -> "));
     const at = (id) => order.indexOf(id);
-    check("the brands section is present", at("at-brands") !== -1, order.join(" -> "));
-    if (at("at-searches") !== -1) check("the searches come before the brands", at("at-searches") < at("at-brands"), order.join(" -> "));
-    if (at("at-details") !== -1) check("Details (where the funnel matrix lives) comes after the brands", at("at-details") > at("at-brands"), order.join(" -> "));
+    check("the at-a-glance card comes first", at("at-glance") === 0, order.join(" -> "));
+    check("what backs each brand is there, after it", at("at-backing") > 0, order.join(" -> "));
+    check("Details comes last", at("at-details") === order.length - 1, order.join(" -> "));
     const matrixFirst = await page.evaluate(() => {
       const m = document.getElementById("card-omitted-analysis");
-      const b = document.getElementById("at-brands");
+      const b = document.getElementById("at-glance");
       return !!(m && b && m.getBoundingClientRect().top < b.getBoundingClientRect().top);
     });
     check("the funnel matrix never paints above the brands", !matrixFirst);
@@ -142,18 +142,21 @@ try {
     // each mentioned brand." The quote was the tallest element in each row
     // and the least reliable — a brand introduced inside a markdown table
     // arrived as a wall of rating cells, and two brands named in the same
-    // sentence showed the identical block of text.
+    // sentence showed the identical block of text. The brands now show as
+    // one line each in the glance, and as one row each in "what backs it".
     const bm = await page.evaluate(() => {
-      const sec = document.getElementById("at-brands");
-      if (!sec) return null;
-      const rows = [...sec.querySelectorAll(".at-tr:not(.at-th):not(.dropped)")];
+      const glance = document.getElementById("at-glance");
+      const back = document.getElementById("at-backing");
+      if (!glance || !back) return null;
+      const rows = [...glance.querySelectorAll(".at-glance-brand")];
       const heights = rows.map((r) => Math.round(r.getBoundingClientRect().height));
       return {
         rows: rows.length,
-        quotes: sec.querySelectorAll(".brand-quote, blockquote").length,
-        ordinals: rows.filter((r) => /^(\d+|–)$/.test(r.querySelector(".ap-rank")?.textContent || "")).length,
-        counts: rows.filter((r) => /^×\d+$|card only/.test(r.querySelector(".num")?.textContent || "")).length,
-        chips: [...sec.querySelectorAll(".ap-bchip, .ap-brand-sub")].map((t) => t.textContent),
+        backRows: back.querySelectorAll(".at-backing-row:not(.dropped)").length,
+        quotes: document.querySelectorAll("#analyze .at-main .brand-quote, #analyze .at-main blockquote").length,
+        ordinals: rows.filter((r) => /^\d+$/.test(r.querySelector(".at-rank")?.textContent || "")).length,
+        counts: rows.filter((r) => /^×\d+$/.test(r.querySelector(".at-glance-n")?.textContent || "")).length,
+        chips: [...back.querySelectorAll(".at-backer")].map((t) => t.textContent),
         minHeight: Math.min(...heights),
         maxHeight: Math.max(...heights),
       };
@@ -164,9 +167,10 @@ try {
       check("no per-brand quote block", bm.quotes === 0, `${bm.quotes} quotes`);
       check("every brand still shows its position in the answer", bm.ordinals === bm.rows, `${bm.ordinals} of ${bm.rows}`);
       check("and how often it was named", bm.counts === bm.rows, `${bm.counts} of ${bm.rows}`);
-      check("rows are the same height, give or take one wrapped line", bm.maxHeight - bm.minHeight < 40, `${bm.minHeight}-${bm.maxHeight}px`);
+      check("each named brand gets a row in what backs it", bm.backRows >= bm.rows, `${bm.backRows} vs ${bm.rows}`);
+      check("brand lines are all one line high", bm.maxHeight - bm.minHeight < 4, `${bm.minHeight}-${bm.maxHeight}px`);
       // A chip that ran into the next table column read "… Reliability Approx".
-      check("no chip label trails into the next table column",
+      check("no chip label trails into the next column",
         !bm.chips.some((c) => /\b(approx|₹|\$)\b/i.test(c)), bm.chips.join(" | "));
     }
   }

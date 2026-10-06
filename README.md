@@ -10,12 +10,21 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.53.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.54.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - Analyze in the full tab now follows the design properly. It opens on one "at a glance"
+>   card: the brands named (with a dot for what backs each), the pages cited and the
+>   searches it ran. Product cards are a table with "where to buy" beside it; click a card
+>   to see its stores. Image answers show who supplied each image and where a click leads.
+>   Every named brand gets a row in "What backs each brand" with a plain verdict and a
+>   "What to do" line. Details is one switch between technical details, the grounding
+>   check, the page behind each part and every page it read. The answer panel shows the
+>   line the engine shows above its answer (for example "Searched 12 sites"), and the page
+>   has much narrower side margins, so the analysis gets the width instead of white space.
 > - PDF reports. In a campaign's Export…, choose PDF report and a run: up to seven A4 pages
 >   with the headline numbers and what they say, brands, every prompt on every engine,
 >   sources, kinds of answer and product cards, the engines' searches, and what to do next.

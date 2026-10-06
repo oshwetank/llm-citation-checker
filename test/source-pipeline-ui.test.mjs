@@ -108,6 +108,10 @@ try {
     const page = await context.newPage();
     await page.setViewportSize({ width: 1280, height: 1000 });
     await page.goto(`chrome-extension://${extId}/ui/panel.html?mode=tab`);
+    // Since 0.54.0 Details opens on the technical details, as on the canvas;
+    // the sources card is under "Every page it read".
+    await page.waitForSelector("#at-details .at-seg", { timeout: 15000 });
+    await page.evaluate(() => [...document.querySelectorAll("#at-details .at-seg [role=tab]")].find((t) => t.textContent === "Every page it read")?.click());
     await page.waitForSelector("#card-sources", { timeout: 15000 });
     return page;
   };
