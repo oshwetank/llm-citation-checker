@@ -19,6 +19,8 @@ import { aggregateSources, aggregateSourcesFromCaptures } from "../src/lib/sourc
 import { analyzeFanout, FANOUT_BENCHMARK } from "../src/lib/fanout.js";
 import { sanitizeText, trimLabel } from "../src/lib/text-sanitize.js";
 import { formatCooldown } from "../src/lib/pacing.js";
+import { summarizeDomains } from "../src/lib/cited-domains.js";
+import { originalImageUrl } from "../src/lib/image-url.js";
 import {
   computeVerbatimGrounding,
   computeAuthoritySplit,
@@ -1107,6 +1109,45 @@ function openDomainModal(domainName, rec) {
   doneBtn.onclick = close;
 }
 
+/*
+ * A captured image that never shows up as an empty box.
+ *
+ * Reported: product images showed in the Analyze tab as bordered, coloured
+ * tiles with no picture in them. Those are ChatGPT's images.openai.com
+ * thumbnails failing to load in the extension page. Three steps instead of one:
+ *   1. the captured URL, with no referrer (the extension's own origin is
+ *      meaningless to an image host and only gives it a reason to refuse);
+ *   2. if that fails, the original image the thumbnail was made from — the
+ *      thumbnail URL encodes it (see src/lib/image-url.js);
+ *   3. if that fails too, a tile that says what the image was, rather than a
+ *      blank one that looks like a rendering bug.
+ */
+function capturedImage(url, label, className = "cap-img") {
+  // The name sits in the frame from the start and the picture covers it only
+  // once it has actually loaded, so a slow or failed image never leaves an
+  // empty box.
+  const name = el("span", { className: "cap-img-missing-label" }, label || "Image unavailable");
+  const wrap = el("div", { className: `${className} cap-img-wrap` }, name);
+  const fallback = () => {
+    wrap.classList.add("cap-img-missing");
+    wrap.title = "This image could not be loaded from the engine's image server.";
+  };
+  if (!url) { fallback(); return wrap; }
+  const img = el("img", { alt: label || "", loading: "lazy", referrerPolicy: "no-referrer" });
+  let triedOriginal = false;
+  img.onload = () => { wrap.classList.add("cap-img-loaded"); };
+  img.onerror = async () => {
+    if (triedOriginal) { img.remove(); fallback(); return; }
+    triedOriginal = true;
+    const orig = await originalImageUrl(url);
+    if (orig && orig !== img.src) img.src = orig;
+    else { img.remove(); fallback(); }
+  };
+  img.src = url;
+  wrap.append(img);
+  return wrap;
+}
+
 function openProductModal(product, rec) {
   const existing = document.getElementById("product-modal-backdrop");
   if (existing) existing.remove();
@@ -1407,7 +1448,9 @@ function renderAnalyze() {
   const car = rec.carousels || {};
   carouselBox.append(
     el("span", { className: `chip ${car.products ? "active" : ""}` }, `Products: ${car.products ? "YES" : "NO"}`),
-    el("span", { className: `chip ${car.images ? "active" : ""}` }, `Images: ${car.images ? "YES" : "NO"}`),
+    // Product thumbnails count: they are images the answer showed, and this
+    // chip said "NO" on captures with a full Images card further down.
+    el("span", { className: `chip ${car.images || rec.images?.length ? "active" : ""}` }, `Images: ${car.images || rec.images?.length ? "YES" : "NO"}`),
     el("span", { className: `chip ${car.news ? "active" : ""}` }, `News: ${car.news ? "YES" : "NO"}`),
     el("span", { className: `chip ${car.map ? "active" : ""}` }, `Map: ${car.map ? "YES" : "NO"}`)
   );
@@ -1650,6 +1693,7 @@ function renderAnalyze() {
         ),
         el("div", { className: "muted", style: "font-size:11px; margin-bottom:10px; line-height:1.45" },
           "Cross-references which cited sources and domains contain each brand vs where blind spots occur. " +
+          "Estimated by matching brand names against search titles and snippets, so read it as a rough guide. " +
           "Click any row to expand details.")
       );
 
@@ -1798,7 +1842,8 @@ function renderAnalyze() {
     }
   }
 
-  // Column 2: Main Area (Fan-outs, Top Domains, Top URLs, Places, Products)
+  // Column 2: Main Area (Cited Domains, Fan-out, Sources, Products, Images…;
+  // final order is set by MAIN_ORDER below)
   const mainCol = el("div", { className: "analyze-main" });
 
   // Extended Thinking & Reasoning Trace (Gemini / Grok)
@@ -1873,13 +1918,6 @@ function renderAnalyze() {
       mainCol.append(authCard);
     }
   }
-
-  // Search Funnel goes first in the main column so it reads immediately after
-  // Brand Mentions in BOTH layouts — the popup stacks brand slot then main,
-  // and the full-screen grid puts the brand card at the top of this same
-  // column. It answers the follow-up question to Brand Mentions ("who got
-  // left out"), so anywhere else breaks the narrative.
-  if (funnelCard) mainCol.append(funnelCard);
 
   // 1. Query Fan-Out queries card
   //
@@ -2028,38 +2066,66 @@ function renderAnalyze() {
     mainCol.append(fc);
   }
 
-  // 2. Top Domains Card
+  // Cited Domains — which publishers this answer leaned on.
+  //
+  // Requested: the domains and URLs being cited matter more than the
+  // snippet-based Brand & Domain Citation Matrix, which used to sit here and
+  // now closes the page. This replaced the old "Top Domains" table, which
+  // ranked by raw URL count, so a domain fetched three times and never used
+  // outranked the one the answer actually cited. Ranking lives in
+  // src/lib/cited-domains.js. One row per domain: the bar splits cited from
+  // fetched-only URLs, and each row opens to its URLs with full titles.
   if (rec.sources.length) {
-    const domCount = new Map();
-    const domTypes = new Map();
-    rec.sources.forEach((s) => {
-      if (!s.domain) return;
-      domCount.set(s.domain, (domCount.get(s.domain) || 0) + 1);
-      const set = domTypes.get(s.domain) || new Set();
-      set.add(s.outcome);
-      if (s.type === "news") set.add("news");
-      domTypes.set(s.domain, set);
+    const domains = summarizeDomains(rec.sources);
+    const citedDomainCount = domains.filter((d) => d.cited > 0).length;
+    const maxTotal = Math.max(1, ...domains.map((d) => d.total));
+    const cd = el("div", { className: "card", id: "card-cited-domains" },
+      el("div", { className: "card-header" },
+        el("h3", {}, `Cited Domains (${domains.length})`),
+        el("span", { className: "tag cited" }, `${citedDomainCount} cited`),
+        el("span", { className: "tag fetched" }, `${domains.length - citedDomainCount} fetched only`)),
+      el("div", { className: "muted small", style: "margin-top:-2px" },
+        "Every site this answer drew on, cited ones first. Click a domain to see its URLs."));
+    const list = el("div", { className: "domain-rank-list" });
+    domains.forEach((d, i) => {
+      const row = el("div", { className: `domain-rank${d.cited ? " is-cited" : ""}` });
+      const head = el("button", { className: "domain-rank-head", type: "button", "aria-expanded": "false" });
+      const bar = el("span", { className: "domain-rank-bar", title: `${d.cited} cited · ${d.total - d.cited} not cited` });
+      bar.append(
+        el("span", { className: "domain-rank-bar-cited", style: `width:${(d.cited / maxTotal) * 100}%` }),
+        el("span", { className: "domain-rank-bar-rest", style: `width:${((d.total - d.cited) / maxTotal) * 100}%` }));
+      const counts = [];
+      if (d.cited) counts.push(`${d.cited} cited`);
+      if (d.fetched) counts.push(`${d.fetched} fetched`);
+      if (d.other) counts.push(`${d.other} other`);
+      head.append(
+        el("span", { className: "domain-rank-pos" }, String(i + 1)),
+        el("span", { className: "domain-rank-name" }, d.domain),
+        el("span", { className: d.news ? "tag news" : "domain-rank-nonews" }, d.news ? "news" : ""),
+        bar,
+        el("span", { className: "domain-rank-counts" }, counts.join(" · ")),
+        el("span", { className: "domain-rank-chev", "aria-hidden": "true" }, "▸"));
+      const body = el("ul", { className: "domain-rank-urls", hidden: true });
+      d.sourceIdxs.forEach((idx) => {
+        const s = rec.sources[idx];
+        body.append(el("li", {},
+          el("span", { className: `tag ${s.outcome}` }, s.outcome),
+          el("a", { href: s.url, target: "_blank", rel: "noreferrer", title: s.url }, s.title || s.url)));
+      });
+      const more = el("button", { className: "linkbtn small", type: "button" }, `More on ${d.domain} →`);
+      more.onclick = () => openDomainModal(d.domain, rec);
+      body.append(el("li", { className: "domain-rank-more" }, more));
+      head.onclick = () => {
+        const open = body.hidden;
+        body.hidden = !open;
+        row.classList.toggle("open", open);
+        head.setAttribute("aria-expanded", String(open));
+      };
+      row.append(head, body);
+      list.append(row);
     });
-
-    const topDomHead = el("div", { className: "card-header" }, el("h3", {}, `Top Domains (${domCount.size})`));
-    const topDomCard = el("div", { className: "card", id: "card-top-domains" }, topDomHead);
-    const dt = el("table", {});
-    dt.append(el("tr", {}, el("th", {}, "Domain"), el("th", {}, "Type"), el("th", { className: "num" }, "URLs")));
-    
-    [...domCount.entries()].sort((a, b) => b[1] - a[1]).forEach(([d, count]) => {
-      const tagGroup = el("div", { className: "type-tag-group" });
-      [...(domTypes.get(d) || [])].forEach((typ) =>
-        tagGroup.append(el("span", { className: `tag ${typ === "news" ? "news" : typ}` }, typ))
-      );
-      const tagCell = el("td", {}, tagGroup);
-      
-      const domLink = el("button", { className: "linkbtn td-domain-btn", title: `Click for detailed URLs under ${d}` }, d);
-      domLink.onclick = () => openDomainModal(d, rec);
-
-      dt.append(el("tr", {}, el("td", { className: "td-domain" }, domLink), tagCell, el("td", { className: "num" }, String(count))));
-    });
-    topDomCard.append(dt);
-    mainCol.append(topDomCard);
+    cd.append(list);
+    mainCol.append(cd);
   }
 
   // 3. Top URLs Card (Merged list with Rank, Snippets & Char Counts)
@@ -2071,7 +2137,6 @@ function renderAnalyze() {
     // toggle keeps the jump-to-passage links one click away rather than
     // deleting them.
     let showSnippets = false;
-    let showAllSources = false;
     const snipToggle = el("button", { className: "linkbtn", type: "button" }, "Show snippets");
     const srcHead = el("div", { className: "card-header" },
       el("h3", {}, `Sources (${rec.sources.length})`),
@@ -2094,12 +2159,10 @@ function renderAnalyze() {
 
       const order = { cited: 0, fetched: 1, mentioned: 2, unknown: 3 };
       const ranked = [...filtered].sort((a, b) => (order[a.outcome] ?? 9) - (order[b.outcome] ?? 9));
-      // Cited sources sort first, so the first ten are the ones that actually
-      // shaped the answer — the long fetched-but-unused tail is one click away
-      // instead of running the card to several screens.
-      const SRC_PREVIEW = 10;
-      const visible = showAllSources ? ranked : ranked.slice(0, SRC_PREVIEW);
-      visible.forEach((s, idx) => {
+      // Every source is listed. This used to stop at ten behind a "Show all"
+      // link, which was reported as the sources being cut off; cited sources
+      // still sort first, so the ones that shaped the answer lead.
+      ranked.forEach((s, idx) => {
         const li = el("li", { className: "src-item" });
         const header = el("div", { className: "src-header" });
         
@@ -2185,16 +2248,6 @@ function renderAnalyze() {
         ul.append(li);
       });
 
-      if (ranked.length > visible.length) {
-        const more = el("button", { className: "linkbtn src-more", type: "button" },
-          `Show all ${ranked.length} sources`);
-        more.onclick = () => { showAllSources = true; renderSrcList(); };
-        ul.append(el("li", { className: "src-more-row" }, more));
-      } else if (showAllSources && ranked.length > 10) {
-        const less = el("button", { className: "linkbtn src-more", type: "button" }, "Show fewer");
-        less.onclick = () => { showAllSources = false; renderSrcList(); };
-        ul.append(el("li", { className: "src-more-row" }, less));
-      }
     };
     snipToggle.onclick = () => {
       showSnippets = !showSnippets;
@@ -2298,12 +2351,16 @@ function renderAnalyze() {
     allProducts.forEach((p) => {
       const isHero = !!p.isHero;
       const li = el("li", {
-        className: `product-item-card ${isHero ? "hero-product-card" : ""}`,
+        className: `product-item-card ${isHero ? "hero-product-card" : ""}${p.image ? " has-thumb" : ""}`,
         style: `cursor: pointer; transition: all 0.2s ease; ${isHero ? "border: 1.5px solid #f59e0b; background: rgba(254,243,199,0.4);" : ""}`,
         title: "Click for merchant details, rating sources, and citation breakdown",
         onclick: () => openProductModal(p, rec)
       });
 
+      // The product's own picture, which ChatGPT shows on every product
+      // card. It was only ever drawn in the separate Images grid, which is
+      // where it was reported missing; next to the name is where it reads.
+      if (p.image) li.append(capturedImage(p.image, p.name, "product-thumb"));
       const head = el("div", { className: "item-head" });
       const nameSpan = el("span", { className: "item-name", style: "font-weight: 600;" });
       if (isHero) {
@@ -2362,8 +2419,8 @@ function renderAnalyze() {
     const grid = el("div", { className: "imggrid" });
     rec.images.forEach((im) => {
       const fig = el("a", { href: im.url, target: "_blank", rel: "noreferrer", className: "imgcell" });
-      fig.append(el("img", { src: im.url, alt: im.title || "", loading: "lazy" }));
-      if (im.title) fig.append(el("div", { className: "imgcap" }, im.title));
+      fig.append(capturedImage(im.url, im.title, "imgcell-frame"));
+      if (im.title) fig.append(el("div", { className: "imgcap", title: im.title }, im.title));
       grid.append(fig);
     });
     ic.append(grid);
@@ -2418,12 +2475,34 @@ function renderAnalyze() {
     mainCol.append(grdCard);
   }
 
+  // Reading order inside the main column. Requested: what was cited (domains,
+  // searches, sources) first, then what was shown (products, images), then
+  // the deeper traces. Cards are built in whatever order their data needs, so
+  // they are placed here by id; a card not in this list keeps its place at
+  // the end.
+  const MAIN_ORDER = [
+    "card-cited-domains", "card-fanout", "card-sources", "card-products", "card-images",
+    "card-places", "card-entities", "card-social-citations", "card-authority-split",
+    "card-thinking", "card-reasoning", "card-grounding-integrity",
+  ];
+  const pos = (n) => { const i = MAIN_ORDER.indexOf(n.id); return i === -1 ? MAIN_ORDER.length : i; };
+  [...mainCol.children].sort((a, b) => pos(a) - pos(b)).forEach((n) => mainCol.append(n));
+
   // Append columns to layout grid
   // Order matters for the narrow popup (a plain flex column); the tab layout
   // overrides placement explicitly with grid-area rules.
   grid.append(sidebar);
   if (brandCard) grid.append(brandCard);
   grid.append(mainCol);
+  // The Brand & Domain Citation Matrix closes the page in both layouts.
+  // Requested: it is inferred from search snippets, so it is the least
+  // reliable read on the page, and it used to sit second, right under Brand
+  // Mentions, pushing the cited domains and sources out of view. It is its own
+  // grid item so the popup can put it after the reference cards too.
+  if (funnelCard) {
+    funnelCard.classList.add("analyze-bottom-slot");
+    grid.append(funnelCard);
+  }
   root.append(grid);
   } catch (err) {
     console.error("renderAnalyze failed:", err);

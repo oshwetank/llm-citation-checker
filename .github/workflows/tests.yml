@@ -124,6 +124,7 @@ jobs:
                    test/perplexity-ws-contamination.test.mjs \
                    test/glossary.test.mjs test/grounding-score.test.mjs test/multi-engine.test.mjs \
                    test/pacing.test.mjs test/retention.test.mjs \
+                   test/cited-domains.test.mjs test/image-url.test.mjs \
                    test/sources.test.mjs test/text-sanitize.test.mjs test/xlsxlite.test.mjs; do
             echo "── $f"
             if ! node "$f"; then

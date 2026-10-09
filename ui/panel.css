@@ -718,6 +718,9 @@ body.tab .app-content {
    BEFORE Brand Mentions, so the popup opened on metadata. */
 .analyze-grid > .analyze-brand-slot { order: 2; }
 .analyze-grid > .analyze-main { order: 3; }
+/* 5  Brand & Domain Citation Matrix — snippet-based estimate, the last thing
+      on the page in both layouts (after the reference cards here). */
+.analyze-grid > .analyze-bottom-slot { order: 5; }
 
 /* Below the two-column breakpoint (the popup, and a narrow tab window) the
    sidebar has no box of its own, so its four cards become flex items of the
@@ -739,7 +742,7 @@ body.tab .app-content {
        column, the rest of the main column sits beneath it, and the sidebar
        spans both rows down the left. */
     grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
-    grid-template-rows: auto auto;
+    grid-template-rows: auto auto auto;
     gap: 24px;
     align-items: start;
   }
@@ -758,7 +761,12 @@ body.tab .app-content {
   }
   body.tab .analyze-grid > .analyze-sidebar {
     grid-column: 1;
-    grid-row: 1 / span 2;
+    grid-row: 1 / span 3;
+  }
+  /* The citation matrix closes the wide column. */
+  body.tab .analyze-grid > .analyze-bottom-slot {
+    grid-column: 2;
+    grid-row: 3;
   }
 
   /* Deliberately NOT columns any more. The rows are one line each now, and
@@ -1280,31 +1288,85 @@ select.filter {
   max-width: 220px;
 }
 
-/* Image Grid */
+/* Image Grid. Tiles were 90px wide and 75px tall, small enough that a
+   product photo read as a coloured chip; the full-screen view now gets real
+   thumbnails, and the popup two to a row. */
 .imggrid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
   margin-top: 8px;
 }
+body.tab .imggrid { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
 
 .imgcell {
   text-decoration: none;
   color: var(--fg-primary);
+  min-width: 0;
 }
 
-.imgcell img {
-  width: 100%;
-  height: 75px;
-  object-fit: contain;
-  background: var(--bg-subtle);
+.imgcell-frame {
+  height: 140px;
+  background: #fff;
   border: 1px solid var(--border);
   border-radius: 8px;
   transition: border-color 0.15s ease;
 }
-.imgcell img:hover {
-  border-color: var(--accent);
+body.tab .imgcell-frame { height: 170px; }
+.imgcell:hover .imgcell-frame { border-color: var(--accent); }
+
+/* capturedImage(): the picture, or a tile that names what is missing. */
+.cap-img-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
 }
+.cap-img-wrap { position: relative; }
+.cap-img-wrap img {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 6px;
+  box-sizing: border-box;
+}
+.cap-img-wrap.cap-img-loaded img { opacity: 1; }
+.cap-img-wrap.cap-img-loaded .cap-img-missing-label { visibility: hidden; }
+.cap-img-wrap.cap-img-missing {
+  background: var(--bg-subtle);
+  border-style: dashed;
+}
+.cap-img-missing-label {
+  font-size: 10.5px;
+  color: var(--fg-muted);
+  text-align: center;
+  padding: 6px;
+  line-height: 1.3;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+/* Product cards carry their own thumbnail. */
+.product-item-card.has-thumb {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  column-gap: 12px;
+  align-items: center;
+}
+.product-item-card.has-thumb > .product-thumb { grid-row: 1 / span 2; }
+.product-thumb {
+  width: 64px;
+  height: 64px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.product-thumb img { padding: 4px; }
 
 .imgcap {
   font-size: 10px;
@@ -1966,24 +2028,6 @@ html {
   border-radius: 3px;
   margin-left: 6px;
   font-weight: 600;
-}
-
-/* Top Domains Table — auto layout so tags never clip */
-#card-top-domains table {
-  table-layout: auto;
-  width: 100%;
-  border-collapse: collapse;
-}
-
-#card-top-domains th,
-#card-top-domains td {
-  border-bottom: 1px solid var(--border);
-  padding: 8px 10px;
-  vertical-align: middle;
-}
-
-#card-top-domains tr:last-child td {
-  border-bottom: none;
 }
 
 /* Domain column: truncate long names */
@@ -4402,4 +4446,48 @@ body.popup .pp-chip { font-size: 9.5px; }
   background: var(--red-bg);
   color: var(--red-fg);
   border: 1px solid var(--red-border);
+}
+
+/* Cited Domains (Analyze) — one row per domain, cited first. The bar splits
+   cited URLs (green) from fetched-but-unused ones (grey) on a shared scale. */
+.domain-rank-list { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.domain-rank { border: 1px solid var(--border); border-radius: 8px; background: var(--bg-subtle); }
+.domain-rank.is-cited { border-color: var(--green-border); }
+.domain-rank-head {
+  all: unset;
+  box-sizing: border-box;
+  width: 100%;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto minmax(60px, 140px) auto 12px;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.domain-rank-head:focus-visible { outline: 2px solid var(--accent); border-radius: 8px; }
+.domain-rank-pos { font-size: 11px; font-weight: 700; color: var(--fg-muted); text-align: center; }
+.domain-rank.is-cited .domain-rank-pos { color: var(--green-fg); }
+.domain-rank-name { font-weight: 600; color: var(--fg-primary); overflow-wrap: anywhere; }
+.domain-rank-bar { display: flex; height: 6px; border-radius: 3px; background: transparent; overflow: hidden; }
+.domain-rank-bar-cited { background: #10b981; }
+.domain-rank-bar-rest { background: rgba(148, 163, 184, 0.55); }
+.domain-rank-counts { font-size: 11px; color: var(--fg-secondary); white-space: nowrap; }
+.domain-rank-chev { font-size: 10px; color: var(--fg-muted); transition: transform 0.15s ease; }
+.domain-rank.open .domain-rank-chev { transform: rotate(90deg); }
+.domain-rank-urls { list-style: none; margin: 0; padding: 0 10px 8px 40px; display: flex; flex-direction: column; gap: 5px; }
+.domain-rank-urls[hidden] { display: none; }
+.domain-rank-urls li { display: flex; gap: 6px; align-items: baseline; font-size: 12px; line-height: 1.4; }
+.domain-rank-urls a { color: var(--accent); text-decoration: none; overflow-wrap: anywhere; }
+.domain-rank-urls a:hover { text-decoration: underline; }
+.domain-rank-urls .domain-rank-more { margin-top: 2px; }
+/* Narrow popup: counts drop under the name rather than squeezing the bar. */
+@media (max-width: 599px) {
+  .domain-rank-head { grid-template-columns: 22px minmax(0, 1fr) minmax(48px, 90px) 12px; row-gap: 2px; }
+  .domain-rank-head > .tag.news, .domain-rank-nonews { display: none; }
+  .domain-rank-pos { grid-column: 1; grid-row: 1; }
+  .domain-rank-name { grid-column: 2; grid-row: 1; }
+  .domain-rank-bar { grid-column: 3; grid-row: 1; }
+  .domain-rank-counts { grid-column: 2 / span 2; grid-row: 2; }
+  .domain-rank-chev { grid-column: 4; grid-row: 1; }
 }

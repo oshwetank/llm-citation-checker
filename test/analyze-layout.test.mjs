@@ -49,7 +49,8 @@ try {
 const PROBE = () => {
   const ids = [
     "card-general", "card-brand-mentions", "card-omitted-analysis", "card-fanout",
-    "card-top-domains", "card-sources", "card-technical", "card-global-stats", "card-summary",
+    "card-cited-domains", "card-sources", "card-technical", "card-global-stats", "card-summary",
+    "card-products", "card-images", "card-entities", "card-grounding-integrity",
   ];
   const out = [];
   for (const id of ids) {
@@ -102,6 +103,75 @@ async function orderAt(context, extId, width, height) {
 
 const idx = (order, id) => order.findIndex((o) => o.id === id);
 
+/*
+ * The redesign asked for: cited domains straight after Brand Mentions, every
+ * source listed (it used to stop at ten), the snippet-based citation matrix
+ * as the very last card, and no image frame left empty. Image hosts are
+ * blocked for this run (see the route below), so every frame must fall back
+ * to naming what it was.
+ */
+function checkRedesign(fullOrder, shape, where) {
+  // Full screen has two columns, and the sidebar's cards interleave with the
+  // wide column's by height. Reading order is per column, so compare within
+  // the column Brand Mentions heads; the popup is one column already.
+  const brandLeft = fullOrder.find((o) => o.id === "card-brand-mentions")?.left;
+  const order = fullOrder.filter((o) => o.left === brandLeft);
+  const brand = idx(order, "card-brand-mentions");
+  const domains = idx(order, "card-cited-domains");
+  const matrix = idx(order, "card-omitted-analysis");
+  check(`${where}: Cited Domains is present`, domains !== -1);
+  check(`${where}: Cited Domains comes right after Brand Mentions`,
+    domains === brand + 1, order.map((o) => o.id).join(" -> "));
+  if (matrix !== -1) {
+    check(`${where}: the citation matrix is the last card on the page`,
+      matrix === order.length - 1, order.map((o) => o.id).join(" -> "));
+  }
+  check(`${where}: Top Domains table is gone (replaced by Cited Domains)`, !shape.topDomains);
+  check(`${where}: cited domains are ranked first`, shape.citedFirst, shape.domainOrder.join(", "));
+  check(`${where}: every source is listed, no "show all" cut-off`,
+    shape.sourceRows === shape.sourceCount && !shape.showAll,
+    `${shape.sourceRows} of ${shape.sourceCount} listed`);
+  check(`${where}: a domain row opens to its URLs`, shape.expandedUrls > 0, `${shape.expandedUrls} URLs`);
+  if (shape.frames.length) {
+    check(`${where}: no image frame is left empty`,
+      shape.frames.every((f) => f.loaded || f.label), JSON.stringify(shape.frames.slice(0, 3)));
+  }
+}
+
+async function redesignShape(context, extId, width, height) {
+  const page = await context.newPage();
+  await page.setViewportSize({ width, height });
+  await page.goto(`chrome-extension://${extId}/ui/panel.html${width > 640 ? "?mode=tab" : ""}`);
+  await page.waitForTimeout(1200);
+  // Lazy images below the fold would never start loading in a headless run.
+  await page.evaluate(() => document.querySelectorAll("#analyze img").forEach((i) => { i.loading = "eager"; }));
+  await page.waitForTimeout(1500);
+  const out = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll("#card-cited-domains .domain-rank")];
+    const firstHead = document.querySelector("#card-cited-domains .domain-rank-head");
+    firstHead && firstHead.click();
+    const h3 = document.querySelector("#card-sources h3");
+    return {
+      topDomains: !!document.getElementById("card-top-domains"),
+      domainOrder: rows.map((r) => (r.classList.contains("is-cited") ? "cited:" : "") +
+        r.querySelector(".domain-rank-name").textContent),
+      citedFirst: rows.findIndex((r) => !r.classList.contains("is-cited")) === -1 ||
+        !rows.slice(rows.findIndex((r) => !r.classList.contains("is-cited"))).some((r) => r.classList.contains("is-cited")),
+      expandedUrls: document.querySelectorAll("#card-cited-domains .domain-rank.open .domain-rank-urls a").length,
+      sourceCount: h3 ? Number((h3.textContent.match(/\((\d+)\)/) || [])[1]) : 0,
+      sourceRows: document.querySelectorAll("#card-sources .src-item").length,
+      showAll: !!document.querySelector("#card-sources .src-more"),
+      frames: [...document.querySelectorAll("#analyze .cap-img-wrap")].map((w) => ({
+        loaded: w.classList.contains("cap-img-loaded"),
+        label: getComputedStyle(w.querySelector(".cap-img-missing-label")).visibility === "visible" &&
+          w.querySelector(".cap-img-missing-label").textContent.trim().length > 0,
+      })),
+    };
+  });
+  await page.close();
+  return out;
+}
+
 /** Shape of the Brand Mentions card as actually rendered. */
 async function brandCardShape(context, extId, width, height) {
   const page = await context.newPage();
@@ -142,6 +212,9 @@ try {
   let sw = context.serviceWorkers()[0];
   if (!sw) sw = await context.waitForEvent("serviceworker", { timeout: 20000 });
   const extId = sw.url().split("/")[2];
+  // Image hosts are unreachable here anyway; failing them outright makes the
+  // empty-frame check deterministic instead of depending on a timeout.
+  await context.route(/images\.openai\.com|gstatic\.com/, (r) => r.abort());
   await seedFixtures(context, extId);
 
   console.log("\nPOPUP (540px) — result first, reference last");
@@ -184,6 +257,7 @@ try {
     if (tech !== -1) {
       check("Technical Information is pushed below Brand Mentions", tech > brand, `tech@${tech} brand@${brand}`);
     }
+    checkRedesign(order, await redesignShape(context, extId, 540, 900), "popup");
   }
 
   console.log("\nFULL SCREEN (1280px) — Brand Mentions heads the wide column");
@@ -196,6 +270,7 @@ try {
     if (funnel !== -1) {
       check("Search Funnel still comes after Brand Mentions", funnel > brand, `funnel@${funnel} brand@${brand}`);
     }
+    checkRedesign(order, await redesignShape(context, extId, 1280, 900), "full screen");
   }
 } finally {
   await context.close();
