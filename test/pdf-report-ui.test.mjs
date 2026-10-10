@@ -163,7 +163,15 @@ try {
   console.log(`\nseeded: ${seeded.answers} answers to ${seeded.prompts} prompts (and 40 never reached), two runs; own brand "${seeded.own}"`);
 
   const external = [];
-  context.on("request", (r) => { if (!/^(chrome-extension|data|blob):/.test(r.url())) external.push(r.url()); });
+  // Requests made by the report pages themselves. Since 0.58.0 the Analyze
+  // tab the answer report is opened from loads the engine's product images
+  // (the popup already did), which is that page's doing, not the report's.
+  context.on("request", (r) => {
+    if (/^(chrome-extension|data|blob):/.test(r.url())) return;
+    let from = "";
+    try { from = r.frame().page().url(); } catch (_) {}
+    if (/\/ui\/report\.html/.test(from)) external.push(r.url());
+  });
   const page = await context.newPage();
   const pageErrors = [];
   page.on("pageerror", (e) => pageErrors.push(String(e)));
