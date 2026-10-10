@@ -16,7 +16,7 @@
  * retail domains are public sites from the shared lists in brands.js.
  */
 import {
-  answerKind, searchesView, brandsView, pagesView, ownBrandFor, yourBrandView,
+  answerKind, searchesView, brandsView, pagesView, domainsView, ownBrandFor, yourBrandView,
   findPrevious, changesView, normPrompt,
 } from "../src/lib/analyzeView.js";
 import { siteKindOf, isBrandSite } from "../src/lib/siteKind.js";
@@ -129,6 +129,34 @@ console.log("\nPages cited: each cited page, its kind, and the brands it mention
   check("no independent cited page is silent about Zento here", v.silent.length === 0, v.silent.join());
   const silentCase = pagesView({ ...current, sources: [...current.sources, src("techradar.com", "Kovo Air tested")] }, { own });
   check("a cited review page that never mentions you is flagged", silentCase.silent.join() === "techradar.com", silentCase.silent.join());
+}
+
+console.log("\nSites it used: every domain and every page, cited sites first (0.58.0)");
+{
+  // Reported: the domains and URLs the answer cited had all but disappeared —
+  // five pages in a column, the rest folded into "+ 6 pages read but not
+  // cited". Every site must be listed, with every page the engine opened.
+  const withRepeat = { ...current, sources: [
+    ...current.sources,
+    src("gadgets360.com", "Lumi One long-term test", "fetched"),
+    src("gadgets360.com", "Lumi One review"), // the same page again: one row
+    src("gadgets360.com", "Lumi One review"),
+  ] };
+  const v = domainsView(withRepeat, { own });
+  const order = v.rows.map((r) => r.domain);
+  check("every site is listed, cited and read-only alike", order.length === 7, order.join());
+  check("cited sites first", v.rows.slice(0, v.citedSites).every((r) => r.cited > 0) && v.rows.slice(v.citedSites).every((r) => r.cited === 0), order.join());
+  check("a site cited once outranks one only read", order.indexOf("gadgets360.com") < order.indexOf("91mobiles.com"), order.join());
+  const g = v.rows.find((r) => r.domain === "gadgets360.com");
+  check("a site keeps every page it read there, the cited one first",
+    g.pages.length === 3 && g.pages[0].cited && g.pages[0].title === "Lumi One review", JSON.stringify(g.pages));
+  check("a page repeated in the capture is counted once", g.cited === 1 && g.read === 2, `${g.cited} cited · ${g.read} read`);
+  check("counts of cited and read-only sites", v.citedSites === 6 && v.readOnlySites === 1, `${v.citedSites}/${v.readOnlySites}`);
+  check("each site keeps its kind", v.rows.find((r) => r.domain === "zento.in").kind === "Your site");
+  const pv = pagesView(withRepeat, { own });
+  const nOf = (url) => v.rows.flatMap((r) => r.pages).find((p) => p.url === url && p.cited)?.n;
+  check("a cited page carries the same number Pages cited gives it", pv.rows.every((r) => nOf(r.url) === r.n), pv.rows.map((r) => `${r.n}:${nOf(r.url)}`).join(" "));
+  check("no sources, no rows", domainsView({ sources: [] }).rows.length === 0);
 }
 
 console.log("\nYour brand: who it is, and four numbers");

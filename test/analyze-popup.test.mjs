@@ -171,25 +171,35 @@ try {
     check("the popup scrolls rather than shrinking boxes", r.scrolls);
   }
 
-  console.log("\nMore information: every brand, every cited page, what changed");
+  console.log("\nMore information: every brand, every site and page, what changed");
   {
     const r = await page.evaluate(() => {
       const head = (id) => document.querySelector(`#${id} .ap-h`)?.textContent || "";
       return {
         brandHead: head("ap-brands"),
         brandRows: document.querySelectorAll("#ap-brands .ap-tr:not(.ap-th):not(.shown-only):not(.dropped)").length,
-        pagesHead: head("ap-pages"),
-        pageRows: document.querySelectorAll("#ap-pages .ap-page").length,
-        legend: document.querySelectorAll("#ap-pages .ap-legend span").length,
+        sitesHead: head("ap-sites"),
+        siteRows: document.querySelectorAll("#ap-sites .site-row").length,
+        citedSites: document.querySelectorAll("#ap-sites .site-row.is-cited").length,
+        pages: document.querySelectorAll("#ap-sites .site-pages li").length,
+        legend: document.querySelectorAll("#ap-sites .ap-legend span").length,
+        backedByColumn: [...document.querySelectorAll("#ap-brands .ap-th span")].some((x) => /Backed by/.test(x.textContent)),
+        backingRows: document.querySelectorAll("#ap-backing .ap-backing-row").length,
         changes: document.querySelectorAll("#ap-changes li").length,
         facts: document.querySelector(".ap-facts")?.textContent || "",
       };
     });
     const nBrands = Number((r.brandHead.match(/·\s*(\d+)/) || [])[1]);
     check("the brand list has every named brand its heading counts", nBrands > 0 && r.brandRows === nBrands, `${r.brandRows} rows, heading "${r.brandHead}"`);
-    const nCited = Number((r.pagesHead.match(/·\s*(\d+) of/) || [])[1]);
-    check("every cited page is listed", nCited > 0 && r.pageRows === nCited, `${r.pageRows} rows, heading "${r.pagesHead}"`);
+    // 0.58.0: "Pages cited" listed cited domains and put the rest on one line.
+    // Now every site, cited first, each holding every page read there.
+    const nSites = Number((r.sitesHead.match(/·\s*(\d+)/) || [])[1]);
+    check("every site is listed, as the heading counts", nSites > 0 && r.siteRows === nSites, `${r.siteRows} rows, heading "${r.sitesHead}"`);
+    check("including sites read but not cited", r.siteRows > r.citedSites && r.citedSites > 0, `${r.citedSites} of ${r.siteRows} cited`);
+    check("each site holds its pages", r.pages >= r.siteRows, `${r.pages} pages`);
     check("cited pages are broken down by kind of site", r.legend > 0);
+    check("the brand table no longer has a “Backed by” column", !r.backedByColumn);
+    check("what backs each brand has its own section", r.backingRows > 0, r.backingRows);
     check("what changed since the previous answer is shown", r.changes > 0, r.changes);
     check("the answer's facts line is there", /Model/.test(r.facts), r.facts);
   }

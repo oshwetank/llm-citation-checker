@@ -108,7 +108,10 @@ try {
     check("the popup uses its own Analyze layout", order.length > 0);
     check("searches come first", at("ap-searches") === 0, order.join(" -> "));
     check("brands come after the searches", at("ap-brands") > at("ap-searches"), order.join(" -> "));
-    if (at("ap-pages") !== -1) check("pages cited come after the brands", at("ap-pages") > at("ap-brands"), order.join(" -> "));
+    if (at("ap-sites") !== -1) check("the sites it used come after the brands", at("ap-sites") > at("ap-brands"), order.join(" -> "));
+    // 0.58.0: "What backs each brand" is an inference from titles and
+    // snippets; requested at the very bottom of the popup.
+    if (at("ap-backing") !== -1) check("what backs each brand is the last section", at("ap-backing") === order.length - 1, order.join(" -> "));
     if (at("ap-products") !== -1) check("product cards lead the analysis, before brands", at("ap-products") < at("ap-brands"), order.join(" -> "));
   }
 
@@ -129,8 +132,11 @@ try {
     console.log("  painted order: " + order.join(" -> "));
     const at = (id) => order.indexOf(id);
     check("the at-a-glance card comes first", at("at-glance") === 0, order.join(" -> "));
-    check("what backs each brand is there, after it", at("at-backing") > 0, order.join(" -> "));
-    check("Details comes last", at("at-details") === order.length - 1, order.join(" -> "));
+    // 0.58.0, as requested: every site it used follows the glance card, and
+    // what backs each brand moves to the very bottom, after Details.
+    check("the sites it used come right after it", at("at-sites") === 1, order.join(" -> "));
+    check("what backs each brand is the last section", at("at-backing") === order.length - 1, order.join(" -> "));
+    check("Details comes just before it", at("at-details") === order.length - 2, order.join(" -> "));
     const matrixFirst = await page.evaluate(() => {
       const m = document.getElementById("card-omitted-analysis");
       const b = document.getElementById("at-glance");

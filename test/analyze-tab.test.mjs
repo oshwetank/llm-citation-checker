@@ -67,6 +67,13 @@ try {
   let sw = context.serviceWorkers()[0];
   if (!sw) sw = await context.waitForEvent("serviceworker", { timeout: 20000 });
   const extId = sw.url().split("/")[2];
+  // The engines' image hosts, answered with a small stand-in picture so the
+  // product and image tiles can be checked for an actual loaded image
+  // (0.58.0). gstatic is where an images.openai.com thumbnail's original lives.
+  await context.route(/images\.openai\.com|gstatic\.com/, (r) => r.fulfill({
+    status: 200, contentType: "image/svg+xml",
+    body: '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="#89a"/></svg>',
+  }));
 
   // Seed, all with made-up prompts (a fixture's prompt comes from the request
   // body, as on the engines' own pages):
@@ -165,8 +172,75 @@ try {
     check("it lists the brands, the cited pages and the searches", r.brands === 5 && r.pages === 2 && r.searches > 0, `${r.brands} brands, ${r.pages} pages, ${r.searches} searches`);
     check("every search is under how the answer was built", r.built === r.searches, `${r.built} vs ${r.searches}`);
     check("no search is cut off there", r.cut.length === 0, r.cut.join(" | "));
-    check("then products, what backs each brand, how it was built, Details",
-      ["at-products", "at-backing", "at-built", "at-details"].every((id) => r.order.includes(id)) && r.order.indexOf("at-products") < r.order.indexOf("at-backing") && r.order.indexOf("at-backing") < r.order.indexOf("at-built") && r.order.at(-1) === "at-details", r.order.join(" > "));
+    // 0.58.0, as requested: every site the answer used comes right after the
+    // glance card, and "What backs each brand" — an inference from titles and
+    // snippets — moves from the middle of the page to the very end.
+    check("then the sites it used, right after the glance card", r.order[1] === "at-sites", r.order.join(" > "));
+    check("then products, how it was built, Details, and what backs each brand last",
+      ["at-products", "at-built", "at-details", "at-backing"].every((id) => r.order.includes(id)) && r.order.indexOf("at-products") < r.order.indexOf("at-built") && r.order.indexOf("at-built") < r.order.indexOf("at-details") && r.order.at(-1) === "at-backing", r.order.join(" > "));
+  }
+
+  console.log("\nNothing in the glance card is cut off (0.58.0)");
+  {
+    const r = await page.evaluate(() => {
+      const g = document.getElementById("at-glance");
+      const qs = [...g.querySelectorAll(".at-glance-qt")];
+      return {
+        more: [...g.querySelectorAll(".at-glance-more")].map((x) => x.textContent),
+        cut: qs.filter((x) => x.scrollWidth > x.clientWidth + 1 || getComputedStyle(x).textOverflow === "ellipsis").map((x) => x.textContent),
+        searches: qs.length,
+      };
+    });
+    check("no “+ N more” in place of brands, pages or searches", r.more.length === 0, r.more.join(" | "));
+    check("no search is ellipsised", r.searches > 0 && r.cut.length === 0, r.cut.join(" | "));
+  }
+
+  console.log("\nSites it used: every domain, cited first, each with its pages (0.58.0)");
+  {
+    const r = await page.evaluate(() => {
+      const sec = document.getElementById("at-sites");
+      const rows = sec ? [...sec.querySelectorAll(".site-row")] : [];
+      const cited = rows.map((x) => x.classList.contains("is-cited"));
+      return {
+        rows: rows.length,
+        citedFirst: cited.indexOf(false) === -1 || !cited.slice(cited.indexOf(false)).includes(true),
+        citedOpen: rows.filter((x) => x.classList.contains("is-cited")).every((x) => x.open),
+        readClosed: rows.filter((x) => !x.classList.contains("is-cited")).every((x) => !x.open),
+        citedRows: cited.filter(Boolean).length,
+        pages: sec ? sec.querySelectorAll(".site-pages li").length : 0,
+        links: sec ? [...sec.querySelectorAll(".site-pages a")].filter((a) => /^https?:/.test(a.href)).length : 0,
+        glancePages: document.querySelectorAll("#at-glance .at-glance-page").length,
+      };
+    });
+    check("a row per site, more than the cited ones alone", r.rows > r.citedRows && r.citedRows > 0, `${r.rows} sites, ${r.citedRows} cited`);
+    check("cited sites first", r.citedFirst);
+    check("cited sites open on their pages, read-only ones closed", r.citedOpen && r.readClosed);
+    check("every page read is listed, each linked", r.pages > r.glancePages && r.links === r.pages, `${r.pages} pages, ${r.links} links`);
+    await page.evaluate(() => [...document.querySelectorAll("#at-sites .site-row:not(.is-cited) summary")][0]?.click());
+    await page.waitForTimeout(200);
+    const opened = await page.evaluate(() => {
+      const row = document.querySelector("#at-sites .site-row:not(.is-cited)");
+      return !!row && row.open && !row.querySelector(".site-pages").hidden && row.querySelectorAll(".site-pages li").length > 0;
+    });
+    check("a read-only site opens to its pages", opened);
+  }
+
+  console.log("\nPictures: product tiles and the Images section show the image (0.58.0)");
+  {
+    await page.evaluate(() => document.querySelectorAll("#analyze img").forEach((i) => { i.loading = "eager"; }));
+    await page.waitForTimeout(1200);
+    const r = await page.evaluate(() => ({
+      thumbs: document.querySelectorAll("#at-products .at-thumb").length,
+      loaded: document.querySelectorAll("#at-products .at-thumb.img-loaded img").length,
+      washed: [...document.querySelectorAll("#at-products .at-thumb, .at-ans-thumb, .at-img-thumb")].filter((x) => /gradient/.test(getComputedStyle(x).backgroundImage)).length,
+      answerCards: document.querySelectorAll("#at-answer .at-ans-thumb.img-loaded img").length,
+      images: !!document.getElementById("at-images"),
+      imageTiles: document.querySelectorAll("#at-images .at-img-thumb.img-loaded img").length,
+    }));
+    check("every product row shows its picture", r.thumbs > 0 && r.loaded === r.thumbs, `${r.loaded} of ${r.thumbs}`);
+    check("so do the answer panel's product cards", r.answerCards === r.thumbs, `${r.answerCards}`);
+    check("no tile is a colour wash", r.washed === 0, `${r.washed} with a gradient`);
+    check("a shopping answer's images show in the full tab", r.images && r.imageTiles > 0, `${r.imageTiles} images`);
   }
 
   console.log("\nThe canvas's spacing: narrow gutters, a wide analysis column");

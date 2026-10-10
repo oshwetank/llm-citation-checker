@@ -219,6 +219,55 @@ export function pagesView(rec, { own, knownBrands } = {}) {
   return { rows, kinds, readOnly, silent, sourceCount: sources.length };
 }
 
+/* ---------- sites it used ---------- */
+
+/**
+ * Every site the answer read, one row per domain, with its pages.
+ *
+ * Reported (0.58.0): "we have almost removed the domains and the URLs which
+ * were getting cited … the visibility around them was an important section".
+ * The at-a-glance column showed five cited pages and folded everything else
+ * into "+ 6 pages read but not cited"; the popup listed cited domains and put
+ * the rest on one line. This is the full picture: cited sites first, then
+ * sites read but not cited, each with every page the engine opened there.
+ *
+ * Ranked by cited pages, then pages read, then name: a site cited once
+ * outranks one read three times and never used. A cited page's `n` is its
+ * position among cited pages, the same numbering pagesView gives.
+ */
+export function domainsView(rec, { own, knownBrands } = {}) {
+  const sources = rec.sources || [];
+  const brands = cleanBrands(rec, knownBrands).map((b) => b.brand);
+  const ctx = { ownBrand: own ? own.name : "", ownUrl: own ? own.url : "", brands };
+  const byDomain = new Map();
+  const seen = new Set();
+  let citedN = 0;
+  sources.forEach((s) => {
+    const domain = normDomain(s.domain || s.url);
+    if (!domain) return;
+    const cited = s.outcome === "cited";
+    const key = `${s.url || `${s.domain}|${s.title}`}|${cited}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    let d = byDomain.get(domain);
+    if (!d) {
+      d = { domain, kind: siteKindOf(domain, ctx), cited: 0, read: 0, pages: [] };
+      byDomain.set(domain, d);
+    }
+    if (cited) d.cited++; else d.read++;
+    d.pages.push({ title: s.title || "", url: s.url || "", cited, n: cited ? ++citedN : null });
+  });
+  const rows = [...byDomain.values()];
+  rows.forEach((d) => d.pages.sort((a, b) => (b.cited - a.cited) || ((a.n || 0) - (b.n || 0))));
+  rows.sort((a, b) => b.cited - a.cited || (b.cited + b.read) - (a.cited + a.read) || a.domain.localeCompare(b.domain));
+  return {
+    rows,
+    citedSites: rows.filter((d) => d.cited).length,
+    readOnlySites: rows.filter((d) => !d.cited).length,
+    maxPages: Math.max(1, ...rows.map((d) => d.cited + d.read)),
+  };
+}
+
 /* ---------- your brand ---------- */
 
 /**

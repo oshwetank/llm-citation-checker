@@ -10,12 +10,29 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.57.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.58.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - Analyze shows every site the answer used. A new "Sites it used" section, right after the
+>   "at a glance" card (and in the popup after the brands), lists every domain, cited ones
+>   first, with a bar for cited and read-only pages; open a site for every page the engine
+>   read there, its full title and address, and the citation number it has in the answer.
+>   The "at a glance" card no longer cuts anything off: every brand, every cited page and
+>   every search, in full. "What backs each brand" is an inference from the pages' titles
+>   and search snippets, so it moves to the very bottom, in the full tab and the popup (the
+>   popup's "Backed by" column is gone).
+> - Product and image pictures show. The full tab drew every product as a coloured box with
+>   a cart icon and never showed the images at all on a shopping answer; the popup squeezed
+>   them into a strip of tiny tiles. Product cards (table, answer panel and popup) now carry
+>   the picture, the full tab always has its Images section, and the popup shows images
+>   three to a row. If ChatGPT's copy of an image won't load, the original it was made from
+>   is tried before the tile falls back to a plain icon.
+> - Text after a ChatGPT citation is no longer lost. Removing ChatGPT's citation markers ate
+>   the rest of the line after each one, so a model named after a citation never reached
+>   the brand's model list.
 > - One question, one answer. Grok sends the same reply several times (while it streams,
 >   when it finishes, and again when the page re-reads it), and each copy was stored as its
 >   own answer: one question showed up to six times, and the newest copy, which had no pages

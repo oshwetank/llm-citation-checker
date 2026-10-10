@@ -77,6 +77,37 @@ console.log("\nsanitizeText: degrades safely on empty/null input");
   check("empty string -> empty string", sanitizeText("") === "");
 }
 
+console.log("\nsanitizeText: ChatGPT cite markers — text after a complete marker survives");
+{
+  // ChatGPT wraps a citation as OPEN (U+E200) + "cite" + MID (U+E202) + body
+  // + CLOSE (U+E201), see cleanPassage in adapters/chatgpt.js. The old single
+  // pattern matched OPEN…MID, then took the CLOSE as a fresh opener and ate the
+  // rest of the line — so "Kovo Air" below vanished, and extractBrandModels()
+  // in ui/panel.js never saw any model named after a citation.
+  const OPEN = "", CLOSE = "", MID = "";
+  const one = `${OPEN}cite${MID}turn0search1${CLOSE}`;
+  const many = `${OPEN}cite${MID}turn0search1${MID}turn0news4${CLOSE}`;
+
+  const out = sanitizeText(`Zentra Lite is the best value ${one} for most people. Kovo Air is lighter.`);
+  check("text after a complete cite marker survives",
+    out === "Zentra Lite is the best value for most people. Kovo Air is lighter.", out);
+
+  const out2 = sanitizeText(`Pick Zentra Lite ${many} or Kovo Air ${one} if weight matters.`);
+  check("multi-ref markers and two markers on one line both strip cleanly",
+    out2 === "Pick Zentra Lite or Kovo Air if weight matters.", out2);
+
+  const out3 = sanitizeText(`Zentra Lite wins ${OPEN}cite${MID}turn0search1${MID}turn0search2`);
+  check("a truncated, unclosed marker at the end is still removed",
+    out3 === "Zentra Lite wins", out3);
+
+  const out4 = sanitizeText(`search1${CLOSE} and Kovo Air is lighter.`);
+  check("a lone CLOSE (slice began mid-marker) is dropped without eating the line",
+    out4 === "search1 and Kovo Air is lighter.", out4);
+
+  check("no private-use characters survive",
+    ![out, out2, out3, out4].some((s) => /[-]/.test(s)));
+}
+
 console.log("\ntrimLabel: a chip label must not run into the next table column");
 {
   // The reported case, from a real capture. sanitizeText() replaces markdown
