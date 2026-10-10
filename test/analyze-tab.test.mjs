@@ -187,12 +187,12 @@ try {
       const qs = [...g.querySelectorAll(".at-glance-qt")];
       return {
         more: [...g.querySelectorAll(".at-glance-more")].map((x) => x.textContent),
-        cut: qs.filter((x) => x.scrollWidth > x.clientWidth + 1 || getComputedStyle(x).textOverflow === "ellipsis").map((x) => x.textContent),
+        cut: [...qs, ...g.querySelectorAll(".at-glance-name, .at-glance-kind")].filter((x) => x.scrollWidth > x.clientWidth + 1 || getComputedStyle(x).textOverflow === "ellipsis").map((x) => x.textContent),
         searches: qs.length,
       };
     });
     check("no “+ N more” in place of brands, pages or searches", r.more.length === 0, r.more.join(" | "));
-    check("no search is ellipsised", r.searches > 0 && r.cut.length === 0, r.cut.join(" | "));
+    check("no search, brand or site is ellipsised", r.searches > 0 && r.cut.length === 0, r.cut.join(" | "));
   }
 
   console.log("\nSites it used: every domain, cited first, each with its pages (0.58.0)");

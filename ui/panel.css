@@ -5154,7 +5154,7 @@ i.dot.none { width: 4px; height: 4px; background: var(--border); }
 .at-glance-page[aria-pressed="true"] { background: var(--accent-subtle); }
 .at-glance-page:disabled { cursor: default; }
 .at-glance-brand:focus-visible, .at-glance-page:focus-visible, .at-backing-name:focus-visible, .at-prod-row:focus-visible, .at-seg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.at-glance-name { flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.at-glance-name { flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; line-height: 1.3; }
 .at-glance-brand.mine .at-glance-name { color: var(--accent); }
 .at-glance-n { font-size: 12px; color: var(--fg-secondary); font-variant-numeric: tabular-nums; }
 .at-rank {
@@ -5168,7 +5168,7 @@ i.dot.none { width: 4px; height: 4px; background: var(--border); }
   font-size: 11px; font-weight: 500; line-height: 19px; text-align: center;
 }
 .at-glance-page[aria-pressed="true"] .at-site-chip { background: var(--accent); color: var(--accent-fg); }
-.at-glance-kind { min-width: 0; font-size: 12px; color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.at-glance-kind { min-width: 0; font-size: 12px; color: var(--fg-muted); overflow-wrap: anywhere; }
 .at-glance-q { display: flex; align-items: baseline; gap: 6px; padding: 3px 0; font-size: 13px; min-width: 0; }
 /* Searches in full: one cut to "best phones under 40000 Indi…" was the
    reported truncation (0.58.0). */
