@@ -11,12 +11,38 @@ Everything is stored **locally in your browser**. The extension makes **no netwo
 of its own**, except, if you turn on **Read the cited pages**, to the pages an answer cited;
 nothing leaves your device.
 
-> **v0.62.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.62.1** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **No more phantom prompts** (0.62.1). Reopening a Grok conversation stored its answer again
+>   as a new one, under a prompt nobody asked ("Youbest good quality…": Grok's hidden "You"
+>   label glued to the question). The page reader now runs only after a prompt was sent from
+>   that page, and a copy of an answer joins its first capture however late it arrives. On
+>   updating, stored duplicates are folded in once, automatically.
+> - **What opening a ChatGPT card loads** (0.62.1). Open a product card on ChatGPT and
+>   "Products and where to buy" shows each store with its price, stock and delivery and
+>   ChatGPT's tag ("Best price"), why ChatGPT recommends it, what reviews say (theme,
+>   sentiment, source) and the pages behind that panel. If ChatGPT's lookup returned
+>   something else (a case instead of the earbuds) it says so. The follow-up form's choices
+>   are kept too. Card prices and stores that ChatGPT binds by name are filled in, and a card
+>   and its shopping listing are one product, not two.
+> - **"Where it came from" says only what was checked** (0.62.1). A brand no cited page names
+>   reads "Not in what the engine sent" until the pages themselves are read (with the button
+>   right there), then "No cited page names it". Each brand lists its products and the pages
+>   naming each; the Products table links to it.
+> - Junk brands are gone ("Up", "IP55", "AI", "Dual-driver", "Buy", "Choose", "Save").
+>   Perplexity's typeahead and notifications are no longer stored as captures; a page it
+>   opened directly is shown as opened, not as a search. "Searches it ran" always says
+>   whether any search was limited with site:.
+> - The list of sections folds to a strip of icons and opens on hover; pin it to keep it open.
+>   "Which page backs each part" is in Details.
+> - **Gemini** (0.62.1): Gemini no longer sends the request CitoSkeleton reads, so nothing is
+>   captured yet. With Debug capture on, what it sends now is kept apart, and About → "Payloads
+>   it couldn't read" saves it to send to the developer. The diagnostic report names each
+>   Gemini call.
 > - **Read the cited pages** (0.62.0, off until you turn it on in Settings). The extension
 >   opens the pages an answer cited, and only those, reads their text on this computer
 >   (Mozilla Readability, with a background tab for pages that need one) and checks which
