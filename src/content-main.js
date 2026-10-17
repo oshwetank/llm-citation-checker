@@ -203,6 +203,7 @@
   // captured, and the key names in a response's first 2 KB. The same rules
   // are in src/lib/netlog.js (which masks again on the way in); this file
   // can't import it.
+  const NET_VALUE_KEYS = /^(?:rpcids|rt|TYPE|VER|CI|source-path-kind)$/;
   const NET_ID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{12,}|\d{4,}|[A-Za-z0-9_-]{20,})$/i;
   const netMask = (pathname) => String(pathname || "/").split("/").map((seg) => {
     if (!seg) return seg;
@@ -231,10 +232,17 @@
       const u = new URL(url, location.href);
       if (!/^(?:https?|wss?):$/.test(u.protocol)) return;
       const q = [];
-      u.searchParams.forEach((_, k) => { if (!q.includes(k) && /^[\w.[\]-]{1,40}$/.test(k)) q.push(k); });
+      const qv = {};
+      u.searchParams.forEach((v, k) => {
+        if (!q.includes(k) && /^[\w.[\]-]{1,40}$/.test(k)) q.push(k);
+        // A few keys name the call rather than carry anything of the user's
+        // (Gemini's batchexecute rpcids, WebChannel's TYPE): their values
+        // are kept, so the report can tell the calls apart.
+        if (NET_VALUE_KEYS.test(k) && /^[\w.,:-]{1,60}$/.test(v)) qv[k] = v;
+      });
       window.postMessage({ __LCFC__: CHANNEL, type: "netlog", entry: {
         t: Date.now(), page: location.hostname, kind, method: String(method || "GET").toUpperCase(),
-        host: u.host, path: netMask(u.pathname), q: q.sort().slice(0, 20), matched: CONV_RE.test(String(url)), ...extra,
+        host: u.host, path: netMask(u.pathname), q: q.sort().slice(0, 20), qv, matched: CONV_RE.test(String(url)), ...extra,
       } }, location.origin);
     } catch (_) { /* never in the page's way */ }
   }
@@ -266,6 +274,20 @@
     } else {
       netlog("fetch", method, url, base);
     }
+  }
+
+  // Gemini's answer moved off StreamGenerate (0.62.1, from the owner's
+  // network report: no StreamGenerate at all; a WebChannel stream on
+  // geminiweb-pa.clients6.google.com/v1/processSession and many batchexecute
+  // calls). Until its shape is known, with Debug capture on these replies
+  // are kept as probes: stored apart from captures (never shown as answers),
+  // for the owner to save and send ("Payloads it couldn't read").
+  const GEMINI_PROBE_RE = /\/v1\/processSession\b|\/batchexecute\b/;
+  function probe(url, method, reqBody, body) {
+    if (!IS_GEMINI || !debugOn() || !body) return;
+    try {
+      window.postMessage({ __LCFC__: CHANNEL, type: "probe", url: String(url || "").slice(0, 2000), method: String(method || "GET"), reqBody: typeof reqBody === "string" ? reqBody.slice(0, 50000) : "", body: String(body).slice(0, 300000), at: Date.now() }, location.origin);
+    } catch (_) { /* never in the page's way */ }
   }
 
   // Drain a cloned stream to text without disturbing the branch the page reads.
@@ -333,6 +355,9 @@
       dbg("fetch", { url: (url || "").slice(0, 140), status: resp && resp.status, matched: isConv });
     }
     netlogFetch(url, method, resp, started, isConv);
+    if (IS_GEMINI && !isConv && resp && GEMINI_PROBE_RE.test(url || "") && debugOn()) {
+      resp.clone().text().then((body) => { if (body && body.length >= 2000) probe(url, method, init && typeof init.body === "string" ? init.body : "", body); }).catch(() => {});
+    }
     if (isConv && resp) {
       try {
         const cloned = resp.clone();
@@ -367,6 +392,23 @@
       return open.call(this, method, url, ...rest);
     };
     XHR.prototype.send = function (body) {
+      // A Gemini WebChannel stream (processSession) never "loads" while the
+      // conversation is open: its reply is read as it grows, and handed over
+      // a piece at a time once it goes quiet for a moment.
+      if (IS_GEMINI && !this.__lcfc_conv && GEMINI_PROBE_RE.test(this.__lcfc_url || "")) {
+        const xhr = this, reqBody = typeof body === "string" ? body : "";
+        let sent = 0, timer = null;
+        const flush = () => {
+          if (timer) { clearTimeout(timer); timer = null; }
+          let text = "";
+          try { text = xhr.responseText || ""; } catch (_) { return; }
+          if (text.length - sent < 200) return;
+          probe(xhr.__lcfc_url, xhr.__lcfc_method, reqBody, text.slice(sent));
+          sent = text.length;
+        };
+        this.addEventListener("progress", () => { if (timer) clearTimeout(timer); timer = setTimeout(flush, 1500); });
+        this.addEventListener("loadend", flush);
+      }
       // Listened for whatever the setting says now: a page's first requests
       // go out before content-iso.js has read it; netlog() checks it later.
       if (IS_TARGET) {

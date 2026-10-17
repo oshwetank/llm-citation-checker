@@ -10,7 +10,7 @@
  * without values) and that the grouping says which calls were captured.
  */
 import { readFileSync } from "node:fs";
-import { maskPath, queryKeys, keyShape, cleanEntry, appendRing, groupNetlog, netlogReportLines } from "../src/lib/netlog.js";
+import { maskPath, queryKeys, keyShape, cleanEntry, appendRing, groupNetlog, netlogReportLines, NET_VALUE_KEYS } from "../src/lib/netlog.js";
 
 let failures = 0;
 function check(label, cond, detail = "") {
@@ -64,6 +64,21 @@ console.log("grouped for the report");
   const text = netlogReportLines(entries).join("\n");
   check("the report names uncaptured calls and their shape", /batchexecute\?bl&rpcids · 2× · not captured/.test(text) && /starts as xssi/.test(text) && /StreamGenerate · 1× · captured 1/.test(text), text);
   check("an empty log says how to fill it", /Turn on Debug capture/.test(netlogReportLines([]).join("\n")));
+}
+
+console.log("values that name the call (0.62.1)");
+{
+  // Gemini's answer moved; its batchexecute calls differ only by rpcids, so
+  // the report needs that value (a method name, nothing of the user's).
+  const e = cleanEntry({ page: "gemini.google.com", host: "gemini.google.com", path: "/_/BardChatUi/data/batchexecute", q: ["rpcids", "f.sid", "q"], qv: { rpcids: "ESY5D", "f.sid": "-4242", q: "best phone" } });
+  check("rpcids keeps its value; nothing else does", JSON.stringify(e.qv) === JSON.stringify({ rpcids: "ESY5D" }), JSON.stringify(e.qv));
+  check("a value that isn't a plain name is dropped", JSON.stringify(cleanEntry({ qv: { rpcids: "best phone under 30000?" } }).qv) === "{}");
+  const g = groupNetlog([e, cleanEntry({ ...e, qv: { rpcids: "hNvQHb" } }), cleanEntry({ ...e, qv: { rpcids: "ESY5D" } })]);
+  check("calls with different rpcids are separate rows", g[0].rows.length === 2 && g[0].rows[0].count === 2, JSON.stringify(g[0].rows.map((r) => [r.qvs, r.count])));
+  check("and the report shows the value", /batchexecute\?f\.sid&q&rpcids=ESY5D · 2×/.test(netlogReportLines([e, e]).join("\n")), netlogReportLines([e, e]).join("\n"));
+  const src = readFileSync(new URL("../src/content-main.js", import.meta.url), "utf8");
+  const page = (src.match(/const NET_VALUE_KEYS = (\/.*\/);/) || [])[1];
+  check("the page keeps the same keys", page === String(NET_VALUE_KEYS), `${page} vs ${NET_VALUE_KEYS}`);
 }
 
 console.log("the page's copy of the rules");

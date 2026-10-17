@@ -57,6 +57,8 @@ const PAGE = `<!doctype html><body>stub<script>
     const es = new EventSource("/api/stream/updates?token=abc");
     setTimeout(() => es.close(), 1500);
     try { const ws = new WebSocket("wss://gemini.google.com/ws/live/0123456789abcdef"); ws.onerror = () => {}; } catch (_) {}
+    // Gemini's WebChannel stream (0.62.1): kept as a probe in Debug capture.
+    await new Promise((done) => { const c = new XMLHttpRequest(); c.open("GET", "https://geminiweb-pa.clients6.google.com/v1/processSession?VER=8&RID=rpc&SID=abc&CI=0&AID=12&TYPE=xmlhttp&zx=q&t=1"); c.onloadend = done; c.send(); });
     document.title = "done";
   })();
 </script></body>`;
@@ -66,6 +68,8 @@ const context = await chromium.launchPersistentContext(`${PROFILE_BASE}-${Date.n
   args: [`--disable-extensions-except=${EXT_PATH}`, `--load-extension=${EXT_PATH}`, "--headless=new", "--no-sandbox"],
 });
 try {
+  const CHANNEL_REPLY = `${"[[7,[\"noop\"]]]\n".repeat(20)}[[8,[{"answer_chunk":"${SECRET}","rcid":"rc_1"}]]]\n${"x".repeat(400)}`;
+  await context.route(/^https:\/\/geminiweb-pa\.clients6\.google\.com\//, (route) => route.fulfill({ status: 200, headers: { "access-control-allow-origin": "https://gemini.google.com", "access-control-allow-credentials": "true", "content-type": "text/plain" }, body: CHANNEL_REPLY }));
   await context.route(/^https:\/\/gemini\.google\.com\//, (route) => {
     const u = new URL(route.request().url());
     if (/StreamGenerate/.test(u.pathname)) return route.fulfill({ status: 200, contentType: "application/json", body: `)]}'\n[["wrb.fr",null,"[]"]]` });
@@ -98,6 +102,8 @@ try {
     await visit();
     const r = await msg({ type: "get-netlog" });
     check("with Debug capture off the log stays empty", r && r.ok && r.entries.length === 0, JSON.stringify(r && r.entries && r.entries.length));
+    const pr = await msg({ type: "get-probes" });
+    check("and nothing is kept as a probe", pr && pr.ok && pr.probes.length === 0, JSON.stringify(pr && pr.probes && pr.probes.length));
   }
 
   console.log("\nOn: every kind of request is logged, stripped");
@@ -112,6 +118,8 @@ try {
     check("the answer XHR is logged as captured", sg && sg.matched === true && sg.method === "POST" && sg.status === 200, JSON.stringify(sg));
     const be = find("batchexecute", "fetch");
     check("an uncaptured POST is logged, query keys only, with its shape", be && !be.matched && JSON.stringify(be.q) === JSON.stringify(["bl", "f.sid", "rpcids"]) && be.shape && be.shape.form === "xssi", JSON.stringify(be));
+    // 0.62.1: rpcids names the call (Gemini's batchexecute differ only by it).
+    check("the one value that names the call is kept: rpcids", be && JSON.stringify(be.qv) === JSON.stringify({ rpcids: "ESY5D" }), JSON.stringify(be && be.qv));
     const ans = find("/api/v2/conversations/", "fetch");
     check("a GET on an unknown path is logged with its id masked", ans && ans.method === "GET" && ans.path === "/api/v2/conversations/:id/answers" && ans.q.join() === "prompt", JSON.stringify(ans));
     check("and its reply's key names, which say it's an answer", ans && ans.shape && ans.shape.keys.includes("answer_text") && ans.shape.keys.includes("sources"), JSON.stringify(ans && ans.shape));
@@ -121,7 +129,16 @@ try {
     const ws = gem.find((e) => e.kind === "ws-open" || e.kind === "ws");
     check("a WebSocket is logged", ws && ws.host === "gemini.google.com" && ws.path === "/ws/live/:id", JSON.stringify(ws));
     const all = JSON.stringify(entries);
-    check("the prompt, the answer text and query values are never stored", !all.includes("zento") && !all.includes("Zento") && !all.includes("sharpest") && !all.includes("4242") && !all.includes("ESY5D") && !all.includes("abc\""), all.slice(0, 400));
+    check("the prompt, the answer text and query values are never stored", !all.includes("zento") && !all.includes("Zento") && !all.includes("sharpest") && !all.includes("4242") && !all.includes("boq") && !all.includes("abc\""), all.slice(0, 400));
+  }
+
+  console.log("\nGemini's unread replies are kept apart, as probes (0.62.1)");
+  {
+    const pr = ((await msg({ type: "get-probes" })) || {}).probes || [];
+    const ch = pr.find((p) => /processSession/.test(p.url));
+    check("the WebChannel stream's reply is kept", ch && ch.body.includes("answer_chunk") && ch.method === "GET", JSON.stringify(pr.map((p) => [p.url.slice(0, 60), p.body.length])));
+    const recs = (((await msg({ type: "get-records" })) || {}).records || []).filter((r) => r.platform === "gemini");
+    check("and never becomes an answer", recs.length === 0, String(recs.length));
   }
 
   console.log("\nThe diagnostic report has the table");
@@ -142,6 +159,8 @@ try {
     await msg({ type: "clear-all" });
     const r = await msg({ type: "get-netlog" });
     check("Clear all data empties the log", r && r.entries.length === 0);
+    const pr = await msg({ type: "get-probes" });
+    check("and the probes", pr && pr.probes.length === 0);
   }
   check("no page errors", pageErrors.length === 0, pageErrors.join(" | "));
 } catch (e) {

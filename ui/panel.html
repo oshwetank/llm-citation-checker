@@ -312,7 +312,7 @@
                   <div class="ab-head">
                     <div>
                       <h2 class="ab-title">Report a problem</h2>
-                      <p class="ab-sub">Send both of these. Neither contains your prompts, answers, links or brand names.</p>
+                      <p class="ab-sub">The first two contain no prompts, answers, links or brand names. The third does, and says so.</p>
                     </div>
                   </div>
                   <div class="ab-report">
@@ -335,6 +335,14 @@
                         <select id="diagExportProfile" class="filter"></select>
                         <button type="button" id="diagExportBtn" class="btn sm ghost">Export .zip</button>
                       </div>
+                    </div>
+                    <div class="ab-report-item">
+                      <span class="ab-num" aria-hidden="true">3</span>
+                      <div class="ab-tool-text">
+                        <b>Payloads it couldn't read</b>
+                        <span>With Debug capture on, what Gemini sent that CitoSkeleton can't read yet. These hold your prompt and the answer: open the .zip before you send it.</span>
+                      </div>
+                      <button type="button" id="probeSave" class="btn sm ghost">Save .zip</button>
                     </div>
                   </div>
                 </div>

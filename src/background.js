@@ -444,6 +444,24 @@ function netlogAppend(entries) {
   return netlogChain;
 }
 
+// Gemini replies kept as probes (0.62.1, Debug capture only; content-main.js
+// GEMINI_PROBE_RE): the newest 20, in session storage, never derived into an
+// answer. "Payloads it couldn't read" in About saves them for the owner to
+// send, so a reader for Gemini's new traffic can be written from the real
+// shape.
+const PROBE_KEY = "lcfcProbes";
+let probeChain = Promise.resolve();
+async function probesLoad() {
+  try { const got = await chrome.storage.session.get(PROBE_KEY); return got[PROBE_KEY] || []; } catch (_) { return []; }
+}
+function probeAppend(p) {
+  probeChain = probeChain.then(async () => {
+    const list = (await probesLoad()).concat([{ at: p.at || Date.now(), url: String(p.url || "").slice(0, 2000), method: String(p.method || ""), pageUrl: String(p.pageUrl || "").slice(0, 500), reqBody: String(p.reqBody || "").slice(0, 50000), body: String(p.body || "").slice(0, 300000) }]);
+    await chrome.storage.session.set({ [PROBE_KEY]: list.slice(-20) });
+  }).catch((e) => logErr("probe", e));
+  return probeChain;
+}
+
 async function attachInteractions(record) {
   const rows = await db.getAllByIndex("interactions", "captureId", record.captureId).catch(() => []);
   if (!rows.length) return;
@@ -3610,6 +3628,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true });
           break;
         }
+        case "probe": {
+          await probeAppend(msg.payload || {});
+          sendResponse({ ok: true });
+          break;
+        }
+        case "get-probes": {
+          sendResponse({ ok: true, probes: await probesLoad() });
+          break;
+        }
         case "get-netlog": {
           sendResponse({ ok: true, entries: await netlogLoad() });
           break;
@@ -3712,7 +3739,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           await db.clear("runs");
           await db.clear("pages").catch(() => {});
           await db.clear("interactions").catch(() => {});
-          await chrome.storage.session.remove(NETLOG_KEY).catch(() => {});
+          await chrome.storage.session.remove([NETLOG_KEY, PROBE_KEY]).catch(() => {});
           sendResponse({ ok: true });
           break;
         case "stats": {

@@ -138,6 +138,14 @@
       return;
     }
 
+    // Gemini replies kept as probes (0.62.1; content-main.js).
+    if (data.type === "probe") {
+      try {
+        chrome.runtime.sendMessage({ type: "probe", payload: { url: String(data.url || ""), method: String(data.method || ""), reqBody: String(data.reqBody || ""), body: String(data.body || ""), at: data.at || Date.now(), pageUrl: location.href } }, () => void chrome.runtime.lastError);
+      } catch (_) { /* worker asleep: this one is lost */ }
+      return;
+    }
+
     // What the page loaded after the answer (0.62.0; content-main.js).
     if (data.type === "page-interaction") {
       try {

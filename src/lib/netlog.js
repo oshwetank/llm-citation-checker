@@ -20,6 +20,11 @@
 
 export const NETLOG_MAX = 3000;
 
+// Query keys whose values name the call rather than carry anything of the
+// user's (0.62.1): Gemini's batchexecute "rpcids", WebChannel's "TYPE"…
+// Same list in content-main.js (NET_VALUE_KEYS); the unit test checks.
+export const NET_VALUE_KEYS = /^(?:rpcids|rt|TYPE|VER|CI|source-path-kind)$/;
+
 const ID_SEG = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{12,}|\d{4,}|[A-Za-z0-9_-]{20,})$/i;
 
 /** A path with ids and anything prompt-like masked: ":id" for ids, ":text" for long or wordy segments. */
@@ -75,6 +80,7 @@ export function cleanEntry(e) {
     host: String(e.host || "").slice(0, 120),
     path: maskPath(e.path),
     q: (Array.isArray(e.q) ? e.q : []).filter((k) => /^[\w.[\]-]{1,40}$/.test(k)).slice(0, 20),
+    qv: Object.fromEntries(Object.entries(e.qv && typeof e.qv === "object" ? e.qv : {}).filter(([k, v]) => NET_VALUE_KEYS.test(k) && typeof v === "string" && /^[\w.,:-]{1,60}$/.test(v))),
     status: num(e.status),
     type: String(e.type || "").split(";")[0].trim().slice(0, 60),
     size: num(e.size),
@@ -104,8 +110,9 @@ export function groupNetlog(entries) {
     const page = e.page || "?";
     if (!engines.has(page)) engines.set(page, new Map());
     const rows = engines.get(page);
-    const key = `${e.host}${e.path}`;
-    if (!rows.has(key)) rows.set(key, { host: e.host, path: e.path, count: 0, matched: 0, kinds: new Set(), methods: new Set(), statuses: new Set(), types: new Set(), q: new Set(), min: null, max: null, forms: new Set(), keys: new Set(), last: 0 });
+    const qvs = Object.entries(e.qv || {}).sort().map(([k, v]) => `${k}=${v}`).join("&");
+    const key = `${e.host}${e.path}?${qvs}`;
+    if (!rows.has(key)) rows.set(key, { host: e.host, path: e.path, qvs, count: 0, matched: 0, kinds: new Set(), methods: new Set(), statuses: new Set(), types: new Set(), q: new Set(), min: null, max: null, forms: new Set(), keys: new Set(), last: 0 });
     const r = rows.get(key);
     r.count++;
     if (e.matched) r.matched++;
@@ -121,7 +128,7 @@ export function groupNetlog(entries) {
     page,
     total: [...rows.values()].reduce((n, r) => n + r.count, 0),
     rows: [...rows.values()].sort((a, b) => b.count - a.count || b.last - a.last).map((r) => ({
-      host: r.host, path: r.path, count: r.count, matched: r.matched,
+      host: r.host, path: r.path, qvs: r.qvs, count: r.count, matched: r.matched,
       kinds: [...r.kinds], methods: [...r.methods], statuses: [...r.statuses].sort(), types: [...r.types], q: [...r.q].sort(),
       size: r.min == null ? null : r.min === r.max ? fmtSize(r.min) : `${fmtSize(r.min)}–${fmtSize(r.max)}`,
       forms: [...r.forms], keys: [...r.keys],
@@ -150,7 +157,8 @@ export function netlogReportLines(entries, { maxRows = 40 } = {}) {
         r.types.join(", "),
         r.size ? r.size : "",
       ].filter(Boolean);
-      lines.push(`    ${r.host}${r.path}${r.q.length ? `?${r.q.join("&")}` : ""} · ${bits.join(" · ")}`);
+      const keys = r.q.map((k) => (r.qvs && new RegExp(`(^|&)${k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}=`).test(r.qvs) ? r.qvs.split("&").find((x) => x.startsWith(`${k}=`)) : k));
+      lines.push(`    ${r.host}${r.path}${keys.length ? `?${keys.join("&")}` : ""} · ${bits.join(" · ")}`);
       if (r.keys.length || r.forms.length) lines.push(`        starts as ${r.forms.join("/") || "?"}${r.keys.length ? `, keys: ${r.keys.join(", ")}` : ""}`);
     });
     if (g.rows.length > maxRows) lines.push(`    … ${g.rows.length - maxRows} more paths`);
