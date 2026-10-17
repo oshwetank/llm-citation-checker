@@ -6926,3 +6926,11 @@ polyline.ot-line.c5 { stroke: #c9a227; } circle.ot-line.c5 { fill: #c9a227; }
 .db-date { height: 30px; padding: 0 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-solid); color: var(--fg-primary); font: inherit; font-size: 13px; color-scheme: light; }
 .db-date:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-subtle); }
 html[data-theme="dark"] .db-date { color-scheme: dark; }
+.ab-row-note { display: block; margin-top: 4px; color: var(--amber-fg, var(--fg-secondary)); font-size: 12px; }
+
+/* Cited pages read (0.62.0) */
+.at-pages-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 12px; margin-bottom: 10px; border-radius: 10px; background: var(--tile-bg, var(--bg-subtle)); font-size: 12.5px; color: var(--fg-secondary); }
+.at-pages-bar > span { flex: 1 1 320px; min-width: 0; }
+.at-mx-basis { display: block; margin-top: 2px; font-size: 10.5px; font-weight: 500; color: var(--fg-muted); font-family: var(--font-sans); }
+.at-mx-basis.b-page { color: var(--green-fg); }
+.at-mx-basis.b-mixed { color: var(--amber-fg, var(--fg-secondary)); }

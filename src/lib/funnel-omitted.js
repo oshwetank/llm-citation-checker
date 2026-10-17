@@ -339,7 +339,14 @@ export function computeBrandMatrix(rec) {
   // 1. URL-Level Matrix
   const sourceMatrix = rec.sources.map((s, idx) => {
     const srcText = `${s.title || ""} ${s.snippet || ""}`;
-    const found = extractBrandsFromText(srcText, vocab).map((b) => canonicalBrand(b.brand));
+    // A cited page that was read (0.62.0, lib/pageText.js) is judged on its
+    // whole text, not the line or two the engine showed of it.
+    const page = s.platformSpecific && s.platformSpecific.page;
+    const fromPage = page && page.status === "ok" && Array.isArray(page.brands);
+    const found = [
+      ...extractBrandsFromText(srcText, vocab).map((b) => canonicalBrand(b.brand)),
+      ...(fromPage ? page.brands.map((b) => canonicalBrand(b.brand)) : []),
+    ];
     const presentSet = new Set(found.map((f) => f.toLowerCase()));
     const presentBrands = uniqueCandidateBrands.filter((b) => presentSet.has(b.toLowerCase()));
     const missingBrands = uniqueCandidateBrands.filter((b) => !presentSet.has(b.toLowerCase()));
@@ -351,6 +358,7 @@ export function computeBrandMatrix(rec) {
       title: s.title || "",
       presentBrands,
       missingBrands,
+      basis: fromPage ? "page" : "snippet",
     };
   });
 

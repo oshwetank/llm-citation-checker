@@ -242,6 +242,18 @@
                       </div>
                     </div>
                     <div class="ab-row">
+                      <label class="ab-row-text" for="setPages">
+                        <b>Read the cited pages</b>
+                        <span>After each answer, read the pages it cited, on this computer, to see which brands each page really names. This is the only time the extension makes requests of its own, and only to those pages. Chrome asks you to allow site access the first time.</span>
+                        <span class="ab-row-note" id="setPagesNote" hidden></span>
+                      </label>
+                      <label class="ab-switch">
+                        <input type="checkbox" id="setPages" role="switch" />
+                        <span class="ab-switch-track" aria-hidden="true"><span class="ab-switch-knob"></span></span>
+                        <span class="ab-switch-text" id="setPagesText">Off</span>
+                      </label>
+                    </div>
+                    <div class="ab-row">
                       <label class="ab-row-text" for="setDebug">
                         <b>Capture debugger</b>
                         <span>Logs every network event the extension sees. Leave it off unless you're asked to turn it on.</span>

@@ -27,6 +27,7 @@ import { campaignReport } from "./lib/campaignReport.js";
 import { findPrevious } from "./lib/analyzeView.js";
 import { summarizeRunDiagnostics } from "./lib/diagnosticsSummary.js";
 import { gzipString, gunzipToString } from "./lib/gzip.js";
+import { citedUrls, pageVerdict, pageSummary, wordCount, PAGE_TTL_MS } from "./lib/pageText.js";
 import { searchAnswers } from "./lib/answerSearch.js";
 import { answerKey, sameAnswer, mergeAnswers, SAME_ANSWER_WINDOW_MS } from "./lib/sameAnswer.js";
 import { campaignBoard, brandDetail } from "./lib/campaignBoard.js";
@@ -77,7 +78,10 @@ const DEFAULT_SETTINGS = {
   // URLs let cited domains be attributed to the right brand.
   myBrand: { name: "", url: "" },
   competitors: [], // [{ name, url }]
-  debugCapture: false, // diagnostic channel is OFF by default (it is chatty)
+  debugCapture: false,
+  // Read the cited pages (0.62.0): off until asked for, since it is the one
+  // thing that makes requests beyond the engines' own pages.
+  readCitedPages: false, // diagnostic channel is OFF by default (it is chatty)
   maxCaptureMB: 8, // skip storing a single raw payload larger than this
   retentionMax: 2000, // keep at most N captures; oldest pruned first
 };
@@ -383,8 +387,152 @@ async function deriveAndStore(rawRow, rawText, settings, { settle = true } = {})
     return null;
   }
 
+  await attachPages(record);
   await db.put("derived", record);
   return settle ? settleSameAnswer(record) : record;
+}
+
+/* ------------------------------------------------------------------
+ * The cited pages, read (0.62.0). Only with "Read the cited pages" on, and
+ * only the pages an answer cited: fetched as the browser would, turned into
+ * readable text in the offscreen document (Mozilla Readability), and kept
+ * in the "pages" store. A page that comes back as a wall or an empty
+ * JavaScript shell is opened once in a hidden tab and read from there. The
+ * record carries what was found (status, words, the brands the text names)
+ * and gets it back on every reprocess from the stored text.
+ * ------------------------------------------------------------------ */
+const PAGE_FETCH_MS = 10000;
+const PAGE_MAX_BYTES = 5 * 1024 * 1024;
+
+async function attachPages(record) {
+  const urls = citedUrls(record);
+  if (!urls.length) return;
+  let read = 0;
+  for (const s of record.sources || []) {
+    if (s.outcome !== "cited" || !s.url) continue;
+    const row = await db.get("pages", s.url.replace(/#.*$/, "")).catch(() => null);
+    if (!row) continue;
+    s.platformSpecific = { ...(s.platformSpecific || {}), page: pageSummary(row, record) };
+    if (row.status === "ok") read++;
+  }
+  const tried = (record.sources || []).filter((s) => s.platformSpecific && s.platformSpecific.page).length;
+  if (tried) record.pagesRead = { read, tried, cited: urls.length };
+}
+
+let offscreenReady = null;
+async function ensureOffscreen() {
+  if (!chrome.offscreen) throw new Error("no offscreen API");
+  if (offscreenReady) return offscreenReady;
+  offscreenReady = (async () => {
+    const has = chrome.runtime.getContexts ? (await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] })).length > 0 : false;
+    if (!has) await chrome.offscreen.createDocument({ url: "ui/offscreen.html", reasons: ["DOM_PARSER"], justification: "Read the text of the pages an answer cited" });
+  })();
+  try { await offscreenReady; } catch (e) { offscreenReady = null; throw e; }
+  return offscreenReady;
+}
+async function extractPage(html, url) {
+  await ensureOffscreen();
+  const r = await chrome.runtime.sendMessage({ target: "offscreen", type: "extract-page", html, url });
+  if (!r || !r.ok) throw new Error((r && r.error) || "no reply from the page reader");
+  return r;
+}
+
+async function fetchPage(url) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), PAGE_FETCH_MS);
+  try {
+    const res = await fetch(url, { credentials: "omit", redirect: "follow", signal: ctl.signal });
+    const type = res.headers.get("content-type") || "";
+    if (!res.ok) return { status: "failed", httpStatus: res.status };
+    if (!/html|xml|text\/plain/i.test(type)) return { status: "not-html", httpStatus: res.status };
+    const len = Number(res.headers.get("content-length") || 0);
+    if (len > PAGE_MAX_BYTES) return { status: "too-large", httpStatus: res.status };
+    const html = (await res.text()).slice(0, PAGE_MAX_BYTES);
+    const page = await extractPage(html, res.url || url);
+    return { status: pageVerdict(page), httpStatus: res.status, ...page };
+  } catch (e) {
+    return { status: "failed", error: String((e && e.name === "AbortError") ? "timed out" : (e && e.message) || e) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// One hidden tab at a time: a page that only fills in with JavaScript, or
+// sits behind a check that a real browser passes. Needs the site access the
+// setting asked for (scripting a page needs host permission).
+let tabReadChain = Promise.resolve();
+function readInTab(url) {
+  const run = async () => {
+    let tabId = null;
+    try {
+      const tab = await chrome.tabs.create({ url, active: false });
+      tabId = tab.id;
+      try { await chrome.tabs.update(tabId, { autoDiscardable: false }); } catch (_) {}
+      await new Promise((resolve) => {
+        const done = setTimeout(resolve, 15000);
+        const on = (id, info) => { if (id === tabId && info.status === "complete") { clearTimeout(done); chrome.tabs.onUpdated.removeListener(on); setTimeout(resolve, 1500); } };
+        chrome.tabs.onUpdated.addListener(on);
+      });
+      const [res] = await chrome.scripting.executeScript({ target: { tabId }, func: () => ({ title: document.title, text: document.body ? document.body.innerText : "", lang: document.documentElement.lang || null }) });
+      const page = (res && res.result) || { title: "", text: "" };
+      page.text = String(page.text || "").slice(0, 200000);
+      return { status: pageVerdict(page), method: "tab", ...page };
+    } catch (e) {
+      return { status: "failed", method: "tab", error: String((e && e.message) || e) };
+    } finally {
+      if (tabId != null) chrome.tabs.remove(tabId).catch(() => {});
+    }
+  };
+  const p = tabReadChain.then(run, run);
+  tabReadChain = p.catch(() => {});
+  return p;
+}
+
+async function readOnePage(url, { force = false } = {}) {
+  const cached = await db.get("pages", url).catch(() => null);
+  if (!force && cached && cached.status === "ok" && Date.now() - (cached.fetchedAt || 0) < PAGE_TTL_MS) return cached;
+  let page = await fetchPage(url);
+  let method = "fetch";
+  if (page.status === "blocked" || page.status === "thin" || page.status === "failed") {
+    const canScript = !!(chrome.scripting && (await chrome.permissions.contains({ origins: ["<all_urls>"] }).catch(() => false)));
+    if (canScript) {
+      const viaTab = await readInTab(url);
+      if (viaTab.status === "ok" || (page.status !== "ok" && wordCount(viaTab.text) > wordCount(page.text))) { page = viaTab; method = "tab"; }
+    }
+  }
+  const row = {
+    url, fetchedAt: Date.now(), status: page.status, method: page.method === "tab" ? "tab" : method,
+    httpStatus: page.httpStatus || null, title: page.title || "", lang: page.lang || null,
+    words: wordCount(page.text), text: page.status === "ok" ? page.text : "", error: page.error || null,
+  };
+  await db.put("pages", row);
+  return row;
+}
+
+// Three pages at a time; the record is rewritten once, when all are read.
+const pagesInFlight = new Set();
+async function readCitedPages(captureId, { force = false, manual = false } = {}) {
+  if (pagesInFlight.has(captureId)) return { ok: true, busy: true };
+  const settings = await getSettings();
+  if (!settings.readCitedPages && !manual) return { ok: false, off: true };
+  const rec = await db.get("derived", captureId);
+  if (!rec) return { ok: false, error: "no such capture" };
+  const urls = citedUrls(rec);
+  if (!urls.length) return { ok: true, read: 0, tried: 0 };
+  pagesInFlight.add(captureId);
+  try {
+    const queue = [...urls];
+    const work = async () => { while (queue.length) { const u = queue.shift(); try { await readOnePage(u, { force }); } catch (e) { logErr("pages", e, { url: u.slice(0, 120) }); } } };
+    await Promise.all([work(), work(), work()]);
+    const current = await db.get("derived", captureId);
+    if (!current) return { ok: false, error: "capture removed" };
+    await attachPages(current);
+    await db.put("derived", current);
+    try { chrome.runtime.sendMessage({ type: "capture-updated", captureId }, () => void chrome.runtime.lastError); } catch (_) {}
+    return { ok: true, ...(current.pagesRead || {}) };
+  } finally {
+    pagesInFlight.delete(captureId);
+  }
 }
 
 /* One answer, one record (lib/sameAnswer.js). Another copy of this answer
@@ -2260,6 +2408,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             } catch (_) {}
             // Deliberately NOT awaited: the capture is already saved and shown.
             enrichCaptureWithAI(res.record);
+            // Also not awaited, and only with the setting on (0.62.0).
+            readCitedPages(res.captureId).catch(() => {});
           }
           sendResponse({ ok: true, captureId: res?.captureId || null, skipped: res?.skipped || null });
           break;
@@ -3377,6 +3527,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, records: out });
           break;
         }
+        // Read (or re-read) one answer's cited pages now, from Analyze.
+        case "read-cited-pages":
+          sendResponse(await readCitedPages(msg.captureId, { force: !!msg.force, manual: true }));
+          break;
         case "get-raw": {
           const row = await db.get("raw", msg.captureId);
           const raw = row ? await gunzipToString(row.gz) : null;

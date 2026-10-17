@@ -11,7 +11,9 @@
     "alarms",
     "notifications",
     "languageModel",
-    "cookies"
+    "cookies",
+    "offscreen",
+    "scripting"
   ],
   "host_permissions": [
     "https://chatgpt.com/*",
@@ -21,6 +23,9 @@
     "https://perplexity.ai/*",
     "https://grok.com/*",
     "https://x.com/*"
+  ],
+  "optional_host_permissions": [
+    "<all_urls>"
   ],
   "background": {
     "service_worker": "src/background.js",

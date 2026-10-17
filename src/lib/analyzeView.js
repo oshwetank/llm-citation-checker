@@ -230,15 +230,22 @@ export function sourceBrandMatrix(rec, { own, knownBrands, maxBrands = 6, maxSit
   const sources = rec.sources || [];
   const named = namedOrder(cleanBrands(rec, knownBrands)).slice(0, maxBrands);
   if (!named.length || !sources.length) return null;
-  const present = new Map((computeBrandMatrix(rec).sources || []).map((s) => [s.sourceIdx, s.presentBrands]));
+  const matrix = computeBrandMatrix(rec).sources || [];
+  const present = new Map(matrix.map((s) => [s.sourceIdx, s.presentBrands]));
+  const basis = new Map(matrix.map((s) => [s.sourceIdx, s.basis]));
   const byDomain = new Map();
   sources.forEach((s, i) => {
     const domain = normDomain(s.domain || s.url);
     if (!domain) return;
     let row = byDomain.get(domain);
-    if (!row) { row = { domain, cited: false, cells: named.map(() => "") }; byDomain.set(domain, row); }
+    if (!row) { row = { domain, cited: false, cells: named.map(() => ""), pagesRead: new Set(), pages: new Set() }; byDomain.set(domain, row); }
     const cited = s.outcome === "cited";
     if (cited) row.cited = true;
+    // Whether this site's cells come from its pages' text or only from the
+    // titles and snippets the engine sent (0.62.0).
+    const key = String(s.url || i).replace(/#.*$/, "");
+    row.pages.add(key);
+    if (basis.get(i) === "page") row.pagesRead.add(key);
     const names = present.get(i) || [];
     named.forEach((b, j) => {
       if (!names.some((n) => sameBrand(n, b))) return;
@@ -251,8 +258,9 @@ export function sourceBrandMatrix(rec, { own, knownBrands, maxBrands = 6, maxSit
     .sort((a, b) => score(b) - score(a) || a.domain.localeCompare(b.domain));
   return {
     brands: named.map((name) => ({ name, isYou: !!own && sameBrand(own.name, name) })),
-    rows: rows.slice(0, maxSites),
+    rows: rows.slice(0, maxSites).map(({ pagesRead, pages, ...r }) => ({ ...r, basis: pagesRead.size ? (pagesRead.size === pages.size ? "page" : "mixed") : "snippet" })),
     more: Math.max(0, rows.length - maxSites),
+    pagesRead: matrix.filter((m) => m.basis === "page").length,
   };
 }
 

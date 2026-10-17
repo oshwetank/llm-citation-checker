@@ -2839,12 +2839,14 @@ function atBackingSection(rec, brands, { own, pages, kind, ctxKinds, knownBrands
     const row = (...cells) => el("div", { className: "at-grid-row", role: "row" }, ...cells);
     grid.append(row(el("span", { role: "columnheader" }, "Site"), ...m.brands.map((b) => el("span", { role: "columnheader", className: `c${b.isYou ? " you" : ""}`, title: b.name }, b.name))));
     m.rows.forEach((r) => grid.append(row(
-      el("span", { role: "rowheader", className: "at-matrix-site" }, r.domain),
+      el("span", { role: "rowheader", className: "at-matrix-site" }, r.domain,
+        el("span", { className: `at-mx-basis b-${r.basis}`, title: r.basis === "snippet" ? "From the titles and snippets the engine sent" : r.basis === "page" ? "From the text of the pages themselves" : "Some pages read, the rest from their snippets" }, r.basis === "page" ? "page text" : r.basis === "mixed" ? "partly read" : "snippet")),
       ...r.cells.map((c, j) => el("span", { role: "cell", className: `at-mx ${c || "none"}`, "aria-label": `${r.domain}, ${m.brands[j].name}: ${c === "cited" ? "cited, names it" : c === "read" ? "read only, names it" : "doesn't name it"}` }, c === "cited" ? "cited" : c === "read" ? "read" : "")))));
     box.append(el("div", { className: "at-scroll" }, grid));
     box.append(el("div", { className: "ap-legend at-mx-legend" },
       el("span", {}, el("i", { className: "at-mx cited" }), "cited, names the brand"), el("span", {}, el("i", { className: "at-mx read" }), "read only, names it"), el("span", {}, el("i", { className: "at-mx none" }), "doesn’t name it"),
-      m.more ? el("span", {}, `+ ${m.more} more sites`) : null));
+      m.more ? el("span", {}, `+ ${m.more} more sites`) : null,
+      el("span", { className: "ap-muted" }, m.pagesRead ? "“page text”: found in the page itself; “snippet”: only in what the engine showed" : "From the titles and snippets the engine sent; read the cited pages above for the pages themselves")));
     sec.append(box);
   }
   return sec;
@@ -3268,12 +3270,50 @@ function sitesListEl(dv, { fnByUrl = new Map(), openCited = false, onCite = null
  * engine's results, the brands its pages name, and filters for cited, read
  * only and cited without naming your brand. In Expert, each page's index and
  * ref as the engine sent them. */
+// What reading one cited page found (0.62.0): "page read · 2,340 words, names
+// Samsung, HONOR", or why it couldn't be read.
+const PAGE_FAIL = { blocked: "a bot check stood in the way", thin: "too little text to be the page", failed: "couldn’t be fetched", "not-html": "not a web page", "too-large": "too large to read" };
+function atPageLine(pg) {
+  if (!pg) return "";
+  if (pg.status !== "ok") return `page not read: ${PAGE_FAIL[pg.status] || pg.status}${pg.httpStatus && pg.httpStatus >= 400 ? ` (${pg.httpStatus})` : ""}`;
+  const names = (pg.brands || []).slice(0, 3).map((b) => b.brand);
+  return `page read · ${(pg.words || 0).toLocaleString()} words${pg.method === "tab" ? " (in a hidden tab)" : ""}${names.length ? ` · names ${names.join(", ")}${pg.brands.length > 3 ? ` +${pg.brands.length - 3}` : ""}` : " · names none of the brands"}`;
+}
+// The bar at the top of "Every site it read": how many cited pages were read,
+// and a button to read them now (asking for site access first if needed).
+function atPagesBar(rec) {
+  const pr = rec.pagesRead;
+  const cited = new Set((rec.sources || []).filter((x) => x.outcome === "cited" && x.url).map((x) => x.url.replace(/#.*$/, ""))).size;
+  if (!cited) return null;
+  const bar = el("div", { className: "at-pages-bar" });
+  const line = el("span", {}, pr
+    ? `Cited pages read: ${pr.read} of ${Math.min(cited, 15)}. Brands below come from the page text where a page was read, otherwise from the title and snippet the engine sent.`
+    : "Brands below come from the title and snippet the engine sent with each result. Read the cited pages to check what each page itself says.");
+  const btn = el("button", { className: "at-btn sm", type: "button" }, pr ? "Read them again" : "Read the cited pages");
+  btn.onclick = async () => {
+    btn.disabled = true;
+    try {
+      if (chrome.permissions && !(await chrome.permissions.contains({ origins: ["<all_urls>"] }))) await chrome.permissions.request({ origins: ["<all_urls>"] }).catch(() => false);
+    } catch (_) { /* reading still tries; pages that refuse say so */ }
+    btn.textContent = "Reading…";
+    const r = await send({ type: "read-cited-pages", captureId: rec.captureId, force: !!pr });
+    if (!r || !r.ok) { btn.textContent = "Couldn’t read them"; btn.disabled = false; return; }
+    FULL.delete(rec.captureId);
+    await hydrate(rec.captureId);
+    renderAnalyze();
+  };
+  bar.append(line, btn);
+  return bar;
+}
+
 function atSitesSection(rec, dv, { fnByUrl, pages, own, ctxKinds, positions, knownBrands }) {
   const sec = atSection("at-sites", "Every site it read", "",
     el("span", { className: "ap-chips" },
       apPill(`${dv.citedSites} cited`, "good", "Sites with at least one page the answer cites"),
       dv.readOnlySites ? apPill(`${dv.readOnlySites} read, not cited`, "neutral", "Sites the engine opened but didn’t cite") : null));
   sec.dataset.rail = "Every site it read";
+  const pagesBar = atPagesBar(rec);
+  if (pagesBar) sec.append(pagesBar);
   // Cited pages by kind of site, as one bar.
   if (pages.kinds.length) {
     const bar = el("div", { className: "ap-kindbar at-kindbar", role: "img", "aria-label": "Cited pages by kind: " + pages.kinds.map((k) => `${k.n} ${k.label.toLowerCase()}`).join(", ") });
@@ -3307,7 +3347,7 @@ function atSitesSection(rec, dv, { fnByUrl, pages, own, ctxKinds, positions, kno
         const date = xp.pubDate ? atShortDay(xp.pubDate < 1e12 ? xp.pubDate * 1000 : xp.pubDate) : "";
         const pos = positions.get(pg.url);
         return {
-          text: [pos ? `#${pos} in its results` : "", date].filter(Boolean).join(" · "),
+          text: [pos ? `#${pos} in its results` : "", date, atPageLine(xp.page)].filter(Boolean).join(" · "),
           expert: [xp.pipeline, xp.refType, (xp.markerIds || []).join(" ")].filter(Boolean).join(" · "),
         };
       },
@@ -9735,12 +9775,14 @@ function abDraft() {
     retentionMax: settingValue("retentionMax", $("#setRetention").value),
     maxCaptureMB: settingValue("maxCaptureMB", $("#setMaxMB").value),
     debugCapture: !!$("#setDebug").checked,
+    readCitedPages: !!$("#setPages")?.checked,
   };
 }
 function abFillSettings(s) {
   $("#setRetention").value = s.retentionMax;
   $("#setMaxMB").value = s.maxCaptureMB;
   $("#setDebug").checked = !!s.debugCapture;
+  if ($("#setPages")) $("#setPages").checked = !!s.readCitedPages;
 }
 function updateSettingsStatus() {
   const status = $("#setStatus");
@@ -9751,6 +9793,7 @@ function updateSettingsStatus() {
   $("#setUndo").disabled = !st.dirty;
   $("#setSave").disabled = !st.dirty;
   $("#setDebugText").textContent = $("#setDebug").checked ? "On" : "Off";
+  if ($("#setPagesText")) $("#setPagesText").textContent = $("#setPages").checked ? "On" : "Off";
 }
 async function loadSettings() {
   const r = await send({ type: "settings-get" });
@@ -9760,12 +9803,29 @@ async function loadSettings() {
   // rejection rather than a visible failure.
   if (!r || !r.ok || !r.settings || !$("#setRetention")) return;
   const s = r.settings;
-  abSaved = { retentionMax: s.retentionMax, maxCaptureMB: s.maxCaptureMB, debugCapture: !!s.debugCapture };
+  abSaved = { retentionMax: s.retentionMax, maxCaptureMB: s.maxCaptureMB, debugCapture: !!s.debugCapture, readCitedPages: !!s.readCitedPages };
   abFillSettings(abSaved);
   updateSettingsStatus();
   renderStorageMeter();
 }
 ["#setRetention", "#setMaxMB", "#setDebug"].forEach((id) => $(id)?.addEventListener(id === "#setDebug" ? "change" : "input", () => { abJustSaved = false; updateSettingsStatus(); }));
+// Turning on "Read the cited pages" asks Chrome for access to any site,
+// from this click (Chrome only shows its prompt in answer to a click). If
+// it's refused the switch goes back off and says why (0.62.0).
+$("#setPages")?.addEventListener("change", async (e) => {
+  const box = e.target, note = $("#setPagesNote");
+  if (note) { note.hidden = true; note.textContent = ""; }
+  if (box.checked && chrome.permissions) {
+    let ok = false;
+    try { ok = await chrome.permissions.contains({ origins: ["<all_urls>"] }) || await chrome.permissions.request({ origins: ["<all_urls>"] }); } catch (_) { ok = false; }
+    if (!ok) {
+      box.checked = false;
+      if (note) { note.hidden = false; note.textContent = "Chrome didn't allow site access, so the pages can't be read. Turn it on again to be asked again."; }
+    }
+  }
+  abJustSaved = false;
+  updateSettingsStatus();
+});
 document.querySelectorAll(".ab-stepbtn[data-step]").forEach((b) => b.addEventListener("click", () => {
   const input = document.getElementById(b.dataset.step);
   const key = b.dataset.step === "setRetention" ? "retentionMax" : "maxCaptureMB";

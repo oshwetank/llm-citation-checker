@@ -9,7 +9,7 @@
  */
 
 const DB_NAME = "lcfc";
-const DB_VERSION = 6;
+const DB_VERSION = 7;
 
 let dbPromise = null;
 
@@ -81,6 +81,14 @@ function openDb() {
         if (!er.indexNames.contains("runId")) {
           er.createIndex("runId", "context.runId", { unique: false });
         }
+      }
+      // v7: the cited pages read on this computer (0.62.0, "Read the cited
+      // pages"), one row per address: its readable text, when and how it was
+      // read. Kept apart from the records so a reprocess re-matches brands
+      // against the same text without fetching anything again.
+      if (!db.objectStoreNames.contains("pages")) {
+        const pg = db.createObjectStore("pages", { keyPath: "url" });
+        pg.createIndex("fetchedAt", "fetchedAt", { unique: false });
       }
     };
     req.onsuccess = () => resolve(req.result);

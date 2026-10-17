@@ -103,7 +103,7 @@ export function settingValue(key, raw) {
  * justSaved only shows "Settings saved" until the next edit.
  */
 export function settingsState(saved, draft, { justSaved = false } = {}) {
-  const keys = ["retentionMax", "maxCaptureMB", "debugCapture"];
+  const keys = ["retentionMax", "maxCaptureMB", "debugCapture", "readCitedPages"];
   const changed = !!saved && !!draft && keys.some((k) => saved[k] !== draft[k]);
   return {
     dirty: changed,

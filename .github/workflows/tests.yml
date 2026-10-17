@@ -128,7 +128,7 @@ jobs:
                    test/pacing.test.mjs test/retention.test.mjs \
                    test/image-url.test.mjs test/sources.test.mjs test/text-sanitize.test.mjs test/xlsxlite.test.mjs \
                    test/brands-local.test.mjs test/same-answer.test.mjs test/gemini-hotels.test.mjs \
-                   test/chatgpt-ads.test.mjs test/chatgpt-genui.test.mjs test/raw-breakdown.test.mjs test/answer-links.test.mjs; do
+                   test/chatgpt-ads.test.mjs test/chatgpt-genui.test.mjs test/raw-breakdown.test.mjs test/page-text.test.mjs test/answer-links.test.mjs; do
             echo "── $f"
             if ! node "$f"; then
               echo "::error file=$f::unit test failed"
