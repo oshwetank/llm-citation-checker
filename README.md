@@ -10,12 +10,30 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.60.1** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.60.2** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **ChatGPT's card answers look like ChatGPT's** (0.60.2). "The answer, as ChatGPT showed
+>   it" now draws each card as ChatGPT does: picture on the left, its badge, the product
+>   name, the spec line, the text with its source chips and the grey note. The follow-up
+>   form shows each question with the choice ChatGPT had selected. Cards are named by their
+>   product even when the large title is a spec ("Snapdragon 8 Gen 5"), and a price is found
+>   wherever the card puts it. The same view is in the PDF and the HTML export.
+> - The News chip only appears when ChatGPT actually showed a news block. The answer report no
+>   longer says a brand is "easy to lose next time".
+> - The raw payload breakdown keeps every value whole: every query, long values, and streamed
+>   text put back together, with Show all and Copy.
+> - **Images shown** is rebuilt: wider cards, pictures that fill their frame, the kind of site
+>   as a dot and a word, and the page each picture came from.
+> - Dashboard: "Ran for your prompt" shows every prompt in full, each one a link; a **Custom…**
+>   period picks any span of days.
+> - The top bar centres Analyze, Dashboard, Campaigns and About; Simple/Expert is one small
+>   switch; Analyze no longer has a search box (the pager stays).
+> - Studio and Classic now share one typeface (Geist) and one set of sizes; they differ in
+>   colour and shape only.
 > - **ChatGPT's card answers read properly** (0.60.1). Some ChatGPT answers now arrive as
 >   layout code for cards. They used to show every sentence twice, lose the intro, print the
 >   tags, count no page as cited, keep one product of three and one image of three, take
