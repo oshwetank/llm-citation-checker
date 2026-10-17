@@ -671,15 +671,27 @@ try {
       pill?.click();
     });
     await page.waitForTimeout(900);
-    const clicked = await page.evaluate(() => {
-      const btn = document.querySelector("#cb-sources .drill-table td.td-domain button");
-      if (!btn) return false;
-      btn.click();
-      return true;
-    });
+    // Opens URL rows in turn until one's answers name a tracked brand: the
+    // Brands column lists the campaign's tracked brands only, and a page
+    // that only made-up fixtures cite (Zento, Kovo) rightly has none. Which
+    // URL comes first depends on which fixtures share pages.
+    let clicked = false;
+    for (let i = 0; i < 6; i++) {
+      const ok = await page.evaluate((i) => {
+        document.getElementById("url-modal-backdrop")?.remove();
+        const btn = document.querySelectorAll("#cb-sources .drill-table td.td-domain button")[i];
+        if (!btn) return false;
+        btn.click();
+        return true;
+      }, i);
+      if (!ok) break;
+      clicked = true;
+      await page.waitForTimeout(1200);
+      const tagged = await page.evaluate(() => [...document.querySelectorAll("#url-modal-backdrop .drill-table tr")].slice(1).some((r) => r.querySelector(".tag")));
+      if (tagged) break;
+    }
     check("URL rows are clickable", clicked);
     if (clicked) {
-      await page.waitForTimeout(1200);
       const modal = await page.evaluate(() => {
         const b = document.getElementById("url-modal-backdrop");
         if (!b) return null;
@@ -689,7 +701,7 @@ try {
           stats: [...b.querySelectorAll(".modal-statgrid .stat")].map((s) => s.textContent),
           headers: [...b.querySelectorAll("th")].map((t) => t.textContent),
           rows: rows.length - 1,
-          firstRowBrands: [...(rows[1]?.querySelectorAll(".tag") || [])].map((t) => t.textContent),
+          firstRowBrands: [...(rows.slice(1).find((r) => r.querySelector(".tag"))?.querySelectorAll(".tag") || [])].map((t) => t.textContent),
           outcomes: [...b.querySelectorAll(".pp-chip")].map((o) => o.textContent),
           engines: [...b.querySelectorAll(".engine-chip, .engine-th")].length,
         };
