@@ -3026,6 +3026,7 @@ function atRawPanel(rec, engineLabel) {
       }
       await new Promise((res) => setTimeout(res, 0));
       b = rawBreakdown(r.raw, { reqBody: r.meta && r.meta.reqBody });
+      b.interactions = r.interactions || [];
       RAW_CACHE.set(rec.captureId, b);
       if (RAW_CACHE.size > 4) RAW_CACHE.delete(RAW_CACHE.keys().next().value);
     }
@@ -3050,6 +3051,20 @@ function atRawBody(b, rec, engineLabel) {
     out.push(el("div", { className: "at-rawx-row" }, el("span", { className: "at-eyebrow" }, "Objects by type"), types));
   }
   b.sections.forEach((sec) => out.push(atRawSection(sec, b, rec, engineLabel)));
+  // What ChatGPT loaded after the answer (0.62.0), each reply in full.
+  if ((b.interactions || []).length) {
+    const d = el("details", { className: "at-rawx-sec sec-interactions", "data-section": "interactions" });
+    d.append(el("summary", {}, el("b", {}, "Loaded after the answer"), el("span", { className: "n" }, String(b.interactions.length)), el("span", { className: "ap-muted" }, "replies ChatGPT fetched later in this conversation, e.g. a product card’s stores")));
+    b.interactions.forEach((x) => {
+      let pretty = x.body;
+      try { pretty = JSON.stringify(JSON.parse(x.body), null, 2); } catch (_) { /* keep as sent */ }
+      const row = el("div", { className: "at-rawx-full" },
+        el("div", { className: "at-rawx-full-h" }, el("code", {}, x.path), el("span", { className: "ap-muted" }, `${x.status} · ${apTime(x.at)}`)),
+        el("pre", {}, pretty.slice(0, 200000)));
+      d.append(row);
+    });
+    out.push(d);
+  }
   const json = () => JSON.stringify(b, null, 2);
   const copy = el("button", { className: "at-btn sm", type: "button" }, "Copy the breakdown");
   copy.onclick = async () => { try { await navigator.clipboard.writeText(json()); showToast("Copied"); } catch (_) { showToast("Couldn't copy", "error"); } };
@@ -3390,11 +3405,20 @@ function atProductsSection(rec, pv, { engineLabel, own }) {
     const imgHost = atProxied(r.image) ? "the engine’s copy" : atHost(r.image);
     const sup = supplierOf(p.supplier);
     const stores = el("span", { role: "cell", className: "at-prod-stores" });
+    // The stores ChatGPT listed when the card was opened (0.62.0): each with
+    // its price and link, in ChatGPT's order. Without that, the stores the
+    // answer stream names ("Motorola India + others").
+    if ((p.offers || []).length) {
+      p.offers.forEach((o, j) => stores.append(el(o.url ? "a" : "span", { className: "at-store-chip at-offer", ...(o.url ? { href: o.url, target: "_blank", rel: "noopener noreferrer" } : {}), title: [o.availability, o.delivery].filter(Boolean).join(" · ") }, el("b", {}, String(j + 1)), ` ${o.merchant}`, o.price ? el("span", { className: "at-offer-price" }, ` ${o.price}`) : null)));
+      stores.append(el("span", { className: "ap-muted at-offer-note" }, "as listed when the card was opened"));
+    } else {
     r.stores.forEach((st, j) => stores.append(el("span", { className: `at-store-chip${st.own ? " own" : ""}`, title: st.own ? `${r.brand}’s own store` : "" }, el("b", {}, String(j + 1)), ` ${st.name}`)));
     if (r.otherStores) stores.append(el("span", { className: "ap-muted" }, "+ others"));
     // A card ChatGPT drew in the answer without a shopping listing behind it
     // (generative-UI answers) names no store by design.
     if (!r.stores.length) stores.append(el("span", { className: "ap-muted" }, p.listing === false ? "a card in the answer · no shopping listing" : "no store named"));
+    if (rec.platform === "chatgpt" && p.listing !== false) stores.append(el("span", { className: "ap-muted at-offer-note" }, "open this card on ChatGPT to record every store"));
+    }
     const pagesCell = el("span", { role: "cell", className: "at-prod-pages" });
     r.pages.forEach((d) => pagesCell.append(el("span", { className: "at-page-chip" }, atShortDomain(d))));
     if (!r.pages.length) pagesCell.append(el("span", { className: "at-page-chip none" }, "no cited page"));

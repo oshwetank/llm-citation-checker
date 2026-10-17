@@ -6934,3 +6934,9 @@ html[data-theme="dark"] .db-date { color-scheme: dark; }
 .at-mx-basis { display: block; margin-top: 2px; font-size: 10.5px; font-weight: 500; color: var(--fg-muted); font-family: var(--font-sans); }
 .at-mx-basis.b-page { color: var(--green-fg); }
 .at-mx-basis.b-mixed { color: var(--amber-fg, var(--fg-secondary)); }
+
+/* Stores listed when a card was opened (0.62.0) */
+.at-offer { text-decoration: none; color: inherit; }
+.at-offer:hover { border-color: var(--accent); }
+.at-offer-price { color: var(--fg-secondary); font-variant-numeric: tabular-nums; }
+.at-offer-note { display: block; font-size: 11px; margin-top: 2px; }

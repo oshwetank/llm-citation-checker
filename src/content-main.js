@@ -128,7 +128,30 @@
     try { window.postMessage({ __LCFC__: CHANNEL, type: "engine-submit", via }, location.origin); } catch (_) { /* ignore */ }
   };
 
+  // What ChatGPT loads after an answer (0.62.0). A product card's stores are
+  // not in the answer stream: ChatGPT fetches them when someone opens the
+  // card. After this page has given us an answer, its own later requests to
+  // /backend-api/ are looked at (never made by us), and a JSON reply that
+  // reads like shopping data (merchants, offers, sellers, prices) is passed
+  // on. Account, settings and model paths are never looked at.
+  let answerSeen = false;
+  const INTERACTION_DENY = /\/backend-api\/(?:me|accounts?|settings|user|models|conversations?(?:\/|\?|$)|conversation\/init|sentinel|memories|files|gizmos|subscriptions|payments|billing|auth|beacons|lat\/|aip\/)/i;
+  const SHOPPING_KEYS = /"(?:merchants?|offers?|sellers?|retailers?|store_name|merchant_name|seller_name|price_display|buy_url|checkout_url)"\s*:/i;
+  function watchInteraction(url, method, resp) {
+    if (!IS_CHATGPT || !answerSeen || !resp) return;
+    let path = "";
+    try { const u = new URL(url, location.href); if (u.origin !== location.origin) return; path = u.pathname + u.search; } catch (_) { return; }
+    if (!/^\/backend-api\//.test(path) || INTERACTION_DENY.test(path)) return;
+    const type = (resp.headers && resp.headers.get("content-type")) || "";
+    if (!/json/i.test(type)) return;
+    resp.clone().text().then((body) => {
+      if (!body || body.length > 2000000 || !SHOPPING_KEYS.test(body)) return;
+      window.postMessage({ __LCFC__: CHANNEL, type: "page-interaction", path: path.slice(0, 500), method, status: resp.status, body, at: Date.now() }, location.origin);
+    }).catch(() => {});
+  }
+
   function emit(record) {
+    answerSeen = true;
     try {
       window.postMessage({ __LCFC__: CHANNEL, type: "raw-conversation", ...record }, location.origin);
     } catch (_) {
@@ -227,6 +250,8 @@
       } catch (_) {
         /* ignore */
       }
+    } else {
+      try { watchInteraction(url, method, resp); } catch (_) { /* never in the page's way */ }
     }
     return resp;
   };

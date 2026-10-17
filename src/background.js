@@ -28,6 +28,7 @@ import { findPrevious } from "./lib/analyzeView.js";
 import { summarizeRunDiagnostics } from "./lib/diagnosticsSummary.js";
 import { gzipString, gunzipToString } from "./lib/gzip.js";
 import { citedUrls, pageVerdict, pageSummary, wordCount, PAGE_TTL_MS } from "./lib/pageText.js";
+import { offersFrom, attachOffers } from "./lib/offers.js";
 import { searchAnswers } from "./lib/answerSearch.js";
 import { answerKey, sameAnswer, mergeAnswers, SAME_ANSWER_WINDOW_MS } from "./lib/sameAnswer.js";
 import { campaignBoard, brandDetail } from "./lib/campaignBoard.js";
@@ -388,6 +389,7 @@ async function deriveAndStore(rawRow, rawText, settings, { settle = true } = {})
   }
 
   await attachPages(record);
+  await attachInteractions(record);
   await db.put("derived", record);
   return settle ? settleSameAnswer(record) : record;
 }
@@ -417,6 +419,41 @@ async function attachPages(record) {
   }
   const tried = (record.sources || []).filter((s) => s.platformSpecific && s.platformSpecific.page).length;
   if (tried) record.pagesRead = { read, tried, cited: urls.length };
+}
+
+/* What ChatGPT loaded after an answer (0.62.0, content-main.js): a product
+ * card's stores, seen only when someone opens the card. Stored per reply and
+ * put back on the record on every derive. */
+async function attachInteractions(record) {
+  const rows = await db.getAllByIndex("interactions", "captureId", record.captureId).catch(() => []);
+  if (!rows.length) return;
+  rows.sort((a, b) => a.at - b.at);
+  const products = (record.products || []).map((p) => ({ ...p }));
+  record.interactions = rows.map((r) => {
+    let json = null;
+    try { json = JSON.parse(r.body); } catch (_) { /* not JSON after all */ }
+    const found = json ? offersFrom(json) : [];
+    const added = attachOffers(products, found, { path: r.path });
+    return { id: r.id, at: r.at, path: r.path, status: r.status, offers: found.reduce((n, f) => n + f.offers.length, 0), cards: added };
+  });
+  record.products = products;
+}
+
+async function onPageInteraction(p) {
+  const conv = (/\/c\/([0-9a-f][0-9a-f-]{7,})/i.exec(p.pageUrl || "") || [])[1];
+  if (!conv) return { ok: false, reason: "no conversation" };
+  const recs = await db.getAllByIndex("derived", "conversationId", conv).catch(() => []);
+  const at = p.at || Date.now();
+  const rec = recs.filter((r) => r.platform === "chatgpt" && at - r.capturedAt < 60 * 60000 && at >= r.capturedAt - 5000).sort((a, b) => b.capturedAt - a.capturedAt)[0];
+  if (!rec) return { ok: false, reason: "no recent capture in this conversation" };
+  const id = `${rec.captureId}:${at}:${Math.random().toString(36).slice(2, 8)}`;
+  await db.put("interactions", { id, captureId: rec.captureId, conversationId: conv, at, path: p.path, method: p.method, status: p.status, body: String(p.body || "").slice(0, 2000000) });
+  const current = await db.get("derived", rec.captureId);
+  if (!current) return { ok: false };
+  await attachInteractions(current);
+  await db.put("derived", current);
+  try { chrome.runtime.sendMessage({ type: "capture-updated", captureId: rec.captureId }, () => void chrome.runtime.lastError); } catch (_) {}
+  return { ok: true, captureId: rec.captureId };
 }
 
 let offscreenReady = null;
@@ -557,6 +594,9 @@ async function dropCapture(captureId) {
   const rec = await db.get("derived", captureId);
   for (const id of [captureId, ...((rec && rec.mergedFrom) || [])]) await db.delete("raw", id);
   await db.delete("derived", captureId);
+  // What loaded after the answer goes with it (0.62.0). Read pages stay:
+  // they belong to the address, and other answers cite the same pages.
+  for (const row of await db.getAllByIndex("interactions", "captureId", captureId).catch(() => [])) await db.delete("interactions", row.id);
 }
 
 // Keep the store bounded: prune the oldest AD-HOC captures beyond the
@@ -3527,6 +3567,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, records: out });
           break;
         }
+        case "page-interaction":
+          sendResponse(await onPageInteraction(msg.payload || {}));
+          break;
         // Read (or re-read) one answer's cited pages now, from Analyze.
         case "read-cited-pages":
           sendResponse(await readCitedPages(msg.captureId, { force: !!msg.force, manual: true }));
@@ -3534,7 +3577,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "get-raw": {
           const row = await db.get("raw", msg.captureId);
           const raw = row ? await gunzipToString(row.gz) : null;
-          sendResponse({ ok: true, raw, meta: row ? { url: row.url, reqBody: row.reqBody } : null });
+          const inter = await db.getAllByIndex("interactions", "captureId", msg.captureId).catch(() => []);
+          sendResponse({ ok: true, raw, meta: row ? { url: row.url, reqBody: row.reqBody } : null, interactions: inter.sort((x, y) => x.at - y.at).map((x) => ({ at: x.at, path: x.path, status: x.status, body: x.body })) });
           break;
         }
         case "reprocess-all":
@@ -3573,6 +3617,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           await db.clear("raw");
           await db.clear("derived");
           await db.clear("runs");
+          await db.clear("pages").catch(() => {});
+          await db.clear("interactions").catch(() => {});
           sendResponse({ ok: true });
           break;
         case "stats": {

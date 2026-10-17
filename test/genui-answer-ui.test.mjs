@@ -115,6 +115,34 @@ try {
   check("each picture says which page it came from", im.leads.every((l) => /shop1\.example page/.test(l)), JSON.stringify(im.leads));
   check("cards keep their own numbers", JSON.stringify(im.names) === JSON.stringify(["1. Zento Nova 8", "2. Kovo Edge 5 Pro", "3. Lumora Pix 3"]), JSON.stringify(im.names));
 
+  // A card's stores load only when someone opens the card on ChatGPT
+  // (0.62.0). The reply ChatGPT fetched is recorded against the answer it
+  // followed; this one is made up, in a plausible shape.
+  console.log("\nStores listed when a card was opened");
+  {
+    const rec = await page.evaluate((id) => new Promise((r) => chrome.runtime.sendMessage({ type: "get-record", captureId: id }, (x) => r(x && x.record))), id);
+    const body = JSON.stringify({ product: { id: "kovo-edge-5-pro", title: "Kovo Edge 5 Pro", offers: [
+      { merchant_name: "Kovo Store", price_display: "₹28,499", url: "https://kovo.example/edge5" },
+      { merchant_name: "Phonekart", price_display: "₹27,999", url: "https://phonekart.example/kovo-edge-5" },
+    ] } });
+    const sent = await page.evaluate(([conv, body]) => new Promise((r) => chrome.runtime.sendMessage({ type: "page-interaction", payload: { path: "/backend-api/shopping/product?id=kovo-edge-5-pro", method: "GET", status: 200, body, at: Date.now(), pageUrl: `https://chatgpt.com/c/${conv}` } }, r)), [rec.conversationId, body]);
+    check("the reply is tied to the answer it followed", sent && sent.ok && sent.captureId === id, JSON.stringify(sent));
+    await page.goto(`chrome-extension://${extId}/ui/panel.html?mode=tab&capture=${encodeURIComponent(id)}`);
+    await page.waitForTimeout(1800);
+    const st = await page.evaluate(() => {
+      const row = [...document.querySelectorAll("#at-products .at-prod-row:not(.at-th)")].find((r) => /Kovo Edge 5 Pro/.test(r.textContent));
+      return { offers: [...(row ? row.querySelectorAll(".at-offer") : [])].map((a) => `${a.textContent.trim()}|${a.getAttribute("href") || ""}`), note: row ? row.querySelector(".at-offer-note")?.textContent : "" };
+    });
+    check("the card lists every store with its price and link", JSON.stringify(st.offers) === JSON.stringify(["1 Kovo Store ₹28,499|https://kovo.example/edge5", "2 Phonekart ₹27,999|https://phonekart.example/kovo-edge-5"]), JSON.stringify(st));
+    check("and says where the list came from", /when the card was opened/.test(st.note || ""), st.note);
+    await page.evaluate(() => { localStorage.setItem("cito-detail", "expert"); document.documentElement.setAttribute("data-detail", "expert"); });
+    await page.evaluate(() => document.querySelector("#at-rawx > summary")?.click());
+    await page.waitForFunction(() => !!document.querySelector('#at-rawx [data-section="interactions"]'), null, { timeout: 8000 }).catch(() => {});
+    const raw = await page.evaluate(() => document.querySelector('#at-rawx [data-section="interactions"]')?.textContent || "");
+    check("the raw breakdown has the reply in full", /Loaded after the answer/.test(raw) && /Phonekart/.test(raw), raw.slice(0, 160));
+    await page.evaluate(() => { localStorage.setItem("cito-detail", "simple"); });
+  }
+
   console.log("\nCards drawn as ChatGPT drew them");
   {
     const fx = readFileSync(path.join(HERE, "fixtures", "chatgpt-genui-entity-cards.txt"), "utf8").split(/\r?\n/);

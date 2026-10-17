@@ -90,6 +90,12 @@ function openDb() {
         const pg = db.createObjectStore("pages", { keyPath: "url" });
         pg.createIndex("fetchedAt", "fetchedAt", { unique: false });
       }
+      // Also v7: what ChatGPT loaded after an answer (a product card's stores,
+      // 0.62.0), one row per reply, tied to the capture it followed.
+      if (!db.objectStoreNames.contains("interactions")) {
+        const it = db.createObjectStore("interactions", { keyPath: "id" });
+        it.createIndex("captureId", "captureId", { unique: false });
+      }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -128,6 +134,10 @@ export const db = {
   },
   getAll(store) {
     return tx(store, "readonly", (os) => reqToPromise(os.getAll()));
+  },
+  // Every row whose index `index` equals `value` (e.g. a capture's interactions).
+  getAllByIndex(store, index, value) {
+    return tx(store, "readonly", (os) => reqToPromise(os.index(index).getAll(value)));
   },
   getAllKeys(store) {
     return tx(store, "readonly", (os) => reqToPromise(os.getAllKeys()));
