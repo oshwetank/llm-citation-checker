@@ -92,6 +92,21 @@ console.log("shapes no engine sends today");
   check("parseRaw skips the export's # header lines", parseRaw("# url: x\n# reqBody: {}\n\n{\"a\":1}").format === "JSON");
 }
 
+console.log("nothing cut off (0.60.2)");
+{
+  // Reported: "the raw payload breakdown queries are getting truncated".
+  // 0.60.1 kept three values per field, each cut at 140 characters.
+  const long = "best foldable phone for multitasking with the most powerful processor available in India this year, with split screen, floating windows, app pairs, a large inner display, long battery life and at least seven years of updates";
+  const queries = [long, "q2", "q3", "q4", "q5"];
+  const b = rawBreakdown(JSON.stringify({ search_model_queries: { queries } }));
+  const f = field(b, "searches", /queries/);
+  check("every query is kept", f && f.samples.length === 5 && f.distinct === 5, JSON.stringify(f && f.samples));
+  check("a long query is kept whole", f && f.samples[0] === long);
+  const sse = ["data: " + JSON.stringify({ p: "/message/content/parts/0", o: "append", v: "Hello " }), "data: " + JSON.stringify({ p: "/message/content/parts/0", o: "append", v: "there, " }), "data: " + JSON.stringify({ p: "/message/content/parts/0", o: "append", v: "world." })].join("\n\n");
+  const j = field(rawBreakdown(sse), "answer", /parts/);
+  check("streamed pieces are put back together", j && j.joined === "Hello there, world.", JSON.stringify(j));
+}
+
 console.log("on-device labels");
 {
   const fields = [{ path: "zq.blorp.[].wib", sample: "a" }, { path: "[2].⟨json⟩.[4]", sample: "If you want" }];

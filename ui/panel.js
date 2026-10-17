@@ -3117,11 +3117,41 @@ function atRawSection(sec, b, rec, engineLabel) {
       if (parent) list.append(el("div", { className: "at-rawx-group", role: "row" }, el("span", { role: "cell", title: parent }, parent), el("span", { role: "cell", className: "ap-muted" }, plural(fields.length, "field"))));
       fields.forEach((f) => {
         const leaf = parent ? f.path.slice(parent.length + 1) : f.path;
-        const sample = f.samples.map((x) => (typeof x === "string" ? JSON.stringify(x) : String(x))).join("  ·  ");
+        const show = (x) => (typeof x === "string" ? JSON.stringify(x) : String(x));
+        const first = f.samples.length ? show(f.samples[0]) : "—";
+        const more = f.samples.length - 1;
+        // Values wrap to three lines; "Show all" opens every distinct value
+        // in full, the longest one and, for streamed text, the pieces put
+        // back together (reported: queries were cut off).
+        const cell = el("span", { role: "cell", className: "at-rawx-sample" }, el("span", { className: "at-rawx-val" }, first));
+        const full = f.joined || f.longest || f.samples.some((x) => typeof x === "string" && x.length > 160) || more > 0;
+        if (full) {
+          const btn = el("button", { className: "ap-link at-rawx-more", type: "button", "aria-expanded": "false" },
+            more > 0 ? `Show all ${f.distinct > f.samples.length ? `${f.samples.length} of ${f.distinct}` : f.samples.length} values` : "Show all");
+          btn.onclick = () => {
+            const open = btn.getAttribute("aria-expanded") === "true";
+            btn.setAttribute("aria-expanded", open ? "false" : "true");
+            btn.textContent = open ? (more > 0 ? `Show all ${f.samples.length} values` : "Show all") : "Show less";
+            const prev = row.querySelector(".at-rawx-full");
+            if (open) { prev && prev.remove(); return; }
+            const box = el("div", { className: "at-rawx-full", role: "cell" });
+            const add = (label, text) => {
+              const pre = el("pre", {}, text);
+              const copy = el("button", { className: "at-btn sm", type: "button" }, "Copy");
+              copy.onclick = async () => { try { await navigator.clipboard.writeText(text); showToast("Copied"); } catch (_) { showToast("Couldn't copy", "error"); } };
+              box.append(el("div", { className: "at-rawx-full-h" }, el("span", { className: "ap-muted" }, label), copy), pre);
+            };
+            if (f.joined) add(`The streamed pieces put together · ${f.joined.length.toLocaleString()} characters`, f.joined);
+            if (f.longest) add(`Longest value · ${f.longest.length.toLocaleString()} characters`, f.longest);
+            add(f.samples.length > 1 ? `${f.samples.length} distinct values${f.distinct > f.samples.length ? ` (first ${f.samples.length} of ${f.distinct})` : ""}` : "Value", f.samples.map(show).join("\n"));
+            row.append(box);
+          };
+          cell.append(btn);
+        }
         const row = el("div", { className: "at-rawx-field", role: "row", "data-path": f.path },
           el("code", { role: "cell", title: f.path }, leaf),
           el("span", { role: "cell", className: "ap-muted" }, `×${f.count}`, f.ops.length ? ` · ${f.ops.join("/")}` : "", ` · ${f.kinds.join("/")}`),
-          el("span", { role: "cell", className: "at-rawx-sample", title: f.longest || sample }, sample || "—"));
+          cell);
         list.append(row);
       });
     }

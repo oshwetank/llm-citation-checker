@@ -26,6 +26,10 @@
  * request (nano.js labelRawFields) — those labels are shown as guesses.
  */
 
+const MAX_VALUE = 20000;   // one value, in full up to this
+const MAX_SAMPLES = 50;    // distinct values kept per field
+const MAX_JOINED = 200000; // streamed text put back together
+
 export const SECTIONS = [
   { id: "request", label: "What was sent", note: "the request the page made" },
   { id: "answer", label: "Answer text", note: "the words of the answer and its markup" },
@@ -147,7 +151,7 @@ export function rawBreakdown(raw, opts = {}) {
     let p = paths.get(path);
     if (!p) {
       if (paths.size >= maxPaths) { truncated = true; return; }
-      p = { path, count: 0, kinds: new Set(), ops: new Set(), samples: [], chars: 0, firstFrame: frame, longest: "", empty: true };
+      p = { path, count: 0, kinds: new Set(), ops: new Set(), samples: [], distinct: new Set(), chars: 0, firstFrame: frame, longest: "", joined: "", empty: true };
       paths.set(path, p);
     }
     p.count++;
@@ -158,12 +162,21 @@ export function rawBreakdown(raw, opts = {}) {
       p.chars += value.length;
       // Engines that resend the whole answer so far (Gemini) only show what
       // a field is in its longest value; the first ones are a few words.
-      if (value.length > p.longest.length) p.longest = value.slice(0, 2000);
+      if (value.length > p.longest.length) p.longest = value.slice(0, MAX_VALUE);
+      // Text streamed in pieces (ChatGPT's appends) reads whole only when
+      // the pieces are put back together.
+      if (op === "append" && p.joined.length < MAX_JOINED) p.joined += value;
     }
     if (!(value === null || value === "" || (Array.isArray(value) && !value.length) || (value && typeof value === "object" && !Array.isArray(value) && !Object.keys(value).length))) p.empty = false;
-    if (p.samples.length < 3 && kind !== "object" && kind !== "array") {
-      const s = typeof value === "string" ? (value.length > 140 ? value.slice(0, 140) + "…" : value) : value;
-      if (!p.samples.some((x) => x === s) && s !== "") p.samples.push(s);
+    // Every distinct value, in full (up to a cap), not the first three cut
+    // at 140 characters: reported, the searches in the breakdown were cut
+    // off, and a field with five queries showed three.
+    if (kind !== "object" && kind !== "array" && value !== "") {
+      const key = typeof value === "string" ? value.slice(0, 300) : String(value);
+      if (!p.distinct.has(key) && p.distinct.size < 1000) {
+        p.distinct.add(key);
+        if (p.samples.length < MAX_SAMPLES) p.samples.push(typeof value === "string" && value.length > MAX_VALUE ? value.slice(0, MAX_VALUE) + "…" : value);
+      }
     }
   };
 
@@ -213,11 +226,12 @@ export function rawBreakdown(raw, opts = {}) {
   const byId = new Map(sections.map((s) => [s.id, s]));
   for (const p of paths.values()) {
     const sec = byId.get(sectionOf(p.path, p.longest ? [p.longest, ...p.samples] : p.samples)) || byId.get("other");
-    const longest = p.longest.length > 140 ? p.longest.slice(0, 400) + (p.longest.length > 400 ? "…" : "") : null;
+    const longest = p.longest && !p.samples.includes(p.longest) ? p.longest : null;
+    const joined = p.joined && p.joined.length > p.longest.length ? p.joined : null;
     // Slots that never held anything are counted, not listed: Gemini sends
     // dozens of always-null positions in every frame.
     if (p.empty) { sec.emptyFields = (sec.emptyFields || 0) + 1; continue; }
-    sec.fields.push({ path: p.path, count: p.count, kinds: [...p.kinds], ops: [...p.ops], samples: p.samples, longest, chars: p.chars, firstFrame: p.firstFrame });
+    sec.fields.push({ path: p.path, count: p.count, kinds: [...p.kinds], ops: [...p.ops], samples: p.samples, distinct: p.distinct.size, longest, joined, chars: p.chars, firstFrame: p.firstFrame });
   }
   if (opts.reqBody) {
     const req = rawBreakdown(String(opts.reqBody), { maxPaths: 300 });

@@ -636,6 +636,19 @@ try {
       return { n: rows.length, url: rows.some((r) => /https:\/\//.test(r.textContent)), wide: document.documentElement.scrollWidth <= window.innerWidth };
     });
     check("a section lists its fields with samples, without widening the page", rx2.n > 3 && rx2.url && rx2.wide, JSON.stringify(rx2));
+    // Values wrap instead of being cut, and "Show all" opens them in full (0.60.2).
+    await page.evaluate(() => document.querySelector('#at-rawx .at-rawx-sec[data-section="searches"] > summary').click());
+    await page.waitForTimeout(300);
+    const rx3 = await page.evaluate(() => {
+      const sec = document.querySelector('#at-rawx .at-rawx-sec[data-section="searches"]');
+      const v = sec.querySelector(".at-rawx-val");
+      const btn = sec.querySelector(".at-rawx-more");
+      const nowrap = [...document.querySelectorAll("#at-rawx .at-rawx-val")].some((x) => getComputedStyle(x).whiteSpace === "nowrap" || getComputedStyle(x).textOverflow === "ellipsis");
+      btn && btn.click();
+      const pre = sec.querySelector(".at-rawx-full pre");
+      return { val: v ? v.textContent : "", nowrap, pre: pre ? pre.textContent : "", expanded: btn && btn.getAttribute("aria-expanded") };
+    });
+    check("search values wrap, uncut, and Show all opens them in full", rx3.val && !rx3.val.endsWith("…") && !rx3.nowrap && rx3.pre.length >= rx3.val.length - 2 && rx3.expanded === "true", JSON.stringify(rx3).slice(0, 300));
     await page.evaluate(() => [...document.querySelectorAll("#headerPage .at-detail-btn")].find((b) => b.textContent === "Simple").click());
     await page.waitForTimeout(300);
     check("back in Simple it is hidden again", await page.evaluate(() => !document.getElementById("at-rawx")?.offsetParent));
