@@ -6899,3 +6899,8 @@ polyline.ot-line.c5 { stroke: #c9a227; } circle.ot-line.c5 { fill: #c9a227; }
 .at-img-kind i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
 .at-img-lead, .at-img-brand { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; white-space: normal; overflow-wrap: break-word; font-size: 11.5px; line-height: 1.4; }
 .at-img-lead .glyph { vertical-align: -2px; margin-right: 3px; }
+
+/* "Ran for your prompt": whole prompts, each a link, two lines at most each (0.60.2) */
+.db-from { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
+.db-from-link { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; text-align: left; white-space: normal; overflow-wrap: break-word; max-width: 100%; }
+.db-from-more { font-size: 12px; }

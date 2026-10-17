@@ -5473,8 +5473,21 @@ function renderDashboardImpl() {
       const table = el("div", { className: "db-fan", role: "table", "aria-label": "Searches the engines ran" });
       if (!popup) table.append(el("div", { className: "db-fan-row db-th", role: "row" }, ...["Search the engine ran", "Times", "Engines", "Ran for your prompt"].map((h) => el("span", { role: "columnheader" }, h))));
       v.fan.forEach((f) => {
-        const from = el("button", { className: "db-link", type: "button", title: f.from.join("\n") }, (f.from[0].length > 60 ? f.from[0].slice(0, 58) + "…" : f.from[0]) + (f.from.length > 1 ? ` +${f.from.length - 1} more` : ""));
-        from.onclick = () => { const r = v.list.find((x) => x.text === f.from[0]); if (r) openCapture(r.latestId); };
+        // Every prompt the search ran for, in full and each one a link
+        // (reported: cut at 60 characters, with the rest only in a tooltip
+        // and only the first one clickable). Two show; "+N more" opens the rest.
+        const from = el("span", { className: "db-from" });
+        const link = (text) => {
+          const b = el("button", { className: "db-link db-from-link", type: "button", title: text }, text);
+          b.onclick = () => { const r = v.list.find((x) => x.text === text); if (r) openCapture(r.latestId); };
+          return b;
+        };
+        f.from.slice(0, 2).forEach((t) => from.append(link(t)));
+        if (f.from.length > 2) {
+          const more = el("button", { className: "ap-link db-from-more", type: "button", "aria-expanded": "false" }, `+${f.from.length - 2} more`);
+          more.onclick = () => { f.from.slice(2).forEach((t) => from.insertBefore(link(t), more)); more.remove(); };
+          from.append(more);
+        }
         const eng = el("span", { className: "db-engines" }, ...f.engines.map((id) => { const ic = engineIconEl(id); ic.setAttribute("title", dbEngineLabel(id)); return ic; }));
         table.append(el("div", { className: "db-fan-row", role: "row" },
           el("span", { role: "cell", className: "db-fan-q" }, dbHighlight(f.text, v.tokens), f.lane !== "web" ? el("span", { className: "ap-tag" }, f.lane) : null),

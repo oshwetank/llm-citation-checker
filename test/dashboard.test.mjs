@@ -211,6 +211,14 @@ try {
     await page.waitForTimeout(300);
     const r = await page.evaluate(() => ({ rows: document.querySelectorAll(".db-fan-row:not(.db-th)").length, head: document.querySelector(".db-fan-row.db-th")?.textContent || "" }));
     check("a table of every search, how often, which engines, for which prompt", r.rows > 0 && /Ran for your prompt/.test(r.head), JSON.stringify(r));
+    // "Ran for your prompt" was cut at 60 characters with the rest in a
+    // tooltip, and only the first prompt was a link (0.60.2).
+    const f = await page.evaluate(() => {
+      const prompts = new Set([...document.querySelectorAll(".db-fan-row:not(.db-th) .db-from-link")].map((b) => b.textContent));
+      const cells = [...document.querySelectorAll(".db-fan-row:not(.db-th) > span:last-child")];
+      return { links: prompts.size, cut: cells.some((c) => /…/.test(c.textContent)), styles: [...document.querySelectorAll(".db-from-link")].every((b) => getComputedStyle(b).whiteSpace !== "nowrap") };
+    });
+    check("every prompt is whole, wraps, and is its own link", f.links > 0 && !f.cut && f.styles, JSON.stringify(f));
     await page.evaluate(() => [...document.querySelectorAll(".db-view")].find((b) => /Prompts/.test(b.textContent))?.click());
     await page.waitForTimeout(300);
   }
