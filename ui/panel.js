@@ -2250,54 +2250,16 @@ let atScrollBound = false;
  * your own captures, as the popup's arrows do. */
 let atHeaderNodes = null;
 function atHeaderTools(rec) {
-  const wrap = el("div", { className: "at-find", role: "search" });
-  const input = el("input", { type: "search", className: "at-find-input", placeholder: "Find a captured prompt", "aria-label": "Find a captured prompt", autocomplete: "off", "aria-expanded": "false", "aria-controls": "at-find-list", role: "combobox", "aria-autocomplete": "list" });
-  const list = el("div", { className: "at-find-list", id: "at-find-list", role: "listbox", hidden: true });
-  wrap.append(glyphEl("search", 14), input, list);
-  let hits = [], sel = -1;
-  const open = (r) => { list.hidden = true; input.setAttribute("aria-expanded", "false"); atResetState(); openCapture(r.captureId); };
-  const paint = () => {
-    list.textContent = "";
-    hits.forEach((r, i) => {
-      const ic = engineIconEl(r.platform);
-      ic.classList.add("ap-engine-icon");
-      const o = el("button", { className: `at-find-item${i === sel ? " on" : ""}`, type: "button", role: "option", id: `at-find-${i}`, "aria-selected": String(i === sel), tabindex: "-1" },
-        ic, el("span", { className: "at-find-text" }, r.userPrompt || "(no prompt text)"),
-        el("span", { className: "at-find-meta" }, [r.geo ? "campaign" : "", apDate(r.capturedAt)].filter(Boolean).join(" · ")));
-      o.onmousedown = (e) => e.preventDefault();
-      o.onclick = () => open(r);
-      list.append(o);
-    });
-    if (!hits.length && input.value.trim()) list.append(el("div", { className: "at-find-none" }, "No captured prompt matches."));
-    const show = !!input.value.trim();
-    list.hidden = !show;
-    input.setAttribute("aria-expanded", String(show));
-    if (sel >= 0) input.setAttribute("aria-activedescendant", `at-find-${sel}`); else input.removeAttribute("aria-activedescendant");
-  };
-  input.oninput = () => {
-    const words = input.value.toLowerCase().split(/\s+/).filter(Boolean);
-    const pool = (ALL_RECORDS.length ? ALL_RECORDS : RECORDS);
-    hits = words.length ? pool.filter((r) => { const t = String(r.userPrompt || "").toLowerCase(); return words.every((w) => t.includes(w)); })
-      .sort((a, b) => (b.capturedAt || 0) - (a.capturedAt || 0)).slice(0, 8) : [];
-    sel = hits.length ? 0 : -1;
-    paint();
-  };
-  input.onkeydown = (e) => {
-    if (e.key === "ArrowDown" && hits.length) { sel = (sel + 1) % hits.length; paint(); e.preventDefault(); }
-    else if (e.key === "ArrowUp" && hits.length) { sel = (sel - 1 + hits.length) % hits.length; paint(); e.preventDefault(); }
-    else if (e.key === "Enter" && hits[sel]) { open(hits[sel]); e.preventDefault(); }
-    else if (e.key === "Escape") { input.value = ""; hits = []; sel = -1; paint(); }
-  };
-  input.onblur = () => setTimeout(() => { list.hidden = true; input.setAttribute("aria-expanded", "false"); }, 120);
-  // Simple / Expert, beside the find box as on the canvas.
-  const seg = el("div", { className: "at-detail-seg", role: "group", "aria-label": "Level of detail" });
-  [["simple", "Simple"], ["expert", "Expert"]].forEach(([v, l]) => {
-    const on = (document.documentElement.getAttribute("data-detail") || "simple") === v;
-    const b = el("button", { className: `at-detail-btn${on ? " on" : ""}`, type: "button", "data-detail-pick": v, "aria-pressed": String(on) }, l);
-    b.onclick = () => setDetail(v);
-    seg.append(b);
-  });
-  const nodes = [seg, wrap];
+  // The "Find a captured prompt" box left the bar in 0.60.2 (reported: a
+  // search box makes no sense on Analyze; the Dashboard is where prompts are
+  // found). The pager stays.
+  // Simple / Expert as one small switch (0.60.2; reported: the two-button
+  // segment took too much of the bar). Off is Simple, on is Expert.
+  const on = document.documentElement.getAttribute("data-detail") === "expert";
+  const sw = el("button", { className: `at-detail-switch${on ? " on" : ""}`, type: "button", role: "switch", "aria-checked": String(on), "data-detail-switch": "", title: "Expert adds raw ids, listing feeds, a grounding figure and the raw payload" },
+    el("span", { className: "at-switch-track", "aria-hidden": "true" }, el("span", { className: "at-switch-dot" })), el("span", { className: "at-switch-label" }, "Expert"));
+  sw.onclick = () => setDetail(document.documentElement.getAttribute("data-detail") === "expert" ? "simple" : "expert");
+  const nodes = [sw];
   const idx = RECORDS.findIndex((r) => r.captureId === rec.captureId);
   if (idx >= 0 && RECORDS.length > 1) {
     const go = (j) => { const t = RECORDS[j]; if (t) { atResetState(); openCapture(t.captureId); } };
@@ -8516,6 +8478,10 @@ function applyDetail(detail) {
     const on = b.dataset.detailPick === next;
     b.setAttribute(b.getAttribute("role") === "radio" ? "aria-checked" : "aria-pressed", String(on));
     b.classList.toggle("on", on);
+  });
+  document.querySelectorAll("[data-detail-switch]").forEach((b) => {
+    b.setAttribute("aria-checked", String(next === "expert"));
+    b.classList.toggle("on", next === "expert");
   });
   return changed;
 }

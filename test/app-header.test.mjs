@@ -104,13 +104,14 @@ try {
     await page.waitForTimeout(1200);
     const m = await measure();
     check("one row", m.header && m.header.h <= 56, m.header && `${m.header.h}px tall`);
-    check("the pages sit right after the name, not at the far end", m.title && m.nav && m.nav.l - m.title.r < 140 && m.nav.l < 500, JSON.stringify({ title: m.title, nav: m.nav }));
+    // Centred since 0.60.2 (reported: the pages sat off to one side).
+    check("the pages sit in the middle of the bar", m.header && m.nav && Math.abs((m.nav.l + m.nav.r) / 2 - (m.header.l + m.header.r) / 2) < 24, JSON.stringify({ header: m.header, nav: m.nav }));
     check("words, no icons", m.tabIcons === 0, `${m.tabIcons} icons`);
     // Analyze adds its search and pager (analyze-tab covers them) when an
     // answer is on screen; the sample capture can arrive on a fresh install
     // before this runs, so check against what Analyze is showing.
-    const az = await page.evaluate(() => ({ answer: !!document.getElementById("at-answer"), find: !!document.querySelector("#headerPage .at-find"), items: document.getElementById("headerPage").childElementCount }));
-    check("Analyze adds its search to the bar only when it shows an answer", az.answer ? az.find : az.items === 0, JSON.stringify(az));
+    const az = await page.evaluate(() => ({ answer: !!document.getElementById("at-answer"), sw: !!document.querySelector("#headerPage .at-detail-switch"), find: !!document.querySelector("#headerPage input[type=search]"), items: document.getElementById("headerPage").childElementCount }));
+    check("Analyze adds its Expert switch (and no search) to the bar only when it shows an answer", (az.answer ? az.sw : az.items === 0) && !az.find, JSON.stringify(az));
 
     await page.evaluate(() => document.querySelector('[data-tab="dashboard"]').click());
     await page.waitForTimeout(800);

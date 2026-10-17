@@ -584,11 +584,12 @@ try {
     const simple = await page.evaluate(() => ({
       raw: [...document.querySelectorAll("#at-details .at-seg-btn")].some((b) => b.textContent === "Raw"),
       xs: [...document.querySelectorAll("#analyze .x-only")].filter((x) => x.offsetParent).length,
-      seg: [...document.querySelectorAll("#headerPage .at-detail-btn")].map((b) => `${b.textContent}:${b.getAttribute("aria-pressed")}`).join(),
+      seg: [...document.querySelectorAll("#headerPage .at-detail-switch")].map((b) => `${b.textContent}:${b.getAttribute("aria-checked")}`).join(),
+      segW: Math.round(document.querySelector("#headerPage .at-detail-switch")?.getBoundingClientRect().width || 0),
     }));
     check("Simple by default: no Raw tab, no expert-only detail shown", !simple.raw && simple.xs === 0, JSON.stringify(simple));
-    check("the switch sits in the top bar", simple.seg === "Simple:true,Expert:false", simple.seg);
-    await page.evaluate(() => [...document.querySelectorAll("#headerPage .at-detail-btn")].find((b) => b.textContent === "Expert").click());
+    check("the switch sits in the top bar, one small Expert switch, off", simple.seg === "Expert:false" && simple.segW > 0 && simple.segW <= 90, JSON.stringify(simple));
+    await page.evaluate(() => document.querySelector('#headerPage .at-detail-switch[aria-checked="false"]').click());
     await page.waitForTimeout(700);
     await page.evaluate(() => [...document.querySelectorAll("#at-details .at-seg-btn")].find((b) => b.textContent === "Raw")?.click());
     await page.waitForTimeout(500);
@@ -649,40 +650,28 @@ try {
       return { val: v ? v.textContent : "", nowrap, pre: pre ? pre.textContent : "", expanded: btn && btn.getAttribute("aria-expanded") };
     });
     check("search values wrap, uncut, and Show all opens them in full", rx3.val && !rx3.val.endsWith("…") && !rx3.nowrap && rx3.pre.length >= rx3.val.length - 2 && rx3.expanded === "true", JSON.stringify(rx3).slice(0, 300));
-    await page.evaluate(() => [...document.querySelectorAll("#headerPage .at-detail-btn")].find((b) => b.textContent === "Simple").click());
+    await page.evaluate(() => document.querySelector('#headerPage .at-detail-switch[aria-checked="true"]').click());
     await page.waitForTimeout(300);
     check("back in Simple it is hidden again", await page.evaluate(() => !document.getElementById("at-rawx")?.offsetParent));
-    await page.evaluate(() => [...document.querySelectorAll("#headerPage .at-detail-btn")].find((b) => b.textContent === "Expert").click());
+    await page.evaluate(() => document.querySelector('#headerPage .at-detail-switch[aria-checked="false"]').click());
     await page.waitForTimeout(300);
-    await page.evaluate(() => [...document.querySelectorAll("#headerPage .at-detail-btn")].find((b) => b.textContent === "Simple").click());
+    await page.evaluate(() => document.querySelector('#headerPage .at-detail-switch[aria-checked="true"]').click());
     await page.waitForTimeout(500);
   }
 
-  console.log("\nFind a captured prompt, and page through them, from the top bar");
+  console.log("\nPage through captures from the top bar (no search box since 0.60.2)");
   {
     await open(ids.shop);
     const bar = await page.evaluate(() => {
       const slot = document.getElementById("headerPage");
       return {
-        find: !!slot?.querySelector('input[type="search"][placeholder="Find a captured prompt"]'),
+        find: !!slot?.querySelector('input[type="search"]'),
         paging: slot?.querySelector(".ap-paging")?.textContent || "",
         inHero: !!document.querySelector("#analyze .at-hero .ap-paging"),
       };
     });
-    check("the search box is in the top bar", bar.find, JSON.stringify(bar));
-    check("with the pager beside it, not in the prompt header", /^\d+ of 5$/.test(bar.paging) && !bar.inHero, JSON.stringify(bar));
-    await page.fill("#headerPage .at-find-input", "jewellery wedding");
-    await page.waitForTimeout(200);
-    const hits = await page.evaluate(() => [...document.querySelectorAll("#headerPage .at-find-item .at-find-text")].map((x) => x.textContent));
-    check("typing lists the captures whose prompt has those words", hits.length === 1 && /jewellery shops near me/.test(hits[0]), hits.join(" | "));
-    await page.press("#headerPage .at-find-input", "Enter");
-    await page.waitForTimeout(1500);
-    const now = await page.evaluate(() => ({ prompt: document.querySelector("#analyze .at-prompt")?.textContent || "", kind: document.querySelector("#analyze .at-hero .ap-kind")?.textContent }));
-    check("Enter opens it", /jewellery shops near me/.test(now.prompt) && now.kind === "Local", JSON.stringify(now));
-    await page.fill("#headerPage .at-find-input", "no such prompt anywhere");
-    await page.waitForTimeout(200);
-    check("and says so when nothing matches", await page.evaluate(() => /No captured prompt matches/.test(document.querySelector("#headerPage .at-find-list")?.textContent || "")));
-    await page.press("#headerPage .at-find-input", "Escape");
+    check("no search box on Analyze (reported: it made no sense there)", !bar.find, JSON.stringify(bar));
+    check("the pager is in the bar, not in the prompt header", /^\d+ of 5$/.test(bar.paging) && !bar.inHero, JSON.stringify(bar));
     const p0 = await page.evaluate(() => document.querySelector("#headerPage .ap-paging")?.textContent);
     await page.evaluate(() => document.querySelector('#headerPage [aria-label="Older capture"]')?.click());
     await page.waitForTimeout(1500);
@@ -690,10 +679,10 @@ try {
     check("Older moves one capture on", p0 && p1 && Number(p1.split(" ")[0]) === Number(p0.split(" ")[0]) + 1, `${p0} → ${p1}`);
     await page.evaluate(() => document.querySelector('[data-tab="dashboard"]').click());
     await page.waitForTimeout(500);
-    check("the tools leave the bar with the page", await page.evaluate(() => !document.querySelector("#headerPage .at-find")));
+    check("the tools leave the bar with the page", await page.evaluate(() => !document.querySelector("#headerPage .at-pager")));
     await page.evaluate(() => document.querySelector('[data-tab="analyze"]').click());
     await page.waitForTimeout(500);
-    check("and come back with it", await page.evaluate(() => !!document.querySelector("#headerPage .at-find")));
+    check("and come back with it", await page.evaluate(() => !!document.querySelector("#headerPage .at-pager")));
   }
 
   console.log("\nA long, paragraph-length prompt");

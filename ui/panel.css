@@ -765,17 +765,7 @@ body.popup .app-header {
 /* Both its buttons are popup-only (see .popout-btn). */
 body.tab .header-actions { display: none !important; }
 .header-note { font-size: 12px; color: var(--fg-secondary); }
-/* Analyze's tools in the bar (0.56.0): find a captured prompt, and paging. */
-.at-find { position: relative; display: flex; align-items: center; gap: 6px; width: 260px; height: 32px; padding: 0 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-solid); color: var(--fg-muted); }
-.at-find:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-subtle); }
-.at-find-input { flex: 1 1 auto; min-width: 0; height: 100%; border: none; outline: none; background: transparent; color: var(--fg-primary); font: inherit; font-size: 13px; }
-.at-find-list { position: absolute; top: calc(100% + 6px); right: 0; z-index: 120; width: 420px; max-width: 80vw; display: flex; flex-direction: column; padding: 4px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-solid); box-shadow: 0 12px 30px rgba(15, 23, 42, 0.2); }
-.at-find-list[hidden] { display: none; }
-.at-find-item { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 7px 8px; border: none; border-radius: 7px; background: transparent; color: var(--fg-primary); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
-.at-find-item.on, .at-find-item:hover { background: var(--accent-subtle); }
-.at-find-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.at-find-meta { font-size: 11px; color: var(--fg-muted); white-space: nowrap; }
-.at-find-none { padding: 8px; font-size: 12px; color: var(--fg-muted); }
+/* Analyze's tools in the bar: the pager (the find box left in 0.60.2). */
 .at-pager { display: flex; align-items: center; gap: 2px; margin-left: 6px; }
 .at-page-btn { display: flex; width: 30px; height: 30px; align-items: center; justify-content: center; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-solid); color: var(--fg-primary); font: inherit; font-size: 16px; cursor: pointer; }
 .at-page-btn:disabled { color: var(--fg-muted); opacity: 0.5; cursor: default; }
@@ -6904,3 +6894,27 @@ polyline.ot-line.c5 { stroke: #c9a227; } circle.ot-line.c5 { fill: #c9a227; }
 .db-from { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
 .db-from-link { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; text-align: left; white-space: normal; overflow-wrap: break-word; max-width: 100%; }
 .db-from-more { font-size: 12px; }
+
+/* The top bar in the full tab (0.60.2): the four pages centred, the logo on
+   the left, the page's own tools on the right. Reported: the pages sat off to
+   one side. Below 1000px the bar wraps as before. */
+@media (min-width: 1000px) {
+  body.tab .app-header, body:not(.popup) .app-header {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: center !important;
+  }
+  body.tab .brand-logo-group { grid-column: 1; justify-self: start; }
+  body.tab .nav-tabs { grid-column: 2; justify-self: center; }
+  body.tab .header-page { grid-column: 3; justify-self: end; margin-left: 0; }
+  body.tab .header-page:empty { display: block; }
+}
+/* Simple / Expert as one switch */
+.at-detail-switch { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px 0 4px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-solid); color: var(--fg-secondary); font: inherit; font-size: 12px; cursor: pointer; }
+.at-detail-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.at-switch-track { position: relative; width: 26px; height: 16px; border-radius: 999px; background: var(--bg-subtle); box-shadow: inset 0 0 0 1px var(--border); transition: background 0.15s; }
+.at-switch-dot { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--fg-muted); transition: transform 0.15s, background 0.15s; }
+.at-detail-switch.on { color: var(--accent); border-color: var(--accent); }
+.at-detail-switch.on .at-switch-track { background: var(--accent); box-shadow: none; }
+.at-detail-switch.on .at-switch-dot { transform: translateX(10px); background: #fff; }
+@media (prefers-reduced-motion: reduce) { .at-switch-track, .at-switch-dot { transition: none; } }
