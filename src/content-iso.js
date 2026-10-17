@@ -86,6 +86,17 @@
     }
   });
 
+  let netBatch = [];
+  let netTimer = null;
+  const flushNetlog = () => {
+    if (netTimer) { clearTimeout(netTimer); netTimer = null; }
+    if (!netBatch.length) return;
+    const entries = netBatch;
+    netBatch = [];
+    try { chrome.runtime.sendMessage({ type: "netlog", entries }, () => void chrome.runtime.lastError); } catch (_) { /* extension reloaded */ }
+  };
+  window.addEventListener("pagehide", flushNetlog);
+
   const engineSubmit = { at: 0, via: "" };
   window.addEventListener("message", (event) => {
     if (event.source !== window) return;
@@ -101,6 +112,18 @@
           () => void chrome.runtime.lastError
         );
       } catch (_) {}
+      return;
+    }
+
+    // The network recorder (0.62.0, Debug capture only): entries arrive
+    // already stripped by content-main.js; they go to the worker in batches
+    // so a busy page isn't one message per request.
+    if (data.type === "netlog") {
+      if (data.entry && typeof data.entry === "object") {
+        netBatch.push(data.entry);
+        if (netBatch.length >= 50) flushNetlog();
+        else if (!netTimer) netTimer = setTimeout(flushNetlog, 2000);
+      }
       return;
     }
 

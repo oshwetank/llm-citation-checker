@@ -34,6 +34,7 @@ import { sanitizeText, trimLabel } from "../src/lib/text-sanitize.js";
 import { pipelineOf, typeLabel, supplierOf, retrievalMix } from "../src/lib/retrieval.js";
 import { formatCooldown } from "../src/lib/pacing.js";
 import { BUILD } from "../src/lib/build.js";
+import { netlogReportLines } from "../src/lib/netlog.js";
 import {
   computeVerbatimGrounding,
   computeAuthoritySplit,
@@ -8664,10 +8665,11 @@ function fmtBytes(n) {
  */
 async function buildDiagnosticReport() {
   const manifest = chrome.runtime.getManifest();
-  const [statsRes, runsRes, buildRes] = await Promise.all([
+  const [statsRes, runsRes, buildRes, netRes] = await Promise.all([
     send({ type: "stats" }),
     send({ type: "geo-run-list" }), // no profileId = every campaign's runs
     send({ type: "build-info" }),
+    send({ type: "get-netlog" }),
   ]);
 
   const lines = [];
@@ -8707,7 +8709,11 @@ async function buildDiagnosticReport() {
     lines.push(`  (couldn't load — ${runsRes.error || "unknown error"})`);
   }
   lines.push("");
-  lines.push("This report contains no prompt text, answer content, URLs, or brand names — only counts, timing, and short failure-reason labels.");
+  // What the engine pages called (0.62.0): which request carries the answer
+  // when an engine stops being captured. Only with Debug capture on.
+  lines.push(...netlogReportLines(netRes && netRes.ok ? netRes.entries || [] : []));
+  lines.push("");
+  lines.push("This report contains no prompt text, answer content, full addresses, or brand names — only counts, timing, short failure-reason labels and, from Debug capture, the hosts and paths engine pages called with ids masked, query values dropped and response key names only.");
   return lines.join("\n");
 }
 

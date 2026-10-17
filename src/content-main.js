@@ -178,6 +178,80 @@
     }
   }
 
+  // The network recorder (0.62.0, Debug capture only). When an engine moves
+  // its answer to a path the patterns above don't match, the extension sees
+  // nothing and can't say why. With Debug capture on, every request this page
+  // makes is logged, already stripped here so nothing private leaves the page:
+  // host, path with ids and prompt-like slugs masked, query key names (never
+  // values), status, content type, size, time to response, whether it was
+  // captured, and the key names in a response's first 2 KB. The same rules
+  // are in src/lib/netlog.js (which masks again on the way in); this file
+  // can't import it.
+  const NET_ID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{12,}|\d{4,}|[A-Za-z0-9_-]{20,})$/i;
+  const netMask = (pathname) => String(pathname || "/").split("/").map((seg) => {
+    if (!seg) return seg;
+    let s = seg;
+    try { s = decodeURIComponent(seg); } catch (_) { /* keep raw */ }
+    // A uuid first (its dashes would read as a slug), then slugs, then ids.
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) return ":id";
+    if (s.length > 40 || /\s/.test(s) || (s.match(/-/g) || []).length >= 3) return ":text";
+    if (NET_ID.test(s) || (/\d/.test(s) && /[a-z]/i.test(s) && s.length >= 10)) return ":id";
+    return s;
+  }).join("/").slice(0, 200);
+  const netShape = (text) => {
+    const head = String(text || "").slice(0, 2048);
+    if (!head.trim()) return null;
+    const t = head.trimStart();
+    const form = /^\)\]\}'/.test(t) ? "xssi" : /^(?:data|event|id):/m.test(t) ? "sse" : /^4\d/.test(t) ? "socket.io" : /^[[{]/.test(t) ? "json" : "text";
+    const keys = [];
+    const re = /"([A-Za-z_$][\w$-]{0,40})"\s*:/g;
+    let m;
+    while ((m = re.exec(head)) && keys.length < 40) if (!keys.includes(m[1])) keys.push(m[1]);
+    return { form, keys };
+  };
+  function netlog(kind, method, url, extra) {
+    if (!IS_TARGET || !debugOn()) return;
+    try {
+      const u = new URL(url, location.href);
+      if (!/^(?:https?|wss?):$/.test(u.protocol)) return;
+      const q = [];
+      u.searchParams.forEach((_, k) => { if (!q.includes(k) && /^[\w.[\]-]{1,40}$/.test(k)) q.push(k); });
+      window.postMessage({ __LCFC__: CHANNEL, type: "netlog", entry: {
+        t: Date.now(), page: location.hostname, kind, method: String(method || "GET").toUpperCase(),
+        host: u.host, path: netMask(u.pathname), q: q.sort().slice(0, 20), matched: CONV_RE.test(String(url)), ...extra,
+      } }, location.origin);
+    } catch (_) { /* never in the page's way */ }
+  }
+  // The first 2 KB of a response the capture didn't take, read from a clone
+  // so the page's own copy is untouched, then the clone is dropped.
+  async function headOf(resp) {
+    try {
+      const c = resp.clone();
+      if (!c.body) return "";
+      const reader = c.body.getReader();
+      const dec = new TextDecoder();
+      let out = "";
+      while (out.length < 2048) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        out += dec.decode(value, { stream: true });
+      }
+      reader.cancel().catch(() => {});
+      return out;
+    } catch (_) { return ""; }
+  }
+  function netlogFetch(url, method, resp, started, matched) {
+    if (!IS_TARGET || !debugOn()) return;
+    const type = (resp && resp.headers && resp.headers.get("content-type")) || "";
+    const len = resp && resp.headers && Number(resp.headers.get("content-length"));
+    const base = { matched: !!matched, status: resp ? resp.status : 0, type, size: isFinite(len) && len > 0 ? len : null, ms: Date.now() - started };
+    if (!matched && resp && /json|event-stream|text\/plain|x-ndjson|octet-stream/i.test(type)) {
+      headOf(resp).then((head) => netlog("fetch", method, url, { ...base, shape: netShape(head) }));
+    } else {
+      netlog("fetch", method, url, base);
+    }
+  }
+
   // Drain a cloned stream to text without disturbing the branch the page reads.
   async function drain(stream, meta) {
     const reader = stream.getReader();
@@ -231,10 +305,18 @@
       }
     }
 
-    const resp = await origFetch.apply(this, args);
+    const started = Date.now();
+    let resp;
+    try {
+      resp = await origFetch.apply(this, args);
+    } catch (err) {
+      netlog("fetch", method, url, { status: 0, ms: Date.now() - started, type: "failed" });
+      throw err;
+    }
     if (method === "POST") {
       dbg("fetch", { url: (url || "").slice(0, 140), status: resp && resp.status, matched: isConv });
     }
+    netlogFetch(url, method, resp, started, isConv);
     if (isConv && resp) {
       try {
         const cloned = resp.clone();
@@ -263,11 +345,26 @@
     const send = XHR.prototype.send;
     XHR.prototype.open = function (method, url, ...rest) {
       this.__lcfc_url = String(url || "");
+      this.__lcfc_method = String(method || "GET");
       this.__lcfc_post = String(method || "").toUpperCase() === "POST";
       this.__lcfc_conv = this.__lcfc_post && CONV_RE.test(this.__lcfc_url);
       return open.call(this, method, url, ...rest);
     };
     XHR.prototype.send = function (body) {
+      // Listened for whatever the setting says now: a page's first requests
+      // go out before content-iso.js has read it; netlog() checks it later.
+      if (IS_TARGET) {
+        const started = Date.now();
+        this.addEventListener("loadend", () => {
+          if (!debugOn()) return;
+          let head = "";
+          const type = this.getResponseHeader ? (this.getResponseHeader("content-type") || "") : "";
+          try { if (!this.__lcfc_conv && (this.responseType === "" || this.responseType === "text")) head = (this.responseText || "").slice(0, 2048); } catch (_) { head = ""; }
+          let size = null;
+          try { size = this.responseType === "" || this.responseType === "text" ? (this.responseText || "").length : null; } catch (_) { size = null; }
+          netlog("xhr", this.__lcfc_method, this.__lcfc_url, { matched: !!this.__lcfc_conv, status: this.status, type, size, ms: Date.now() - started, shape: head ? netShape(head) : null });
+        });
+      }
       if (this.__lcfc_post) dbg("xhr", { url: this.__lcfc_url.slice(0, 140), matched: !!this.__lcfc_conv });
       if (this.__lcfc_post && SUBMIT_RE && SUBMIT_RE.test(this.__lcfc_url)) signalSubmit("xhr");
       if (this.__lcfc_conv) {
@@ -302,6 +399,28 @@
       const wsUrl = String(url || "");
       const isTargetWs = (IS_PERPLEXITY && (/socket\.io|perplexity\.ai/i.test(wsUrl) || !isThirdParty(wsUrl))) ||
                          (IS_GROK && /rpc|grok/i.test(wsUrl));
+      if (IS_TARGET) {
+        // One line when it opens; one when it closes (or after 50 frames),
+        // with the frame count and the keys of the first sizeable frame.
+        const opened = Date.now();
+        let inFrames = 0, outFrames = 0, bytes = 0, shape = null, told = false;
+        const tell = () => {
+          if (told) return;
+          told = true;
+          netlog("ws", "WS", wsUrl, { status: 101, matched: isTargetWs, frames: inFrames + outFrames, size: bytes, ms: Date.now() - opened, shape });
+        };
+        netlog("ws-open", "WS", wsUrl, { matched: isTargetWs });
+        ws.addEventListener("message", (ev) => {
+          inFrames++;
+          const d = typeof ev.data === "string" ? ev.data : "";
+          bytes += d.length;
+          if (!shape && d.length >= 40 && !isBackgroundSubscription(d)) shape = netShape(d);
+          if (inFrames >= 50) tell();
+        });
+        const sendRef = ws.send;
+        ws.send = function (data) { outFrames++; return sendRef.apply(this, arguments); };
+        ws.addEventListener("close", tell);
+      }
 
       if (isTargetWs) {
         let lastReqBody = null;
@@ -381,5 +500,36 @@
     PatchedWebSocket.CLOSED = OrigWebSocket.CLOSED;
     Object.setPrototypeOf(PatchedWebSocket, OrigWebSocket);
     window.WebSocket = PatchedWebSocket;
+  }
+
+  // --- EventSource (logged only; no engine sends its answer this way today,
+  // and if one starts to, the network recorder is where it will show up) ---
+  const OrigEventSource = window.EventSource;
+  if (OrigEventSource) {
+    function PatchedEventSource(url) {
+      const es = Reflect.construct(OrigEventSource, arguments, PatchedEventSource);
+      if (IS_TARGET) {
+        const opened = Date.now();
+        let n = 0, bytes = 0, shape = null, told = false;
+        const tell = () => { if (told) return; told = true; netlog("sse", "GET", String(url || ""), { status: 200, type: "text/event-stream", frames: n, size: bytes, ms: Date.now() - opened, shape }); };
+        es.addEventListener("message", (ev) => {
+          n++;
+          const d = typeof ev.data === "string" ? ev.data : "";
+          bytes += d.length;
+          if (!shape && d.length >= 20) shape = netShape(d);
+          if (n >= 50) tell();
+        });
+        es.addEventListener("error", tell);
+        const closeRef = es.close;
+        es.close = function () { tell(); return closeRef.apply(this, arguments); };
+      }
+      return es;
+    }
+    PatchedEventSource.prototype = OrigEventSource.prototype;
+    PatchedEventSource.CONNECTING = OrigEventSource.CONNECTING;
+    PatchedEventSource.OPEN = OrigEventSource.OPEN;
+    PatchedEventSource.CLOSED = OrigEventSource.CLOSED;
+    Object.setPrototypeOf(PatchedEventSource, OrigEventSource);
+    window.EventSource = PatchedEventSource;
   }
 })();

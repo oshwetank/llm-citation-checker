@@ -28,6 +28,7 @@ import { findPrevious } from "./lib/analyzeView.js";
 import { summarizeRunDiagnostics } from "./lib/diagnosticsSummary.js";
 import { gzipString, gunzipToString } from "./lib/gzip.js";
 import { citedUrls, pageVerdict, pageSummary, wordCount, PAGE_TTL_MS } from "./lib/pageText.js";
+import { appendRing } from "./lib/netlog.js";
 import { offersFrom, attachOffers } from "./lib/offers.js";
 import { searchAnswers } from "./lib/answerSearch.js";
 import { answerKey, sameAnswer, mergeAnswers, SAME_ANSWER_WINDOW_MS } from "./lib/sameAnswer.js";
@@ -424,6 +425,24 @@ async function attachPages(record) {
 /* What ChatGPT loaded after an answer (0.62.0, content-main.js): a product
  * card's stores, seen only when someone opens the card. Stored per reply and
  * put back on the record on every derive. */
+// The network recorder's ring (0.62.0). Session storage, not IndexedDB: it
+// is diagnostics for the report, cleared when the browser closes, and never
+// part of a capture. Appends are chained so two tabs' batches arriving
+// together can't overwrite each other.
+const NETLOG_KEY = "lcfcNetlog";
+let netlogChain = Promise.resolve();
+async function netlogLoad() {
+  try { const got = await chrome.storage.session.get(NETLOG_KEY); return got[NETLOG_KEY] || []; } catch (_) { return []; }
+}
+function netlogAppend(entries) {
+  if (!entries.length) return netlogChain;
+  netlogChain = netlogChain.then(async () => {
+    const ring = appendRing(await netlogLoad(), entries);
+    await chrome.storage.session.set({ [NETLOG_KEY]: ring });
+  }).catch((e) => logErr("netlog", e));
+  return netlogChain;
+}
+
 async function attachInteractions(record) {
   const rows = await db.getAllByIndex("interactions", "captureId", record.captureId).catch(() => []);
   if (!rows.length) return;
@@ -3522,6 +3541,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
 
+        // The network recorder (0.62.0, Debug capture only; content-main.js).
+        case "netlog": {
+          await netlogAppend(Array.isArray(msg.entries) ? msg.entries.slice(0, 200) : []);
+          sendResponse({ ok: true });
+          break;
+        }
+        case "get-netlog": {
+          sendResponse({ ok: true, entries: await netlogLoad() });
+          break;
+        }
+
         case "get-records": {
           const records = await db.getAll("derived");
           records.sort((a, b) => b.capturedAt - a.capturedAt);
@@ -3619,6 +3649,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           await db.clear("runs");
           await db.clear("pages").catch(() => {});
           await db.clear("interactions").catch(() => {});
+          await chrome.storage.session.remove(NETLOG_KEY).catch(() => {});
           sendResponse({ ok: true });
           break;
         case "stats": {
