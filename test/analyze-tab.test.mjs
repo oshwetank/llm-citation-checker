@@ -671,7 +671,10 @@ try {
       };
     });
     check("no search box on Analyze (reported: it made no sense there)", !bar.find, JSON.stringify(bar));
-    check("the pager is in the bar, not in the prompt header", /^\d+ of 5$/.test(bar.paging) && !bar.inHero, JSON.stringify(bar));
+    // Five seeded captures, plus the built-in sample when it lands first on a
+    // fresh install (CI saw "2 of 6").
+    const of = Number((/^\d+ of (\d+)$/.exec(bar.paging) || [])[1]);
+    check("the pager is in the bar, not in the prompt header", of >= 5 && !bar.inHero, JSON.stringify(bar));
     const p0 = await page.evaluate(() => document.querySelector("#headerPage .ap-paging")?.textContent);
     await page.evaluate(() => document.querySelector('#headerPage [aria-label="Older capture"]')?.click());
     await page.waitForTimeout(1500);
