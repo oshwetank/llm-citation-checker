@@ -3330,6 +3330,13 @@ function atSitesSection(rec, dv, { fnByUrl, pages, own, ctxKinds, positions, kno
   sec.dataset.rail = "Every site it read";
   const pagesBar = atPagesBar(rec);
   if (pagesBar) sec.append(pagesBar);
+  // Which index served each page (labrador, bright, oxylabs, serp) is asked
+  // for often. ChatGPT sent it only from 21 May to 21 July 2026; said plainly
+  // in Expert rather than leaving a blank column. A capture that does carry
+  // it shows it on each page (pageMeta, below).
+  if (rec.platform === "chatgpt" && (rec.sources || []).length && !(rec.sources || []).some((x) => x.platformSpecific && x.platformSpecific.pipeline)) {
+    sec.append(el("p", { className: "at-sites-note x-only" }, "Which index served each page: not sent. ChatGPT hasn’t sent it (labrador, bright, oxylabs, serp) since 21 July 2026."));
+  }
   // Cited pages by kind of site, as one bar.
   if (pages.kinds.length) {
     const bar = el("div", { className: "ap-kindbar at-kindbar", role: "img", "aria-label": "Cited pages by kind: " + pages.kinds.map((k) => `${k.n} ${k.label.toLowerCase()}`).join(", ") });

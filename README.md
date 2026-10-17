@@ -8,14 +8,32 @@ those they *cite* versus merely *fetch*, and which brands they name — then mea
 brand's visibility against competitors over time.
 
 Everything is stored **locally in your browser**. The extension makes **no network requests
-of its own**; nothing leaves your device.
+of its own**, except, if you turn on **Read the cited pages**, to the pages an answer cited;
+nothing leaves your device.
 
-> **v0.60.2** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.62.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **Read the cited pages** (0.62.0, off until you turn it on in Settings). The extension
+>   opens the pages an answer cited, and only those, reads their text on this computer
+>   (Mozilla Readability, with a background tab for pages that need one) and checks which
+>   brands each page really names. "Which sources name which brands" then says, row by row,
+>   whether it comes from the page text or from the title and snippet the engine sent. A
+>   page behind a bot check says so. Pages are kept for 7 days.
+> - **Where to buy, from the card you opened** (0.62.0). ChatGPT loads a product's stores
+>   only when someone opens its card. After an answer, the extension now watches what the
+>   ChatGPT page itself loads, and when a card is opened its stores, prices and links appear
+>   under "Products and where to buy". The raw breakdown has a "Loaded after the answer"
+>   section.
+> - **Network recorder** (0.62.0, Debug capture only). Every request an engine page makes is
+>   logged with ids masked, query values dropped and only the key names of replies, and
+>   "Copy diagnostic report" lists them by engine. This is for finding why an engine stops
+>   being captured.
+> - Expert says plainly that ChatGPT hasn't sent which index served each page (labrador,
+>   bright, oxylabs, serp) since 21 July 2026.
 > - **ChatGPT's card answers look like ChatGPT's** (0.60.2). "The answer, as ChatGPT showed
 >   it" now draws each card as ChatGPT does: picture on the left, its badge, the product
 >   name, the spec line, the text with its source chips and the grey note. The follow-up
@@ -622,9 +640,12 @@ test/                   55 suites + real capture fixtures
 
 ## Privacy
 
-Everything stays in your browser's IndexedDB. The extension makes no network requests and
-asks for host access to the supported engines only (ChatGPT, Gemini, Perplexity and
-Grok). Raw payloads are gzipped; storage is capped
+Everything stays in your browser's IndexedDB. The extension makes no network requests of its
+own, except, if you turn on Read the cited pages, to the pages an answer cited (without your
+cookies; that setting asks for access to all sites, and nothing is sent anywhere else). It
+asks for host access to the supported engines only (ChatGPT, Gemini, Perplexity and Grok).
+The network recorder (Debug capture) keeps only hosts, masked paths, query key names and
+reply key names, in session storage, cleared when the browser closes. Raw payloads are gzipped; storage is capped
 (default 2,000 captures, 8 MB per payload) with oldest-first pruning. Clear everything from
 the Dashboard at any time.
 

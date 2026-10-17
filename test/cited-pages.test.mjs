@@ -13,7 +13,8 @@
  * cited pages are fetched; the article is read and names the brands its text
  * names; the bot check is reported as such; Analyze says how many pages were
  * read and which grid rows come from page text; a reprocess keeps it without
- * fetching again; a page read in the last 7 days isn't fetched again.
+ * fetching again; a page read in the last 7 days isn't fetched again. And
+ * (0.62.0, part D) Expert says the index behind each page wasn't sent.
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -134,10 +135,15 @@ try {
         bar: document.querySelector("#at-sites .at-pages-bar")?.textContent || "",
         metas: [...document.querySelectorAll("#at-sites .site-page-meta")].map((m) => m.textContent),
         basis: [...document.querySelectorAll("#analyze .at-mx-basis")].map((b) => b.textContent),
+        note: (() => { const n = document.querySelector("#at-sites .at-sites-note"); if (!n) return null; const simple = getComputedStyle(n).display; document.documentElement.dataset.detail = "expert"; const expert = getComputedStyle(n).display; return { text: n.textContent, simple, expert }; })(),
       };
     });
     check("the section says how many cited pages were read", /Cited pages read: 1 of 3/.test(ui.bar), ui.bar);
     check("each cited page says what reading it found", ui.metas.some((m) => /page read · [\d,]+ words · names .*Zento/.test(m)) && ui.metas.some((m) => /page not read: /.test(m)), JSON.stringify(ui.metas));
+    // Asked: which index (labrador, bright, oxylabs, serp) served each page.
+    // This capture carries none, as ChatGPT has sent none since 21 July 2026.
+    check("Expert says which index served each page wasn't sent, and since when", ui.note && /not sent/.test(ui.note.text) && /21 July 2026/.test(ui.note.text) && ui.note.expert !== "none", JSON.stringify(ui.note));
+    check("Simple doesn't show that line", ui.note && ui.note.simple === "none", JSON.stringify(ui.note));
     check("grid rows say whether they come from page text or the snippet", ui.basis.includes("page text"), JSON.stringify(ui.basis));
   }
 
