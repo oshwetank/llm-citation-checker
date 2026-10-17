@@ -13,14 +13,23 @@ import { parseCsv, parseXlsx, rowsToPrompts } from "../src/lib/xlsxLite.js";
 import { makeZip } from "../src/lib/zipWrite.js";
 import { BUNDLE_PARTS, buildFeedbackFiles, bundleFilename } from "../src/lib/feedbackBundle.js";
 import { computeSearchFunnel, computeBrandMatrix } from "../src/lib/funnel-omitted.js";
-import { GLOSSARY, glossaryGroups } from "../src/lib/glossary.js";
+import { GLOSSARY, glossaryEntries } from "../src/lib/glossary.js";
+import { ABOUT_STEPS, ABOUT_NEWS, glossaryView, pickedTerm, startProgress, settingsState, settingValue, SETTING_LIMITS, storageMeter, logView, buildStatus } from "../src/lib/aboutView.js";
 import { normalizeMentions } from "../src/lib/mention-list.js";
-import { aggregateSources, aggregateSourcesFromCaptures } from "../src/lib/sources.js";
-import { analyzeFanout, FANOUT_BENCHMARK } from "../src/lib/fanout.js";
-import { sanitizeText, trimLabel } from "../src/lib/text-sanitize.js";
-import { formatCooldown } from "../src/lib/pacing.js";
-import { summarizeDomains } from "../src/lib/cited-domains.js";
+import {
+  answerKind, searchesView, brandsView, pagesView, domainsView, ownBrandFor, yourBrandView, findPrevious, changesView, knownVendors, adsView,
+} from "../src/lib/analyzeView.js";
 import { originalImageUrl } from "../src/lib/image-url.js";
+import { answersToPrompt, compareView } from "../src/lib/compareView.js";
+import { historyRows, historyView, highlightRuns, dayDiff, shortDate, PERIODS, KINDS, ENGINE_ORDER } from "../src/lib/historyView.js";
+import { extractBrandAspects } from "../src/lib/aspects.js";
+import { siteKindOf } from "../src/lib/siteKind.js";
+import { aggregateSources } from "../src/lib/sources.js";
+import { analyzeFanout, FANOUT_BENCHMARK, titleMatchesQueries } from "../src/lib/fanout.js";
+import { sanitizeText, trimLabel } from "../src/lib/text-sanitize.js";
+import { pipelineOf, typeLabel, supplierOf, retrievalMix } from "../src/lib/retrieval.js";
+import { formatCooldown } from "../src/lib/pacing.js";
+import { BUILD } from "../src/lib/build.js";
 import {
   computeVerbatimGrounding,
   computeAuthoritySplit,
@@ -48,6 +57,47 @@ const send = (msg) =>
       resolve({ ok: false, error: String(err && err.message ? err.message : err) });
     }
   });
+
+/* A half-updated install: these screens, and the background that actually
+ * runs campaigns, loaded from different builds. The manifest can't reveal it
+ * (see src/lib/build.js) — a real browser reported 0.41.0 everywhere while
+ * its runs failed with a bug two versions gone. Said up front, on every tab,
+ * before a run is wasted on the old code. Only a genuine mismatch shows it: a
+ * background that reports another build, or one too old to know the question
+ * ("unknown message type"). A broken connection is load()'s to explain.
+ *
+ * Reproduced, not guessed: a Chrome profile that had loaded the extension
+ * before kept running the old background across relaunches after the files
+ * (and manifest version) on disk changed — its Preferences still recorded the
+ * old service-worker version. Only the chrome://extensions reload button
+ * replaced it, and the fix then held across relaunches. Hence the wording.
+ */
+async function checkBuildMatch() {
+  const r = await send({ type: "build-info" });
+  // About shows the same check, as a status on every page (0.51.0).
+  abBuildReply = r || { ok: false };
+  if ($("#about")?.classList.contains("active")) renderAbout(); else renderAboutBuild();
+  const stale = (r && r.ok && r.build !== BUILD) || (r && r.error === "unknown message type");
+  if (!stale) return;
+  const host = document.querySelector(".app-content");
+  if (!host || host.querySelector(".build-mismatch")) return;
+  const running = r.ok ? `version ${r.build}` : "an older version";
+  const li = (text) => { const n = document.createElement("li"); n.textContent = text; return n; };
+  const list = document.createElement("ol");
+  list.append(
+    li("Open chrome://extensions and click the reload ↻ icon on CitoSkeleton. Restarting Chrome is not enough — Chrome keeps the old background running until this button is pressed."),
+    li("If this message is still here after that, some files were not replaced: close Chrome, extract the update over the folder again (replacing every file), reopen Chrome and press reload ↻ once more."));
+  const note = document.createElement("div");
+  note.className = "build-mismatch";
+  note.setAttribute("role", "alert");
+  const title = document.createElement("b");
+  title.textContent = "Part of CitoSkeleton is out of date";
+  note.append(title,
+    `These screens are version ${BUILD}, but the part that runs campaigns is still ${running}. Campaign runs will use the old code until this is fixed.`,
+    list);
+  host.prepend(note);
+}
+checkBuildMatch();
 
 // Synchronize full-tab vs popup mode in DOM for responsive layout and zoom stability
 function syncViewportMode() {
@@ -120,7 +170,25 @@ function applyMode() {
   const header = document.querySelector(".app-header");
   if (header) {
     document.documentElement.style.setProperty("--analyze-bar-top", `${header.offsetHeight}px`);
+    // The bar's right-hand slot changes with the page (setHeaderPage) and
+    // can wrap it onto a second line, so keep measuring.
+    if (!headerObs && "ResizeObserver" in window) {
+      headerObs = new ResizeObserver(() => document.documentElement.style.setProperty("--analyze-bar-top", `${header.offsetHeight}px`));
+      headerObs.observe(header);
+    }
   }
+}
+let headerObs = null;
+/* The page's own items in the app bar's right-hand slot (full tab only, as
+   on the canvas; the popup's bar has no room). Cleared on every tab switch,
+   so a page that has nothing to add leaves it empty. */
+function setHeaderPage(tab, ...nodes) {
+  const slot = document.getElementById("headerPage");
+  if (!slot) return;
+  const active = document.querySelector(".panel.active")?.id;
+  if (tab !== active) return;
+  slot.textContent = "";
+  if (document.body.classList.contains("tab")) slot.append(...nodes.filter(Boolean));
 }
 applyMode();
 window.addEventListener("resize", applyMode);
@@ -179,7 +247,10 @@ function withBusy(btn, busyLabel, fn) {
       return await fn(...args);
     } finally {
       btn.disabled = false;
-      btn.textContent = original;
+      // Put the label back only if it still says the busy text: an action
+      // that relabels its own button ("Load sample" -> "Remove sample") used
+      // to have its new label overwritten here with the old one.
+      if (!busyLabel || btn.textContent === busyLabel) btn.textContent = original;
     }
   };
 }
@@ -297,15 +368,22 @@ function showSignInGate({ signedOut = [], unknown = [], message, onProceed }) {
 }
 
 let RECORDS = [];
+// Every capture's light row, campaign ones included. Analyze reads it to find
+// the previous answer to a campaign prompt, which RECORDS (ad-hoc only) lacks.
+let ALL_RECORDS = [];
+// The record Analyze last drew, so opening the tab can tell About's
+// "Get started" that a real answer was read (see abNoteAnalyzed).
+let ANALYZE_SHOWN = null;
 let PROJECTS = [];
-let dashboardCampaignId = ""; // "" = no campaign selected
-let dashboardGeoPrompts = []; // tracked prompts for dashboardCampaignId (tag chips only — independent of the Campaigns tab's own GEO_PROMPTS)
-let dashboardSearch = ""; // filters Saved Conversations (and the ad-hoc stat grid) by prompt text
-let viewingId = null; // which capture the Analyze tab shows (null = latest)
+let viewingId = (() => {
+  // ?capture=<id>: the popup's "Full analysis" link opens the full tab on the
+  // answer that was on screen, not on whatever is latest.
+  try { return new URLSearchParams(location.search).get("capture") || null; } catch (_) { return null; }
+})(); // which capture the Analyze tab shows (null = latest)
 // Which tab to return to from Analyze, and what to call it in the "← Back
 // to X" link. Set by openCapture() from whichever tab was active when a
-// capture link was clicked (Dashboard's Saved Conversations or Prompt
-// Performance table, Campaigns' own Prompt Performance, Compare's run
+// capture link was clicked (a Dashboard row, a campaign's Prompt
+// Performance table in Campaigns, Compare's run
 // links…), so following a link and coming back doesn't require re-finding
 // whatever filter/scroll state was on that screen — combined with
 // TAB_SCROLL below, showTab() restores it exactly as it was left.
@@ -318,8 +396,6 @@ const TAB_LABELS = { dashboard: "Dashboard", loader: "Campaigns", compare: "Comp
 // switching TO (often clamped near the top if the other tab's content is
 // shorter). This is what actually restores "come back to where you were."
 const TAB_SCROLL = {};
-let selectedIds = new Set(); // captures ticked in the Saved Conversations table
-let showEmptyCaptures = false; // reveal zero-signal rows (see hasSignal note below)
 // Tracking-run captures are hidden from the ad-hoc views by default so brand
 // measurements and casual browsing never contaminate each other's numbers.
 let includeTrackedInAdhoc = false;
@@ -329,34 +405,26 @@ let GEO_PROFILES = [];
 let TRASHED_PROFILES = []; // soft-deleted campaigns, still within the recovery window
 let GEO_PROMPTS = [];
 let geoActiveId = null;
-let geoTagFilter = [];
+// The engine the campaign's results are narrowed to ([] = every engine).
+// The rest of the results' state lives with renderCampaignResults (cb*).
 let geoEngineFilter = [];
-// Reported: a campaign with many auto-generated tags (a 747-prompt import
-// produced 20+) rendered every one of them, unconditionally, above the KPI
-// tiles — three lines of pills before any actual number was visible. This
-// caps the row until the user asks for more; resets each panel load (not
-// persisted) since it's a display convenience, not a filter setting.
-let geoTagsExpanded = false;
-/* Which run the campaign view is scoped to. "" = every run of this campaign
-   averaged together, which stays the default. Set by the run picker in the
-   campaign header and by clicking a row in Run history. */
-let geoRunFilter = "";
-let geoRunsCache = [];
-// Which brand the campaign view is pointed at. null = the campaign's own
-// brand. Everything brand-shaped on the Dashboard — the KPI row, the
-// per-engine split, the Prompt Performance columns — answers for THIS brand,
-// so a competitor can be analysed with the same depth as your own brand
-// instead of being a row you can only read across.
-let geoFocusBrand = null;
-// Whether the campaign card's supporting-detail disclosure is open. Kept
-// across re-renders so changing a filter doesn't close it mid-read.
-let geoDetailOpen = false;
 // Campaigns tab (formerly Tracking + Loader) state
 let promptTagFilter = []; // tag chips selected in the prompt table sidebar
 let promptOnlyUnassigned = false;
 let promptSearch = "";
 let campaignManageOpen = false; // collapsible setup/prompts panel once a campaign is locked
 let selectedPromptIds = new Set(); // checked rows in the prompt table, for bulk pause/enable/remove
+// Campaign setup state that has to outlive a re-render — every add, filter
+// click and search keystroke in this tab rebuilds it from the database:
+//   setupDraft — what's typed in the setup form but not saved yet;
+//   setupAttemptedFor — the campaign whose "Save & start tracking" was pressed
+//     with gaps, so its missing items stay red until they're filled;
+//   promptAddMode / promptAddNote — which way of adding prompts is open, and
+//     what the last add did.
+let setupDraft = null;
+let setupAttemptedFor = null;
+let promptAddMode = null;
+let promptAddNote = null;
 const ONBOARD_KEY = "lcfc.onboarding.campaignsDismissed";
 let campaignOnboardDismissed = true; // flips to false once we've checked storage, if unset
 chrome.storage.local.get(ONBOARD_KEY, (r) => { campaignOnboardDismissed = !!r[ONBOARD_KEY]; });
@@ -366,7 +434,8 @@ chrome.storage.local.get(ONBOARD_KEY, (r) => { campaignOnboardDismissed = !!r[ON
 // auto_switcher_race_winner) and retries — a losing/interrupted request still
 // hits our capture endpoint but streams almost nothing. These are legitimate
 // captures (raw data is kept, nothing is discarded), just not useful to browse,
-// so the list hides them by default with a toggle to reveal.
+// so they are never the answer Analyze opens on by default. (The Dashboard
+// lists prompts, and these have none.)
 function hasSignal(r) {
   if (!r) return false;
   const fan = ((r.fanout?.search?.length || 0) + (r.fanout?.shopping?.length || 0) + (r.fanout?.image?.length || 0));
@@ -594,11 +663,16 @@ function activeScroller() {
 // showTab() below, a related but distinct problem (there the scroll
 // position needs to be remembered PER TAB, not just held steady around one
 // tab's own re-render).
+//
+// Only written back when the render actually moved it. Writing scrollTop,
+// even to the value it already has, cancels a smooth scroll in progress in
+// current Chrome (153), and the Campaigns tab's 1.5s status poll runs
+// through here: a board section link stopped wherever the next poll landed.
 function withScrollPreserved(renderFn) {
   const scroller = activeScroller();
   const y = scroller ? scroller.scrollTop : 0;
   renderFn();
-  if (scroller) scroller.scrollTop = y;
+  if (scroller && scroller.scrollTop !== y) scroller.scrollTop = y;
 }
 
 function showTab(name) {
@@ -616,6 +690,13 @@ function showTab(name) {
   if (btn) btn.classList.add("active");
   const panel = document.getElementById(name);
   if (panel) panel.classList.add("active");
+  const slot = document.getElementById("headerPage");
+  if (slot) slot.textContent = "";
+  if (name === "dashboard") setHeaderPage("dashboard", el("span", { className: "header-note" }, "Everything you’ve captured · stored on this computer"));
+  if (name === "loader" && cbHeaderNav) setHeaderPage("loader", cbHeaderNav);
+  if (name === "analyze" && atHeaderNodes && document.getElementById("at-answer")) setHeaderPage("analyze", ...atHeaderNodes);
+  if (name === "about") aboutEnter();
+  if (name === "analyze") abNoteAnalyzed(ANALYZE_SHOWN);
 
   // Switching tabs changes the document's total scrollable height (each
   // tab's content is a different length), so the browser clamps whatever
@@ -657,6 +738,9 @@ async function openCapture(captureId) {
   const current = document.querySelector(".panel.active")?.id;
   if (current && current !== "analyze") returnTab = current;
   viewingId = captureId;
+  // A different answer starts with its details sheet and menus closed.
+  apSheet = null; apMenuOpen = false; apFanAll = false; apPromptOpen = false;
+  atResetState();
   showTab("analyze");
   renderAnalyze();
 }
@@ -696,7 +780,7 @@ async function load() {
         el("div", { className: "card warn-box", style: "margin: 20px; color: var(--red-fg);" },
           el("h3", {}, "Couldn't connect to the extension"),
           el("p", {}, "This usually happens right after the extension is reloaded or updated while this popup/tab was already open."),
-          el("p", { style: "font-weight:600;" }, "Close this popup and reopen it (or refresh the page, if you're in Full tab view)."),
+          el("p", { style: "font-weight:500;" }, "Close this popup and reopen it (or refresh the page, if you're in Full tab view)."),
           el("p", { className: "muted", style: "font-size: 11px;" }, `Details: ${esc(res.error)}`)
         )
       );
@@ -713,6 +797,7 @@ async function load() {
   const all = res.ok ? res.records : [];
   const parts = partitionRecords(all);
   RECORDS = includeTrackedInAdhoc ? all : parts.adhoc;
+  ALL_RECORDS = all;
   TRACKED_COUNT = parts.tracked.length;
 
   // Paint Analyze — the default-visible tab — the moment ITS OWN data
@@ -725,7 +810,7 @@ async function load() {
 
   const pr = await projectsP;
   PROJECTS = pr.ok ? pr.projects : [];
-  await geoP; // populates GEO_PROFILES/GEO_PROMPTS so Dashboard can show campaign performance
+  await geoP; // populates GEO_PROFILES/GEO_PROMPTS: the Dashboard names each prompt's campaign
   renderDashboard();
 
   const s = await statsP;
@@ -737,14 +822,10 @@ async function load() {
   renderCompare();
 }
 
+// The storage meter lives in About's Settings (see renderStorageMeter).
 function renderStorageInfo(s) {
-  const box = $("#storageInfo");
-  if (!box) return;
-  if (!s || !s.ok) { box.textContent = ""; return; }
-  const mb = (n) => (n / 1024 / 1024).toFixed(1) + " MB";
-  box.textContent = s.usage
-    ? `Storage: ${mb(s.usage.usedBytes)} used of ~${mb(s.usage.quotaBytes)} available · ${s.raw} raw / ${s.derived} derived captures`
-    : `${s.raw} raw / ${s.derived} derived captures`;
+  abStats = s;
+  renderStorageMeter();
 }
 
 function projectName(id) {
@@ -814,20 +895,7 @@ const SENTENCE_START_STOPWORDS = new Set([
  * annotations, and the maker of each carded product. Neither is guesswork, so
  * they are the right roots to file loose SKU mentions under.
  */
-function knownVendors(rec) {
-  const out = [];
-  for (const e of rec.entities || []) {
-    if (e && e.text && /vendor|manufacturer|brand/i.test(e.category || "")) out.push(e.text);
-  }
-  for (const p of rec.products || []) {
-    // "Realme P4 5G" -> "Realme". Only the first word, and only when it looks
-    // like a name rather than a spec, so a product called "5G Router" can't
-    // invent a vendor called "5G".
-    const first = String(p.name || "").trim().split(/\s+/)[0];
-    if (first && first.length > 1 && /^[A-Za-z][A-Za-z.&'-]*$/.test(first)) out.push(first);
-  }
-  return [...new Set(out)];
-}
+// knownVendors() moved to src/lib/analyzeView.js in 0.48.0 (shared with the compare view).
 
 // Bare spec and qualifier tokens that are never a model on their own. A chip
 // reading just "5G" or "Fast" says nothing — these turned up in a real capture
@@ -948,86 +1016,8 @@ function extractRankAndCategory(brandName, passage, text) {
   return { rank, category };
 }
 
-// Takes the brand's OWN passages (b.passages — each already a tight, correctly
-// scoped ±110-char window around one real mention, computed by the adapter/
-// src/lib/brands.js) instead of re-deriving a window from the full answer
-// text. The previous version re-scanned a fresh 350-char slice of raw text
-// and cut it off at the next hardcoded smartphone-brand name it could find —
-// in dense side-by-side comparisons (several brands named within a couple of
-// sentences of each other, e.g. a TV shootout) that cutoff landed almost
-// immediately, so real aspects a few words later were silently missed. Using
-// the passage(s) already scoped to THIS brand's own mentions avoids that
-// failure mode entirely, and scanning every passage (not just the first)
-// catches aspects raised at a brand's later mentions too.
-//
-// Aspects come from two places, in order of trust:
-//
-//  1. What the answer SAYS it rates the brand for — "best for <x>", "known for
-//     <x>", "stands out for <x>". The label is lifted from the sentence, so it
-//     works in any vertical without knowing a single industry word ("low
-//     processing fees", "same-day delivery", "crack resistance").
-//  2. A curated dimension map, as a fallback for answers that describe a brand
-//     without ever labelling why. This used to be phone specs ONLY — camera,
-//     battery, display, chipset — so a cement or lending answer either got
-//     nothing or, worse, got "Performance" off the word "speed" and "Design"
-//     off "premium". The map now spans the dimensions any category gets
-//     compared on, and the phone-specific triggers only fire on words that
-//     genuinely mean a phone spec.
-const ASPECT_DIMENSIONS = [
-  ["Price & Value", /\b(price|pricing|cost|affordable|budget|value for money|cheaper|expensive|premium pricing|discount|emi)\b/],
-  ["Fees & Rates", /\b(interest rate|interest rates|apr|processing fee|processing fees|brokerage|commission|charges|no annual fee|expense ratio)\b/],
-  ["Quality", /\b(quality|grade|purity|strength|finish|craftsmanship|ingredients|material|materials)\b/],
-  ["Durability", /\b(durability|durable|long[- ]lasting|weather resistant|crack resistan|warranty|wear and tear)\b/],
-  ["Service & Support", /\b(customer (?:service|support|care)|after[- ]sales|helpline|turnaround time|claim settlement|onboarding)\b/],
-  ["Availability", /\b(availability|widely available|in stock|distribution network|dealer network|branches|nationwide|delivery time)\b/],
-  ["Trust & Reputation", /\b(trusted|reputation|reliable|legacy|established|market leader|credibility|certified|regulated|iso )\b/],
-  ["Safety", /\b(safety|safe for|side effects|clinically|dermatologically|non[- ]toxic|fda|hypoallergenic)\b/],
-  ["Sustainability", /\b(sustainab|eco[- ]friendly|recycl|carbon|green building|organic|cruelty[- ]free)\b/],
-  ["Camera", /\b(camera|cameras|megapixel|telephoto|portrait mode|hasselblad|optical zoom)\b/],
-  ["Battery", /\b(battery|mah|fast charging|wireless charging|battery backup)\b/],
-  ["Display", /\b(display|screen|amoled|oled|refresh rate|120hz|ltpo|hdr|dolby vision)\b/],
-  ["Performance", /\b(processor|chipset|snapdragon|dimensity|benchmark|ram|cpu|gpu|thermal throttl)\b/],
-  ["Software", /\b(software update|os update|years of updates|user interface|bloatware|ecosystem)\b/],
-];
-
-// "Best for gaming and photography" → "gaming and photography". Bounded to a
-// short noun phrase so a whole sentence never becomes a chip.
-const ASPECT_PHRASE_RE =
-  /\b(?:best|ideal|great|good|preferred|recommended|popular|known|noted|praised|valued|stands out)\s+(?:choice\s+)?for\s+(?:its\s+)?([a-z][a-z0-9 &/,'-]{2,40}?)(?=[.,;:!?)]|\band\b\s+(?:it|they|the)\b|$)/gi;
-const ASPECT_PHRASE_STOP = /^(the|a|an|you|those|them|it|this|that|these|him|her|us|people|users|customers|anyone|everyone|most|some|many)\b/i;
-
-function extractBrandAspects(passages) {
-  const raw = sanitizeText((passages || []).join(" "));
-  if (!raw) return [];
-  const text = raw.toLowerCase();
-
-  const aspects = [];
-  const seen = new Set();
-  const push = (label) => {
-    const k = label.toLowerCase();
-    if (!seen.has(k)) { seen.add(k); aspects.push(label); }
-  };
-
-  // 1. aspects the answer states outright
-  let m;
-  ASPECT_PHRASE_RE.lastIndex = 0;
-  while ((m = ASPECT_PHRASE_RE.exec(raw))) {
-    // Same bounding as the list-header path, so both chip sources are
-    // trimmed by one rule rather than two that drift apart.
-    const phrase = trimLabel(m[1]);
-    if (!phrase || ASPECT_PHRASE_STOP.test(phrase)) continue;
-    push(phrase.charAt(0).toUpperCase() + phrase.slice(1));
-    if (aspects.length >= 3) return aspects;
-  }
-
-  // 2. fall back to the dimension map
-  for (const [label, re] of ASPECT_DIMENSIONS) {
-    if (re.test(text)) push(label);
-    if (aspects.length >= 3) break;
-  }
-
-  return aspects.slice(0, 3);
-}
+// extractBrandAspects() and its vocabulary live in src/lib/aspects.js (since
+// 0.50.0), shared with the campaign board.
 
 // The vocabulary the Search-Funnel card scans source snippets with.
 //
@@ -1109,45 +1099,6 @@ function openDomainModal(domainName, rec) {
   doneBtn.onclick = close;
 }
 
-/*
- * A captured image that never shows up as an empty box.
- *
- * Reported: product images showed in the Analyze tab as bordered, coloured
- * tiles with no picture in them. Those are ChatGPT's images.openai.com
- * thumbnails failing to load in the extension page. Three steps instead of one:
- *   1. the captured URL, with no referrer (the extension's own origin is
- *      meaningless to an image host and only gives it a reason to refuse);
- *   2. if that fails, the original image the thumbnail was made from — the
- *      thumbnail URL encodes it (see src/lib/image-url.js);
- *   3. if that fails too, a tile that says what the image was, rather than a
- *      blank one that looks like a rendering bug.
- */
-function capturedImage(url, label, className = "cap-img") {
-  // The name sits in the frame from the start and the picture covers it only
-  // once it has actually loaded, so a slow or failed image never leaves an
-  // empty box.
-  const name = el("span", { className: "cap-img-missing-label" }, label || "Image unavailable");
-  const wrap = el("div", { className: `${className} cap-img-wrap` }, name);
-  const fallback = () => {
-    wrap.classList.add("cap-img-missing");
-    wrap.title = "This image could not be loaded from the engine's image server.";
-  };
-  if (!url) { fallback(); return wrap; }
-  const img = el("img", { alt: label || "", loading: "lazy", referrerPolicy: "no-referrer" });
-  let triedOriginal = false;
-  img.onload = () => { wrap.classList.add("cap-img-loaded"); };
-  img.onerror = async () => {
-    if (triedOriginal) { img.remove(); fallback(); return; }
-    triedOriginal = true;
-    const orig = await originalImageUrl(url);
-    if (orig && orig !== img.src) img.src = orig;
-    else { img.remove(); fallback(); }
-  };
-  img.src = url;
-  wrap.append(img);
-  return wrap;
-}
-
 function openProductModal(product, rec) {
   const existing = document.getElementById("product-modal-backdrop");
   if (existing) existing.remove();
@@ -1171,7 +1122,7 @@ function openProductModal(product, rec) {
   // genuinely illegible. Dropping the override lets .card's real background
   // apply, the same as every other card in the app.
   const priceInfo = el("div", { className: "card", style: "margin-bottom: 12px;" },
-    el("div", { style: "font-weight: 600; font-size: 14px; color: var(--accent);" }, product.price || "Price specified in response text"),
+    el("div", { style: "font-weight: 500; font-size: 14px; color: var(--accent);" }, product.price || "Price specified in response text"),
     el("div", { className: "muted", style: "font-size: 12px; margin-top: 4px;" }, `E-Commerce Merchant: ${product.merchant || "Multiple E-Commerce Retailers"}`),
     el("div", { className: "muted", style: "font-size: 11px; margin-top: 2px;" }, `Rating Source: ${product.rating ? product.rating + " ★ rating aggregated from store metadata & search snippets" : "Rating derived from user evaluation in response"}`)
   );
@@ -1193,7 +1144,7 @@ function openProductModal(product, rec) {
       const li = el("li", { className: "src-item" });
       const h = el("div", { className: "src-header" },
         el("span", { className: `tag ${s.outcome}` }, s.outcome),
-        el("a", { href: s.url, target: "_blank", rel: "noreferrer", style: "font-weight: 600; font-size: 12px; text-decoration: none; color: var(--accent);" }, s.domain || s.url)
+        el("a", { href: s.url, target: "_blank", rel: "noreferrer", style: "font-weight: 500; font-size: 12px; text-decoration: none; color: var(--accent);" }, s.domain || s.url)
       );
       li.append(h);
       if (s.title) li.append(el("div", { style: "font-size: 11px; font-weight: 500; margin-top: 4px;" }, s.title));
@@ -1248,67 +1199,1730 @@ function showToast(text, variant = "success", ms = variant === "error" ? 7000 : 
 }
 
 // Listen for captured items broadcasted from background worker
+/* Reported: during a run the panel "glitches" and the prompt list keeps
+ * jumping back to the top, so there is no way to scroll down and watch the
+ * prompts that are still to come.
+ *
+ * These broadcasts arrive once per captured prompt, plus again when the
+ * on-device enrichment pass improves that same record — so a long run fires
+ * hundreds of them. Each one called load(), which refetches everything and
+ * rebuilds every tab's DOM from scratch; that rebuild resets scrollTop, so
+ * any attempt to scroll was undone by the next captured prompt. Two things
+ * are needed, and withScrollPreserved supplies neither: load() is async, so
+ * a synchronous save/restore around it would restore before the DOM it is
+ * meant to hold steady has even been built; and a burst of broadcasts has to
+ * collapse into one rebuild rather than several back-to-back.
+ */
+let refreshPending = null;
+function refreshFromBroadcast() {
+  if (refreshPending) return; // a refresh is already queued — it will pick this up too
+  refreshPending = setTimeout(async () => {
+    refreshPending = null;
+    const scroller = activeScroller();
+    const y = scroller ? scroller.scrollTop : 0;
+    await load(); // awaits geoP, so the Campaigns tab has rendered before we restore
+    if (scroller && scroller.scrollTop !== y) scroller.scrollTop = y; // see withScrollPreserved
+  }, 400);
+}
+
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type === "new-capture") {
-    load();
-    showToast("New LLM citation captured!");
+    refreshFromBroadcast();
+    if (!msg.duringRun) showToast("New LLM citation captured!");
   }
   // The optional on-device AI pass finished and improved a record that is
   // already on screen. Refresh silently: the capture was announced moments
   // ago, and a second toast for the same prompt reads like a second capture.
   if (msg?.type === "capture-updated") {
-    load();
+    refreshFromBroadcast();
   }
 });
 
 /* ---------- Analyze (most recent capture) ---------- */
-function renderAnalyze() {
-  try {
-    const root = $("#analyze");
-    root.textContent = "";
-    // A specifically-requested, already-hydrated capture (viewingId) wins
-    // outright — even a TRACKED one not present in the ad-hoc RECORDS list
-    // (e.g. opened via Prompt Performance's "click a prompt" link). Without
-    // this, RECORDS.find() below would silently miss it (tracked captures
-    // are deliberately excluded from RECORDS — see the isolation note in
-    // load()) and fall back to RECORDS[0], opening the wrong, most-recent
-    // AD-HOC capture instead of the one actually clicked.
-    let rec = viewingId ? FULL.get(viewingId) : null;
-    if (!rec) {
-      // Prefer the hydrated full record (carries answerText, which drives brand rank,
-      // "cited for" aspects and hero-product detection). Falls back to the light row.
-      const targetId = viewingId || defaultRecordId();
-      const light = targetId ? RECORDS.find((r) => r.captureId === targetId) || RECORDS[0] : RECORDS[0];
-      rec = light ? FULL.get(light.captureId) || light : null;
-    }
-    if (!rec) {
-      /* Two different empty states, because they need different answers.
-       *
-       * RECORDS deliberately excludes campaign captures (see the isolation
-       * note in load()), so a user who only ever runs campaigns has an empty
-       * RECORDS and used to be told "No captures yet — run a prompt", while
-       * a thousand captures sat in storage. Telling someone their data does
-       * not exist when it does is worse than showing nothing, and it is the
-       * reported "I ran a campaign, where did my results go".
-       */
-      if (TRACKED_COUNT > 0) {
-        const box = el("div", { className: "empty" },
-          el("div", {}, `Nothing selected to analyse — but ${TRACKED_COUNT} capture${TRACKED_COUNT === 1 ? "" : "s"} ${TRACKED_COUNT === 1 ? "is" : "are"} stored against your campaigns.`),
-          el("div", { className: "muted small", style: "margin-top:6px" },
-            "Campaign captures are kept separate from ad-hoc browsing so a tracking run can't skew your ad-hoc numbers. Open one from the Dashboard's campaign view — click any prompt in the performance table."));
-        const go = el("button", { className: "btn sm primary", style: "margin-top:10px" }, "Go to campaign results →");
-        go.onclick = () => { showTab("dashboard"); renderDashboard(); };
-        box.append(go);
-        root.append(box);
-        return;
-      }
-      root.append(
-        el("div", { className: "empty" },
-          "No captures yet. Open ChatGPT, Gemini, Perplexity or Grok in a tab, run a prompt, then reopen this panel.")
-      );
-      return;
-    }
+/* ---------- Analyze, popup layout (0.47.0) ----------
+ * The popup gets its own Analyze, built from src/lib/analyzeView.js. (The
+ * full tab got its own too in 0.48.0: renderAnalyzeTab.)
+ *
+ * Why a separate layout. Reported on the design canvas: the popup's Analyze
+ * "provides less information", the box under the product cards was "half cut
+ * from the bottom", and the searches (fan-out) were "getting cut". The old
+ * popup was the full-tab card stack squeezed to 540px: General Information
+ * first, searches far down the page, and each search ellipsised. This one
+ * reads top to bottom in the order the owner asked for — the searches the
+ * engine ran directly under the prompt, then what led the answer (product
+ * cards, map or images), your brand, every brand with what backs it, every
+ * cited page, and what changed since the last time.
+ *
+ * Nothing in it squeezes: .ap is a plain column inside the scrolling
+ * .app-content, so a tall section makes the popup scroll instead of being
+ * shrunk to fit and cut off. analyze-popup.test.mjs measures that.
+ */
+let apSheet = null;        // which details tab is open in the popup's sheet, or null
+let apSheetProduct = 0;    // the product the "Where to buy" tab shows
+let apFanAll = false;      // "Show all N searches"
+let apPromptOpen = false;  // long prompt expanded
+let apMenuOpen = false;
 
+const AP_FAN_MAX = 5;
+const AP_KIND_VAR = {
+  "Your site": "--kind-you", "Rival brand sites": "--kind-rival", "Review sites": "--kind-review",
+  "Retailers": "--kind-retail", "Forums & social": "--kind-forum", "Other": "--kind-other",
+};
+const apOrd = (n) => { const s = ["th", "st", "nd", "rd"], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); };
+const apDate = (t) => new Date(t).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
+const apTime = (t) => new Date(t).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+function apSection(id, title, count, extra) {
+  const head = el("div", { className: "ap-sec-head" });
+  const h = el("h2", { className: "ap-h", id: `${id}-h` }, title);
+  if (count != null && count !== "") h.append(el("span", { className: "ap-h-count" }, ` · ${count}`));
+  head.append(h);
+  if (extra) head.append(extra);
+  return el("section", { className: "ap-sec", id, "aria-labelledby": `${id}-h` }, head);
+}
+
+function apPill(text, tone, title) {
+  return el("span", { className: `ap-pill tone-${tone || "neutral"}`, ...(title ? { title } : {}) }, text);
+}
+
+function renderAnalyzePopup(rec, root) {
+  const knownBrands = knownVendors(rec);
+  const own = ownBrandFor(rec, GEO_PROFILES);
+  const previous = findPrevious(rec, ALL_RECORDS);
+  const kind = answerKind(rec);
+  const engineLabel = ENGINES.find((e) => e.id === rec.platform)?.label || rec.platform || "Unknown engine";
+  const mentions = normalizeMentions(rec.brandMentions || [], knownBrands);
+  const brandNames = mentions.map((b) => b.brand);
+  const searches = searchesView(rec, brandNames);
+  const brands = brandsView(rec, { own, knownBrands, previous });
+  const pages = pagesView(rec, { own, knownBrands });
+  const you = yourBrandView(rec, own, { knownBrands, previous });
+  const changes = changesView(rec, previous, { knownBrands });
+  const cited = pages.rows.length;
+
+  const wrap = el("div", { className: "ap" });
+  root.append(wrap);
+
+  if (rec.isDemo || String(rec.captureId || "").startsWith("demo-")) {
+    wrap.append(el("div", { className: "demo-banner" },
+      el("span", { className: "demo-banner-label" }, "Sample"),
+      el("span", {}, "Example data showing what a captured answer looks like — not a real capture. Remove it any time from the About tab.")));
+  }
+
+  /* --- sticky head: engine, time, kind, capture paging, menu; the prompt; the strip --- */
+  const head = el("header", { className: "ap-head" });
+  const row = el("div", { className: "ap-head-row" });
+  const eng = engineIconEl(rec.platform);
+  eng.classList.add("ap-engine-icon");
+  row.append(eng, el("span", { className: "ap-engine" }, engineLabel),
+    el("span", { className: "ap-when", title: new Date(rec.capturedAt).toLocaleString() }, `· ${apDate(rec.capturedAt)}, ${apTime(rec.capturedAt)}`),
+    el("span", { className: `ap-kind kind-${kind.id}` }, kind.label));
+  const spacer = el("span", { className: "ap-head-spacer" });
+  row.append(spacer);
+  const idx = RECORDS.findIndex((r) => r.captureId === rec.captureId);
+  if (idx >= 0 && RECORDS.length > 1) {
+    const go = (j) => { const t = RECORDS[j]; if (!t) return; apSheet = null; apFanAll = false; apPromptOpen = false; openCapture(t.captureId); };
+    const newer = el("button", { className: "ap-icon-btn", type: "button", title: "Newer capture", "aria-label": "Newer capture" }, "‹");
+    newer.disabled = idx === 0;
+    newer.onclick = () => go(idx - 1);
+    const older = el("button", { className: "ap-icon-btn", type: "button", title: "Older capture", "aria-label": "Older capture" }, "›");
+    older.disabled = idx === RECORDS.length - 1;
+    older.onclick = () => go(idx + 1);
+    row.append(newer, el("span", { className: "ap-paging" }, `${idx + 1} of ${RECORDS.length}`), older);
+  } else if (rec.geo) {
+    row.append(el("span", { className: "ap-paging", title: "A campaign capture — open others from the campaign's results" }, "Campaign"));
+  }
+  const menuBtn = el("button", { className: "ap-icon-btn ap-menu-btn", type: "button", title: "More actions", "aria-label": "More actions", "aria-expanded": apMenuOpen ? "true" : "false" }, "⋯");
+  menuBtn.onclick = () => { apMenuOpen = !apMenuOpen; renderAnalyze(); };
+  row.append(menuBtn);
+  head.append(row);
+  if (apMenuOpen) {
+    const menu = el("div", { className: "ap-menu", role: "menu" });
+    const item = (label, fn, danger) => {
+      const b = el("button", { className: `ap-menu-item${danger ? " danger" : ""}`, type: "button", role: "menuitem" }, label);
+      b.onclick = async () => { apMenuOpen = false; await fn(); };
+      menu.append(b);
+    };
+    item("Copy the prompt", async () => { try { await navigator.clipboard.writeText(rec.userPrompt || ""); showToast("Prompt copied"); } catch (_) { showToast("Couldn't copy — select the prompt text instead", "error"); } renderAnalyze(); });
+    item("Save as PDF", () => { openAnswerReport(rec); renderAnalyze(); });
+    item("Save as HTML", () => { exportRecordsAsHtml([rec]); renderAnalyze(); });
+    item("Download raw payload", () => { downloadRaw(rec.captureId, "analyze"); renderAnalyze(); });
+    item("Report a wrong reading", () => { renderAnalyze(); openFeedbackModal(rec); });
+    item("Remove from my history", async () => {
+      if (!confirm("Remove this answer from your history? This can't be undone.")) { renderAnalyze(); return; }
+      await send({ type: "delete-record", captureId: rec.captureId });
+      FULL.delete(rec.captureId);
+      viewingId = null;
+      showToast("Removed from your history");
+      load();
+    }, true);
+    head.append(menu);
+  }
+  const promptText = rec.userPrompt || "(no prompt text)";
+  const words = promptText.trim().split(/\s+/).length;
+  const isLong = words > 28 || promptText.length > 180;
+  const h1 = el("h1", { className: `ap-prompt${isLong ? " long" : ""}${isLong && !apPromptOpen ? " clamped" : ""}`, title: promptText }, promptText);
+  head.append(h1);
+  if (isLong) {
+    const t = el("button", { className: "ap-link", type: "button", "aria-expanded": apPromptOpen ? "true" : "false" }, `${apPromptOpen ? "Show less" : "Show all"} · ${words} words`);
+    t.onclick = () => { apPromptOpen = !apPromptOpen; renderAnalyze(); };
+    head.append(t);
+  }
+  const strip = el("div", { className: "ap-strip" });
+  const chip = (text, on, title, cls) => strip.append(el("span", { className: `ap-chip${on ? " on" : ""}${cls ? " " + cls : ""}`, title }, text));
+  if (rec.searched) chip(searches.count ? `Searched the web · ${searches.count} search${searches.count === 1 ? "" : "es"}` : "Searched the web", true, "The engine searched the web before answering", "searched");
+  else chip("No web search", true, "Answered from what the model already knows", "memory");
+  chip(rec.sources.length ? `${rec.sources.length} read · ${cited} cited` : "No pages", rec.sources.length > 0, "Pages the engine opened, and how many it cited");
+  if ((rec.products || []).length) chip(`${rec.products.length} products`, true, "Product cards in the answer");
+  if ((rec.places || []).length) chip(`Map · ${rec.places.length}`, true, "Places on a map");
+  if ((rec.images || []).length) chip(`${rec.images.length} images`, true, "Images from the web");
+  if ((rec.ads || []).length) chip(`Ad · ${adAdvertisers(rec)}`, true, "A sponsored card shown with the answer", "ad");
+  head.append(strip);
+  wrap.append(head);
+
+  /* --- 1. searches it ran, right under the prompt --- */
+  if (searches.count) {
+    const extra = el("span", { className: "ap-sec-meta" });
+    if (searches.breadth) extra.append(apPill(searches.breadth.short, searches.breadth.band === "narrow" ? "warn" : searches.breadth.band === "broad" ? "good" : "neutral", `Breadth: ${searches.breadth.label}`));
+    extra.append(el("span", { className: "ap-muted" }, `avg ${searches.avgWords} words · ${searches.namingBrand} name${searches.namingBrand === 1 ? "s" : ""} a brand`));
+    const sec = apSection("ap-searches", "Searches it ran", searches.count, extra);
+    const ol = el("ol", { className: "ap-fan" });
+    const shown = apFanAll ? searches.rows : searches.rows.slice(0, AP_FAN_MAX);
+    shown.forEach((q) => {
+      ol.append(el("li", { className: "ap-fan-row" },
+        el("span", { className: `ap-lane lane-${q.lane}`, title: q.laneLabel, "aria-label": q.laneLabel }, { web: "W", shopping: "S", image: "I" }[q.lane] || "•"),
+        el("span", { className: "ap-fan-text" }, q.text),
+        q.tag ? el("span", { className: "ap-tag" }, q.tag) : el("span", {})));
+    });
+    sec.append(ol);
+    if (searches.rows.length > AP_FAN_MAX) {
+      const more = el("button", { className: "ap-link", type: "button", "aria-expanded": apFanAll ? "true" : "false" }, apFanAll ? "Show fewer" : `Show all ${searches.rows.length} searches`);
+      more.onclick = () => { apFanAll = !apFanAll; renderAnalyze(); };
+      sec.append(more);
+    }
+    wrap.append(sec);
+  } else if (searches.unpublished) {
+    const sec = apSection("ap-searches", "Searches it ran", "");
+    sec.append(el("p", { className: "ap-note" }, `${engineLabel} confirms it searched the web for this answer but doesn't publish what it searched for, so there is no list to show. That's the engine, not a failed capture.`));
+    wrap.append(sec);
+  }
+
+  /* --- 2. what led the answer --- */
+  if ((rec.products || []).length) {
+    const sec = apSection("ap-products", "Product cards", rec.products.length, el("span", { className: "ap-muted" }, "click one to see where it's sold"));
+    const strip2 = el("div", { className: "ap-cards" });
+    rec.products.forEach((p, i) => {
+      const mine = own && you && new RegExp(`^${escapeRegExp(own.name)}\\b`, "i").test(String(p.name || ""));
+      // The product's picture, as on the engine's card (0.58.0: the cards
+      // were reported as coloured boxes with no image).
+      const b = el("button", { className: `ap-card${mine ? " mine" : ""}`, type: "button", title: p.name || "" },
+        withImage(el("span", { className: "ap-card-thumb" }, glyphEl("cart", 22)), p.image, p.name),
+        el("span", { className: "ap-card-n" }, String(i + 1)),
+        el("span", { className: "ap-card-name" }, p.name || "—"),
+        el("span", { className: "ap-card-price" }, p.price || "price not shown"),
+        el("span", { className: "ap-card-meta" }, [p.rating != null ? `★ ${p.rating}` : "", p.merchant || ""].filter(Boolean).join(" · ") || "no store named"));
+      b.onclick = () => { apSheet = "buy"; apSheetProduct = i; renderAnalyze(); };
+      strip2.append(b);
+    });
+    sec.append(strip2);
+    wrap.append(sec);
+  }
+  if ((rec.places || []).length) {
+    const sec = apSection("ap-places", "On the map", rec.places.length);
+    const ol = el("ol", { className: "ap-places" });
+    rec.places.slice(0, 5).forEach((p, i) => {
+      const mine = own && String(p.name || "").toLowerCase().startsWith(own.name.toLowerCase());
+      ol.append(el("li", { className: `ap-place${mine ? " mine" : ""}` },
+        el("span", { className: "ap-pin" }, String(i + 1)),
+        el("span", { className: "ap-place-name" }, p.name || "—"),
+        el("span", { className: "ap-muted" }, [p.rating != null ? `★ ${p.rating}` : "", p.category || ""].filter(Boolean).join(" · "))));
+    });
+    sec.append(ol);
+    if (rec.places.length > 5) {
+      const more = el("button", { className: "ap-link", type: "button" }, `All ${rec.places.length} places`);
+      more.onclick = () => { apSheet = "places"; renderAnalyze(); };
+      sec.append(more);
+    }
+    wrap.append(sec);
+  }
+  if ((rec.images || []).length) {
+    const sec = apSection("ap-images", "Images shown", rec.images.length);
+    const grid = el("div", { className: "ap-imgs" });
+    // Every image, three to a row at a size you can see (0.58.0: six to a
+    // row at 54px tall read as a strip of coloured chips).
+    rec.images.forEach((im) => {
+      let host = "";
+      try { host = new URL(im.url).hostname.replace(/^www\./, ""); } catch (_) {}
+      grid.append(el("a", { className: "ap-img", href: im.url, target: "_blank", rel: "noreferrer", title: im.title || host },
+        withImage(el("span", { className: "ap-img-frame" }, el("span", { className: "ap-img-ph" }, im.title || host || "image")), im.url, im.title),
+        el("span", { className: "ap-img-from" }, im.title || im.attribution || host)));
+    });
+    sec.append(grid);
+    wrap.append(sec);
+  }
+  if ((rec.ads || []).length) {
+    const ads = adsView(rec);
+    const sec = apSection("ap-ads", "Ad shown with the answer", ads.length > 1 ? ads.length : "", apPill("Sponsored", "warn", "Paid placement, not part of the answer"));
+    ads.forEach((a) => sec.append(adCardEl(a)));
+    wrap.append(sec);
+  }
+  if (kind.id === "memory") {
+    wrap.append(el("section", { className: "ap-sec ap-memory", id: "ap-memory" },
+      el("b", {}, "Answered from memory"),
+      el("span", {}, `${engineLabel} didn't search the web, so there are no pages or citations. The brands below come from what the model already knows.`)));
+  }
+
+  /* --- 3. your brand --- */
+  if (you) {
+    const extra = you.since ? el("span", { className: "ap-muted" }, `vs ${apDate(you.previousAt)}: ${you.since}`) : null;
+    const sec = apSection("ap-you", "Your brand", "", extra);
+    sec.classList.add("ap-you");
+    sec.querySelector(".ap-h").append(el("span", { className: "ap-you-name" }, ` · ${you.name}`));
+    const tiles = el("div", { className: "ap-tiles" });
+    you.tiles.forEach((t) => tiles.append(el("div", { className: "ap-tile", title: t.label },
+      el("span", { className: "ap-tile-label" }, t.label),
+      el("span", { className: `ap-tile-value tone-${t.tone}` }, t.value),
+      el("span", { className: "ap-tile-sub" }, t.sub))));
+    sec.append(tiles);
+    wrap.append(sec);
+  } else if (mentions.length) {
+    wrap.append(el("p", { className: "ap-note ap-you-hint", id: "ap-you" },
+      "Set up a campaign with your brand and this answer will show how your brand did in it."));
+  }
+
+  /* --- 4. every brand, and what backs it --- */
+  if (brands.rows.length) {
+    const title = kind.id === "local" ? "Places named" : "Brands named";
+    const extra = brands.hasPrevious ? null : el("span", { className: "ap-muted" }, previous ? "" : "no earlier answer to compare");
+    const sec = apSection("ap-brands", title, brands.rows.filter((r) => !r.shownOnly).length, extra);
+    const table = el("div", { className: `ap-table ap-brand-table${brands.hasPrevious ? " has-change" : ""}`, role: "table", "aria-labelledby": "ap-brands-h" });
+    table.append(el("div", { className: "ap-tr ap-th", role: "row" },
+      el("span", { role: "columnheader", className: "ap-sr" }, "Position"),
+      el("span", { role: "columnheader" }, kind.id === "local" ? "Place" : "Brand"),
+      el("span", { role: "columnheader", className: "num" }, "Mentions"),
+      brands.hasPrevious ? el("span", { role: "columnheader" }, `vs ${apDate(previous.capturedAt).replace(/^\w+,?\s*/, "")}`) : null));
+    brands.rows.forEach((r) => {
+      const m = mentions.find((x) => x.brand === r.name);
+      const models = [...new Set([...(m && m.skus) || [], ...extractBrandModels(r.name, rec.products, rec.answerText || "")])].slice(0, 2);
+      const aspects = r.count > 0 && m ? extractBrandAspects(m.passages || []).slice(0, 2) : [];
+      const sub = [...models, ...aspects].join(" · ");
+      const ch = r.change;
+      const chText = !ch ? "—" : ch.kind === "added" ? "New" : ch.kind === "same" ? "= Same" : ch.kind === "up" ? `↑ from ${apOrd(ch.from)}` : `↓ from ${apOrd(ch.from)}`;
+      const tr = el("div", { className: `ap-tr${r.isYou ? " mine" : ""}${r.shownOnly ? " shown-only" : ""}`, role: "row", title: `${r.backing.label}${r.backing.readOnly ? ` · also in ${r.backing.readOnly} page(s) read but not cited` : ""}` },
+        el("span", { role: "cell", className: `ap-rank${r.position === 1 ? " first" : ""}` }, r.position ? String(r.position) : "–"),
+        el("span", { role: "cell", className: "ap-brand-cell" },
+          el("span", { className: "ap-brand-name" }, r.name + (r.isYou ? " · you" : "")),
+          sub ? el("span", { className: "ap-brand-sub" }, sub) : null),
+        el("span", { role: "cell", className: "num" }, r.shownOnly ? "card only" : `×${r.count}`),
+        brands.hasPrevious ? el("span", { role: "cell", className: `ap-change ch-${ch ? ch.kind : "none"}` }, chText) : null);
+      table.append(tr);
+    });
+    brands.dropped.forEach((d) => {
+      table.append(el("div", { className: "ap-tr dropped", role: "row", title: "Named last time, missing from this answer" },
+        el("span", { role: "cell", className: "ap-rank" }, "–"),
+        el("span", { role: "cell", className: "ap-brand-cell" },
+          el("span", { className: "ap-brand-name" }, d.name),
+          el("span", { className: "ap-brand-sub" }, `was ${apOrd(d.was)} last time`)),
+        el("span", { role: "cell", className: "num" }, "×0"),
+        el("span", { role: "cell", className: "ap-change ch-dropped" }, "Dropped")));
+    });
+    sec.append(table);
+    wrap.append(sec);
+  }
+
+  /* --- 5. every site it used (0.58.0) --- */
+  // Was "Pages cited": cited domains as a list, and every site read but not
+  // cited squeezed onto one line. Reported: the cited domains and URLs had
+  // all but disappeared. Now every site, cited first, each opening to every
+  // page the engine read there.
+  const sites = domainsView(rec, { own, knownBrands });
+  if (sites.rows.length) {
+    const sec = apSection("ap-sites", "Sites it used", sites.rows.length,
+      el("span", { className: "ap-muted" }, `${sites.citedSites} cited · ${sites.readOnlySites} read only`));
+    if (cited) {
+      const bar = el("div", { className: "ap-kindbar", role: "img", "aria-label": "Cited pages by kind: " + pages.kinds.map((k) => `${k.n} ${k.label.toLowerCase()}`).join(", ") });
+      pages.kinds.forEach((k) => bar.append(el("span", { title: `${k.label} · ${k.n}`, style: `flex:${k.n} 1 0; background:var(${AP_KIND_VAR[k.label]})` })));
+      const legend = el("div", { className: "ap-legend" });
+      pages.kinds.forEach((k) => legend.append(el("span", {}, el("i", { style: `background:var(${AP_KIND_VAR[k.label]})` }), `${k.label} · ${k.n}`)));
+      sec.append(bar, legend);
+    }
+    sec.append(sitesListEl(sites));
+    if (own && pages.silent.length) sec.append(el("p", { className: "ap-foot accent" }, `Cited but silent about ${own.name}: ${pages.silent.join(", ")} — the pages to get onto.`));
+    wrap.append(sec);
+  }
+
+  /* --- 6. since last time --- */
+  if (changes) {
+    const sec = apSection("ap-changes", `Since ${apDate(changes.at)}`, "", el("span", { className: "ap-muted" }, "same prompt, same engine"));
+    const SIGN = { added: "+", dropped: "−", up: "↑", down: "↓", same: "=", site: "↻" };
+    const ul = el("ul", { className: "ap-changes" });
+    changes.items.forEach((x) => ul.append(el("li", {}, el("span", { className: `ap-sign s-${x.kind}`, "aria-hidden": "true" }, SIGN[x.kind] || "•"), x.text)));
+    sec.append(ul);
+    wrap.append(sec);
+  }
+
+  /* --- 7. what backs each brand, at the bottom (0.58.0) --- */
+  // Requested: this reads which brands appear in the cited pages' titles and
+  // search snippets, so it's an inference, and it sat in the brands table as a
+  // "Backed by: Nothing" column. It is the last section now.
+  if (rec.searched && kind.id !== "memory" && brands.rows.some((r) => r.position > 0)) {
+    const sec = apSection("ap-backing", kind.id === "local" ? "What backs each place" : "What backs each brand", "",
+      el("span", { className: "ap-muted" }, "the cited pages that mention it"));
+    brands.rows.filter((r) => r.position > 0).sort((x, y) => x.position - y.position).forEach((r) => {
+      sec.append(el("div", { className: `ap-backing-row${r.isYou ? " mine" : ""}` },
+        el("span", { className: `ap-rank${r.position === 1 ? " first" : ""}` }, String(r.position)),
+        el("span", { className: "ap-brand-name" }, r.name + (r.isYou ? " · you" : "")),
+        apPill(r.backing.label, r.backing.tone),
+        el("span", { className: "ap-muted ap-backing-pages" }, r.backing.backers.map((x) => x.domain + (x.own ? " (own site)" : "")).join(", ") || "no cited page mentions it")));
+    });
+    wrap.append(sec);
+  }
+
+  /* --- 8. facts, and the way into the details --- */
+  const ps = rec.platformSpecific || {};
+  const wordsN = ps.wordCount || (rec.answerText ? rec.answerText.trim().split(/\s+/).length : 0);
+  const vg = rec.sources.length && rec.answerText ? computeVerbatimGrounding(rec.answerText, rec.sources) : null;
+  const facts = el("div", { className: "ap-facts" });
+  const fact = (k, v) => facts.append(el("span", {}, el("span", { className: "ap-muted" }, k + " "), el("b", {}, v)));
+  if (wordsN) fact("Answer", `${wordsN} words`);
+  if (vg && vg.totalClaims) fact("Quoted word for word", `${vg.groundedClaims} of ${vg.totalClaims} claims`);
+  fact("Model", rec.model || "not reported");
+  fact("Captured", `${apDate(rec.capturedAt)}, ${apTime(rec.capturedAt)}`);
+  wrap.append(facts);
+
+  const tabs = apSheetTabs(rec);
+  const links = el("div", { className: "ap-links" });
+  tabs.filter((t) => t.id !== "searches").forEach((t) => {
+    const b = el("button", { className: "ap-btn", type: "button" }, t.label);
+    b.onclick = () => { apSheet = t.id; renderAnalyze(); };
+    links.append(b);
+  });
+  const key = normPrompt(rec.userPrompt);
+  // Counted over RECORDS because that is what the Compare page lists (campaign
+  // captures stay out of it unless "include campaign captures" is on).
+  const others = key && RECORDS.some((r) => r.captureId === rec.captureId) ? RECORDS.filter((r) => normPrompt(r.userPrompt) === key).length : 0;
+  if (others > 1) {
+    const b = el("button", { className: "ap-btn", type: "button", "data-open": "compare", title: "Every captured answer to this prompt, run by run and engine by engine" }, `All ${others} answers to this prompt`);
+    b.onclick = () => openCompareFor(rec);
+    links.append(b);
+  }
+  const full = el("button", { className: "ap-link ap-full", type: "button", title: "Open this answer in a full browser tab" }, "Full analysis ↗");
+  full.onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL(`ui/panel.html?mode=tab&capture=${encodeURIComponent(rec.captureId)}`) });
+  links.append(full);
+  wrap.append(links);
+
+  if (apSheet && tabs.some((t) => t.id === apSheet)) renderApSheet(rec, wrap, tabs, { own, brands, pages, searches, knownBrands });
+}
+
+function apSheetTabs(rec) {
+  const t = [];
+  if (rec.searched) t.push({ id: "backing", label: "What backs each brand" });
+  if ((rec.products || []).length) t.push({ id: "buy", label: "Where to buy" });
+  if ((rec.places || []).length) t.push({ id: "places", label: "All places" });
+  if ((rec.images || []).length) t.push({ id: "images", label: "All images" });
+  if ((rec.sources || []).length) t.push({ id: "pages", label: "Every page it opened" });
+  if (((rec.fanout?.search?.length || 0) + (rec.fanout?.shopping?.length || 0) + (rec.fanout?.image?.length || 0)) > 0) t.push({ id: "searches", label: "Search details" });
+  t.push({ id: "tech", label: "Technical" });
+  return t;
+}
+
+function renderApSheet(rec, wrap, tabs, ctx) {
+  const close = () => { apSheet = null; renderAnalyze(); };
+  const scrim = el("div", { className: "ap-scrim", "aria-hidden": "true" });
+  scrim.onclick = close;
+  const sheet = el("section", { className: "ap-sheet", role: "dialog", "aria-modal": "true", "aria-label": "Details" });
+  const top = el("div", { className: "ap-sheet-top" });
+  const tl = el("div", { className: "ap-sheet-tabs", role: "tablist" });
+  tabs.forEach((t) => {
+    const b = el("button", { className: `ap-sheet-tab${t.id === apSheet ? " on" : ""}`, type: "button", role: "tab", "aria-selected": t.id === apSheet ? "true" : "false" }, t.label);
+    b.onclick = () => { apSheet = t.id; renderAnalyze(); };
+    tl.append(b);
+  });
+  const x = el("button", { className: "ap-icon-btn ap-sheet-close", type: "button", "aria-label": "Close details", title: "Close" }, "×");
+  x.onclick = close;
+  top.append(tl, x);
+  const body = el("div", { className: "ap-sheet-body" });
+  const col = el("div", { className: "ap-sheet-col" });
+  body.append(col);
+  sheet.append(top, body);
+
+  if (apSheet === "backing") {
+    col.append(el("p", { className: "ap-note" }, "Each brand and the cited pages that mention it. Brands backed by independent pages tend to keep their place; brands with only their own site — or nothing — behind them can drop out next time."));
+    ctx.brands.rows.forEach((r) => {
+      const chips = el("div", { className: "ap-chips" });
+      r.backing.backers.forEach((b) => chips.append(el("span", { className: `ap-bchip${b.own ? " own" : ""}` }, `${b.domain} · ${b.own ? "own site" : "independent"}`)));
+      if (!r.backing.backers.length) chips.append(el("span", { className: "ap-muted" }, r.backing.verdict === "read" ? "only in pages it read without citing" : "no page the engine read mentions it"));
+      col.append(el("div", { className: "ap-sheet-row" },
+        el("div", { className: "ap-sheet-row-head" }, el("b", {}, `${r.position || "–"}. ${r.name}`), apPill(r.backing.label, r.backing.tone)),
+        chips,
+        r.backing.readOnly ? el("span", { className: "ap-foot warn" }, `also in ${r.backing.readOnly} page${r.backing.readOnly === 1 ? "" : "s"} read but not cited`) : null));
+    });
+  } else if (apSheet === "buy") {
+    const ps = rec.products;
+    const pick = el("div", { className: "ap-chips" });
+    ps.forEach((p, i) => {
+      const b = el("button", { className: `ap-pick${i === apSheetProduct ? " on" : ""}`, type: "button" }, (p.name || "—").split(/\s+/).slice(0, 3).join(" "));
+      b.onclick = () => { apSheetProduct = i; renderAnalyze(); };
+      pick.append(b);
+    });
+    const p = ps[Math.min(apSheetProduct, ps.length - 1)];
+    const kv = el("dl", { className: "ap-kv" });
+    const add = (k, v) => { if (v) kv.append(el("div", {}, el("dt", {}, k), el("dd", {}, v))); };
+    add("Price on the card", p.price || "not shown");
+    add("Stores the card names", p.merchant || "none named");
+    add("Rating", p.rating != null ? `★ ${p.rating}${p.reviews ? ` (${Number(p.reviews).toLocaleString()} reviews)` : ""}` : "");
+    const sup = supplierOf(p.supplier);
+    add("Listing feed", sup ? sup.code : "");
+    const word = String(p.name || "").split(/\s+/).slice(0, 2).join(" ").toLowerCase();
+    const about = word ? rec.sources.filter((s) => `${s.title || ""} ${s.snippet || ""}`.toLowerCase().includes(word)) : [];
+    col.append(pick, el("h3", { className: "ap-h3" }, p.name || "—"), kv,
+      el("p", { className: "ap-note" }, "The card names its stores but the capture doesn't carry each store's price, so only the card's own price is shown."));
+    if (about.length) {
+      col.append(el("h3", { className: "ap-h3" }, `Pages that mention it · ${about.length}`));
+      about.slice(0, 8).forEach((s) => col.append(el("a", { className: "ap-sheet-link", href: s.url, target: "_blank", rel: "noreferrer" }, `${s.domain || ""} — ${s.title || s.url}`)));
+    }
+  } else if (apSheet === "places") {
+    rec.places.forEach((p, i) => {
+      const links = el("div", { className: "ap-chips" });
+      placeLinkChips(p, links);
+      col.append(el("div", { className: "ap-sheet-row" },
+        el("div", { className: "ap-sheet-row-head" }, el("span", { className: "ap-pin" }, String(i + 1)), el("b", {}, p.name || "—")),
+        el("span", { className: "ap-muted" }, [p.rating != null ? `★ ${p.rating}${p.reviews ? ` (${Number(p.reviews).toLocaleString()})` : ""}` : "", p.category, p.priceRange, p.hours].filter(Boolean).join(" · ")),
+        p.address ? el("span", { className: "ap-muted" }, p.address) : null,
+        links));
+    });
+  } else if (apSheet === "images") {
+    rec.images.forEach((im) => {
+      let host = "";
+      try { host = new URL(im.url).hostname.replace(/^www\./, ""); } catch (_) {}
+      const img = el("img", { src: im.url, alt: im.title || "", loading: "lazy" });
+      img.onerror = () => img.replaceWith(el("span", { className: "ap-img-ph" }, ""));
+      col.append(el("a", { className: "ap-sheet-img", href: im.url, target: "_blank", rel: "noreferrer" },
+        img,
+        el("span", {}, el("b", {}, im.title || "Untitled image"), el("span", { className: "ap-muted" }, [im.attribution || host, im.price].filter(Boolean).join(" · ")))));
+    });
+  } else if (apSheet === "pages") {
+    // Every page, cited first, with its full address: reported "i am not
+    // able to see all the cited, fetched domain and there urls".
+    const rows = [...rec.sources].sort((a, b) => (b.outcome === "cited") - (a.outcome === "cited"));
+    col.append(el("p", { className: "ap-note" }, `${plural(rows.length, "page")} opened · ${rows.filter((s) => s.outcome === "cited").length} cited. Read only = opened while searching, not linked in the answer.`));
+    rows.forEach((s) => col.append(sourceRowEl(s, { pill: (t, tone) => apPill(t, tone), cls: "ap-sheet-row ap-page-row" })));
+  } else if (apSheet === "searches") {
+    const all = [].concat(rec.fanout.search || [], rec.fanout.shopping || [], rec.fanout.image || []);
+    const fa = analyzeFanout(all, rec.sources || []);
+    const kv = el("dl", { className: "ap-kv" });
+    const add = (k, v) => kv.append(el("div", {}, el("dt", {}, k), el("dd", {}, v)));
+    add("Searches", `${fa.count} · ${fa.benchmark.label}`);
+    add("Average length", `${fa.avgWords} words (longest ${fa.maxWords})`);
+    add("With a year or 'latest'", String(fa.temporalCount));
+    add("Scoped to a site (site:)", fa.scopedDomains.length ? fa.scopedDomains.map((d) => `${d.domain}${d.cited ? " ✓ cited" : " — not cited"}`).join(", ") : "none");
+    if (fa.excludedDomains.length) add("Excluded (-site:)", fa.excludedDomains.map((d) => d.domain).join(", "));
+    add("What the searches were after", fa.intents.length ? fa.intents.map((i) => `${i.key} ${i.count}`).join(", ") : "—");
+    col.append(kv);
+  } else if (apSheet === "tech") {
+    const ps = rec.platformSpecific || {};
+    const kv = el("dl", { className: "ap-kv two" });
+    const add = (k, v) => { if (v) kv.append(el("div", {}, el("dt", {}, k), el("dd", { title: String(v) }, String(v)))); };
+    add("Captured", new Date(rec.capturedAt).toLocaleString());
+    add("Engine", ENGINES.find((e) => e.id === rec.platform)?.label || rec.platform);
+    add("Model", rec.model || "not reported");
+    add("Engine's own label", rec.turnUseCase || "");
+    add("Searched the web", rec.searched ? "Yes" : "No");
+    add("Kind of answer", answerKind(rec).label);
+    add("Pages read · cited", `${rec.sources.length} · ${ctx.pages.rows.length}`);
+    add("Products · places · images", `${(rec.products || []).length} · ${(rec.places || []).length} · ${(rec.images || []).length}`);
+    add("Plan type", ps.planType || "");
+    add("Time to first token", ps.ttfvtMs ? `${(ps.ttfvtMs / 1000).toFixed(2)}s` : "");
+    add("Reference types", Object.entries(rec.referenceTypes || {}).map(([k, v]) => `${k} (${v})`).join(", "));
+    add("Read from", rec._extraction?.usedFallback ? "Page fallback (stream unreadable)" : "The engine's own response");
+    add("Conversation", rec.conversationId || "");
+    add("Capture id", rec.captureId);
+    col.append(kv);
+    const raw = el("button", { className: "ap-btn", type: "button" }, "Download raw payload");
+    raw.onclick = () => downloadRaw(rec.captureId, "analyze");
+    col.append(raw);
+  }
+  wrap.append(scrim, sheet);
+}
+
+// Compare left the top menu in 0.47.0 — comparing answers to one prompt now
+// starts from the answer itself. Same page as before, opened on this prompt.
+function openCompareFor(rec) {
+  cmpProjectFilter = "";
+  cmpModelFilter = "";
+  ["#cmpProject", "#cmpModel"].forEach((id) => { const n = $(id); if (n) n.value = ""; });
+  cmpSearch = "";
+  const si = $("#cmpSearch");
+  if (si) si.value = "";
+  refreshComparePickers();
+  const sel = $("#cmpPrompt");
+  const key = normPrompt(rec.userPrompt);
+  if (sel && [...sel.options].some((o) => o.value === key)) sel.value = key;
+  showTab("compare");
+  renderCompare();
+}
+
+/* ---------- Analyze, full tab (0.48.0) ----------
+ * Release 2 of the canvas redesign. The owner's brief for the full tab: the
+ * old page "has lot of white spaces", and the answer itself, as the engine
+ * showed it, belongs on the far right with the analysis down the left. So: a
+ * prompt header,
+ * then two columns — the analysis (searches first, as in the popup; your
+ * brand; what led the answer; every brand and what backs it; every cited
+ * page; what changed; kinds of sites; details) and, pinned on the right, the
+ * answer as the engine showed it, with brands and citations highlighted.
+ * Clicking a brand or a page on the left lights it up in the answer.
+ *
+ * When the same prompt has answers from more than one engine, tabs switch
+ * between them and "Compare engines" lays them side by side
+ * (src/lib/compareView.js) — the comparison that used to need the Compare tab.
+ *
+ * The detailed cards the page always had (every page read with its index and
+ * kind chips, search details, the brand/page matrix, claim grounding,
+ * technical) are kept, built by renderAnalyzeLegacy() and shown in Details.
+ */
+let atFocusBrand = null;   // brand lit up in the answer
+let atFocusCite = null;    // citation number lit up in the answer
+let atHlBrands = true;
+let atHlCites = true;
+let atCompare = false;     // the "Compare engines" view
+let atCompareRead = null;  // whose answer the compare view shows on the right
+let atDetails = "tech";    // which Details tab
+let atProduct = 0;         // product row selected for "Where to buy"
+let atPromptOpen = false;
+let atMenuOpen = false;
+let atHeroObs = null;      // keeps --at-hero-h in step with the pinned header
+
+function atResetState() {
+  atFocusBrand = null; atFocusCite = null; atCompare = false; atCompareRead = null;
+  atProduct = 0; atPromptOpen = false; atMenuOpen = false;
+}
+
+function atSection(id, title, count, extra) {
+  const head = el("div", { className: "at-sec-head" });
+  const h = el("h2", { className: "at-h", id: `${id}-h` }, title);
+  if (count != null && count !== "") h.append(el("span", { className: "ap-h-count" }, ` · ${count}`));
+  head.append(h);
+  if (extra) head.append(extra);
+  return el("section", { className: "at-sec", id, "aria-labelledby": `${id}-h` }, head);
+}
+
+function atEngineLabel(id) { return ENGINES.find((e) => e.id === id)?.label || id || "Unknown engine"; }
+
+function renderAnalyzeTab(rec, root) {
+  const knownBrands = knownVendors(rec);
+  const own = ownBrandFor(rec, GEO_PROFILES);
+  const previous = findPrevious(rec, ALL_RECORDS);
+  const kind = answerKind(rec);
+  const engineLabel = atEngineLabel(rec.platform);
+  const mentions = normalizeMentions(rec.brandMentions || [], knownBrands);
+  const searches = searchesView(rec, mentions.map((b) => b.brand));
+  const brands = brandsView(rec, { own, knownBrands, previous });
+  const pages = pagesView(rec, { own, knownBrands });
+  const you = yourBrandView(rec, own, { knownBrands, previous, max: 6 });
+  const changes = changesView(rec, previous, { knownBrands });
+  const answers = answersToPrompt(rec, ALL_RECORDS);
+  if (answers.length < 2) atCompare = false;
+
+  // The cards renderAnalyzeLegacy() builds, taken by id for Details.
+  const legacy = el("div");
+  try { renderAnalyzeLegacy(rec, legacy); } catch (err) { console.error("legacy Analyze cards failed:", err); }
+  const legacyCard = (id) => legacy.querySelector(`#${id}`);
+
+  /* --- the prompt header: sticky, so which answer this is never scrolls away --- */
+  const hero = el("div", { className: "analyze-context-bar at-hero" });
+  const row = el("div", { className: "at-hero-row" });
+  const backTo = returnTab || "dashboard";
+  const backBtn = el("button", { className: "analyze-context-back", type: "button", title: `Back to ${TAB_LABELS[backTo] || backTo}` },
+    el("span", { "aria-hidden": "true" }, "←"), el("span", { className: "analyze-context-back-label" }, TAB_LABELS[backTo] || backTo));
+  backBtn.onclick = () => { returnTab = null; showTab(backTo); };
+  const eng = engineIconEl(rec.platform);
+  eng.classList.add("ap-engine-icon");
+  row.append(backBtn, eng,
+    el("span", { className: "at-asked" }, `Asked ${engineLabel}`),
+    el("span", { className: "ap-when", title: new Date(rec.capturedAt).toLocaleString() }, `· ${apDate(rec.capturedAt)}, ${apTime(rec.capturedAt)}`),
+    el("span", { className: `ap-kind kind-${kind.id}` }, kind.label));
+  const promptText = rec.userPrompt || "(no prompt text)";
+  const words = promptText.trim().split(/\s+/).length;
+  const isLong = words > 40 || promptText.length > 260;
+  if (isLong) row.append(el("span", { className: "ap-tag" }, `${words}-word prompt`));
+  row.append(el("span", { className: "ap-head-spacer" }));
+  // Finding another capture and paging through them live in the app bar,
+  // as on the canvas (atHeaderTools).
+  atHeaderNodes = atHeaderTools(rec);
+  setHeaderPage("analyze", ...atHeaderNodes);
+  const pdf = el("button", { className: "at-btn", type: "button", title: "A two-page report on this answer, to print or save as PDF" }, "Save as PDF");
+  pdf.onclick = () => openAnswerReport(rec);
+  const raw = el("button", { className: "at-btn", type: "button", title: "The engine's response exactly as captured" }, "Raw data");
+  raw.onclick = () => downloadRaw(rec.captureId, "analyze");
+  const menuBtn = el("button", { className: "ap-icon-btn", type: "button", title: "More actions", "aria-label": "More actions", "aria-expanded": atMenuOpen ? "true" : "false" }, "⋯");
+  menuBtn.onclick = () => { atMenuOpen = !atMenuOpen; renderAnalyze(); };
+  const feedbackBtn = el("button", { className: "analyze-context-feedback", type: "button", title: "Report a problem with this capture", "aria-label": "Report a problem with this capture" }, "💬");
+  feedbackBtn.onclick = () => openFeedbackModal(rec);
+  row.append(pdf, raw, menuBtn, feedbackBtn);
+  hero.append(row);
+  if (atMenuOpen) {
+    const menu = el("div", { className: "ap-menu at-menu", role: "menu" });
+    const item = (label, fn, danger) => {
+      const b = el("button", { className: `ap-menu-item${danger ? " danger" : ""}`, type: "button", role: "menuitem" }, label);
+      b.onclick = async () => { atMenuOpen = false; await fn(); };
+      menu.append(b);
+    };
+    item("Copy the prompt", async () => { try { await navigator.clipboard.writeText(rec.userPrompt || ""); showToast("Prompt copied"); } catch (_) { showToast("Couldn't copy — select the prompt text instead", "error"); } renderAnalyze(); });
+    item("Save as HTML", () => { exportRecordsAsHtml([rec]); renderAnalyze(); });
+    item("Report a wrong reading", () => { renderAnalyze(); openFeedbackModal(rec); });
+    item("Remove from my history", async () => {
+      if (!confirm("Remove this answer from your history? This can't be undone.")) { renderAnalyze(); return; }
+      await send({ type: "delete-record", captureId: rec.captureId });
+      FULL.delete(rec.captureId);
+      viewingId = null;
+      atResetState();
+      showToast("Removed from your history");
+      load();
+    }, true);
+    hero.append(menu);
+  }
+  const h1 = el("h1", { className: `at-prompt analyze-context-prompt${isLong && !atPromptOpen ? " clamped" : ""}`, title: promptText }, promptText);
+  hero.append(h1);
+  if (isLong) {
+    const t = el("button", { className: "ap-link", type: "button", "aria-expanded": atPromptOpen ? "true" : "false" }, atPromptOpen ? "Show less" : "Show the whole prompt");
+    t.onclick = () => { atPromptOpen = !atPromptOpen; renderAnalyze(); };
+    hero.append(t);
+  }
+  const strip = el("div", { className: "ap-strip at-strip" });
+  const chip = (text, on, title, cls) => strip.append(el("span", { className: `ap-chip${on ? " on" : ""}${cls ? " " + cls : ""}`, title }, text));
+  if (rec.searched) chip(searches.count ? `Searched the web · ${searches.count} search${searches.count === 1 ? "" : "es"}` : "Searched the web", true, "The engine searched the web before answering", "searched");
+  else chip("No web search", true, "Answered from what the model already knows", "memory");
+  chip(rec.sources.length ? `${rec.sources.length} pages read · ${pages.rows.length} cited` : "No pages", rec.sources.length > 0, "Pages the engine opened, and how many it cited");
+  if ((rec.products || []).length) chip(`${rec.products.length} product cards`, true, "Product cards in the answer");
+  if ((rec.places || []).length) chip(`Map · ${rec.places.length} places`, true, "Places on a map");
+  if ((rec.images || []).length) chip(`${rec.images.length} images`, true, "Images from the web");
+  if ((rec.ads || []).length) chip(`Ad · ${adAdvertisers(rec)}`, true, "A sponsored card shown with the answer", "ad");
+  const key = normPrompt(rec.userPrompt);
+  const overTime = key && RECORDS.some((r) => r.captureId === rec.captureId) ? RECORDS.filter((r) => normPrompt(r.userPrompt) === key).length : 0;
+  if (overTime > 1) {
+    const b = el("button", { className: "ap-link at-overtime", type: "button", "data-open": "compare", title: "Every captured answer to this prompt, run by run" }, `All ${overTime} answers to this prompt`);
+    b.onclick = () => openCompareFor(rec);
+    strip.append(b);
+  }
+  hero.append(strip);
+  if (answers.length > 1) {
+    const cv = compareView(answers, { own });
+    const tabs = el("div", { className: "at-engines", role: "tablist", "aria-label": "Engine" });
+    const cmp = el("button", { className: `at-engine-tab cmp${atCompare ? " on" : ""}`, type: "button", role: "tab", "aria-selected": atCompare ? "true" : "false" },
+      el("span", { className: "at-engine-tab-label" }, `Compare ${answers.length} engines`),
+      el("span", { className: "at-engine-tab-sub" }, "how the answers differ"));
+    cmp.onclick = () => { atCompare = true; atFocusBrand = null; atFocusCite = null; renderAnalyze(); };
+    tabs.append(cmp);
+    cv.engines.forEach((e) => {
+      const on = !atCompare && e.captureId === rec.captureId;
+      const icon = engineIconEl(e.id);
+      icon.classList.add("ap-engine-icon");
+      const b = el("button", { className: `at-engine-tab${on ? " on" : ""}`, type: "button", role: "tab", "aria-selected": on ? "true" : "false", title: `${e.label}'s answer` },
+        el("span", { className: "at-engine-tab-label" }, icon, ` ${e.label}`),
+        el("span", { className: "at-engine-tab-sub" }, e.stat));
+      b.onclick = () => {
+        if (e.captureId === rec.captureId) { atCompare = false; renderAnalyze(); return; }
+        atResetState();
+        openCapture(e.captureId);
+      };
+      tabs.append(b);
+    });
+    hero.append(tabs);
+  }
+  root.append(hero);
+  // Under the header, not above it: the band above the pinned header is
+  // covered by .at-hero::before so scrolled text can't show through.
+  if (rec.isDemo || String(rec.captureId || "").startsWith("demo-")) {
+    root.append(el("div", { className: "demo-banner at-demo" },
+      el("span", { className: "demo-banner-label" }, "Sample"),
+      el("span", {}, "This is example data showing what a captured answer looks like — not a real capture. Remove it any time from the About tab.")));
+  }
+
+  const grid = el("div", { className: "at-grid" });
+  const main = el("div", { className: "at-main" });
+  grid.append(main);
+  root.append(grid);
+
+  // The answer panel is built first: "which page backs each part" reads it.
+  const reading = atCompare && atCompareRead ? (FULL.get(atCompareRead) || null) : rec;
+  const readingLight = atCompare && atCompareRead ? (ALL_RECORDS.find((r) => r.captureId === atCompareRead) || rec) : rec;
+  if (atCompare && atCompareRead && !reading) hydrate(atCompareRead).then(() => renderAnalyze());
+  const answerPanel = atRenderAnswer(reading || readingLight, {
+    loading: atCompare && atCompareRead && !reading,
+    tabs: atCompare ? answers : null,
+    currentId: atCompareRead || rec.captureId,
+    brandNames: mentions.map((b) => b.brand),
+    own,
+  });
+  grid.append(answerPanel.el);
+
+  if (atCompare) {
+    atRenderCompare(main, compareView(answers, { own }), answers);
+  } else {
+    atRenderSingle(main, rec, { searches, brands, pages, you, changes, previous, kind, own, mentions, answerPanel, legacyCard, engineLabel, knownBrands });
+  }
+  atApplyHighlights(false);
+  const setH = () => document.documentElement.style.setProperty("--at-hero-h", `${hero.offsetHeight}px`);
+  requestAnimationFrame(setH);
+  // One observer for the page's life: every re-render replaces the header.
+  if (atHeroObs) atHeroObs.disconnect();
+  if (window.ResizeObserver) { atHeroObs = new ResizeObserver(setH); atHeroObs.observe(hero); }
+  atCompactOnScroll();
+}
+
+// Once the page scrolls, the pinned header drops to one line (engine, prompt,
+// actions) so it doesn't take a fifth of the screen; scrolling back up
+// restores the chips and engine tabs.
+let atScrollBound = false;
+/* The app bar's Analyze tools (0.56.0, the canvas's TabAnalyze): "Find a
+ * captured prompt" and Newer / Older with "n of N". The search looks through
+ * every capture's prompt, campaign captures included, newest first; arrow
+ * keys move through the matches and Enter opens one. Paging steps through
+ * your own captures, as the popup's arrows do. */
+let atHeaderNodes = null;
+function atHeaderTools(rec) {
+  const wrap = el("div", { className: "at-find", role: "search" });
+  const input = el("input", { type: "search", className: "at-find-input", placeholder: "Find a captured prompt", "aria-label": "Find a captured prompt", autocomplete: "off", "aria-expanded": "false", "aria-controls": "at-find-list", role: "combobox", "aria-autocomplete": "list" });
+  const list = el("div", { className: "at-find-list", id: "at-find-list", role: "listbox", hidden: true });
+  wrap.append(glyphEl("search", 14), input, list);
+  let hits = [], sel = -1;
+  const open = (r) => { list.hidden = true; input.setAttribute("aria-expanded", "false"); atResetState(); openCapture(r.captureId); };
+  const paint = () => {
+    list.textContent = "";
+    hits.forEach((r, i) => {
+      const ic = engineIconEl(r.platform);
+      ic.classList.add("ap-engine-icon");
+      const o = el("button", { className: `at-find-item${i === sel ? " on" : ""}`, type: "button", role: "option", id: `at-find-${i}`, "aria-selected": String(i === sel), tabindex: "-1" },
+        ic, el("span", { className: "at-find-text" }, r.userPrompt || "(no prompt text)"),
+        el("span", { className: "at-find-meta" }, [r.geo ? "campaign" : "", apDate(r.capturedAt)].filter(Boolean).join(" · ")));
+      o.onmousedown = (e) => e.preventDefault();
+      o.onclick = () => open(r);
+      list.append(o);
+    });
+    if (!hits.length && input.value.trim()) list.append(el("div", { className: "at-find-none" }, "No captured prompt matches."));
+    const show = !!input.value.trim();
+    list.hidden = !show;
+    input.setAttribute("aria-expanded", String(show));
+    if (sel >= 0) input.setAttribute("aria-activedescendant", `at-find-${sel}`); else input.removeAttribute("aria-activedescendant");
+  };
+  input.oninput = () => {
+    const words = input.value.toLowerCase().split(/\s+/).filter(Boolean);
+    const pool = (ALL_RECORDS.length ? ALL_RECORDS : RECORDS);
+    hits = words.length ? pool.filter((r) => { const t = String(r.userPrompt || "").toLowerCase(); return words.every((w) => t.includes(w)); })
+      .sort((a, b) => (b.capturedAt || 0) - (a.capturedAt || 0)).slice(0, 8) : [];
+    sel = hits.length ? 0 : -1;
+    paint();
+  };
+  input.onkeydown = (e) => {
+    if (e.key === "ArrowDown" && hits.length) { sel = (sel + 1) % hits.length; paint(); e.preventDefault(); }
+    else if (e.key === "ArrowUp" && hits.length) { sel = (sel - 1 + hits.length) % hits.length; paint(); e.preventDefault(); }
+    else if (e.key === "Enter" && hits[sel]) { open(hits[sel]); e.preventDefault(); }
+    else if (e.key === "Escape") { input.value = ""; hits = []; sel = -1; paint(); }
+  };
+  input.onblur = () => setTimeout(() => { list.hidden = true; input.setAttribute("aria-expanded", "false"); }, 120);
+  const nodes = [wrap];
+  const idx = RECORDS.findIndex((r) => r.captureId === rec.captureId);
+  if (idx >= 0 && RECORDS.length > 1) {
+    const go = (j) => { const t = RECORDS[j]; if (t) { atResetState(); openCapture(t.captureId); } };
+    const newer = el("button", { className: "at-page-btn", type: "button", title: "Newer capture", "aria-label": "Newer capture" }, "‹");
+    newer.disabled = idx === 0;
+    newer.onclick = () => go(idx - 1);
+    const older = el("button", { className: "at-page-btn", type: "button", title: "Older capture", "aria-label": "Older capture" }, "›");
+    older.disabled = idx === RECORDS.length - 1;
+    older.onclick = () => go(idx + 1);
+    nodes.push(el("div", { className: "at-pager" }, newer, el("span", { className: "ap-paging" }, `${idx + 1} of ${RECORDS.length}`), older));
+  }
+  return nodes;
+}
+
+function atCompactOnScroll() {
+  const apply = () => {
+    const hero = document.querySelector("#analyze .at-hero");
+    if (hero) hero.classList.toggle("compact", window.scrollY > 140);
+    // Near the end of the page the grid stops above the footer, and a
+    // pinned panel taller than what's left gets pushed up under the header.
+    // Shorten it by that much instead, so its top stays put.
+    const grid = document.querySelector("#analyze .at-grid");
+    const cut = grid ? Math.max(0, Math.round(window.innerHeight - 12 - grid.getBoundingClientRect().bottom)) : 0;
+    const root = document.documentElement.style;
+    if (root.getPropertyValue("--at-end-cut") !== `${cut}px`) root.setProperty("--at-end-cut", `${cut}px`);
+  };
+  apply();
+  if (atScrollBound) return;
+  atScrollBound = true;
+  window.addEventListener("scroll", apply, { passive: true });
+  window.addEventListener("resize", apply, { passive: true });
+}
+
+/* The answer as the engine showed it, with brands and citations marked. */
+function atRenderAnswer(rec, { loading, tabs, currentId, brandNames, own }) {
+  const aside = el("aside", { className: "at-answer", id: "at-answer", "aria-labelledby": "at-answer-h" });
+  const head = el("div", { className: "at-answer-head" });
+  const icon = engineIconEl(rec.platform);
+  icon.classList.add("at-answer-icon");
+  const words = rec.answerText ? rec.answerText.trim().split(/\s+/).length : (rec.platformSpecific || {}).wordCount || 0;
+  head.append(icon, el("div", { className: "at-answer-title" },
+    el("h2", { className: "at-h", id: "at-answer-h" }, `The answer, as ${atEngineLabel(rec.platform)} showed it`),
+    el("span", { className: "ap-muted" }, [apDate(rec.capturedAt) + ", " + apTime(rec.capturedAt), words ? `${words} words` : "", answerKind(rec).label.toLowerCase() + " answer"].filter(Boolean).join(" · "))));
+  if (rec.pageUrl && /^https?:\/\//.test(rec.pageUrl)) {
+    let host = "";
+    try { host = new URL(rec.pageUrl).hostname.replace(/^www\./, ""); } catch (_) {}
+    head.append(el("a", { className: "at-open", href: rec.pageUrl, target: "_blank", rel: "noreferrer", title: "Open the conversation where it was captured" }, `Open on ${host} ↗`));
+  }
+  aside.append(head);
+  if (tabs) {
+    const t = el("div", { className: "at-ans-tabs", role: "tablist", "aria-label": "Whose answer to read" });
+    tabs.forEach((a) => {
+      const on = a.captureId === currentId;
+      const ic = engineIconEl(a.platform);
+      ic.classList.add("ap-engine-icon");
+      const b = el("button", { className: `ap-sheet-tab${on ? " on" : ""}`, type: "button", role: "tab", "aria-selected": on ? "true" : "false" }, ic, ` ${atEngineLabel(a.platform)}`);
+      b.onclick = () => { atCompareRead = a.captureId; atFocusBrand = null; atFocusCite = null; renderAnalyze(); };
+      t.append(b);
+    });
+    aside.append(t);
+  }
+  const hl = el("div", { className: "at-hl" }, el("span", { className: "ap-muted" }, "Highlight"));
+  const toggle = (label, getOn, set) => {
+    const b = el("button", { className: `at-hl-btn${getOn() ? " on" : ""}`, type: "button", "aria-pressed": getOn() ? "true" : "false" }, label);
+    b.onclick = () => { set(!getOn()); b.classList.toggle("on", getOn()); b.setAttribute("aria-pressed", getOn() ? "true" : "false"); atApplyHighlights(); };
+    return b;
+  };
+  hl.append(toggle("Brands", () => atHlBrands, (v) => { atHlBrands = v; }), toggle("Citations", () => atHlCites, (v) => { atHlCites = v; }));
+  const clear = el("button", { className: "at-hl-clear", type: "button", hidden: true }, "");
+  clear.onclick = () => { atFocusBrand = null; atFocusCite = null; atApplyHighlights(); };
+  hl.append(clear);
+  aside.append(hl);
+
+  const body = el("div", { className: "at-answer-body" });
+  aside.append(body);
+  if (loading) {
+    body.append(el("p", { className: "ap-note" }, "Loading this answer…"));
+    return { el: aside, blocks: [], footnotes: [] };
+  }
+  // The line each engine shows above its answer, and Perplexity's source
+  // cards, so the panel reads like the engine's own page. Only what the
+  // capture holds: no made-up "thought for" times.
+  const sources = rec.sources || [];
+  const cited = sources.filter((s) => s.outcome === "cited");
+  const nSearch = searchesView(rec, brandNames).count;
+  const didSearch = !!(rec.searched || sources.length);
+  const step = !didSearch ? ["Answered without searching the web", "memory"]
+    : rec.platform === "perplexity" ? [[nSearch ? `Searched ${plural(nSearch, "query", "queries")}` : "", `Reviewed ${plural(sources.length, "source")}`].filter(Boolean).join(" · "), "plain"]
+    : rec.platform === "chatgpt" ? [sources.length ? `Searched ${plural(sources.length, "site")}` : "Searched the web", "pill"]
+    : rec.platform === "grok" ? [[nSearch ? `Searched ${plural(nSearch, "time")}` : "Searched", plural(sources.length, "web page and post", "web pages and posts")].join(" · "), "plain"]
+    : null;
+  if (step) body.append(el("span", { className: `at-ans-step ${step[1]}` }, step[0]));
+  const model = rec.answerText ? buildExportModel(rec) : null;
+  const fnN = new Map(model ? model.footnotes.map((f) => [f.source.url, String(f.n)]) : []);
+  if (didSearch && rec.platform === "perplexity" && cited.length) {
+    const top = el("div", { className: "at-ans-sources", "aria-label": "Sources, as Perplexity lists them above the answer" });
+    cited.slice(0, 4).forEach((s) => {
+      const n = fnN.get(s.url) || "";
+      const b = el("button", { className: "at-ans-source", type: "button", "data-focus-cite": n, "aria-pressed": "false", disabled: !n, title: s.url || "" },
+        el("span", { className: "at-ans-source-t" }, s.title || normDomainLabel(s.domain || s.url)),
+        el("span", { className: "ap-muted" }, [atShortDomain(normDomainLabel(s.domain || s.url)), n].filter(Boolean).join(" · ")));
+      if (n) b.onclick = () => atFocusCiteBtn(n);
+      top.append(b);
+    });
+    body.append(top);
+  }
+  if ((rec.products || []).length) {
+    const cards = el("div", { className: "at-ans-cards", "aria-label": "Product cards, in the order the carousel showed them" });
+    rec.products.forEach((p, i) => cards.append(el("div", { className: `at-ans-card${own && new RegExp(`^${escapeRegExp(own.name)}\\b`, "i").test(String(p.name || "")) ? " mine" : ""}` },
+      el("span", { className: "at-ans-wrap" }, withImage(el("span", { className: "at-ans-thumb" }, glyphEl("cart", 30)), p.image, p.name), el("span", { className: "ap-card-n" }, String(i + 1))),
+      el("span", { className: "ap-card-name" }, p.name || "—"),
+      el("span", { className: "ap-card-price" }, p.price || ""),
+      el("span", { className: "ap-card-meta" }, [p.rating != null ? `★ ${p.rating}` : "", p.merchant || ""].filter(Boolean).join(" · ")))));
+    body.append(cards);
+  }
+  if ((rec.places || []).length) {
+    const ol = el("ol", { className: "ap-places at-ans-places" });
+    rec.places.forEach((p, i) => ol.append(el("li", { className: "ap-place" }, el("span", { className: "ap-pin" }, String(i + 1)), el("span", { className: "ap-place-name" }, p.name || "—"), el("span", { className: "ap-muted" }, p.rating != null ? `★ ${p.rating}` : ""))));
+    body.append(ol);
+  }
+  if ((rec.images || []).length && !(rec.products || []).length) {
+    const g = el("div", { className: "ap-imgs at-ans-imgs" });
+    rec.images.slice(0, 8).forEach((im) => {
+      g.append(el("a", { className: "ap-img", href: im.url, target: "_blank", rel: "noreferrer", title: im.title || "" },
+        withImage(el("span", { className: "ap-img-frame" }, el("span", { className: "ap-img-ph" }, im.title || "image")), im.url, im.title)));
+    });
+    body.append(g);
+  }
+  if (!rec.answerText) {
+    body.append(el("p", { className: "ap-note" }, rec.hasAnswerText === false || !rec.answerChars
+      ? "The answer text wasn't captured for this answer — the analysis on the left comes from its searches, pages and cards."
+      : "Loading the answer text…"));
+    return { el: aside, blocks: [], footnotes: [] };
+  }
+  const text = el("div", { className: "at-answer-text" });
+  // bodyHtml is built by exportDoc.js from escaped text plus a fixed set of
+  // our own tags (see markdownToHtml there), the same HTML the export writes.
+  text.innerHTML = model.bodyHtml;
+  const fnByN = new Map(model.footnotes.map((f) => [String(f.n), f.source]));
+  text.querySelectorAll("sup.fn a").forEach((a) => {
+    const n = (a.textContent.match(/\d+/) || [""])[0];
+    const s = fnByN.get(n);
+    const label = s ? normDomainLabel(s.domain || s.url) : n;
+    const chipEl = el("button", { className: "at-cite", type: "button", "data-n": n, title: s ? `${s.title || ""} — ${s.url || ""}` : `Citation ${n}` }, label);
+    chipEl.onclick = () => { atFocusCite = atFocusCite === n ? null : n; atFocusBrand = null; atApplyHighlights(true); };
+    a.parentNode.replaceWith(chipEl);
+  });
+  atMarkBrands(text, brandNames);
+  body.append(text);
+  if (model.footnotes.length) {
+    const list = el("ol", { className: "at-fn-list", "aria-label": "Sources cited in the answer" });
+    model.footnotes.forEach((f) => list.append(el("li", { "data-n": String(f.n) },
+      el("a", { href: f.source.url || "#", target: "_blank", rel: "noreferrer" }, normDomainLabel(f.source.domain || f.source.url)),
+      el("span", { className: "ap-muted" }, ` ${f.source.title || ""}`))));
+    body.append(el("h3", { className: "at-h3" }, rec.platform === "gemini" ? "Sources and related content" : "Sources"), list);
+  }
+  // The engine's ad, where it showed it: under the answer.
+  if ((rec.ads || []).length) adsView(rec).forEach((a) => body.append(adCardEl(a, { compact: true })));
+  // Blocks with the citations inside them, for "which page backs each part".
+  const blocks = [...text.querySelectorAll("p, li")].map((b) => ({
+    text: b.textContent.replace(/\s+/g, " ").trim(),
+    cites: [...new Set([...b.querySelectorAll(".at-cite")].map((c) => c.textContent))],
+  })).filter((b) => b.text);
+  return { el: aside, blocks, footnotes: model.footnotes };
+}
+
+function normDomainLabel(d) {
+  return String(d || "").replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "");
+}
+
+/* Wrap every mention of a known brand in a <mark>, outside links and chips. */
+function atMarkBrands(container, names) {
+  const list = [...new Set(names.filter((n) => n && n.length > 1))].sort((a, b) => b.length - a.length);
+  if (!list.length) return;
+  // Escaped for a /u pattern: escapeRegExp() also escapes "-", which is a
+  // syntax error under /u ("CaratLane - Phoenix Mall" crashed the page).
+  const reEsc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`(^|[^\\p{L}\\p{N}])(${list.map(reEsc).join("|")})(?=$|[^\\p{L}\\p{N}])`, "giu");
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+    // Inside the answer's own links too (Gemini links every hotel it names);
+    // not inside citation chips, footnotes or a mark already made.
+    acceptNode: (n) => (n.parentElement && n.parentElement.closest("button, mark, sup, .at-fn-list") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+  });
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    const t = node.nodeValue;
+    re.lastIndex = 0;
+    if (!re.test(t)) continue;
+    re.lastIndex = 0;
+    const frag = document.createDocumentFragment();
+    let last = 0, m;
+    while ((m = re.exec(t))) {
+      const start = m.index + m[1].length;
+      frag.append(document.createTextNode(t.slice(last, start)));
+      const canon = list.find((n) => n.toLowerCase() === m[2].toLowerCase()) || m[2];
+      const mark = el("mark", { className: "at-mark", "data-brand": canon, title: `${canon} — click to show only this brand` }, m[2]);
+      // In a link, the click picks the brand rather than leaving the page.
+      mark.onclick = (e) => { e.preventDefault(); atFocusBrand = atFocusBrand === canon ? null : canon; atFocusCite = null; atApplyHighlights(); };
+      frag.append(mark);
+      last = start + m[2].length;
+    }
+    frag.append(document.createTextNode(t.slice(last)));
+    node.replaceWith(frag);
+  }
+}
+
+/* Highlights change in place — no re-render, so the answer keeps its scroll. */
+function atApplyHighlights(scroll) {
+  const body = document.querySelector("#at-answer .at-answer-body");
+  if (!body) return;
+  body.classList.toggle("hl-brands", atHlBrands);
+  body.classList.toggle("hl-cites", atHlCites);
+  body.classList.toggle("has-focus", !!(atFocusBrand || atFocusCite));
+  body.querySelectorAll(".at-mark").forEach((m) => m.classList.toggle("focus", m.dataset.brand === atFocusBrand));
+  body.querySelectorAll(".at-cite").forEach((c) => c.classList.toggle("focus", c.dataset.n === atFocusCite));
+  body.querySelectorAll(".at-fn-list li").forEach((li) => li.classList.toggle("focus", li.dataset.n === atFocusCite));
+  document.querySelectorAll("#analyze [data-focus-brand]").forEach((r) => r.setAttribute("aria-pressed", r.dataset.focusBrand === atFocusBrand ? "true" : "false"));
+  document.querySelectorAll("#analyze [data-focus-cite]").forEach((r) => r.setAttribute("aria-pressed", r.dataset.focusCite === atFocusCite ? "true" : "false"));
+  const clear = document.querySelector("#at-answer .at-hl-clear");
+  if (clear) {
+    clear.hidden = !(atFocusBrand || atFocusCite);
+    clear.textContent = atFocusBrand ? `Showing ${atFocusBrand} ×` : atFocusCite ? `Showing citation ${atFocusCite} ×` : "";
+  }
+  if (scroll !== false && (atFocusBrand || atFocusCite)) {
+    const first = body.querySelector(".at-mark.focus, .at-cite.focus");
+    const behavior = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+    if (!first) return;
+    // Scroll the pinned answer panel only. scrollIntoView() also scrolls the
+    // page, so the row just clicked on the left jumped away.
+    if (body.scrollHeight > body.clientHeight + 1) {
+      const y = first.getBoundingClientRect().top - body.getBoundingClientRect().top + body.scrollTop - body.clientHeight / 2;
+      body.scrollTo({ top: Math.max(0, y), behavior });
+    } else {
+      first.scrollIntoView({ block: "center", behavior });
+    }
+  }
+}
+
+const KIND_GROUPS_UI = ["Your site", "Rival brand sites", "Review sites", "Retailers", "Forums & social", "Other"];
+
+/* The single answer, laid out as the canvas's TabAnalyze (0.54.0).
+ *
+ * Reported: "the new layout has not completely and properly been
+ * implemented". Until 0.53.0 this column was the 0.48.0 first pass: searches
+ * first, a brands table, a pages list, and a Details block that still
+ * showed the pre-redesign cards. The canvas order is: the lead line; at a
+ * glance (brands, pages cited, searches); your brand; what led the answer
+ * (product cards and where to buy, the map, the images, or the page behind
+ * each part); what backs each brand, with what to do; since last time and
+ * the kinds of sites; how the answer was built; and Details as tabs
+ * (technical details, the grounding check, the page behind each part, and
+ * every page it read). */
+const AT_LANE_SHORT = { web: "web", shopping: "shop", image: "img" };
+const AT_TONE_DOT = { good: "#047857", warn: "#d97706", bad: "#be123c", neutral: "#94a3b8" };
+const AT_VERDICT = {
+  independent: ["Backed by independent pages", "good"],
+  own: ["Backed only by its own site", "warn"],
+  read: ["Read, not cited", "warn"],
+  none: ["Nothing behind it", "bad"],
+  memory: ["From memory", "warn"],
+};
+const atShortDomain = (d) => String(d || "").replace(/^www\./, "").replace(/\.(co\.in|co\.uk|com|in|org|net|io|ai|app)$/i, "");
+const atFocusCiteBtn = (n) => { atFocusCite = atFocusCite === n ? null : n; atFocusBrand = null; atApplyHighlights(); };
+const atFocusBrandBtn = (name) => { atFocusBrand = atFocusBrand === name ? null : name; atFocusCite = null; atApplyHighlights(); };
+
+function atRenderSingle(main, rec, ctx) {
+  const { searches, brands, pages, you, changes, previous, kind, own, mentions, answerPanel, engineLabel, legacyCard } = ctx;
+  main.append(el("p", { className: "at-lead" }, {
+    shopping: "Products came first, so the product cards and where they lead matter most.",
+    local: "The map came first, so pin order and what each listing shows matter most.",
+    images: "Images came first, so which sites supplied them and where a click leads matter most.",
+    info: "Text came first, so which page backs each part of the answer matters most.",
+    memory: "No web search, so there are no sources — this is what the model already believes.",
+  }[kind.id] || ""));
+  const fnByUrl = new Map(answerPanel.footnotes.map((f) => [f.source.url, String(f.n)]));
+  const searched = !!(rec.searched || rec.sources.length);
+  const ctxKinds = { ownBrand: own ? own.name : "", ownUrl: own ? own.url : "", brands: mentions.map((b) => b.brand) };
+
+  /* 1. at a glance */
+  if (searched) main.append(atGlance(rec, { brands, pages, searches, fnByUrl }));
+  if (kind.id === "memory") main.append(atMemorySection(rec, { brands, mentions, engineLabel }));
+
+  /* 2. your brand */
+  if (you) {
+    const sec = el("section", { className: "at-you", "aria-labelledby": "at-you-h" },
+      el("div", { className: "at-you-name" }, el("span", { className: "at-eyebrow" }, "Your brand"), el("h2", { id: "at-you-h" }, you.name)));
+    you.tiles.forEach((t) => sec.append(el("div", { className: "at-you-tile" },
+      el("span", { className: "at-you-label" }, t.label), el("span", { className: `at-you-value tone-${t.tone}` }, t.value), el("span", { className: "at-you-sub" }, t.sub || ""))));
+    if (you.since) sec.append(el("div", { className: "at-you-tile at-you-since" }, el("span", { className: "at-you-label" }, `vs ${apDate(you.previousAt)}`), el("span", { className: "at-you-sub" }, you.since)));
+    main.append(sec);
+  }
+
+  /* 3. every site it used, and every page (0.58.0) */
+  const sites = domainsView(rec, { own, knownBrands: ctx.knownBrands });
+  if (sites.rows.length) main.append(atSitesSection(rec, sites, fnByUrl));
+
+  /* 4. what led the answer */
+  if ((rec.products || []).length) main.append(atProductsSection(rec, own, engineLabel));
+  if ((rec.places || []).length) main.append(atPlacesSection(rec, own));
+  // Every answer that showed images gets them here. This used to need three or
+  // more, and more images than products, so a shopping answer — whose
+  // pictures are its product shots — never showed them in the full tab; only
+  // the popup did (reported, 0.58.0).
+  if ((rec.images || []).length) main.append(atImagesSection(rec, own, ctxKinds));
+  if ((rec.ads || []).length) {
+    const ads = adsView(rec);
+    const sec = atSection("at-ads", "Ad shown with the answer", ads.length > 1 ? ads.length : "", apPill("Sponsored", "warn", "Paid placement, not part of the answer"));
+    ads.forEach((a) => sec.append(adCardEl(a)));
+    main.append(sec);
+  }
+  if (kind.id === "info" && answerPanel.blocks.length) {
+    const sec = atSection("at-parts", "Which page backs each part of the answer", "", el("span", { className: "ap-muted" }, "for explainers, the pages behind the text are the prize"));
+    atPartsRows(answerPanel.blocks.slice(0, 12)).forEach((r) => sec.append(r));
+    main.append(sec);
+  }
+
+  /* 5. since last time, and kinds of sites */
+  const pair = el("div", { className: "at-pair" });
+  const ch = atSection("at-changes", "Since you last asked this", "", el("span", { className: "ap-muted" }, changes ? `compared with ${apDate(changes.at)}` : ""));
+  if (changes) {
+    const SIGN = { added: "+", dropped: "−", up: "↑", down: "↓", same: "=", site: "↻" };
+    const ul = el("ul", { className: "ap-changes" });
+    changes.items.forEach((x) => ul.append(el("li", {}, el("span", { className: `ap-sign s-${x.kind}`, "aria-hidden": "true" }, SIGN[x.kind] || "•"), x.text)));
+    ch.append(ul);
+  } else {
+    ch.append(el("p", { className: "ap-note" }, `First time this prompt was captured on ${engineLabel}. Ask it again later and the changes will show here.`));
+  }
+  pair.append(ch, atKindsSection(rec, ctxKinds));
+  main.append(pair);
+
+  /* 6. how the answer was built */
+  if (searched) main.append(atBuiltSection(rec, { searches, pages, mentions, kind, engineLabel }));
+
+  /* 7. details */
+  main.append(atDetailsSection(rec, { searches, pages, kind, engineLabel, answerPanel, ctxKinds, mentions, legacyCard }));
+
+  /* 8. what backs each brand — last (0.58.0) */
+  // Requested: this reads which brands appear in the cited pages' titles and
+  // search snippets, so it's an inference, and it opened the page with
+  // "Nothing behind it" for every brand. It now closes the page instead.
+  // A memory answer has nothing behind any brand; the memory box says so.
+  if (brands.rows.length && kind.id !== "memory") main.append(atBackingSection(brands, { own, pages, kind, ctxKinds }));
+}
+
+function atGlance(rec, { brands, pages, searches, fnByUrl }) {
+  const sec = el("section", { className: "at-glance", id: "at-glance", "aria-label": "At a glance" });
+  const named = brands.rows.filter((r) => r.position > 0).sort((a, b) => a.position - b.position);
+  const colB = el("div", { className: "at-glance-col" }, el("h2", {}, "Brands named ", el("span", {}, `· ${named.length}`)));
+  // Every brand, every cited page, every search, in full (0.58.0: reported
+  // "the very first section … is getting truncated").
+  named.forEach((r) => {
+    const b = el("button", { className: `at-glance-brand${r.isYou ? " mine" : ""}`, type: "button", "data-focus-brand": r.name, "aria-pressed": "false", title: `${r.name}: ${(AT_VERDICT[r.backing.verdict] || [r.backing.label])[0].toLowerCase()} — show it in the answer` },
+      el("span", { className: `at-rank${r.position === 1 ? " first" : ""}` }, String(r.position)),
+      el("span", { className: "at-glance-name" }, r.name),
+      el("span", { className: "at-glance-n" }, `×${r.count}`),
+      el("span", { className: "at-dot", style: `background:${AT_TONE_DOT[(AT_VERDICT[r.backing.verdict] || [, r.backing.tone])[1]] || AT_TONE_DOT.neutral}` }));
+    b.onclick = () => atFocusBrandBtn(r.name);
+    colB.append(b);
+  });
+  if (!named.length) colB.append(el("span", { className: "ap-muted" }, "No brand named."));
+  const colP = el("div", { className: "at-glance-col" }, el("h2", {}, "Pages cited ", el("span", {}, `· ${pages.rows.length} of ${pages.sourceCount} read`)));
+  pages.rows.forEach((p) => {
+    const n = fnByUrl.get(p.url) || null;
+    const b = el("button", { className: "at-glance-page", type: "button", "data-focus-cite": n || "", "aria-pressed": "false", title: p.title || p.domain, disabled: !n },
+      el("span", { className: "at-site-chip" }, atShortDomain(p.domain)), el("span", { className: "at-glance-kind" }, `${p.domain} · ${atKindOne(p.kind).toLowerCase()}`));
+    if (n) b.onclick = () => atFocusCiteBtn(n);
+    colP.append(b);
+  });
+  if (pages.readOnly.length) {
+    const more = el("button", { className: "at-glance-warn at-glance-jump", type: "button", title: "Every site it read, in “Sites it used”" },
+      `+ ${pages.readOnly.length} site${pages.readOnly.length === 1 ? "" : "s"} read but not cited ↓`);
+    more.onclick = () => document.getElementById("at-sites")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    colP.append(more);
+  }
+  if (!pages.rows.length) colP.append(el("span", { className: "ap-muted" }, "It cited no page."));
+  const colS = el("div", { className: "at-glance-col" }, el("h2", {}, "Searches it ran ", el("span", {}, `· ${searches.unpublished ? "not shown" : searches.count}`)));
+  searches.rows.forEach((q) => colS.append(el("span", { className: "at-glance-q" }, el("span", { className: `at-lane-tag l-${q.lane}` }, AT_LANE_SHORT[q.lane] || q.lane), el("span", { className: "at-glance-qt", title: q.text }, q.text))));
+  if (searches.unpublished) colS.append(el("span", { className: "ap-muted" }, "This engine searched but doesn’t publish its searches."));
+  sec.append(colB, colP, colS);
+  return sec;
+}
+
+function atMemorySection(rec, { brands, mentions, engineLabel }) {
+  const sec = el("section", { className: "at-memory", "aria-labelledby": "at-memory-h" });
+  sec.append(el("div", { className: "at-memory-note" },
+    el("div", { className: "at-memory-head" }, glyphEl("noglobe", 20), el("h2", { id: "at-memory-h" }, "Answered from memory")),
+    el("p", {}, `${engineLabel} didn’t search the web, so nothing was read or cited. Every brand below comes from what the model learned in training.`),
+    el("p", {}, "Memory answers change when the model is updated, not when pages change — track them over time.")));
+  const list = el("div", { className: "at-memory-brands" }, el("h2", {}, "How the model describes each brand"));
+  brands.rows.filter((r) => r.position > 0).sort((a, b) => a.position - b.position).slice(0, 8).forEach((r) => {
+    const m = mentions.find((x) => x.brand === r.name);
+    const why = m ? extractBrandAspects(m.passages || []).slice(0, 3).join(", ") : "";
+    list.append(el("div", { className: "at-memory-row" }, el("span", { className: "at-rank" }, String(r.position)), el("span", { className: "at-memory-name" }, r.name), el("span", { className: "ap-muted" }, why || "named without a reason")));
+  });
+  sec.append(list);
+  return sec;
+}
+
+function atBackingSection(brands, { own, pages, kind, ctxKinds }) {
+  const sec = atSection("at-backing", kind.id === "local" ? "What backs each place" : "What backs each brand", "", el("span", { className: "ap-muted" }, "the cited pages that mention it"));
+  sec.append(el("p", { className: "at-backing-lead" }, "When an engine names a brand, a page it cited usually talks about that brand. Brands backed by ", el("b", {}, "independent pages"),
+    " — reviews, listings, forums — tend to keep their place. Brands with only their own site, or nothing, behind them can drop out on the next run."));
+  const rows = brands.rows.filter((r) => r.position > 0).sort((a, b) => a.position - b.position);
+  rows.forEach((r) => {
+    const [label, tone] = AT_VERDICT[r.backing.verdict] || [r.backing.label, r.backing.tone];
+    const chips = el("span", { className: "at-backers" });
+    r.backing.backers.forEach((b) => {
+      const kind = b.own ? "Your site" : siteKindOf(b.domain, ctxKinds);
+      chips.append(el("span", { className: `at-backer${b.own ? " own" : ""}` }, el("span", { className: "at-backer-dot", style: `background:var(${AP_KIND_VAR[kind] || "--kind-other"})` }), b.domain, el("span", { className: "ap-muted" }, ` · ${b.own ? "own site" : atKindOne(kind).toLowerCase()}`)));
+    });
+    if (!r.backing.backers.length) chips.append(el("span", { className: "ap-muted" }, r.backing.verdict === "memory" ? "answered without searching" : "no cited page mentions it"));
+    if (r.backing.readOnly) chips.append(el("span", { className: "at-glance-warn" }, `also in ${r.backing.readOnly} page${r.backing.readOnly === 1 ? "" : "s"} read but not cited`));
+    const name = el("button", { className: "at-backing-name", type: "button", "data-focus-brand": r.name, "aria-pressed": "false", title: `Show ${r.name} in the answer` }, r.name + (r.isYou ? " · you" : ""));
+    name.onclick = () => atFocusBrandBtn(r.name);
+    sec.append(el("div", { className: `at-backing-row${r.isYou ? " mine" : ""}` }, el("span", { className: "at-rank" }, String(r.position)), name, el("span", {}, apPill(label, tone)), chips));
+  });
+  brands.dropped.forEach((d) => sec.append(el("div", { className: "at-backing-row dropped" }, el("span", { className: "at-rank" }, "–"), el("span", { className: "at-backing-name" }, d.name), el("span", {}, apPill("Not named this time", "neutral")), el("span", { className: "ap-muted" }, `was ${apOrd(d.was)} last time`))));
+  sec.append(el("div", { className: "at-todo" }, el("span", { className: "at-todo-k" }, "What to do"), el("span", {}, atBackingAdvice(rows, { own, pages }))));
+  return sec;
+}
+
+function atBackingAdvice(rows, { own, pages }) {
+  const focus = (own && rows.find((r) => r.isYou)) || null;
+  const silent = pages.silent || [];
+  const list = (xs) => xs.slice(0, 3).join(", ");
+  if (own && !focus) return pages.rows.length ? `${own.name} wasn’t named. The pages cited here — ${list(pages.rows.map((p) => p.domain))} — are where to get mentioned.` : `${own.name} wasn’t named, and the answer cited no page. Answers like this come from the model’s memory.`;
+  const r = focus || rows[0];
+  if (!r) return "No brand was named.";
+  const v = r.backing.verdict;
+  if (v === "independent") return silent.length ? `${r.name} is backed by independent pages, but ${list(silent)} ${silent.length === 1 ? "is" : "are"} cited here without naming it — the pages to get onto.` : `${r.name}: backed by independent pages. Every independent page cited here already mentions ${r.name}.`;
+  if (v === "own") return `${r.name} has only its own site behind it here. Reviews and listings that name it would hold its place.`;
+  if (v === "memory") return `${r.name} comes from the model’s memory. It holds until the model is updated; pages won’t move it.`;
+  const indep = pages.rows.filter((p) => p.kind !== "Your site" && p.kind !== "Rival brand sites").map((p) => p.domain);
+  return indep.length ? `No page this answer cited mentions ${r.name}. Get onto the pages it cites: ${list(indep)}.` : `No page this answer cited mentions ${r.name}. It can drop out next time.`;
+}
+
+function atKindsSection(rec, ctxKinds) {
+  const kinds = atSection("at-kinds", "Kinds of sites it used", "", el("span", { className: "ap-legend" }, el("span", {}, el("i", { className: "k-cited" }), "cited"), el("span", {}, el("i", { className: "k-read" }), "read only")));
+  const counts = new Map(KIND_GROUPS_UI.map((k) => [k, { c: 0, r: 0 }]));
+  const seen = new Set();
+  rec.sources.forEach((s) => {
+    const d = (s.domain || s.url || "").replace(/^www\./, "");
+    const key = `${s.url}|${s.outcome}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    counts.get(siteKindOf(d, ctxKinds))[s.outcome === "cited" ? "c" : "r"]++;
+  });
+  const max = Math.max(1, ...[...counts.values()].map((v) => v.c + v.r));
+  const kb = el("div", { className: "at-kinds" });
+  [...counts.entries()].filter(([, v]) => v.c + v.r).forEach(([k, v]) => kb.append(el("div", { className: "at-kind-row" },
+    el("span", {}, k),
+    el("span", { className: "at-kind-bar" }, el("span", { className: "c", style: `width:${(v.c / max) * 100}%` }), el("span", { className: "r", style: `width:${(v.r / max) * 100}%` })),
+    el("span", { className: "num" }, `${v.c} · ${v.r}`))));
+  if (!kb.childNodes.length) kb.append(el("p", { className: "ap-note" }, "No pages — the engine didn’t search."));
+  kinds.append(kb);
+  return kinds;
+}
+
+function atBuiltSection(rec, { searches, pages, mentions, kind, engineLabel }) {
+  const extra = searches.breadth ? apPill(`${searches.breadth.short} · ${plural(searches.count, "search", "searches")}`, searches.breadth.band === "narrow" ? "warn" : searches.breadth.band === "broad" ? "good" : "neutral", `Breadth: ${searches.breadth.label}`) : null;
+  const sec = atSection("at-built", "How the answer was built", "", extra);
+  const steps = el("ol", { className: "at-steps", "aria-label": "Steps" });
+  [[searches.unpublished ? "?" : searches.count, "searches it ran"], [rec.sources.length, "pages it read"], [pages.rows.length, "pages it cited"], [mentions.filter((b) => b.count > 0).length, kind.id === "local" ? "places it named" : "brands it named"]]
+    .forEach(([v, l]) => steps.append(el("li", {}, el("b", {}, String(v)), el("span", {}, l))));
+  sec.append(steps);
+  if (searches.count) {
+    const lanes = el("div", { className: "at-lanes" });
+    [["web", "Web searches", "globe"], ["shopping", "Shopping searches", "cart"], ["image", "Image searches", "image"]].forEach(([lane, label, g]) => {
+      const qs = searches.rows.filter((q) => q.lane === lane);
+      if (!qs.length) return;
+      const col = el("div", { className: "at-lane" }, el("h3", { className: "at-lane-h" }, glyphEl(g, 13), `${label} · ${qs.length}`));
+      qs.forEach((q) => col.append(el("span", { className: "at-lane-q" }, el("span", {}, q.text, q.detail ? el("span", { className: "ap-muted at-lane-detail" }, q.detail) : null), q.tag ? el("span", { className: "ap-tag" }, q.tag) : null)));
+      lanes.append(col);
+    });
+    sec.append(lanes);
+    const perPage = searches.count ? (rec.sources.length / searches.count).toFixed(1) : "0";
+    const yr = searches.rows.filter((q) => /\b20\d\d\b/.test(q.text)).length;
+    const rd = searches.rows.filter((q) => /reddit/i.test(q.text)).length;
+    sec.append(el("p", { className: "ap-muted at-foot" }, `Average ${searches.avgWords} words per search · ${perPage} pages read per search · ${yr} with a year · ${rd} asking Reddit`));
+  } else if (searches.unpublished) {
+    sec.append(el("p", { className: "ap-note" }, `${engineLabel} confirms it searched the web but doesn't publish what it searched for, so there is no list to show. That's the engine, not a failed capture.`));
+  }
+  return sec;
+}
+
+function atPartsRows(blocks) {
+  return blocks.map((b, i) => el("div", { className: "at-part" },
+    el("span", { className: "at-part-head" }, i === 0 ? "Opening" : `Part ${i + 1}`),
+    el("span", { className: "at-part-text" }, b.text.length > 160 ? b.text.slice(0, 158) + "…" : b.text),
+    el("span", { className: "ap-chips" }, ...(b.cites.length ? b.cites.map((c) => el("span", { className: "at-part-src" }, c)) : [el("span", { className: "at-glance-warn" }, "no page cited for this part")]))));
+}
+
+function atDetailsSection(rec, { searches, pages, kind, engineLabel, answerPanel, ctxKinds, mentions, legacyCard = () => null }) {
+  const words = rec.answerText ? rec.answerText.trim().split(/\s+/).length : (rec.platformSpecific || {}).wordCount || 0;
+  const ex = rec._extraction || {};
+  const vg = rec.sources.length && rec.answerText ? computeVerbatimGrounding(rec.answerText, rec.sources) : null;
+  const TABS = [
+    ["tech", "Technical details"],
+    vg ? ["ground", "Grounding check"] : null,
+    answerPanel.blocks.length ? ["parts", "Page behind each part"] : null,
+    rec.sources.length ? ["pages", "Every page it read"] : null,
+    // The detailed cards the earlier layout kept here, after the canvas's
+    // four, so nothing it showed is lost: each source's index and kind with
+    // filters (inside "Every page it read"), the search breakdown, the
+    // brand & page matrix, the model's reasoning and the entities.
+    ...[["search", "Search details", "card-fanout"], ["matrix", "Brand & page matrix", "card-omitted-analysis"],
+      ["reasoning", "Reasoning", "card-reasoning"], ["entities", "Entities", "card-entities"]].filter(([, , id]) => legacyCard(id)).map(([k, l]) => [k, l]),
+  ].filter(Boolean);
+  const LEGACY = { search: ["card-fanout"], matrix: ["card-omitted-analysis"], reasoning: ["card-reasoning"], entities: ["card-entities"] };
+  if (!TABS.some((t) => t[0] === atDetails)) atDetails = "tech";
+  const tl = el("div", { className: "at-seg", role: "tablist", "aria-label": "Details" });
+  TABS.forEach(([id, label]) => {
+    const b = el("button", { className: `at-seg-btn${id === atDetails ? " on" : ""}`, type: "button", role: "tab", "aria-selected": id === atDetails ? "true" : "false" }, label);
+    b.onclick = () => { atDetails = id; renderAnalyze(); };
+    tl.append(b);
+  });
+  const sec = atSection("at-details", "Details", "", tl);
+  const panel = el("div", { className: "at-det-panel", role: "tabpanel" });
+  if (atDetails === "tech") {
+    const conv = rec.pageUrl ? String(rec.pageUrl).replace(/^https?:\/\/(www\.)?/, "") : "—";
+    const id = String(rec.captureId || "");
+    const rows = [
+      ["Captured", `${apDate(rec.capturedAt)}, ${apTime(rec.capturedAt)}`],
+      ["Engine", `${engineLabel} · ${rec.model || `${engineLabel} default`}`],
+      ["Engine's own label", rec.turnUseCase || (rec.platformSpecific || {}).useCase || "—"],
+      ["Searched the web", searched(rec) ? `Yes${searches.count ? ` · ${plural(searches.count, "search", "searches")}` : ""}` : "No"],
+      ["Kind of answer", kind.label],
+      ["Answer length", words ? `${words.toLocaleString()} words` : "not captured"],
+      ["Pages read · cited", `${rec.sources.length} · ${pages.rows.length}`],
+      ["Products · places · images", `${(rec.products || []).length} · ${(rec.places || []).length} · ${(rec.images || []).length}`],
+      ["Read from", ex.usedFallback ? "The page itself (the stream wasn’t readable)" : "Network stream, checked against the page"],
+      ["Fallback used", ex.usedFallback ? "Yes" : "No"],
+      ["Conversation", conv.length > 34 ? `${conv.slice(0, 22)}…${conv.slice(-6)}` : conv],
+      ["Capture id", id.length > 16 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id],
+    ];
+    const dl = el("dl", { className: "at-tech" });
+    rows.forEach(([k, v]) => dl.append(el("div", {}, el("dt", {}, k), el("dd", { title: v }, v))));
+    panel.append(dl);
+  } else if (atDetails === "ground") {
+    panel.append(el("p", { className: "at-det-lead" }, `${vg.groundedClaims} of ${vg.totalClaims} sentences share most of their words with a page it read (${vg.score}%). ${vg.verdict}. A sentence with no match isn’t wrong — it just isn’t quoted from a page the capture holds.`));
+    vg.claimMatches.slice(0, 10).forEach((c) => panel.append(el("div", { className: "at-claim" }, el("span", {}, `“${c.sentence}”`),
+      el("span", { className: c.isGrounded ? "at-claim-ok" : "at-claim-no" }, c.isGrounded ? `Matches ${c.sourceDomain} (${c.confidence}% of its words)` : `No page matches${c.sourceDomain ? ` · closest ${c.sourceDomain} (${c.confidence}%)` : ""}`))));
+  } else if (atDetails === "parts") {
+    atPartsRows(answerPanel.blocks.slice(0, 20)).forEach((r) => panel.append(r));
+  } else if (LEGACY[atDetails]) {
+    LEGACY[atDetails].forEach((id) => { const c = legacyCard(id); if (c) panel.append(c); });
+  } else if (atDetails === "pages" && legacyCard("card-sources")) {
+    // The full sources card: which index each came from, its kind, filters,
+    // and pages read whose title echoes no search.
+    ["card-sources", "card-top-domains"].forEach((id) => { const c = legacyCard(id); if (c) panel.append(c); });
+  } else if (atDetails === "pages") {
+    const list = el("div", { className: "at-allpages" });
+    const fnByUrl = new Map(answerPanel.footnotes.map((f) => [f.source.url, String(f.n)]));
+    const rows = [...rec.sources].sort((a, b) => (b.outcome === "cited") - (a.outcome === "cited"));
+    rows.forEach((s) => {
+      const d = (s.domain || s.url || "").replace(/^www\./, "");
+      const n = fnByUrl.get(s.url);
+      list.append(el("div", { className: "at-allpage" },
+        apPill(s.outcome === "cited" ? (n ? `Cited · ${n}` : "Cited") : "Read only", s.outcome === "cited" ? "good" : "neutral"),
+        el("a", { className: "at-allpage-title", href: s.url || "#", target: "_blank", rel: "noreferrer" }, s.title || d || s.url),
+        el("span", { className: "ap-muted" }, `${d} · ${siteKindOf(d, ctxKinds).toLowerCase()}`),
+        s.url ? el("span", { className: "src-url", title: s.url }, displayUrl(s.url)) : null));
+    });
+    panel.append(list);
+  }
+  sec.append(panel);
+  return sec;
+}
+const searched = (rec) => !!(rec.searched || (rec.sources || []).length);
+const plural = (n, w, ws = `${w}s`) => `${n} ${n === 1 ? w : ws}`;
+
+/*
+ * Put the captured picture into a thumbnail box.
+ *
+ * Reported (0.58.0): product cards in the full tab "just present a colour
+ * around them". They were never given the picture: every thumbnail was a
+ * gradient picked from the brand name with a cart icon on it, while the popup
+ * showed the same images. The box keeps its icon underneath; the picture covers
+ * it once it has loaded. If the engine's copy won't load, the original it was
+ * made from is tried (an images.openai.com thumbnail encodes it, see
+ * src/lib/image-url.js), and only then does the box stay an icon on a plain,
+ * colourless ground. No referrer: the extension's address means nothing to an
+ * image host and only gives it a reason to refuse.
+ */
+function withImage(box, url, alt) {
+  box.classList.add("img-box");
+  if (!url) { box.classList.add("img-missing"); return box; }
+  const img = el("img", { alt: alt || "", loading: "lazy", decoding: "async", referrerPolicy: "no-referrer" });
+  let retried = false;
+  img.onload = () => box.classList.add("img-loaded");
+  img.onerror = async () => {
+    const orig = retried ? null : await originalImageUrl(url);
+    retried = true;
+    if (orig && orig !== img.src) img.src = orig;
+    else { img.remove(); box.classList.add("img-missing"); }
+  };
+  img.src = url;
+  box.append(img);
+  return box;
+}
+
+/*
+ * Every site the answer used, one expandable row each (domainsView).
+ *
+ * Reported (0.58.0): the cited domains and URLs had all but disappeared —
+ * the at-a-glance column showed five pages and "+ 6 pages read but not
+ * cited", the popup a list of cited domains and the rest on one line. This
+ * lists every site, cited ones first, each opening to every page the engine
+ * read there with its full title and address. Cited sites start open: they
+ * are the answer's evidence. A cited page's number is the one in the answer,
+ * and clicking it highlights that citation where the answer shows it.
+ */
+function sitesListEl(dv, { fnByUrl = new Map(), openCited = false, onCite = null } = {}) {
+  const list = el("div", { className: "site-list" });
+  dv.rows.forEach((d, i) => {
+    const row = el("details", { className: `site-row${d.cited ? " is-cited" : ""}${d.kind === "Your site" ? " mine" : ""}` });
+    if (openCited && d.cited) row.open = true;
+    const bar = el("span", { className: "site-bar", title: `${d.cited} cited · ${d.read} read, not cited` },
+      el("span", { className: "c", style: `width:${(d.cited / dv.maxPages) * 100}%` }),
+      el("span", { className: "r", style: `width:${(d.read / dv.maxPages) * 100}%` }));
+    const counts = [d.cited ? `${d.cited} cited` : "", d.read ? `${d.read} read` : ""].filter(Boolean).join(" · ");
+    row.append(el("summary", { className: "site-head" },
+      el("span", { className: "site-rank" }, String(i + 1)),
+      el("span", { className: "site-name" },
+        el("b", {}, d.domain),
+        el("span", { className: "site-kind" }, el("i", { style: `background:var(${AP_KIND_VAR[d.kind] || "--kind-other"})` }), d.kind)),
+      bar,
+      el("span", { className: "site-counts" }, counts),
+      el("span", { className: "site-chev", "aria-hidden": "true" }, "▸")));
+    const ul = el("ul", { className: "site-pages" });
+    d.pages.forEach((pg) => {
+      const n = pg.cited ? (fnByUrl.get(pg.url) || null) : null;
+      const pill = pg.cited
+        ? el("button", { className: "site-pill cited", type: "button", "data-focus-cite": n || "", "aria-pressed": "false", disabled: !(n && onCite), title: n && onCite ? "Show this citation in the answer" : "Cited in the answer" }, n ? `Cited · ${n}` : "Cited")
+        : el("span", { className: "site-pill" }, "Read only");
+      if (n && onCite) pill.onclick = () => onCite(n);
+      ul.append(el("li", {}, pill,
+        el("span", { className: "site-page" },
+          el("a", { href: pg.url || "#", target: "_blank", rel: "noreferrer", title: pg.url }, pg.title || displayUrl(pg.url) || d.domain),
+          pg.url ? el("span", { className: "src-url" }, displayUrl(pg.url)) : null)));
+    });
+    // Hidden outright while closed: Chrome still lays out a closed
+    // <details>'s content, so it measured as spilling past its section.
+    ul.hidden = !row.open;
+    row.addEventListener("toggle", () => { ul.hidden = !row.open; });
+    row.append(ul);
+    list.append(row);
+  });
+  return list;
+}
+
+function atSitesSection(rec, dv, fnByUrl) {
+  const sec = atSection("at-sites", "Sites it used", dv.rows.length,
+    el("span", { className: "ap-chips" },
+      apPill(`${dv.citedSites} cited`, "good", "Sites with at least one page the answer cites"),
+      dv.readOnlySites ? apPill(`${dv.readOnlySites} read, not cited`, "neutral", "Sites the engine opened but didn’t cite") : null));
+  sec.append(el("p", { className: "ap-muted at-sites-lead" }, "Cited sites first. Open one for every page the engine read there; a cited page's number is its citation in the answer."));
+  sec.append(sitesListEl(dv, { fnByUrl, openCited: true, onCite: atFocusCiteBtn }));
+  return sec;
+}
+
+function atProductsSection(rec, own, engineLabel) {
+  const ps = rec.products;
+  const sec = el("section", { className: "at-sec at-products-sec", id: "at-products", "aria-labelledby": "at-products-h" });
+  const left = el("div", { className: "at-products-main" });
+  left.append(el("div", { className: "at-sec-head" }, el("h2", { className: "at-h", id: "at-products-h" }, `Product cards shown · ${ps.length}`), el("span", { className: "ap-muted" }, "in the order the carousel showed them · click one")));
+  const table = el("div", { className: "at-prod-table", role: "table", "aria-labelledby": "at-products-h" });
+  table.append(el("div", { className: "at-prod-row at-th", role: "row" }, ...["#", "", "Product", "Price", "Rating", "Card leads to", "Image from"].map((h) => el("span", { role: "columnheader" }, h))));
+  const sel = Math.min(atProduct, ps.length - 1);
+  const brandOf = (p) => p.brand || String(p.name || "").split(/\s+/)[0] || "";
+  const isMine = (p) => !!own && new RegExp(`^${escapeRegExp(own.name)}\\b`, "i").test(String(p.name || ""));
+  ps.forEach((p, i) => {
+    const mine = isMine(p);
+    const stores = atMerchants(p);
+    const imgHost = atProxied(p.image) ? "the engine’s copy" : atHost(p.image);
+    const row = el("button", { className: `at-prod-row${i === sel ? " on" : ""}${mine ? " mine" : ""}`, type: "button", role: "row", "aria-pressed": i === sel ? "true" : "false", title: "Show where to buy it" },
+      el("span", { role: "cell", className: "ap-muted" }, String(i + 1)),
+      el("span", { role: "cell" }, withImage(el("span", { className: "at-thumb" }, glyphEl("cart", 18)), p.image, p.name)),
+      el("span", { role: "cell", className: "at-prod-name" }, el("b", {}, p.name || "—"), el("span", { className: mine ? "at-mine-sub" : "ap-muted" }, mine ? `${brandOf(p)} · your brand` : brandOf(p))),
+      el("span", { role: "cell" }, p.price || "—"),
+      el("span", { role: "cell" }, p.rating != null ? `★ ${p.rating}` : "—", p.reviews ? el("span", { className: "ap-muted" }, ` (${atCompact(p.reviews)})`) : null),
+      el("span", { role: "cell", className: "at-ellipsis" }, stores[0] || "—"),
+      el("span", { role: "cell", className: `at-ellipsis${imgHost && own && own.url && imgHost.includes(atShortDomain(normDomainLabel(own.url))) ? " at-good" : ""}` }, imgHost || (p.image ? "the engine" : "—")));
+    row.onclick = () => { atProduct = i; renderAnalyze(); };
+    table.append(row);
+  });
+  left.append(table);
+  const first = new Map();
+  ps.forEach((p) => { const s = atMerchants(p)[0]; if (s) first.set(s, (first.get(s) || 0) + 1); });
+  const topStore = [...first.entries()].sort((a, b) => b[1] - a[1])[0];
+  const mineCount = ps.filter(isMine).length;
+  left.append(el("p", { className: "at-foot ap-muted" }, [
+    own ? `${own.name} has ${mineCount} of ${ps.length} cards.` : "",
+    topStore && topStore[1] > 1 ? `${topStore[1]} of ${ps.length} cards send buyers to ${topStore[0]}.` : "",
+  ].filter(Boolean).join(" ") || "Click a card to see the stores it lists."));
+  const p = ps[sel];
+  const stores = atMerchants(p);
+  const aside = el("aside", { className: "at-buy", "aria-labelledby": "at-buy-h" },
+    el("span", { className: "at-eyebrow" }, "Where to buy"), el("h3", { className: "at-h3", id: "at-buy-h" }, p.name || "—"),
+    el("span", { className: "ap-muted" }, `The list ${engineLabel} shows when someone opens this card`));
+  const brand = brandOf(p);
+  stores.forEach((s, i) => {
+    const own = brand && (s.toLowerCase().includes(brand.toLowerCase()));
+    aside.append(el("div", { className: `at-store${i === 0 ? " first" : ""}` },
+      el("span", { className: "at-store-name" }, el("b", {}, s), i === 0 ? el("span", { className: "at-store-tag" }, "listed first") : own ? el("span", { className: "at-store-tag own" }, "brand’s own store") : null),
+      el("span", { className: "at-store-price" }, i === 0 ? (p.price || "") : "")));
+  });
+  if (/\bothers?\b/i.test(p.merchant || "")) aside.append(el("div", { className: "at-store more" }, el("span", { className: "ap-muted" }, "+ other stores the card didn’t name")));
+  if (!stores.length) aside.append(el("p", { className: "ap-note" }, "The card names no store."));
+  aside.append(el("p", { className: "ap-muted at-buy-note" }, `${stores[0] ? `${stores[0]} is listed first. ` : ""}The capture keeps the card’s own price and the stores it names, not each store’s price.`));
+  sec.append(left, aside);
+  return sec;
+}
+function atMerchants(p) {
+  return String((p && p.merchant) || "").split(/\s*(?:\+|·|,|\band\b)\s*/i).map((x) => x.trim()).filter((x) => x && !/^others?$/i.test(x));
+}
+// One site's kind, for a chip: "Retailers" → "Retailer".
+function atKindOne(k) { return k === "Forums & social" ? "Forum or social" : k === "Rival brand sites" ? "Rival brand site" : k === "Served by the engine" ? k : String(k).replace(/s$/, ""); }
+// Images the engine serves from its own servers say nothing about the site.
+function atProxied(u) { return /(^|\.)(images\.openai\.com|gstatic\.com|googleusercontent\.com|bing\.net|perplexity\.ai|x\.ai|grok\.com)$/i.test(atHost(u)); }
+function atHost(u) { try { return new URL(u).hostname.replace(/^www\./, ""); } catch (_) { return ""; } }
+function atHue(s) { let h = 0; for (const c of String(s).toLowerCase()) h = (h * 31 + c.charCodeAt(0)) % 360; return h; }
+function atCompact(n) { const v = Number(n); return !Number.isFinite(v) ? String(n) : v >= 1000 ? `${(v / 1000).toFixed(v >= 10000 ? 0 : 1)}k` : String(v); }
+
+function atImagesSection(rec, own, ctxKinds) {
+  const sec = atSection("at-images", "Images shown", rec.images.length, el("span", { className: "ap-muted" }, "who supplied each image, and where a click takes the reader"));
+  const grid = el("div", { className: "at-imgs" });
+  const kinds = new Map();
+  rec.images.forEach((im) => {
+    const host = atHost(im.sourceUrl || im.link || "") || atHost(im.url);
+    const proxied = atProxied(im.url);
+    const from = im.attribution || (proxied && !im.sourceUrl ? "the engine’s copy" : host);
+    const k = proxied && !im.sourceUrl ? "Served by the engine" : siteKindOf(host, ctxKinds);
+    kinds.set(k, (kinds.get(k) || 0) + 1);
+    const brand = ctxKinds.brands.find((b) => new RegExp(`\\b${escapeRegExp(b)}\\b`, "i").test(`${im.title || ""} ${im.attribution || ""}`));
+    const mine = own && brand && brand.toLowerCase() === own.name.toLowerCase();
+    grid.append(el("div", { className: `at-img-card${mine ? " mine" : ""}` },
+      withImage(el("span", { className: "at-img-thumb" }, glyphEl("image", 26)), im.url, im.title || brand || from),
+      el("span", { className: "at-img-from" }, from),
+      el("span", { className: "at-img-kind", style: `background:var(${AP_KIND_VAR[k] || "--kind-other"})` }, atKindOne(k)),
+      el("span", { className: "at-img-lead" }, glyphEl("link", 12), im.sourceUrl || im.link ? `${atHost(im.sourceUrl || im.link)} page` : "no click destination captured"),
+      el("span", { className: "ap-muted at-img-brand" }, [brand || "no brand", im.price].filter(Boolean).join(" · "))));
+  });
+  const legend = el("div", { className: "at-img-kinds" }, el("span", { className: "at-eyebrow" }, "Images by kind of site"),
+    ...[...kinds.entries()].sort((a, b) => b[1] - a[1]).map(([k, n]) => el("span", {}, el("i", { style: `background:var(${AP_KIND_VAR[k] || "--kind-other"})` }), `${k} `, el("b", {}, String(n)))));
+  sec.append(grid, legend);
+  return sec;
+}
+
+
+/* A page's address as people read it: no scheme, no "www.", no tracking
+ * tags. The full address stays on the element's title and its link. */
+function displayUrl(u) {
+  return String(u || "").replace(/^https?:\/\/(www\.)?/, "").replace(/([?&])utm_[^&#]*&?/g, "$1").replace(/[?&]$/, "");
+}
+
+// One page the engine opened: cited or read only, its title linked, its
+// site and its full address.
+function sourceRowEl(s, { cls = "", pill = apPill } = {}) {
+  const d = (s.domain || s.url || "").replace(/^www\./, "");
+  const cited = s.outcome === "cited";
+  return el("div", { className: cls },
+    el("div", { className: "ap-sheet-row-head" }, pill(cited ? "Cited" : "Read only", cited ? "good" : "neutral"),
+      el("a", { href: s.url || "#", target: "_blank", rel: "noreferrer" }, s.title || d || s.url || "—")),
+    el("span", { className: "ap-muted" }, d),
+    s.url ? el("span", { className: "src-url", title: s.url }, displayUrl(s.url)) : null);
+}
+
+/* An ad shown with the answer (adsView): who paid, what the card said,
+ * where it sends people, and what ties it to the answer. Compact is the
+ * version under the answer text, as the engine showed it. */
+function adAdvertisers(rec) {
+  return [...new Set((rec.ads || []).map((a) => a.advertiser || a.targetDomain).filter(Boolean))].join(", ") || "sponsored";
+}
+function adCardEl(a, { compact = false } = {}) {
+  const card = el("div", { className: `ad-card${compact ? " compact" : ""}` });
+  card.append(el("div", { className: "ad-head" },
+    el("b", {}, a.advertiser),
+    el("span", { className: "ad-label" }, a.label),
+    a.placement && !compact ? el("span", { className: "ap-muted" }, a.placement) : null));
+  if (a.preamble) card.append(el("p", { className: "ad-pre" }, a.preamble));
+  if (a.title || a.body) card.append(el("div", { className: "ad-body" }, a.title ? el("b", {}, a.title) : null, a.body ? el("span", {}, a.body) : null));
+  if (a.url || a.domain) {
+    const link = /^https?:\/\//.test(a.url) ? el("a", { href: a.url, target: "_blank", rel: "noopener noreferrer", title: a.url }, a.domain || a.url) : el("span", {}, a.domain);
+    card.append(el("div", { className: "ad-link" }, el("span", { className: "ap-muted" }, "Links to "), link,
+      !compact && a.url ? el("span", { className: "ad-url", title: a.url }, a.url) : null));
+  }
+  if (!compact) {
+    const site = a.siteCited ? [`Its site cited ${a.siteCited}×`, "good"] : a.siteRead ? [`Its site read ${a.siteRead}×, not cited`, "neutral"] : ["Its site not opened", "neutral"];
+    card.append(el("div", { className: "ap-chips" },
+      apPill(a.namedInAnswer ? "Also named in the answer" : "Not named in the answer", a.namedInAnswer ? "good" : "neutral"),
+      apPill(site[0], site[1]),
+      a.format ? el("span", { className: "ap-muted" }, a.format.replace(/_/g, " ")) : null));
+  }
+  return card;
+}
+
+// The links a place's card carries. A hotel from Gemini's Google Hotels card
+// has its listing there (rates and booking) rather than a website or phone.
+function placeLinkChips(p, links) {
+  if (p.listingUrl && /^https:\/\//.test(p.listingUrl)) {
+    links.append(el("a", { className: "ap-bchip", href: p.listingUrl, target: "_blank", rel: "noopener noreferrer", title: "Its listing on the card, with rates" }, "Listing"));
+  }
+  [["Website", p.website], ["Directions", p.mapsUrl], ["Call", p.phone]].forEach(([k, v]) => links.append(el("span", { className: `ap-bchip${v ? "" : " missing"}`, title: v ? "" : `No ${k.toLowerCase()} on this listing` }, k)));
+}
+
+function atPlacesSection(rec, own) {
+  const sec = atSection("at-places", "Places on the map", rec.places.length, el("span", { className: "ap-muted" }, "pin order as shown"));
+  const table = el("div", { className: "at-table at-place-table", role: "table", "aria-labelledby": "at-places-h" });
+  table.append(el("div", { className: "at-tr at-th", role: "row" },
+    el("span", { role: "columnheader" }, "Pin"), el("span", { role: "columnheader" }, "Place"), el("span", { role: "columnheader" }, "Rating"),
+    el("span", { role: "columnheader" }, "Kind"), el("span", { role: "columnheader" }, "Links on its card"), el("span", { role: "columnheader" }, "Named in the text")));
+  const answer = String(rec.answerText || "").toLowerCase();
+  rec.places.forEach((p, i) => {
+    const mine = own && String(p.name || "").toLowerCase().startsWith(own.name.toLowerCase());
+    const links = el("span", { className: "ap-chips" });
+    placeLinkChips(p, links);
+    const inText = p.name && answer.includes(String(p.name).toLowerCase());
+    table.append(el("div", { className: `at-tr${mine ? " mine" : ""}`, role: "row" },
+      el("span", { role: "cell" }, el("span", { className: "ap-pin" }, String(i + 1))),
+      el("span", { role: "cell", className: "ap-brand-cell" }, el("span", { className: "ap-brand-name" }, p.name || "—"), el("span", { className: "ap-brand-sub" }, p.address || p.hours || "")),
+      el("span", { role: "cell" }, p.rating != null ? `★ ${p.rating}${p.reviews ? ` (${Number(p.reviews).toLocaleString()})` : ""}` : "—"),
+      el("span", { role: "cell", className: "at-ellipsis" }, [p.category, p.priceRange].filter(Boolean).join(" · ") || "—"),
+      el("span", { role: "cell" }, links),
+      el("span", { role: "cell", className: inText ? "ap-tile-value tone-good at-small" : "ap-muted" }, inText ? "Yes" : "No")));
+  });
+  sec.append(table);
+  return sec;
+}
+
+/* "Compare engines": the answers to this prompt, side by side. */
+function atRenderCompare(main, cv, answers) {
+  const diffs = atSection("at-cmp-diffs", `How the ${answers.length} answers differ`, "");
+  const ul = el("ul", { className: "at-diffs" });
+  cv.diffs.forEach((d) => ul.append(el("li", {}, el("span", { className: "at-diff-k" }, d.k), el("span", {}, d.v))));
+  diffs.append(ul);
+  main.append(diffs);
+
+  const t = atSection("at-cmp-table", "Each engine in numbers", "");
+  const table = el("div", { className: "at-table at-cmp-engines", role: "table", "aria-labelledby": "at-cmp-table-h" });
+  table.append(el("div", { className: "at-tr at-th", role: "row" }, ...["Engine", "Named first", "Answer had", "Brands", "Searches", "Read", "Cited"].map((h, i) => el("span", { role: "columnheader", className: i >= 3 ? "num" : "" }, h))));
+  cv.engines.forEach((e) => {
+    const ic = engineIconEl(e.id);
+    ic.classList.add("ap-engine-icon");
+    table.append(el("div", { className: "at-tr", role: "row" },
+      el("span", { role: "rowheader", className: "ap-brand-name" }, ic, ` ${e.label}`),
+      el("span", { role: "cell" }, e.first),
+      el("span", { role: "cell", className: "ap-muted" }, e.had.length ? e.had.join(", ") : "text only"),
+      el("span", { role: "cell", className: "num" }, String(e.brands)),
+      el("span", { role: "cell", className: "num" }, String(e.searches)),
+      el("span", { role: "cell", className: "num" }, String(e.read)),
+      el("span", { role: "cell", className: "num" }, String(e.cited))));
+  });
+  t.append(table);
+  main.append(t);
+
+  const pair = el("div", { className: "at-pair" });
+  const head = (label) => cv.engines.map((e) => { const ic = engineIconEl(e.id); ic.classList.add("ap-engine-icon"); return el("span", { role: "columnheader", className: "c", title: e.label, "aria-label": e.label }, ic); });
+  const cols = `minmax(0, 1fr) repeat(${cv.engines.length}, 44px) 64px`;
+  const bsec = atSection("at-cmp-brands", "Where each brand came", "", el("span", { className: "ap-muted" }, "1st = named first in that answer"));
+  const bg = el("div", { className: "at-grid-table", role: "table", style: `grid-template-columns:${cols}` });
+  // Rows are display:contents, so the cells sit on the one grid while a
+  // screen reader still gets rows.
+  const gridRow = (...cells) => el("div", { className: "at-grid-row", role: "row" }, ...cells);
+  bg.append(gridRow(el("span", { role: "columnheader" }, "Brand"), ...head(), el("span", { role: "columnheader", className: "num" }, "Named by")));
+  cv.brandGrid.forEach((b) => bg.append(gridRow(
+    el("span", { role: "rowheader", className: `ap-brand-name${b.isYou ? " you" : ""}` }, b.name + (b.isYou ? " · you" : "")),
+    ...b.cells.map((c, i) => el("span", { role: "cell", className: `c pos${c === 1 ? " first" : c ? "" : " none"}`, "aria-label": `${cv.engines[i].label}: ${c ? apOrd(c) : "not named"}` }, c ? apOrd(c) : "—")),
+    el("span", { role: "cell", className: "num" }, `${b.namedBy} of ${cv.engines.length}`))));
+  bsec.append(bg);
+  const ssec = atSection("at-cmp-sites", "Which sites each engine used", "", el("span", { className: "ap-legend" }, el("span", {}, el("i", { className: "k-cited" }), "cited"), el("span", {}, el("i", { className: "k-read" }), "read")));
+  const sg = el("div", { className: "at-grid-table", role: "table", style: `grid-template-columns:${cols}` });
+  sg.append(gridRow(el("span", { role: "columnheader" }, "Site"), ...head(), el("span", { role: "columnheader", className: "num" }, "Cited by")));
+  cv.siteGrid.slice(0, 16).forEach((s) => sg.append(gridRow(
+    el("span", { role: "rowheader", className: "at-ellipsis" }, s.domain),
+    ...s.cells.map((c, i) => el("span", { role: "cell", className: "c", "aria-label": `${cv.engines[i].label}: ${c || "not used"}` }, el("i", { className: c === "cited" ? "dot cited" : c === "read" ? "dot read" : "dot none" }))),
+    el("span", { role: "cell", className: "num" }, String(s.citedBy)))));
+  if (cv.siteGrid.length > 16) ssec.append(el("p", { className: "ap-muted" }, `+ ${cv.siteGrid.length - 16} more sites used by one engine`));
+  ssec.append(sg);
+  pair.append(bsec, ssec);
+  main.append(pair);
+
+  const q = atSection("at-cmp-searches", "Searches each engine ran", "", el("span", { className: "ap-muted" }, "highlighted = another engine ran the same search"));
+  cv.searchRows.forEach((r) => {
+    const ic = engineIconEl(r.id);
+    ic.classList.add("ap-engine-icon");
+    const chips = el("div", { className: "ap-chips" });
+    if (r.queries.length) r.queries.forEach((x) => chips.append(el("span", { className: `ap-bchip${x.shared ? " shared" : ""}` }, x.text)));
+    else chips.append(el("span", { className: "ap-muted" }, r.searched ? "searched, but didn't publish what for" : "didn't search"));
+    q.append(el("div", { className: "at-cmp-q" }, el("span", { className: "ap-brand-name" }, ic, ` ${r.label} · ${r.queries.length}`), chips));
+  });
+  main.append(q);
+}
+
+/* The card-by-card Analyze that both views used up to 0.46.0. Since 0.48.0
+ * it is built into a detached container and the full tab's Details panel
+ * takes the cards it wants from it by id (renderAnalyzeTab), so none of their
+ * behaviour — pipeline chips, title-mismatch tags, site: scoping, the
+ * brand/page matrix, claim grounding — had to be rewritten to move. */
+function renderAnalyzeLegacy(rec, root) {
   // Sticky prompt/engine identity bar — the first thing in #analyze, before
   // even the context banner below. On a long Analyze view (Verbatim
   // Grounding is now the LAST card, so this page can run long) scrolling
@@ -1359,6 +2973,19 @@ function renderAnalyze() {
     }, "💬");
     feedbackBtn.onclick = () => openFeedbackModal(rec);
 
+    // Compare left the top menu in 0.47.0; it opens from here instead, on
+    // this answer's prompt, whenever there is more than one answer to it.
+    const cmpKey = normPrompt(rec.userPrompt);
+    const cmpN = cmpKey && RECORDS.some((r) => r.captureId === rec.captureId)
+      ? RECORDS.filter((r) => normPrompt(r.userPrompt) === cmpKey).length : 0;
+    const cmpBtn = cmpN > 1 ? el("button", {
+      className: "analyze-context-back analyze-context-compare",
+      type: "button",
+      "data-open": "compare",
+      title: "Every captured answer to this prompt, run by run and engine by engine",
+    }, `Compare ${cmpN} answers`) : null;
+    if (cmpBtn) cmpBtn.onclick = () => openCompareFor(rec);
+
     promptBar.append(
       backBtn,
       el("span", { className: "analyze-context-label muted small" }, "Analyzing"),
@@ -1367,6 +2994,7 @@ function renderAnalyze() {
         title: rec.userPrompt || "",
       }, rec.userPrompt || "(no prompt text)"),
       engineChip(rec.platform, ENGINES.find((e) => e.id === rec.platform)?.label || rec.platform || "Unknown"),
+      ...(cmpBtn ? [cmpBtn] : []),
       feedbackBtn
     );
     root.append(promptBar);
@@ -1421,7 +3049,10 @@ function renderAnalyze() {
 
   const fanCount =
     ((rec.fanout?.search?.length || 0) + (rec.fanout?.shopping?.length || 0) + (rec.fanout?.image?.length || 0));
-  const newsCount = rec.sources.filter((s) => s.type === "news").length;
+  // News by either signal: a publication date, or the engine calling the
+  // result news (ref_type) — the kind chip and this count must agree.
+  const isNews = (s) => s.type === "news" || typeLabel((s.platformSpecific || {}).refType || (s.platformSpecific || {}).resultSource) === "News";
+  const newsCount = rec.sources.filter(isNews).length;
   const citedN = rec.sources.filter((s) => s.outcome === "cited").length;
   const fetchedN = rec.sources.filter((s) => s.outcome === "fetched").length;
 
@@ -1448,9 +3079,7 @@ function renderAnalyze() {
   const car = rec.carousels || {};
   carouselBox.append(
     el("span", { className: `chip ${car.products ? "active" : ""}` }, `Products: ${car.products ? "YES" : "NO"}`),
-    // Product thumbnails count: they are images the answer showed, and this
-    // chip said "NO" on captures with a full Images card further down.
-    el("span", { className: `chip ${car.images || rec.images?.length ? "active" : ""}` }, `Images: ${car.images || rec.images?.length ? "YES" : "NO"}`),
+    el("span", { className: `chip ${car.images ? "active" : ""}` }, `Images: ${car.images ? "YES" : "NO"}`),
     el("span", { className: `chip ${car.news ? "active" : ""}` }, `News: ${car.news ? "YES" : "NO"}`),
     el("span", { className: `chip ${car.map ? "active" : ""}` }, `Map: ${car.map ? "YES" : "NO"}`)
   );
@@ -1693,7 +3322,6 @@ function renderAnalyze() {
         ),
         el("div", { className: "muted", style: "font-size:11px; margin-bottom:10px; line-height:1.45" },
           "Cross-references which cited sources and domains contain each brand vs where blind spots occur. " +
-          "Estimated by matching brand names against search titles and snippets, so read it as a rough guide. " +
           "Click any row to expand details.")
       );
 
@@ -1717,7 +3345,7 @@ function renderAnalyze() {
           body.append(mr);
         }
         if (sourceIdxs && sourceIdxs.length) {
-          const secTitle = el("div", { className: "brand-label", style: "font-size:10.5px; margin-top:3px" }, "Supporting citations:");
+          const secTitle = el("div", { className: "brand-label", style: "font-size:11px; margin-top:3px" }, "Supporting citations:");
           body.append(secTitle);
           sourceIdxs.forEach((idx) => {
             const s = rec.sources[idx];
@@ -1728,7 +3356,7 @@ function renderAnalyze() {
           });
         }
         if (missingIdxs && missingIdxs.length) {
-          const secTitle = el("div", { className: "brand-label", style: "font-size:10.5px; margin-top:5px; color:var(--fg-muted)" }, "Citations omitting this brand:");
+          const secTitle = el("div", { className: "brand-label", style: "font-size:11px; margin-top:5px; color:var(--fg-muted)" }, "Citations omitting this brand:");
           body.append(secTitle);
           missingIdxs.slice(0, 5).forEach((idx) => {
             const s = rec.sources[idx];
@@ -1751,7 +3379,7 @@ function renderAnalyze() {
 
       // 1. Mentioned Brands Citation Support
       if (mentionedMatrixBrands.length) {
-        list.append(el("div", { className: "card-subtitle", style: "font-size:11px; font-weight:700; margin:6px 0 2px 4px; color:var(--fg-secondary)" }, "MENTIONED BRANDS ATTRIBUTION"));
+        list.append(el("div", { className: "card-subtitle", style: "font-size:11px; font-weight:600; margin:6px 0 2px 4px; color:var(--fg-secondary)" }, "MENTIONED BRANDS ATTRIBUTION"));
         mentionedMatrixBrands.forEach((mb) => {
           const pct = Math.round(mb.attributionRate * 100);
           list.append(rowFor(
@@ -1766,7 +3394,7 @@ function renderAnalyze() {
 
       // 2. Omitted Brands & Skipped Models
       if (omittedBrandsList.length || omittedModelsList.length) {
-        list.append(el("div", { className: "card-subtitle", style: "font-size:11px; font-weight:700; margin:10px 0 2px 4px; color:var(--fg-secondary)" }, "SEARCH FUNNEL DROPOUTS (RETRIEVED BUT NOT WRITTEN)"));
+        list.append(el("div", { className: "card-subtitle", style: "font-size:11px; font-weight:600; margin:10px 0 2px 4px; color:var(--fg-secondary)" }, "SEARCH FUNNEL DROPOUTS (RETRIEVED BUT NOT WRITTEN)"));
         omittedBrandsList.forEach((ob) => {
           list.append(rowFor(
             ob.brand,
@@ -1788,7 +3416,7 @@ function renderAnalyze() {
 
       // 3. Domain Coverage & Blind Spots
       if (domainMatrixList.length) {
-        list.append(el("div", { className: "card-subtitle", style: "font-size:11px; font-weight:700; margin:10px 0 2px 4px; color:var(--fg-secondary)" }, "DOMAIN-LEVEL BRAND COVERAGE & BLIND SPOTS"));
+        list.append(el("div", { className: "card-subtitle", style: "font-size:11px; font-weight:600; margin:10px 0 2px 4px; color:var(--fg-secondary)" }, "DOMAIN-LEVEL BRAND COVERAGE & BLIND SPOTS"));
         domainMatrixList.forEach((dm) => {
           const pct = Math.round(dm.coverageRate * 100);
           const subText = `Domain covers ${dm.coveredBrands.length} brands: ${dm.coveredBrands.join(", ") || "None"}. ` +
@@ -1831,7 +3459,7 @@ function renderAnalyze() {
         t.append(tr);
       });
       // Total Row
-      const totalRow = el("tr", { style: "font-weight:700; border-top:1px solid var(--border);" },
+      const totalRow = el("tr", { style: "font-weight:600; border-top:1px solid var(--border);" },
         el("td", {}, "TOTAL"),
         el("td", { className: "num" }, String(rec.sources.length))
       );
@@ -1842,8 +3470,7 @@ function renderAnalyze() {
     }
   }
 
-  // Column 2: Main Area (Cited Domains, Fan-out, Sources, Products, Images…;
-  // final order is set by MAIN_ORDER below)
+  // Column 2: Main Area (Fan-outs, Top Domains, Top URLs, Places, Products)
   const mainCol = el("div", { className: "analyze-main" });
 
   // Extended Thinking & Reasoning Trace (Gemini / Grok)
@@ -1857,7 +3484,7 @@ function renderAnalyze() {
       el("div", { className: "muted small", style: "margin-bottom:8px" },
         "Verbatim reasoning trace captured during response generation, showing synthesis steps and retrieval evaluation."),
       el("pre", {
-        style: "white-space:pre-wrap; font-family:var(--font-mono, monospace); font-size:11.5px; line-height:1.4; max-height:220px; overflow-y:auto; background:var(--bg-subtle); padding:10px 12px; border-radius:8px; border:1px solid var(--border);"
+        style: "white-space:pre-wrap; font-family:var(--font-mono, monospace); font-size:11px; line-height:1.4; max-height:220px; overflow-y:auto; background:var(--bg-subtle); padding:10px 12px; border-radius:8px; border:1px solid var(--border);"
       }, traceText)
     );
     mainCol.append(thinkCard);
@@ -1906,11 +3533,11 @@ function renderAnalyze() {
           style: "display:flex; height:20px; border-radius:6px; overflow:hidden; border:1px solid var(--border); margin-bottom:8px;",
         },
           el("div", {
-            style: `width:${auth.socialPct}%; background:#1d9bf0; color:#fff; font-size:10px; font-weight:700; display:flex; align-items:center; justify-content:center;`,
+            style: `width:${auth.socialPct}%; background:#1d9bf0; color:#fff; font-size:10px; font-weight:600; display:flex; align-items:center; justify-content:center;`,
             title: `Social Authority (X/Twitter): ${auth.socialPct}%`,
           }, auth.socialPct > 15 ? `🐦 ${auth.socialPct}% Social` : ""),
           el("div", {
-            style: `width:${auth.webPct}%; background:#10b981; color:#fff; font-size:10px; font-weight:700; display:flex; align-items:center; justify-content:center;`,
+            style: `width:${auth.webPct}%; background:#10b981; color:#fff; font-size:10px; font-weight:600; display:flex; align-items:center; justify-content:center;`,
             title: `Editorial Web Authority: ${auth.webPct}%`,
           }, auth.webPct > 15 ? `🌐 ${auth.webPct}% Web` : "")
         )
@@ -1918,6 +3545,13 @@ function renderAnalyze() {
       mainCol.append(authCard);
     }
   }
+
+  // Search Funnel goes first in the main column so it reads immediately after
+  // Brand Mentions in BOTH layouts — the popup stacks brand slot then main,
+  // and the full-screen grid puts the brand card at the top of this same
+  // column. It answers the follow-up question to Brand Mentions ("who got
+  // left out"), so anywhere else breaks the narrative.
+  if (funnelCard) mainCol.append(funnelCard);
 
   // 1. Query Fan-Out queries card
   //
@@ -2038,7 +3672,7 @@ function renderAnalyze() {
     let qIdx = 1;
     for (const [bucket, arr] of Object.entries(rec.fanout || {})) {
       if (!arr || !arr.length) continue;
-      fc.append(el("div", { className: "muted", style: "margin-top:6px;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;" }, bucket));
+      fc.append(el("div", { className: "muted", style: "margin-top:6px;font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;" }, bucket));
       const chips = el("div", { className: "chips" });
       arr.forEach((q) => {
         const qStr = typeof q === "string" ? q : q?.query || "";
@@ -2048,14 +3682,14 @@ function renderAnalyze() {
     }
 
     if (rec.products && rec.products.length) {
-      fc.append(el("div", { className: "muted", style: "margin-top:10px;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;" }, "Shopping Carousel Products"));
+      fc.append(el("div", { className: "muted", style: "margin-top:10px;font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;" }, "Shopping Carousel Products"));
       const pChips = el("div", { className: "chips" });
       rec.products.forEach((p, idx) => {
         const renderTag = (p.renderAs || "block").toUpperCase();
         if (renderTag === "HERO") {
           pChips.append(el("span", {
             className: "chip active",
-            style: "background: #f59e0b; color: #fff; font-weight: 600; border: 1px solid #d97706; box-shadow: 0 1px 3px rgba(0,0,0,0.1);"
+            style: "background: #f59e0b; color: #fff; font-weight: 500; border: 1px solid #d97706; box-shadow: 0 1px 3px rgba(0,0,0,0.1);"
           }, `⭐ HERO PICK: ${p.name}`));
         } else {
           pChips.append(el("span", { className: "chip" }, `${idx + 1}. BLOCK · ${p.name}`));
@@ -2066,66 +3700,38 @@ function renderAnalyze() {
     mainCol.append(fc);
   }
 
-  // Cited Domains — which publishers this answer leaned on.
-  //
-  // Requested: the domains and URLs being cited matter more than the
-  // snippet-based Brand & Domain Citation Matrix, which used to sit here and
-  // now closes the page. This replaced the old "Top Domains" table, which
-  // ranked by raw URL count, so a domain fetched three times and never used
-  // outranked the one the answer actually cited. Ranking lives in
-  // src/lib/cited-domains.js. One row per domain: the bar splits cited from
-  // fetched-only URLs, and each row opens to its URLs with full titles.
+  // 2. Top Domains Card
   if (rec.sources.length) {
-    const domains = summarizeDomains(rec.sources);
-    const citedDomainCount = domains.filter((d) => d.cited > 0).length;
-    const maxTotal = Math.max(1, ...domains.map((d) => d.total));
-    const cd = el("div", { className: "card", id: "card-cited-domains" },
-      el("div", { className: "card-header" },
-        el("h3", {}, `Cited Domains (${domains.length})`),
-        el("span", { className: "tag cited" }, `${citedDomainCount} cited`),
-        el("span", { className: "tag fetched" }, `${domains.length - citedDomainCount} fetched only`)),
-      el("div", { className: "muted small", style: "margin-top:-2px" },
-        "Every site this answer drew on, cited ones first. Click a domain to see its URLs."));
-    const list = el("div", { className: "domain-rank-list" });
-    domains.forEach((d, i) => {
-      const row = el("div", { className: `domain-rank${d.cited ? " is-cited" : ""}` });
-      const head = el("button", { className: "domain-rank-head", type: "button", "aria-expanded": "false" });
-      const bar = el("span", { className: "domain-rank-bar", title: `${d.cited} cited · ${d.total - d.cited} not cited` });
-      bar.append(
-        el("span", { className: "domain-rank-bar-cited", style: `width:${(d.cited / maxTotal) * 100}%` }),
-        el("span", { className: "domain-rank-bar-rest", style: `width:${((d.total - d.cited) / maxTotal) * 100}%` }));
-      const counts = [];
-      if (d.cited) counts.push(`${d.cited} cited`);
-      if (d.fetched) counts.push(`${d.fetched} fetched`);
-      if (d.other) counts.push(`${d.other} other`);
-      head.append(
-        el("span", { className: "domain-rank-pos" }, String(i + 1)),
-        el("span", { className: "domain-rank-name" }, d.domain),
-        el("span", { className: d.news ? "tag news" : "domain-rank-nonews" }, d.news ? "news" : ""),
-        bar,
-        el("span", { className: "domain-rank-counts" }, counts.join(" · ")),
-        el("span", { className: "domain-rank-chev", "aria-hidden": "true" }, "▸"));
-      const body = el("ul", { className: "domain-rank-urls", hidden: true });
-      d.sourceIdxs.forEach((idx) => {
-        const s = rec.sources[idx];
-        body.append(el("li", {},
-          el("span", { className: `tag ${s.outcome}` }, s.outcome),
-          el("a", { href: s.url, target: "_blank", rel: "noreferrer", title: s.url }, s.title || s.url)));
-      });
-      const more = el("button", { className: "linkbtn small", type: "button" }, `More on ${d.domain} →`);
-      more.onclick = () => openDomainModal(d.domain, rec);
-      body.append(el("li", { className: "domain-rank-more" }, more));
-      head.onclick = () => {
-        const open = body.hidden;
-        body.hidden = !open;
-        row.classList.toggle("open", open);
-        head.setAttribute("aria-expanded", String(open));
-      };
-      row.append(head, body);
-      list.append(row);
+    const domCount = new Map();
+    const domTypes = new Map();
+    rec.sources.forEach((s) => {
+      if (!s.domain) return;
+      domCount.set(s.domain, (domCount.get(s.domain) || 0) + 1);
+      const set = domTypes.get(s.domain) || new Set();
+      set.add(s.outcome);
+      if (s.type === "news") set.add("news");
+      domTypes.set(s.domain, set);
     });
-    cd.append(list);
-    mainCol.append(cd);
+
+    const topDomHead = el("div", { className: "card-header" }, el("h3", {}, `Top Domains (${domCount.size})`));
+    const topDomCard = el("div", { className: "card", id: "card-top-domains" }, topDomHead);
+    const dt = el("table", {});
+    dt.append(el("tr", {}, el("th", {}, "Domain"), el("th", {}, "Type"), el("th", { className: "num" }, "URLs")));
+    
+    [...domCount.entries()].sort((a, b) => b[1] - a[1]).forEach(([d, count]) => {
+      const tagGroup = el("div", { className: "type-tag-group" });
+      [...(domTypes.get(d) || [])].forEach((typ) =>
+        tagGroup.append(el("span", { className: `tag ${typ === "news" ? "news" : typ}` }, typ))
+      );
+      const tagCell = el("td", {}, tagGroup);
+      
+      const domLink = el("button", { className: "linkbtn td-domain-btn", title: `Click for detailed URLs under ${d}` }, d);
+      domLink.onclick = () => openDomainModal(d, rec);
+
+      dt.append(el("tr", {}, el("td", { className: "td-domain" }, domLink), tagCell, el("td", { className: "num" }, String(count))));
+    });
+    topDomCard.append(dt);
+    mainCol.append(topDomCard);
   }
 
   // 3. Top URLs Card (Merged list with Rank, Snippets & Char Counts)
@@ -2137,6 +3743,7 @@ function renderAnalyze() {
     // toggle keeps the jump-to-passage links one click away rather than
     // deleting them.
     let showSnippets = false;
+    let showAllSources = false;
     const snipToggle = el("button", { className: "linkbtn", type: "button" }, "Show snippets");
     const srcHead = el("div", { className: "card-header" },
       el("h3", {}, `Sources (${rec.sources.length})`),
@@ -2153,26 +3760,54 @@ function renderAnalyze() {
         if (activeSrcFilter === "all") return true;
         if (activeSrcFilter === "cited") return s.outcome === "cited";
         if (activeSrcFilter === "fetched") return s.outcome === "fetched";
-        if (activeSrcFilter === "news") return s.type === "news";
+        if (activeSrcFilter === "news") return isNews(s);
+        const pipe = pipelineOf(s.platformSpecific && s.platformSpecific.pipeline);
+        if (activeSrcFilter === "labrador") return !!pipe && pipe.kind === "openai";
+        if (activeSrcFilter === "external") return !!pipe && pipe.kind !== "openai";
         return true;
       });
 
       const order = { cited: 0, fetched: 1, mentioned: 2, unknown: 3 };
       const ranked = [...filtered].sort((a, b) => (order[a.outcome] ?? 9) - (order[b.outcome] ?? 9));
-      // Every source is listed. This used to stop at ten behind a "Show all"
-      // link, which was reported as the sources being cut off; cited sources
-      // still sort first, so the ones that shaped the answer lead.
-      ranked.forEach((s, idx) => {
+      // Cited sources sort first, so the first ten are the ones that actually
+      // shaped the answer — the long fetched-but-unused tail is one click away
+      // instead of running the card to several screens.
+      const SRC_PREVIEW = 10;
+      const visible = showAllSources ? ranked : ranked.slice(0, SRC_PREVIEW);
+
+      // Every sub-query the engine ran, for the title check on read-only
+      // sources below (fanout.js titleMatchesQueries).
+      const allQueries = Object.values(rec.fanout || {}).flatMap((arr) => arr || []);
+
+      visible.forEach((s, idx) => {
         const li = el("li", { className: "src-item" });
         const header = el("div", { className: "src-header" });
         
         header.append(el("span", { className: "url-rank-badge" }, `#${idx + 1}`));
         header.append(el("span", { className: `tag ${s.outcome}` }, s.outcome));
-        
-        if (s.type === "news") {
-          header.append(el("span", { className: "tag news" }, "news"));
+
+        // Where it came from (lib/retrieval.js): the pipeline, when ChatGPT
+        // named one, then the kind of result. The kind replaces the old
+        // "news" tag wherever the engine states it.
+        const sps = s.platformSpecific || {};
+        const pipe = pipelineOf(sps.pipeline);
+        if (pipe) {
+          header.append(el("span", {
+            className: `tag ${pipe.kind === "openai" ? "pipe-openai" : "pipe-external"}`,
+            title: pipe.note,
+          }, pipe.kind === "openai" ? pipe.label : `Web · ${pipe.label}`));
         }
+        const kind = typeLabel(sps.refType || sps.resultSource);
+        if (kind) header.append(el("span", { className: "tag src-type", title: "The kind of result, as the engine labelled it" }, kind));
+        else if (s.type === "news") header.append(el("span", { className: "tag news" }, "news"));
         
+        if (s.outcome === "fetched" && titleMatchesQueries(s.title, allQueries) === false) {
+          header.append(el("span", {
+            className: "tag src-mismatch",
+            title: "Read but not cited, and the title shares no word with anything the engine searched. Cited pages tend to have titles closer to the searches — try retitling it in the searcher's words.",
+          }, "title mismatch"));
+        }
+
         const titleLink = el("a", { href: s.url, target: "_blank", rel: "noreferrer", className: "src-title" }, s.title || s.url);
         header.append(titleLink);
         li.append(header);
@@ -2203,17 +3838,15 @@ function renderAnalyze() {
         const d = s.platformSpecific && s.platformSpecific.pubDate;
         const dMs = d ? (d > 1e12 ? d : d * 1000) : null; // auto-detect seconds vs milliseconds
         const dateStr = dMs ? new Date(dMs).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : null;
-        const rs = s.platformSpecific && s.platformSpecific.resultSource;
-        
         const meta = el("div", { className: "src-meta" });
         meta.append(el("span", { className: "src-domain" }, s.domain || "—"));
         if (dateStr) {
           meta.append(el("span", { className: "src-dot" }, "·"), el("span", {}, dateStr));
         }
-        if (rs) {
-          meta.append(el("span", { className: "src-dot" }, "·"), el("span", {}, `src: ${rs}`));
-        }
         li.append(meta);
+        // The page's own address, not just its site: which page on
+        // makemytrip.com was read is the actionable part.
+        if (s.url) li.append(el("span", { className: "src-url", title: s.url }, displayUrl(s.url)));
 
         const sm = brandMatrixData && brandMatrixData.sources && brandMatrixData.sources.find((src) => src.url === s.url || src.sourceIdx === rec.sources.indexOf(s));
         if (sm && ((sm.presentBrands && sm.presentBrands.length) || (showSnippets && sm.missingBrands && sm.missingBrands.length))) {
@@ -2230,14 +3863,14 @@ function renderAnalyze() {
               // brightens the text and deepens the tint), and are what
               // .tag.cited already uses elsewhere for this identical
               // "present/positive" meaning.
-              style: "font-size:9.5px; padding:1px 5px; background:var(--green-bg); color:var(--green-fg); border:1px solid var(--green-border); border-radius:4px"
+              style: "font-size:10px; padding:1px 5px; background:var(--green-bg); color:var(--green-fg); border:1px solid var(--green-border); border-radius:4px"
             }, `+ ${pb}`));
           });
           if (showSnippets && sm.missingBrands && sm.missingBrands.length) {
             sm.missingBrands.slice(0, 4).forEach((mb) => {
               brandsRow.append(el("span", {
                 className: "tag",
-                style: "font-size:9.5px; padding:1px 5px; background:rgba(100, 116, 139, 0.08); color:var(--fg-muted); border:1px solid rgba(100, 116, 139, 0.2); border-radius:4px"
+                style: "font-size:10px; padding:1px 5px; background:rgba(100, 116, 139, 0.08); color:var(--fg-muted); border:1px solid rgba(100, 116, 139, 0.2); border-radius:4px"
               }, `- ${mb}`));
             });
           }
@@ -2248,6 +3881,16 @@ function renderAnalyze() {
         ul.append(li);
       });
 
+      if (ranked.length > visible.length) {
+        const more = el("button", { className: "linkbtn src-more", type: "button" },
+          `Show all ${ranked.length} sources`);
+        more.onclick = () => { showAllSources = true; renderSrcList(); };
+        ul.append(el("li", { className: "src-more-row" }, more));
+      } else if (showAllSources && ranked.length > 10) {
+        const less = el("button", { className: "linkbtn src-more", type: "button" }, "Show fewer");
+        less.onclick = () => { showAllSources = false; renderSrcList(); };
+        ul.append(el("li", { className: "src-more-row" }, less));
+      }
     };
     snipToggle.onclick = () => {
       showSnippets = !showSnippets;
@@ -2255,12 +3898,53 @@ function renderAnalyze() {
       renderSrcList();
     };
 
+    const mix = retrievalMix(rec.sources);
     const filters = [
       { id: "all", label: `All (${rec.sources.length})` },
       { id: "cited", label: `Cited (${citedN})` },
       { id: "fetched", label: `Fetched (${fetchedN})` },
       { id: "news", label: `News (${newsCount})` },
+      ...(mix.openai ? [{ id: "labrador", label: `Labrador (${mix.openai})` }] : []),
+      ...(mix.external ? [{ id: "external", label: `External web (${mix.external})` }] : []),
     ];
+
+    // Where this answer's sources came from. The pipeline is shown only when
+    // ChatGPT named it; see lib/retrieval.js for why nothing is inferred.
+    if (rec.platform === "chatgpt" && rec.sources.length) {
+      const line = el("div", { className: "retrieval-mix" });
+      line.append(el("span", { className: "mix-label" }, "Pipeline"));
+      if (mix.pipelines.length) {
+        mix.pipelines.forEach(({ label, kind, count }) => {
+          line.append(el("span", { className: `tag ${kind === "openai" ? "pipe-openai" : "pipe-external"}` }, `${label} ${count}`));
+        });
+        if (mix.unlabelled) line.append(el("span", {}, `${mix.unlabelled} not labelled`));
+      } else {
+        line.append(el("span", { title: "ChatGPT sent result_source, naming the index behind each result, only from 21 May to 21 July 2026." },
+          "not labelled — ChatGPT only named it from 21 May to 21 July 2026"));
+      }
+      if (mix.types.length) {
+        line.append(el("span", { className: "mix-label", style: "margin-left:8px" }, "Types"));
+        line.append(el("span", {}, mix.types.map(({ label, count }) => `${label} ${count}`).join(" · ")));
+      }
+      sc.append(line);
+
+      // Which of ChatGPT's retrieval engines this answer's stream names —
+      // OpenAI's own (Labrador) apart from external ones. Only present when
+      // the stream carries the engine data (see lib/retrieval.js).
+      const engines = (rec.platformSpecific && rec.platformSpecific.enginesNamed) || [];
+      if (engines.length) {
+        const eline = el("div", { className: "retrieval-mix engines-named" });
+        eline.append(el("span", { className: "mix-label" }, "Engines in stream"));
+        engines.forEach(({ name, count }) => {
+          const p = pipelineOf(name);
+          eline.append(el("span", {
+            className: `tag ${p && p.kind === "openai" ? "pipe-openai" : "pipe-external"}`,
+            title: p ? p.note : name,
+          }, count > 1 ? `${name} ×${count}` : name));
+        });
+        sc.append(eline);
+      }
+    }
 
     filters.forEach((f) => {
       const p = el("button", { className: `filter-pill ${f.id === "all" ? "active" : ""}` }, f.label);
@@ -2304,6 +3988,8 @@ function renderAnalyze() {
       if (p.phone) links.append(el("span", { className: "chip" }, `📞 ${p.phone}`));
       if (p.website) links.append(el("a", { className: "chip", href: p.website, target: "_blank", rel: "noreferrer" }, "🌐 Website"));
       if (p.mapsUrl) links.append(el("a", { className: "chip", href: p.mapsUrl, target: "_blank", rel: "noreferrer" }, "📍 Maps"));
+      const sup = supplierOf(p.supplier);
+      if (sup) links.append(el("span", { className: "tag src-type", title: sup.note || "The feed ChatGPT names for this listing" }, `via ${sup.code}`));
       if (links.childNodes.length) li.append(links);
       ul.append(li);
     });
@@ -2351,18 +4037,14 @@ function renderAnalyze() {
     allProducts.forEach((p) => {
       const isHero = !!p.isHero;
       const li = el("li", {
-        className: `product-item-card ${isHero ? "hero-product-card" : ""}${p.image ? " has-thumb" : ""}`,
+        className: `product-item-card ${isHero ? "hero-product-card" : ""}`,
         style: `cursor: pointer; transition: all 0.2s ease; ${isHero ? "border: 1.5px solid #f59e0b; background: rgba(254,243,199,0.4);" : ""}`,
         title: "Click for merchant details, rating sources, and citation breakdown",
         onclick: () => openProductModal(p, rec)
       });
 
-      // The product's own picture, which ChatGPT shows on every product
-      // card. It was only ever drawn in the separate Images grid, which is
-      // where it was reported missing; next to the name is where it reads.
-      if (p.image) li.append(capturedImage(p.image, p.name, "product-thumb"));
       const head = el("div", { className: "item-head" });
-      const nameSpan = el("span", { className: "item-name", style: "font-weight: 600;" });
+      const nameSpan = el("span", { className: "item-name", style: "font-weight: 500;" });
       if (isHero) {
         // Was a hand-picked pale yellow (#fef3c7/#b45309/#fde68a) that
         // happens to be close to the amber tokens but isn't wired to them —
@@ -2389,7 +4071,7 @@ function renderAnalyze() {
   // Model reasoning trace
   if (rec.platformSpecific && rec.platformSpecific.reasoning) {
     const rc = el("div", { className: "card", id: "card-reasoning" }, el("h3", {}, "Model reasoning (thinking trace)"));
-    rc.append(el("div", { className: "muted", style: "white-space:pre-wrap;max-height:220px;overflow:auto;font-size:12px;font-family:'JetBrains Mono',monospace;background:var(--bg-subtle);padding:8px 12px;border-radius:6px;border:1px solid var(--border);" }, rec.platformSpecific.reasoning));
+    rc.append(el("div", { className: "muted", style: "white-space:pre-wrap;max-height:220px;overflow:auto;font-size:12px;font-family:var(--font-mono);background:var(--bg-subtle);padding:8px 12px;border-radius:6px;border:1px solid var(--border);" }, rec.platformSpecific.reasoning));
     mainCol.append(rc);
   }
 
@@ -2405,7 +4087,7 @@ function renderAnalyze() {
     const byCat = {};
     rec.entities.forEach((e) => (byCat[e.category] = byCat[e.category] || []).push(e.text));
     Object.entries(byCat).forEach(([cat, list]) => {
-      ec.append(el("div", { className: "muted", style: "margin-top:6px;font-weight:600;font-size:11px;" }, cat));
+      ec.append(el("div", { className: "muted", style: "margin-top:6px;font-weight:500;font-size:11px;" }, cat));
       const chips = el("div", { className: "chips" });
       list.forEach((t) => chips.append(el("span", { className: "chip" }, t)));
       ec.append(chips);
@@ -2419,8 +4101,8 @@ function renderAnalyze() {
     const grid = el("div", { className: "imggrid" });
     rec.images.forEach((im) => {
       const fig = el("a", { href: im.url, target: "_blank", rel: "noreferrer", className: "imgcell" });
-      fig.append(capturedImage(im.url, im.title, "imgcell-frame"));
-      if (im.title) fig.append(el("div", { className: "imgcap", title: im.title }, im.title));
+      fig.append(el("img", { src: im.url, alt: im.title || "", loading: "lazy" }));
+      if (im.title) fig.append(el("div", { className: "imgcap" }, im.title));
       grid.append(fig);
     });
     ic.append(grid);
@@ -2443,7 +4125,7 @@ function renderAnalyze() {
         el("h3", { "data-term": "verbatimGrounding" }, "Verbatim Grounding & Claim Integrity"),
         el("span", {
           className: "tag cited",
-          style: `background:${scoreColor}18; color:${scoreColor}; border:1px solid ${scoreColor}40; font-weight:700;`,
+          style: `background:${scoreColor}18; color:${scoreColor}; border:1px solid ${scoreColor}40; font-weight:600;`,
           "data-term": "verbatimGrounding",
         }, `${vg.score}% Grounded`),
         el("span", { className: "tag", "data-term": "hallucinationGap" }, `${vg.groundedClaims}/${vg.totalClaims} Claims Substantiated`)
@@ -2462,7 +4144,7 @@ function renderAnalyze() {
           el("div", { style: "display:flex; justify-content:space-between; margin-bottom:3px; gap:8px;" },
             el("span", {
               className: "tag",
-              style: `font-size:10px; padding:1px 5px; font-weight:600; background:${cm.isGrounded ? "rgba(16,185,129,0.12)" : "rgba(239,68,68,0.12)"}; color:${cm.isGrounded ? "#10b981" : "#ef4444"};`,
+              style: `font-size:10px; padding:1px 5px; font-weight:500; background:${cm.isGrounded ? "rgba(16,185,129,0.12)" : "rgba(239,68,68,0.12)"}; color:${cm.isGrounded ? "#10b981" : "#ef4444"};`,
             }, cm.isGrounded ? `✓ Grounded (${cm.confidence}%)` : `⚠ Unsubstantiated`),
             cm.sourceDomain ? el("span", { className: "muted small" }, `via ${cm.sourceDomain}`) : ""
           ),
@@ -2475,35 +4157,77 @@ function renderAnalyze() {
     mainCol.append(grdCard);
   }
 
-  // Reading order inside the main column. Requested: what was cited (domains,
-  // searches, sources) first, then what was shown (products, images), then
-  // the deeper traces. Cards are built in whatever order their data needs, so
-  // they are placed here by id; a card not in this list keeps its place at
-  // the end.
-  const MAIN_ORDER = [
-    "card-cited-domains", "card-fanout", "card-sources", "card-products", "card-images",
-    "card-places", "card-entities", "card-social-citations", "card-authority-split",
-    "card-thinking", "card-reasoning", "card-grounding-integrity",
-  ];
-  const pos = (n) => { const i = MAIN_ORDER.indexOf(n.id); return i === -1 ? MAIN_ORDER.length : i; };
-  [...mainCol.children].sort((a, b) => pos(a) - pos(b)).forEach((n) => mainCol.append(n));
-
   // Append columns to layout grid
   // Order matters for the narrow popup (a plain flex column); the tab layout
   // overrides placement explicitly with grid-area rules.
   grid.append(sidebar);
   if (brandCard) grid.append(brandCard);
   grid.append(mainCol);
-  // The Brand & Domain Citation Matrix closes the page in both layouts.
-  // Requested: it is inferred from search snippets, so it is the least
-  // reliable read on the page, and it used to sit second, right under Brand
-  // Mentions, pushing the cited domains and sources out of view. It is its own
-  // grid item so the popup can put it after the reference cards too.
-  if (funnelCard) {
-    funnelCard.classList.add("analyze-bottom-slot");
-    grid.append(funnelCard);
-  }
   root.append(grid);
+}
+
+function renderAnalyze() {
+  try {
+    const root = $("#analyze");
+    root.textContent = "";
+    // The full tab's single-answer view puts its tools back (atHeaderTools);
+    // every other state of Analyze leaves the bar empty.
+    atHeaderNodes = null;
+    setHeaderPage("analyze");
+    // A specifically-requested, already-hydrated capture (viewingId) wins
+    // outright — even a TRACKED one not present in the ad-hoc RECORDS list
+    // (e.g. opened via Prompt Performance's "click a prompt" link). Without
+    // this, RECORDS.find() below would silently miss it (tracked captures
+    // are deliberately excluded from RECORDS — see the isolation note in
+    // load()) and fall back to RECORDS[0], opening the wrong, most-recent
+    // AD-HOC capture instead of the one actually clicked.
+    let rec = viewingId ? FULL.get(viewingId) : null;
+    if (!rec) {
+      // Prefer the hydrated full record (carries answerText, which drives brand rank,
+      // "cited for" aspects and hero-product detection). Falls back to the light row.
+      const targetId = viewingId || defaultRecordId();
+      const light = targetId ? RECORDS.find((r) => r.captureId === targetId) || RECORDS[0] : RECORDS[0];
+      rec = light ? FULL.get(light.captureId) || light : null;
+    }
+    ANALYZE_SHOWN = rec;
+    abNoteAnalyzed(rec);
+    if (!rec) {
+      /* Two different empty states, because they need different answers.
+       *
+       * RECORDS deliberately excludes campaign captures (see the isolation
+       * note in load()), so a user who only ever runs campaigns has an empty
+       * RECORDS and used to be told "No captures yet — run a prompt", while
+       * a thousand captures sat in storage. Telling someone their data does
+       * not exist when it does is worse than showing nothing, and it is the
+       * reported "I ran a campaign, where did my results go".
+       */
+      if (TRACKED_COUNT > 0) {
+        const box = el("div", { className: "empty" },
+          el("div", {}, `Nothing selected to analyse — but ${TRACKED_COUNT} capture${TRACKED_COUNT === 1 ? "" : "s"} ${TRACKED_COUNT === 1 ? "is" : "are"} stored against your campaigns.`),
+          el("div", { className: "muted small", style: "margin-top:6px" },
+            "Campaign captures are kept separate from ad-hoc browsing so a tracking run can't skew your ad-hoc numbers. Open one from the Dashboard (turn on “From a campaign”) or from a prompt in the campaign's results."));
+        const go = el("button", { className: "btn sm primary", style: "margin-top:10px" }, "Go to campaign results →");
+        go.onclick = () => { showTab("loader"); document.getElementById("campaignResults")?.scrollIntoView({ block: "start" }); };
+        box.append(go);
+        root.append(box);
+        return;
+      }
+      root.append(
+        el("div", { className: "empty" },
+          "No captures yet. Open ChatGPT, Gemini, Perplexity or Grok in a tab, run a prompt, then reopen this panel.")
+      );
+      return;
+    }
+
+  // Each view has its own layout: the popup since 0.47.0 (renderAnalyzePopup),
+  // the full tab since 0.48.0 (renderAnalyzeTab). The full tab reuses the
+  // detailed cards renderAnalyzeLegacy() builds — every page read, search
+  // details, the brand/page matrix, grounding, technical — in its Details.
+  if (document.body.classList.contains("popup")) {
+    renderAnalyzePopup(rec, root);
+    return;
+  }
+  renderAnalyzeTab(rec, root);
   } catch (err) {
     console.error("renderAnalyze failed:", err);
     const root = $("#analyze");
@@ -2520,638 +4244,547 @@ function renderAnalyze() {
   }
 }
 
-let dashboardModelFilter = ""; 
-let dashboardTimeFilter = "";
-let customStartTime = 0;
-let customEndTime = 0;
+// The captures the Dashboard lists right now; About's export and delete
+// buttons act on these.
 let currentFilteredRecs = [];
-let dashboardDrill = null; // which Performance Overview metric is expanded
 
-/* Detail view behind each Performance Overview metric. Always built from the
- * already-filtered records, so the project / model / timeframe selections apply
- * here too rather than silently showing everything. */
-function renderDrilldown(recs) {
-  if (!dashboardDrill) return null;
+/* ---------- Dashboard (0.49.0) ----------
+ * Release 3 of the canvas redesign. The owner's feedback on the old
+ * Dashboard: it must not be brand-centric; it "is a record of prompts,
+ * search is central, and the right-hand side should go". So it is now a
+ * searchable history of everything captured (src/lib/historyView.js works
+ * it out): one row per prompt, grouped by day, with the engines that answered
+ * it, how often it was asked and what the answer held; filters for the
+ * period, the engines, the kind of answer and the week; and a second view of
+ * the searches the engines ran. The search looks in the prompts, in the
+ * searches the engines ran and, through the background ("search-answers"),
+ * in the answers themselves.
+ *
+ * A campaign's results moved to the Campaigns tab with it (see
+ * renderCampaignResults), ahead of that tab's own redesign.
+ */
 
-  const card = el("div", { className: "drilldown" });
-  const titles = {
-    captures: "Every capture",
-    searched: "Captures that triggered a web search",
-    fanout: "Every fan-out query the model issued",
-    domains: "Every domain seen",
-    cited: "Sources the model actually cited",
-    fetched: "Sources fetched but not cited",
-  };
-  const headRow = el("div", { className: "card-header" }, el("h3", {}, titles[dashboardDrill] || "Details"));
-  const close = el("button", { className: "linkbtn" }, "close ✕");
-  close.onclick = () => { dashboardDrill = null; renderDashboard(); };
-  headRow.append(close);
-  card.append(headRow);
+// The canvas's line glyphs (Glyph.dc.html): 24×24, stroked in currentColor.
+// Static markup, never built from data.
+const GLYPH_PATHS = {
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18"/><path d="M12 3a14 14 0 0 0 0 18"/>',
+  noglobe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18"/><path d="M12 3a14 14 0 0 0 0 18"/><path d="M4 4l16 16" stroke-width="2.6"/>',
+  pages: '<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5"/><path d="M10 13h6"/><path d="M10 17h6"/>',
+  cart: '<path d="M3 4h2l2.4 11h10.2L20 8H6.2"/><circle cx="9" cy="19.5" r="1.4"/><circle cx="17" cy="19.5" r="1.4"/>',
+  pin: '<path d="M12 21s-6.5-6.2-6.5-11a6.5 6.5 0 0 1 13 0c0 4.8-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/>',
+  image: '<rect x="3.5" y="5" width="17" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M4 17l5-5 4 4 3-3 4 4"/>',
+  book: '<path d="M4 5.5A2 2 0 0 1 6 4h5v15H6a2 2 0 0 0-2 1.5z"/><path d="M20 5.5A2 2 0 0 0 18 4h-5v15h5a2 2 0 0 1 2 1.5z"/>',
+  task: '<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4.5V3h6v1.5"/><path d="M8.5 11l2 2 4-4"/><path d="M8.5 17h7"/>',
+  trash: '<path d="M4.5 7h15"/><path d="M9.5 7V4.5h5V7"/><path d="M6.5 7l1 13h9l1-13"/><path d="M10.5 11v5.5"/><path d="M13.5 11v5.5"/>',
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4-4"/>',
+  // About's pages (0.51.0)
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5"/><path d="M12 7.5h.01"/>',
+  sliders: '<path d="M4 7h10"/><path d="M18 7h2"/><circle cx="16" cy="7" r="2"/><path d="M4 17h4"/><path d="M12 17h8"/><circle cx="10" cy="17" r="2"/>',
+  tools: '<ellipse cx="12" cy="6" rx="7" ry="2.6"/><path d="M5 6v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6V6"/><path d="M5 12v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6v-6"/>',
+  pulse: '<path d="M3 12h4l2.5-6 4 12 2.5-6H21"/>',
+  spark: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 16l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  lock: '<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/>',
+  // Full-tab Analyze (0.54.0): where an image or card leads
+  link: '<path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1"/>',
+};
+function glyphEl(name, size = 16) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  for (const [k, v] of Object.entries({ viewBox: "0 0 24 24", width: size, height: size, fill: "none", stroke: "currentColor", "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" })) svg.setAttribute(k, String(v));
+  svg.innerHTML = GLYPH_PATHS[name] || "";
+  svg.classList.add("glyph");
+  return svg;
+}
+const AK_GLYPH = { shopping: "cart", info: "book", local: "pin", images: "image", memory: "noglobe", task: "task" };
 
-  const tableWrap = (rows, headers, exportName) => {
-    if (!rows.length) {
-      card.append(el("div", { className: "empty" }, "Nothing here for the current filters."));
-      return;
-    }
-    const bar = el("div", { className: "dlbar" });
-    bar.append(el("span", { className: "muted" }, `${rows.length} row${rows.length === 1 ? "" : "s"}`));
-    const dl = el("button", { className: "btn sm ghost" }, "⬇ CSV");
-    dl.onclick = () => download(`citoskeleton-${exportName}-${Date.now()}.csv`, csvOf([headers, ...rows]), "text/csv");
-    bar.append(dl);
-    card.append(bar);
+let dbQuery = "";
+let dbScope = { prompts: true, answers: true, fan: true };
+let dbEngines = { chatgpt: true, gemini: true, perplexity: true, grok: true };
+let dbPeriod = null;         // null until picked: the view's default, widened if that would show nothing
+let dbRepeat = false;
+let dbCampaignOnly = false;
+let dbKinds = {};
+let dbWeek = null;
+let dbView = "prompts";      // "prompts" | "fan"
+let dbSort = "newest";
+let dbSelected = new Set();  // row keys
+let dbMenu = null;           // "export" | "campaign" | null
+let dbAnswerHits = new Map(); // captureId -> snippet, for dbAnswerFor
+let dbAnswerFor = "";
+let dbAnswerTimer = null;
+let dbRecentTimer = null;
+let dbPending = null;        // removal waiting out its Undo: { keys, ids, timer }
 
-    const wrap = el("div", { className: "drill-scroll" });
-    const t = el("table", { className: "drill-table" });
-    // Right-align ONLY genuinely numeric cells. This used to be
-    // `i === 0 ? "" : "num"` — i.e. every column but the first — which
-    // right-aligned text columns like "Original prompt"/"Platform" and made
-    // the table read as ragged nonsense. Testing `typeof` instead of a column
-    // index also can't drift when a column is added or reordered.
-    const isNum = (c) => typeof c === "number";
-    t.append(el("tr", {}, ...headers.map((h, i) =>
-      el("th", { className: rows.length && isNum(rows[0][i]) ? "num" : "" }, h))));
-    rows.slice(0, 500).forEach((r) =>
-      t.append(el("tr", {}, ...r.map((c) => el("td", { className: isNum(c) ? "num" : "" }, String(c))))));
-    wrap.append(t);
-    card.append(wrap);
-    if (rows.length > 500) card.append(el("div", { className: "muted" }, `Showing first 500 of ${rows.length} — export the CSV for all.`));
-  };
-
-  const when = (t) => new Date(t).toLocaleString();
-
-  if (dashboardDrill === "captures" || dashboardDrill === "searched") {
-    const list = dashboardDrill === "searched" ? recs.filter((r) => r.searched) : recs;
-    const rows = list.map((r) => [
-      r.userPrompt || "(no prompt)",
-      r.platform || "",
-      r.model || "",
-      when(r.capturedAt),
-      ((r.fanout?.search?.length || 0) + (r.fanout?.shopping?.length || 0) + (r.fanout?.image?.length || 0)),
-      (r.sources || []).length,
-      (r.sources || []).filter((s) => s.outcome === "cited").length,
-      (r.brandMentions || []).length,
-    ]);
-    tableWrap(rows, ["Prompt", "Platform", "Model", "Captured", "Fan-out", "Sources", "Cited", "Brands"], "captures");
-  }
-
-  if (dashboardDrill === "fanout") {
-    const rows = [];
-    recs.forEach((r) => {
-      ["search", "shopping", "image"].forEach((bucket) => {
-        (r.fanout?.[bucket] || []).forEach((q) => {
-          const qStr = typeof q === "string" ? q : q?.query || "";
-          rows.push([qStr, bucket, r.userPrompt || "", r.platform || "", when(r.capturedAt)]);
-        });
-      });
-    });
-    tableWrap(rows, ["Fan-out query", "Type", "Original prompt", "Platform", "Captured"], "fanout-queries");
-  }
-
-  if (dashboardDrill === "domains" || dashboardDrill === "cited" || dashboardDrill === "fetched") {
-    // Domain-level rollup. For cited/fetched we scope to that outcome so the
-    // numbers reconcile with the metric that was clicked.
-    const want = dashboardDrill === "domains" ? null : dashboardDrill;
-    const agg = new Map();
-    recs.forEach((r) => {
-      (r.sources || []).forEach((s) => {
-        if (!s.domain) return;
-        if (want && s.outcome !== want) return;
-        const cur = agg.get(s.domain) || { cited: 0, fetched: 0, prompts: new Set(), sample: "" };
-        if (s.outcome === "cited") cur.cited++;
-        else cur.fetched++;
-        if (r.userPrompt) cur.prompts.add(r.userPrompt);
-        if (!cur.sample && s.url) cur.sample = s.url;
-        agg.set(s.domain, cur);
-      });
-    });
-    const rows = [...agg.entries()]
-      .map(([domain, v]) => [domain, v.cited, v.fetched, v.cited + v.fetched, v.prompts.size, v.sample])
-      .sort((a, b) => b[3] - a[3]);
-    tableWrap(rows, ["Domain", "Cited", "Read-only", "Total", "Prompts", "Example URL"], `${dashboardDrill}-domains`);
-  }
-
-  return card;
+// Recent searches: a per-viewer convenience, so browser storage is enough.
+const DB_RECENT_KEY = "cito-recent-searches";
+function dbRecent() {
+  try { const v = JSON.parse(localStorage.getItem(DB_RECENT_KEY) || "[]"); return Array.isArray(v) ? v.filter((x) => typeof x === "string").slice(0, 6) : []; } catch (_) { return []; }
+}
+function dbRememberSearch(q) {
+  const t = String(q || "").trim();
+  if (t.length < 3) return;
+  try { localStorage.setItem(DB_RECENT_KEY, JSON.stringify([t, ...dbRecent().filter((x) => x.toLowerCase() !== t.toLowerCase())].slice(0, 6))); } catch (_) { /* storage off: nothing to keep */ }
 }
 
-/* ---------- Dashboard (aggregates across all captures) ---------- */
+// The answer search runs in the background (the panel has no answer text);
+// a beat after typing stops, and only the latest query's results are kept.
+function dbRequestAnswers() {
+  clearTimeout(dbAnswerTimer);
+  const q = dbQuery.trim();
+  if (!q || !dbScope.answers) { dbAnswerHits = new Map(); dbAnswerFor = ""; return; }
+  if (q === dbAnswerFor) return;
+  dbAnswerHits = new Map();
+  dbAnswerTimer = setTimeout(async () => {
+    const r = await send({ type: "search-answers", query: q });
+    if (dbQuery.trim() !== q) return;
+    dbAnswerHits = new Map(((r && r.ok && r.hits) || []).map((h) => [h.captureId, h.snippet]));
+    dbAnswerFor = q;
+    renderDashboard();
+  }, 250);
+}
+
+function dbSetQuery(q) {
+  dbQuery = q;
+  dbWeek = null;
+  dbSelected.clear();
+  dbRequestAnswers();
+  clearTimeout(dbRecentTimer);
+  dbRecentTimer = setTimeout(() => dbRememberSearch(dbQuery), 1500);
+}
+
+// The default period: the view's own (the canvas's 7 days in a tab, 3 in the
+// popup) unless that would open on an empty list, then the next wider one.
+function dbDefaultPeriod(rows, popup) {
+  const order = popup ? ["3d", "7d", "30d", "all"] : ["7d", "30d", "all"];
+  const base = { query: "", scope: dbScope, engines: dbEngines, kinds: {}, week: null };
+  return order.find((p) => historyView(rows, { ...base, period: p }).list.length) || "all";
+}
+
+/* Remove with Undo: the rows go at once; the records are deleted when the
+ * Undo window closes, or straight away if the panel is closing. */
+function dbRemove(rows) {
+  if (dbPending) dbCommitRemoval();
+  const keys = new Set(rows.map((r) => r.key));
+  const ids = rows.flatMap((r) => r.captureIds);
+  rows.forEach((r) => dbSelected.delete(r.key));
+  dbPending = { keys, ids, n: rows.length, timer: setTimeout(dbCommitRemoval, 7000) };
+  renderDashboard();
+}
+async function dbCommitRemoval() {
+  const p = dbPending;
+  if (!p) return;
+  dbPending = null;
+  clearTimeout(p.timer);
+  for (const id of p.ids) { FULL.delete(id); send({ type: "delete-record", captureId: id }); }
+  if (p.ids.includes(viewingId)) viewingId = null;
+  // load() re-reads the store; the messages above are queued ahead of it.
+  load();
+}
+function dbUndoRemoval() {
+  if (!dbPending) return;
+  clearTimeout(dbPending.timer);
+  dbPending = null;
+  renderDashboard();
+}
+addEventListener("pagehide", () => { if (dbPending) dbCommitRemoval(); });
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden" && dbPending) dbCommitRemoval(); });
+
+function dbChip(label, on, onclick, { cls = "", title = "", pressed = true } = {}) {
+  const b = el("button", { className: `db-chip${on ? " on" : ""}${cls ? " " + cls : ""}`, type: "button", title }, ...[].concat(label));
+  if (pressed) b.setAttribute("aria-pressed", on ? "true" : "false");
+  b.onclick = onclick;
+  return b;
+}
+function dbHighlight(text, toks) {
+  const span = el("span", {});
+  highlightRuns(text, toks).forEach((x) => span.append(x.hit ? el("mark", { className: "db-hit" }, x.t) : document.createTextNode(x.t)));
+  return span;
+}
+const dbEngineLabel = (id) => ENGINES.find((e) => e.id === id)?.label || id;
+const DB_DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+function dbWhen(t) {
+  const dd = dayDiff(Date.now(), t);
+  if (dd < 2) return apTime(t);
+  return `${DB_DOW[new Date(t).getDay()]} ${shortDate(t)}`;
+}
+
+function dbTokens(r, max) {
+  const out = [];
+  const tok = (g, n, title) => out.push(el("span", { className: "db-tok", title }, glyphEl(g, 14), n === "" ? null : el("span", {}, String(n))));
+  if (r.searches) tok("globe", r.searches, `${r.searches} search${r.searches === 1 ? "" : "es"} the engines ran`);
+  else if (r.unpublished) tok("globe", "?", "Searched the web, but the engine doesn't publish what for");
+  else tok("noglobe", "", "No web search");
+  if (r.pages) tok("pages", r.pages, `${r.pages} page${r.pages === 1 ? "" : "s"} read`);
+  if (r.products) tok("cart", r.products, `${r.products} product card${r.products === 1 ? "" : "s"}`);
+  if (r.places) tok("pin", r.places, `A map with ${r.places} place${r.places === 1 ? "" : "s"}`);
+  if (r.images) tok("image", r.images, `${r.images} image${r.images === 1 ? "" : "s"}`);
+  return el("span", { className: "db-toks" }, ...out.slice(0, max || out.length));
+}
+
+function dbEngineMarks(r) {
+  const box = el("span", { className: "db-engines" });
+  r.engines.forEach((id) => {
+    const ic = engineIconEl(id);
+    const b = el("button", { className: "db-engine", type: "button", "data-engine": id, title: `Open ${dbEngineLabel(id)}'s answer`, "aria-label": `Open ${dbEngineLabel(id)}'s answer` }, ic, el("span", { className: "ap-sr" }, dbEngineLabel(id)));
+    b.onclick = () => openCapture(r.latestByEngine[id]);
+    box.append(b);
+  });
+  return box;
+}
+
+// The second line under a prompt: why it matched, or what's worth knowing.
+function dbMuted(r, toks) {
+  if (r.hitAnswer && !r.hitPrompt) return el("span", { className: "db-muted" }, "In the answer: ", dbHighlight(r.hitAnswer.snippet, toks));
+  if (r.hitFan && !r.hitPrompt) return el("span", { className: "db-muted" }, "An engine searched “", dbHighlight(r.hitFan.text, toks), "”");
+  const parts = [];
+  if (r.asked > 1) parts.push(`asked ${r.asked}×`);
+  if (r.campaign) parts.push(`${r.campaign} campaign`);
+  if (r.words > 30) parts.push(`${r.words}-word prompt`);
+  if (r.sample) parts.push("sample data");
+  return parts.length ? el("span", { className: "db-muted" }, parts.join(" · ")) : null;
+}
+
+function dbRow(r, v, popup) {
+  const kind = KINDS.find((k) => k.id === r.kind) || KINDS[1];
+  const long = r.words > 30;
+  const openId = r.hitAnswer ? r.hitAnswer.captureId : r.latestId;
+  const prompt = el("button", { className: `db-prompt${long ? " long" : ""}`, type: "button", title: r.text }, dbHighlight(r.text, dbScope.prompts ? v.tokens : []));
+  prompt.onclick = () => openCapture(openId);
+  const text = el("div", { className: "db-text" }, prompt);
+  const muted = dbMuted(r, v.tokens);
+  if (r.kind === "task") {
+    const rm = el("button", { className: "db-link danger", type: "button" }, "Remove it");
+    rm.onclick = () => dbRemove([r]);
+    text.append(el("span", { className: "db-muted" }, "Looks like a task, not research. ", rm));
+  } else if (muted) text.append(muted);
+  const tile = el("span", { className: `db-kind k-${r.kind}`, title: kind.label, "aria-label": kind.label }, glyphEl(AK_GLYPH[r.kind], popup ? 14 : 15));
+  const trash = el("button", { className: `db-trash${r.kind === "task" ? " task" : ""}`, type: "button", title: "Remove from my history", "aria-label": `Remove “${r.text.slice(0, 40)}” from my history` }, glyphEl("trash", 15));
+  trash.onclick = () => dbRemove([r]);
+  if (popup) {
+    return el("li", { className: `db-row k-${r.kind}`, "data-key": r.key },
+      tile,
+      el("div", { className: "db-main" }, text, el("span", { className: "db-meta" }, el("span", { className: "db-when" }, dbWhen(r.latestAt)), dbTokens(r, 4))),
+      dbEngineMarks(r), trash);
+  }
+  const cb = el("input", { type: "checkbox", "aria-label": `Select “${r.text.slice(0, 40)}”` });
+  cb.checked = dbSelected.has(r.key);
+  cb.onchange = () => { if (cb.checked) dbSelected.add(r.key); else dbSelected.delete(r.key); renderDashboard(); };
+  return el("li", { className: `db-row k-${r.kind}${cb.checked ? " selected" : ""}`, "data-key": r.key },
+    el("label", { className: "db-check" }, cb),
+    el("span", { className: "db-when" }, dbWhen(r.latestAt)),
+    tile, text, dbEngineMarks(r), dbTokens(r), trash);
+}
+
+function dbExportMenu(rows, label) {
+  const wrap = el("div", { className: "menu-wrap" });
+  const btn = el("button", { className: "at-btn sm", type: "button", "aria-expanded": dbMenu === "export" ? "true" : "false", "aria-haspopup": "menu" }, label);
+  btn.onclick = (e) => { e.stopPropagation(); dbMenu = dbMenu === "export" ? null : "export"; renderDashboard(); };
+  wrap.append(btn);
+  if (dbMenu === "export") {
+    const recs = rows.flatMap((r) => r.captureIds).map((id) => ALL_RECORDS.find((x) => x.captureId === id)).filter(Boolean);
+    const menu = el("div", { className: "menu-pop db-menu", role: "menu" });
+    [["excel", "Excel", ".xls spreadsheet"], ["csv", "Detailed CSV", "one row per source"], ["html", "Conversations", "readable HTML document"], ["json", "Raw data", "full JSON payloads"]].forEach(([k, l, sub]) => {
+      const it = el("button", { className: "menu-item", type: "button", role: "menuitem" }, el("span", { className: "menu-item-label" }, l), el("span", { className: "menu-item-sub muted small" }, sub));
+      it.onclick = async () => {
+        dbMenu = null;
+        renderDashboard();
+        if (k === "json") download(`citoskeleton-selected-${Date.now()}.json`, JSON.stringify(recs, null, 2), "application/json");
+        else if (k === "html") await exportRecordsAsHtml(recs);
+        else downloadDetailedFormat(recs, k);
+      };
+      menu.append(it);
+    });
+    menu.append(el("div", { className: "menu-note muted small" }, `${recs.length} answer${recs.length === 1 ? "" : "s"} to ${rows.length} prompt${rows.length === 1 ? "" : "s"}`));
+    wrap.append(menu);
+  }
+  return wrap;
+}
+
+function dbCampaignMenu(rows) {
+  const wrap = el("div", { className: "menu-wrap" });
+  const btn = el("button", { className: "at-btn sm", type: "button", "aria-expanded": dbMenu === "campaign" ? "true" : "false", "aria-haspopup": "menu" }, "Add to a campaign");
+  btn.onclick = (e) => { e.stopPropagation(); dbMenu = dbMenu === "campaign" ? null : "campaign"; renderDashboard(); };
+  wrap.append(btn);
+  if (dbMenu === "campaign") {
+    const menu = el("div", { className: "menu-pop db-menu", role: "menu" });
+    // A campaign that has started tracking is locked, so its prompts stay
+    // comparable run to run; only campaigns still being set up take more.
+    const open = GEO_PROFILES.filter((p) => !p.locked);
+    open.forEach((p) => {
+      const it = el("button", { className: "menu-item", type: "button", role: "menuitem" }, el("span", { className: "menu-item-label" }, p.name || "Untitled"));
+      it.onclick = async () => {
+        dbMenu = null;
+        const r = await send({ type: "geo-prompt-bulk-add-rows", profileId: p.id, rows: rows.map((x) => ({ text: x.text, tags: [] })) });
+        if (r && r.ok) {
+          const dup = (r.duplicates || []).length;
+          showToast(`Added ${r.added} prompt${r.added === 1 ? "" : "s"} to ${p.name || "the campaign"}${dup ? ` (${dup} already there)` : ""}`);
+          dbSelected.clear();
+          loadGeo();
+        } else showToast((r && r.error) || "Couldn't add them to the campaign", "error");
+        renderDashboard();
+      };
+      menu.append(it);
+    });
+    if (!open.length) menu.append(el("div", { className: "menu-note muted small" }, GEO_PROFILES.length ? "Campaigns lock once they start tracking. Start a new one in Campaigns to track these prompts." : "No campaigns yet. Start one in Campaigns to track these prompts."));
+    const go = el("button", { className: "menu-item", type: "button", role: "menuitem" }, el("span", { className: "menu-item-label" }, "Go to Campaigns →"));
+    go.onclick = () => { dbMenu = null; showTab("loader"); };
+    menu.append(go);
+    wrap.append(menu);
+  }
+  return wrap;
+}
+
+// One row per prompt, rebuilt only when the records or campaigns change:
+// load() replaces ALL_RECORDS and GEO_PROFILES, so identity is enough, and
+// typing in the search box doesn't re-read every capture on each key.
+let dbRowsCache = null;
+function dbHistoryRows() {
+  if (!dbRowsCache || dbRowsCache.recs !== ALL_RECORDS || dbRowsCache.profiles !== GEO_PROFILES) {
+    dbRowsCache = { recs: ALL_RECORDS, profiles: GEO_PROFILES, rows: historyRows(ALL_RECORDS, { profiles: GEO_PROFILES }) };
+  }
+  return dbRowsCache.rows;
+}
+
 function renderDashboard() { withScrollPreserved(renderDashboardImpl); }
 function renderDashboardImpl() {
   const root = $("#dashboard");
+  if (!root) return;
   beginSwap(root);
   root.textContent = "";
-
-  const now = Date.now();
-  let timeLimit = dashboardTimeFilter === "1h" ? now - 3600000 :
-                  dashboardTimeFilter === "24h" ? now - 86400000 :
-                  dashboardTimeFilter === "7d" ? now - 604800000 : 0;
-
-  const recs = RECORDS.filter((r) => {
-    if (!matchesSearch(r.userPrompt, dashboardSearch)) return false;
-    if (dashboardModelFilter && r.platform !== dashboardModelFilter) return false;
-    if (dashboardTimeFilter === "custom") {
-      if (customStartTime && r.capturedAt < customStartTime) return false;
-      if (customEndTime && r.capturedAt > customEndTime) return false;
-    } else if (timeLimit && r.capturedAt < timeLimit) {
-      return false;
-    }
-    return true;
-  });
-  currentFilteredRecs = recs;
-  if (!recs.length && !RECORDS.length && !GEO_PROFILES.length) {
-    root.append(el("div", { className: "empty" }, "No data captured yet. Open ChatGPT, Gemini, Perplexity or Grok in a tab and run a query."));
+  const popup = document.body.classList.contains("popup");
+  const removing = dbPending ? dbPending.keys : new Set();
+  const all = dbHistoryRows().filter((r) => !removing.has(r.key));
+  const wrap = el("div", { className: `db ${popup ? "db-popup" : "db-tab"}` });
+  root.append(wrap);
+  if (dbPending) root.append(dbToast());
+  if (!all.length) {
+    currentFilteredRecs = [];
+    wrap.append(el("div", { className: "empty" }, "Nothing captured yet. Ask ChatGPT, Gemini, Perplexity or Grok something in a tab and it shows up here, with the searches it ran and the pages it read."));
     return;
   }
+  const period = dbPeriod || dbDefaultPeriod(all, popup);
+  const v = historyView(all, { query: dbQuery, scope: dbScope, engines: dbEngines, period, kinds: dbKinds, week: dbWeek, repeat: dbRepeat, campaign: dbCampaignOnly, sort: dbSort }, { now: Date.now(), answerHits: dbAnswerHits });
+  currentFilteredRecs = v.list.flatMap((r) => r.captureIds).map((id) => ALL_RECORDS.find((x) => x.captureId === id)).filter(Boolean);
+  const periodPhrase = (PERIODS.find((p) => p.id === period) || PERIODS[5]).phrase;
 
-  let fanTotal = 0, searched = 0, citedTotal = 0, fetchedTotal = 0;
-  const domainCount = new Map();
-  const domainTypes = new Map();
-  const termCount = new Map();
-  recs.forEach((r) => {
-    if (r.searched) searched++;
-    ["search", "shopping", "image"].forEach((b) =>
-      (r.fanout[b] || []).forEach((q) => {
-        fanTotal++;
-        q.query.toLowerCase().split(/\s+/).forEach((w) => {
-          if (w.length > 2) termCount.set(w, (termCount.get(w) || 0) + 1);
-        });
-      })
-    );
-    r.sources.forEach((s) => {
-      if (s.outcome === "cited") citedTotal++;
-      else if (s.outcome === "fetched") fetchedTotal++;
-      if (s.domain) {
-        domainCount.set(s.domain, (domainCount.get(s.domain) || 0) + 1);
-        const set = domainTypes.get(s.domain) || new Set();
-        set.add(s.outcome);
-        if (s.type === "news") set.add("news");
-        domainTypes.set(s.domain, set);
-      }
-    });
-  });
-
-  // Top Metric KPI Grid Card
-  const overviewCard = el("div", { className: "card" });
-  const ovHeader = el("div", { className: "card-header" }, el("h3", {}, "Performance Overview"));
-  
-  const filterRow = el("div", { className: "header-brand", style: "display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end;" });
-
-  // 0. Search — filters captures by prompt text (affects the stat grid,
-  // drilldown, and Saved Conversations list below, same as the other filters).
-  const searchInp = el("input", { id: "dashboardSearch", type: "text", placeholder: "🔍 Search words in prompts…", title: "Type any words — rows matching every word are shown, in any order", value: dashboardSearch, className: "filter", style: "min-width:140px" });
-  searchInp.oninput = () => {
-    dashboardSearch = searchInp.value;
-    const cursor = searchInp.selectionStart;
+  /* --- search --- */
+  const search = el("div", { className: "db-search" });
+  const inp = el("input", { id: "dashboardSearch", type: "search", className: "db-input", value: dbQuery, autocomplete: "off", spellcheck: "false",
+    placeholder: popup ? "Search prompts, answers and searches" : "Search your prompts, the answers, and what the engines searched for",
+    "aria-label": "Search your history" });
+  inp.oninput = () => {
+    const cursor = inp.selectionStart;
+    dbSetQuery(inp.value);
     renderDashboard();
     const next = $("#dashboardSearch");
     if (next) { next.focus(); next.setSelectionRange(cursor, cursor); }
   };
-  filterRow.append(searchInp);
-
-  // 1. Timeframe Filter Container
-  const timeContainer = el("div", { style: "display: flex; gap: 8px; align-items: center;" });
-  
-  const timeSel = el("select", { className: "filter" });
-  const timeOpts = [
-    { v: "", l: "All Time" },
-    { v: "1h", l: "Last Hour" },
-    { v: "24h", l: "Last 24 Hours" },
-    { v: "7d", l: "Last 7 Days" },
-    { v: "custom", l: "Custom..." }
-  ];
-  timeOpts.forEach(o => {
-    const opt = el("option", { value: o.v }, o.l);
-    if (o.v === dashboardTimeFilter) opt.selected = true;
-    timeSel.append(opt);
-  });
-  timeSel.onchange = () => { dashboardTimeFilter = timeSel.value; renderDashboard(); };
-  timeContainer.append(timeSel);
-
-  if (dashboardTimeFilter === "custom") {
-    const startInp = el("input", { type: "datetime-local", className: "filter", style: "width: 140px; padding: 2px 6px;" });
-    if (customStartTime) {
-      const d = new Date(customStartTime);
-      startInp.value = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0,16);
-    }
-    startInp.onchange = (e) => { customStartTime = e.target.value ? new Date(e.target.value).getTime() : 0; renderDashboard(); };
-    
-    const endInp = el("input", { type: "datetime-local", className: "filter", style: "width: 140px; padding: 2px 6px;" });
-    if (customEndTime) {
-      const d = new Date(customEndTime);
-      endInp.value = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0,16);
-    }
-    endInp.onchange = (e) => { customEndTime = e.target.value ? new Date(e.target.value).getTime() : 0; renderDashboard(); };
-
-    timeContainer.append(el("span", { className: "muted" }, "from"), startInp, el("span", { className: "muted" }, "to"), endInp);
+  inp.onkeydown = (e) => { if (e.key === "Enter") dbRememberSearch(dbQuery); if (e.key === "Escape" && dbQuery) { dbSetQuery(""); renderDashboard(); } };
+  search.append(glyphEl("search", 16), inp);
+  if (dbQuery) {
+    const x = el("button", { className: "db-clear", type: "button", title: "Clear the search", "aria-label": "Clear the search" }, "×");
+    x.onclick = () => { dbSetQuery(""); renderDashboard(); $("#dashboardSearch")?.focus(); };
+    search.append(x);
   }
-  
-  filterRow.append(timeContainer);
+  const top = el("section", { className: "db-card db-top", "aria-label": "Search and filters" });
+  wrap.append(top);
+  if (!popup) top.append(el("div", { className: "db-caption" }, "Everything you’ve captured · stored on this computer"));
+  top.append(search);
 
-  // 2. Model Filter — the single engine control for this whole tab, campaign
-  // section included. Re-synced on every render so no other code path can
-  // leave the campaign reading a different engine than the one shown here.
-  geoEngineFilter = dashboardModelFilter ? [dashboardModelFilter] : [];
-  const modelSel = el("select", { className: "filter", title: "Limit every number on this tab — including the campaign below — to one engine" });
-  // Built from the engines that actually have adapters rather than a hardcoded
-  // pair, so adding one doesn't leave a filter that can never select it.
-  [{ id: "", label: "All Models" }, ...availableEngines()].forEach((o) => {
-    const opt = el("option", { value: o.id }, o.label);
-    if (o.id === dashboardModelFilter) opt.selected = true;
-    modelSel.append(opt);
-  });
-  // Reported: "when I change the model the data in the campaign doesn't
-  // change at all." It didn't: this select drove only the ad-hoc record list,
-  // while the campaign section read a SEPARATE geoEngineFilter set by its own
-  // dropdown. Two controls, same word, one of them silently inert over the
-  // section people were actually looking at.
-  //
-  // Unified rather than merely connected — the campaign card's duplicate
-  // dropdown is gone, the same way the "Last 7/30/90 days" selector was
-  // removed when the time filter was unified. One control, one meaning.
-  modelSel.onchange = () => {
-    dashboardModelFilter = modelSel.value;
-    geoEngineFilter = modelSel.value ? [modelSel.value] : [];
-    renderDashboard();
-  };
-  filterRow.append(modelSel);
-
-  // 3. Campaign Filter — picks which campaign's performance shows below.
-  // Nothing selected means no campaign section is shown at all (see the
-  // "No campaign selected" note further down), rather than silently
-  // defaulting to one.
-  if (GEO_PROFILES.length) {
-    const sel = el("select", { className: "filter" });
-    sel.append(el("option", { value: "" }, "No campaign selected"));
-    GEO_PROFILES.forEach((p) => {
-      const o = el("option", { value: p.id }, p.name || "Untitled");
-      if (p.id === dashboardCampaignId) o.selected = true;
-      sel.append(o);
+  /* --- filters --- */
+  const setPeriod = (p) => { dbPeriod = p; dbWeek = null; renderDashboard(); };
+  const engineToggle = (id) => () => { dbEngines = { ...dbEngines, [id]: dbEngines[id] === false }; renderDashboard(); };
+  const recent = dbRecent();
+  if (popup) {
+    const row = el("div", { className: "db-filters" });
+    const sel = el("select", { className: "db-select", "aria-label": "When" });
+    PERIODS.forEach((p) => { const o = el("option", { value: p.id }, p.label); if (p.id === period) o.selected = true; sel.append(o); });
+    sel.onchange = () => setPeriod(sel.value);
+    row.append(sel);
+    const eng = el("span", { className: "db-engine-toggles" });
+    ENGINE_ORDER.forEach((id) => {
+      const on = dbEngines[id] !== false;
+      const b = el("button", { className: `db-etoggle${on ? " on" : ""}`, type: "button", "aria-pressed": on ? "true" : "false", title: `${dbEngineLabel(id)}: ${on ? "shown" : "hidden"}`, "aria-label": dbEngineLabel(id) }, engineIconEl(id));
+      b.onclick = engineToggle(id);
+      eng.append(b);
     });
-    sel.onchange = async () => {
-      dashboardCampaignId = sel.value;
-      expandedPromptRuns = new Set();
-      geoTagFilter = [];
-      // A prompt/source filter typed for one campaign is meaningless against
-      // another and would silently hide most of the new campaign's rows.
-      geoPromptSearch = "";
-      sourceSearch = "";
-      if (dashboardCampaignId) {
-        const qs = await send({ type: "geo-prompt-list", profileId: dashboardCampaignId });
-        dashboardGeoPrompts = qs.ok ? qs.prompts : [];
-      } else {
-        dashboardGeoPrompts = [];
-      }
-      renderDashboard();
-    };
-    filterRow.append(sel);
-  }
-
-  ovHeader.append(filterRow);
-  overviewCard.append(ovHeader);
-  // Always in the DOM — this is what used to disappear once a campaign was
-  // selected, taking the only way to change or clear the selection with it.
-  root.append(overviewCard);
-
-  const selectedCampaign = dashboardCampaignId ? GEO_PROFILES.find((p) => p.id === dashboardCampaignId) : null;
-  // Same timeframe the ad-hoc filters above use — campaign performance used
-  // to have its OWN separate "Last 7/30/90 days" dropdown, which was a second,
-  // inconsistent time filter instead of reusing this one.
-  const geoSince = dashboardTimeFilter === "custom" ? (customStartTime || undefined) : (timeLimit || undefined);
-  const geoUntil = dashboardTimeFilter === "custom" ? (customEndTime || undefined) : undefined;
-
-  if (!selectedCampaign) {
-    // Every metric is clickable and opens a detail view built from the SAME
-    // filtered `recs`, so the model / timeframe filters above always apply
-    // to the drill-down too. Only shown when no campaign is selected — once
-    // one is, this and the campaign KPIs below merge into a single section
-    // (see refreshGeoMetrics) instead of two disconnected cards.
-    const stats = el("div", { className: "statgrid" });
-    const stat = (n, l, key) => {
-      const node = el(
-        "div",
-        { className: `stat clickable-stat${dashboardDrill === key ? " stat-active" : ""}`, title: `Click to break down: ${l}` },
-        el("div", { className: "n" }, String(n)),
-        el("div", { className: "l" }, l)
-      );
-      node.onclick = () => {
-        dashboardDrill = dashboardDrill === key ? null : key;
-        renderDashboard();
-      };
-      return node;
-    };
-    stats.append(
-      stat(recs.length, "Captures", "captures"),
-      stat(searched, "With search", "searched"),
-      stat(fanTotal, "Fan-out queries", "fanout"),
-      stat(domainCount.size, "Unique domains", "domains"),
-      stat(citedTotal, "Cited", "cited"),
-      stat(fetchedTotal, "Read-only", "fetched")
-    );
-    overviewCard.append(stats);
-    const drill = renderDrilldown(recs);
-    if (drill) overviewCard.append(drill);
-
-    if (GEO_PROFILES.length) {
-      root.append(el("div", { className: "empty" }, "No campaign selected — pick one above to see its performance."));
-    }
+    row.append(eng);
+    top.append(row);
+    const kinds = el("div", { className: "db-kindchips", role: "group", "aria-label": "Kind of answer" });
+    KINDS.forEach((k) => {
+      const n = v.kindCounts[k.id] || 0;
+      const on = !!dbKinds[k.id];
+      const c = dbChip([glyphEl(AK_GLYPH[k.id], 13), `${k.label.split(" ·")[0]} · ${n}`], on, () => { dbKinds = { ...dbKinds, [k.id]: !on }; renderDashboard(); }, { cls: `k-${k.id}${n ? "" : " zero"}` });
+      kinds.append(c);
+    });
+    top.append(kinds);
   } else {
-    // A campaign is selected: merge its own captures/fan-out/domain overview
-    // together with its brand KPIs into the one card refreshGeoMetrics builds,
-    // instead of showing the generic ad-hoc overview above it.
-    const gc = el("div", { className: "card", id: "geoMetrics" });
-    gc.append(el("div", { className: "card-header" }, el("h3", {}, "Campaign Performance")), el("div", { className: "muted small" }, "loading…"));
-    root.append(gc);
-    refreshGeoMetrics(selectedCampaign, dashboardGeoPrompts, geoSince, geoUntil);
-
-    const pp = el("div", { className: "card", id: "geoPromptTable" });
-    pp.append(el("div", { className: "card-header" }, el("h3", {}, "Prompt Performance")), el("div", { className: "muted small" }, "loading…"));
-    root.append(pp);
-    refreshPromptPerformance(selectedCampaign, dashboardGeoPrompts, geoSince, geoUntil);
+    const row = el("div", { className: "db-filters" });
+    const scope = el("div", { className: "db-group", role: "group", "aria-label": "Look in" }, el("span", { className: "db-label" }, "Look in"));
+    [["prompts", "Prompts"], ["answers", "Answers"], ["fan", "Searches engines ran"]].forEach(([k, l]) => scope.append(dbChip(l, !!dbScope[k], () => {
+      dbScope = { ...dbScope, [k]: !dbScope[k] };
+      if (k === "answers") { dbAnswerFor = ""; dbRequestAnswers(); }
+      renderDashboard();
+    }, { cls: "scope" })));
+    const eng = el("div", { className: "db-group", role: "group", "aria-label": "Engines" });
+    ENGINE_ORDER.forEach((id) => eng.append(dbChip([engineIconEl(id), dbEngineLabel(id), el("span", { className: "db-n" }, String(v.engineCounts[id] || 0))], dbEngines[id] !== false, engineToggle(id), { cls: "engine" })));
+    const seg = el("div", { className: "db-seg", role: "group", "aria-label": "When" });
+    PERIODS.forEach((p) => { const b = el("button", { className: `db-seg-btn${p.id === period ? " on" : ""}`, type: "button", "aria-pressed": p.id === period ? "true" : "false" }, p.label); b.onclick = () => setPeriod(p.id); seg.append(b); });
+    const toggles = el("div", { className: "db-group" });
+    toggles.append(
+      dbChip(`${dbRepeat ? "✓ " : ""}Asked more than once`, dbRepeat, () => { dbRepeat = !dbRepeat; renderDashboard(); }, { cls: "toggle" }),
+      dbChip(`${dbCampaignOnly ? "✓ " : ""}From a campaign`, dbCampaignOnly, () => { dbCampaignOnly = !dbCampaignOnly; renderDashboard(); }, { cls: "toggle" }));
+    row.append(scope, eng, seg, toggles);
+    top.append(row);
+  }
+  if (recent.length && !dbQuery) {
+    const rr = el("div", { className: "db-recent" }, el("span", { className: "db-label" }, popup ? "Recent" : "Your recent searches"));
+    recent.forEach((q) => rr.append(dbChip(q, false, () => { dbSetQuery(q); renderDashboard(); }, { cls: "recent", pressed: false })));
+    if (!popup) rr.append(el("span", { className: "db-muted" }, "· kept automatically, nothing to set up"));
+    top.append(rr);
   }
 
-  // Saved Conversations + Top Domains are ad-hoc-only (per the isolation rule
-  // in geo.js — tracked runs never mix into this data), so they don't apply
-  // once a campaign is selected. Prompt Performance + the domain/URL toggle
-  // above replace them for that view instead of showing an empty/irrelevant
-  // ad-hoc list underneath a campaign's data.
-  if (selectedCampaign) return;
-
-  // Split Grid Container
-  const grid = el("div", { className: "dashboard-grid" });
-
-  // Main Column: Saved Conversations Card
-  const savedCard = el("div", { className: "card" }, el("div", { className: "card-header" }, el("h3", {}, "Saved Conversations")));
-  const emptyCount = recs.filter((r) => !hasSignal(r)).length;
-  const visibleRecs = showEmptyCaptures ? recs : recs.filter(hasSignal);
-  if (emptyCount) {
-    const note = el("div", { className: "muted", style: "margin-bottom:8px; font-size:11px;" });
-    const toggle = el("button", { className: "linkbtn" }, showEmptyCaptures ? "hide them" : "show them");
-    toggle.onclick = () => { showEmptyCaptures = !showEmptyCaptures; renderDashboard(); };
-    note.append(
-      `${emptyCount} capture${emptyCount === 1 ? "" : "s"} with no prompt/fan-out/sources hidden — `,
-      toggle
-    );
-    savedCard.append(note);
-  }
-
-  // Unified Download Toolbar
-  const bar = el("div", { className: "dlbar" });
-  const sel = () => (selectedIds.size ? visibleRecs.filter((r) => selectedIds.has(r.captureId)) : visibleRecs);
-  const lbl = el("span", { className: "muted" });
-  const updLbl = () => (lbl.textContent = selectedIds.size ? `${selectedIds.size} Selected` : `All ${visibleRecs.length}`);
-  updLbl();
-  
-  // A native <select> sizes itself to its LONGEST option ("Conversations
-  // (HTML)"), so no amount of max-width tightening made it compact — it just
-  // clipped. A button plus its own popover is as wide as the word "Export"
-  // and nothing else. The old hardcoded #10b981 green also made it read as a
-  // foreign control; it uses the accent token like every other action now.
-  const dlWrap = el("div", { className: "menu-wrap" });
-  const dlBtn = el("button", { className: "btn sm ghost menu-btn", title: "Export the shown or selected conversations" },
-    el("span", {}, "\u2913"), el("span", {}, "Export"), el("span", { className: "menu-caret" }, "\u25be"));
-  const dlMenu = el("div", { className: "menu-pop", style: "display:none" });
-  const runExport = async (val) => {
-    dlMenu.style.display = "none";
-    if (val === "json") download(`citoskeleton-selected-${Date.now()}.json`, JSON.stringify(sel(), null, 2), "application/json");
-    else if (val === "excel" || val === "csv") downloadDetailedFormat(sel(), val);
-    else if (val === "html") await exportRecordsAsHtml(sel());
-  };
-  // Trimmed to the formats people actually reach for: a spreadsheet (Excel),
-  // structured data for further analysis (CSV), a readable document (HTML),
-  // and the raw underlying data for bulk-selected conversations (JSON) — vs.
-  // the previous 6-option list where Fan-outs TXT and Print/PDF saw little
-  // use. Print/PDF is still available per-conversation from the Analyze tab.
-  [
-    ["excel", "Excel", ".xls spreadsheet"],
-    ["csv", "Detailed CSV", "one row per source"],
-    ["html", "Conversations", "readable HTML document"],
-    ["json", "Raw data", "full JSON payloads"],
-  ].forEach(([v, label, sub]) => {
-    const item = el("button", { className: "menu-item" },
-      el("span", { className: "menu-item-label" }, label),
-      el("span", { className: "menu-item-sub muted small" }, sub));
-    item.onclick = () => runExport(v);
-    dlMenu.append(item);
+  /* --- summary: how many, when, what kind --- */
+  const maxW = Math.max(1, ...v.weeks.map((w) => w.n));
+  const bars = el("div", { className: "db-weeks", role: "group", "aria-label": "Prompts by week — pick one to see only that week" });
+  v.weeks.forEach((w) => {
+    const on = dbWeek === w.start;
+    const b = el("button", { className: `db-week${on ? " on" : ""}${dbWeek && !on ? " dim" : ""}`, type: "button", "aria-pressed": on ? "true" : "false",
+      title: `${w.n} prompt${w.n === 1 ? "" : "s"} in the week of ${shortDate(w.start)}`, "aria-label": `${w.label}: ${w.n} prompt${w.n === 1 ? "" : "s"}` });
+    if (!popup) b.append(el("span", { className: "db-week-n" }, w.n ? String(w.n) : ""));
+    b.append(el("span", { className: "db-week-bar", style: `height:${Math.round((w.n / maxW) * (popup ? 30 : 58))}px` }));
+    if (!popup) b.append(el("span", { className: "db-week-l" }, w.label));
+    b.onclick = () => { dbWeek = on ? null : w.start; renderDashboard(); };
+    bars.append(b);
   });
-  dlBtn.onclick = (ev) => {
-    ev.stopPropagation();
-    dlMenu.style.display = dlMenu.style.display === "none" ? "block" : "none";
-  };
-  // Click-away close. Registered once per render alongside the menu it closes,
-  // and removed on the same click, so these don't stack up across re-renders.
-  const closeDlMenu = () => { dlMenu.style.display = "none"; document.removeEventListener("click", closeDlMenu); };
-  dlBtn.addEventListener("click", () => { if (dlMenu.style.display === "block") setTimeout(() => document.addEventListener("click", closeDlMenu), 0); });
-  dlWrap.append(dlBtn, dlMenu);
-
-  const deleteSelected = el("button", { className: "btn sm danger", style: selectedIds.size ? "margin-left: auto;" : "display:none;" }, `🗑 Delete Selected`);
-  deleteSelected.onclick = async () => {
-    if (!confirm(`Delete the ${selectedIds.size} selected conversation(s)?`)) return;
-    for (const id of selectedIds) {
-      await send({ type: "delete-record", captureId: id });
-      FULL.delete(id);
-    }
-    selectedIds.clear();
-    load();
-  };
-
-  const deleteAll = el("button", { className: "btn sm danger ghost", style: selectedIds.size ? "" : "margin-left: auto;" }, "🗑 Delete All");
-  deleteAll.onclick = async () => {
-    if (!confirm("Delete all captured conversations? This action cannot be undone.")) return;
-    await send({ type: "clear-all" });
-    FULL.clear();
-    viewingId = null;
-    load();
-  };
-
-  const clearSel = el("button", { className: "linkbtn", style: selectedIds.size ? "" : "display:none;" }, "clear selection");
-  clearSel.onclick = () => { selectedIds.clear(); renderDashboard(); };
-  
-  const rightGroup = el("div", { style: "display: flex; gap: 8px; margin-left: auto; align-items: center;" });
-  rightGroup.append(dlWrap, deleteSelected, deleteAll);
-
-  bar.append(lbl, clearSel, rightGroup);
-  savedCard.append(bar);
-
-  const listHeader = el("div", { className: "capture-list-header" });
-  const head = el("input", { type: "checkbox", title: "Select all shown" });
-  head.checked = visibleRecs.length > 0 && visibleRecs.slice(0, 100).every((r) => selectedIds.has(r.captureId));
-  head.onchange = () => {
-    visibleRecs.slice(0, 100).forEach((r) => (head.checked ? selectedIds.add(r.captureId) : selectedIds.delete(r.captureId)));
-    renderDashboard();
-  };
-  const selectAllLabel = el("label", { className: "chk", style: "margin: 0;" }, head, "Select all shown");
-  listHeader.append(selectAllLabel);
-  savedCard.append(listHeader);
-
-  const ul = el("ul", { className: "capture-list" });
-  const grouped = new Map();
-  visibleRecs.slice(0, 100).forEach((r) => {
-    const d = new Date(r.capturedAt).toLocaleDateString();
-    const p = (r.userPrompt || "(No prompt)").toLowerCase().trim();
-    const key = d + "|" + p;
-    if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key).push(r);
-  });
-
-  Array.from(grouped.values()).forEach((cluster) => {
-    cluster.sort((a,b) => a.capturedAt - b.capturedAt);
-    let activeIdx = 0;
-    
-    const card = el("li", { className: "capture-item", style: "flex-direction: column; align-items: stretch; gap: 8px; cursor: default;" });
-    
-    const renderClusterContent = () => {
-      card.textContent = "";
-      const activeRecord = cluster[activeIdx];
-      const fan = ((activeRecord.fanout?.search?.length || 0) + (activeRecord.fanout?.shopping?.length || 0) + (activeRecord.fanout?.image?.length || 0));
-      
-      const rawB = el("button", { title: "Download raw payload" }, "Raw");
-      rawB.onclick = (e) => { e.stopPropagation(); downloadRaw(activeRecord.captureId, (activeRecord.userPrompt || "capture").slice(0, 24).replace(/\W+/g, "_")); };
-      
-      const del = el("button", { className: "del-btn", title: "Delete capture" }, "Delete");
-      del.onclick = async (e) => {
-         e.stopPropagation();
-         await send({ type: "delete-record", captureId: activeRecord.captureId });
-         load();
-      };
-
-      const promptDiv = el("div", { className: "capture-prompt", title: "Open this capture", style: "cursor: pointer; font-weight: 500;" }, highlightMatch(activeRecord.userPrompt || "(No prompt text)", dashboardSearch));
-      promptDiv.onclick = () => openCapture(activeRecord.captureId);
-      
-      const cb = el("input", { type: "checkbox" });
-      cb.checked = cluster.every(r => selectedIds.has(r.captureId));
-      cb.onchange = (e) => { 
-        cluster.forEach(r => {
-           if (e.target.checked) selectedIds.add(r.captureId);
-           else selectedIds.delete(r.captureId);
-        });
-        updLbl(); 
-        if (typeof mchk !== 'undefined') mchk.checked = false; 
-        renderClusterContent(); 
-      };
-
-      // Reported: "if same prompt is not run on both the llms you won't know
-      // which one was run on which platform." The platform pills below only
-      // ever appeared when a cluster held more than one run — the common case
-      // of a prompt captured on just ONE engine showed no engine at all
-      // anywhere on the row. This badge is unconditional: every saved
-      // conversation states which engine produced it, whether or not its
-      // prompt was also run elsewhere.
-      const engineLabel = ENGINES.find((e) => e.id === activeRecord.platform)?.label || activeRecord.platform || "Unknown";
-      const engineBadge = el("span", { className: "capture-engine", title: `Captured on ${engineLabel}` },
-        engineChip(activeRecord.platform, engineLabel));
-
-      const metaRow = el("div", { className: "capture-meta", style: "margin-top: 4px;" },
-        el("label", { className: "capture-select" }, cb),
-        el("span", { className: "capture-date" }, new Date(activeRecord.capturedAt).toLocaleString()),
-        engineBadge,
-        el("span", { className: "tag cited" }, `${fan} fan-out`),
-        el("span", { className: "tag fetched" }, `${activeRecord.sources.length} src`),
-        el("div", { className: "row-actions", style: "margin-left: auto;" }, rawB, del)
-      );
-
-      let tabsRow = null;
-      if (cluster.length > 1) {
-        tabsRow = el("div", { style: "display:flex; align-items: center; gap: 8px; margin-top: 6px; margin-bottom: 4px; flex-wrap: wrap;" });
-        
-        // Group cluster items by platform
-        const byPlatform = {};
-        cluster.forEach(r => {
-          const p = r.platform || "chatgpt";
-          if (!byPlatform[p]) byPlatform[p] = [];
-          byPlatform[p].push(r);
-        });
-
-        let currentPlat = activeRecord.platform || "chatgpt";
-        if (!byPlatform[currentPlat]) currentPlat = Object.keys(byPlatform)[0];
-
-        // Platform Selector Pills
-        Object.keys(byPlatform).forEach(plat => {
-          const count = byPlatform[plat].length;
-          const label = `${plat.charAt(0).toUpperCase() + plat.slice(1)} (${count})`;
-          const isSelected = plat === currentPlat;
-          
-          const btn = el("button", {
-            className: `btn sm ${isSelected ? "primary" : "ghost"}`,
-            style: "padding: 2px 8px; font-size: 11px; text-transform: capitalize;"
-          }, label);
-          
-          btn.onclick = (e) => {
-            e.stopPropagation();
-            const firstRec = byPlatform[plat][0];
-            activeIdx = cluster.indexOf(firstRec);
-            renderClusterContent();
-          };
-          tabsRow.append(btn);
-        });
-
-        // Time Dropdown for current platform if > 1 run
-        const platRuns = byPlatform[currentPlat] || [];
-        if (platRuns.length > 1) {
-          const timeSel = el("select", { className: "filter", style: "padding: 1px 6px; font-size: 11px; height: 24px;" });
-          platRuns.forEach(r => {
-            const timeStr = new Date(r.capturedAt).toLocaleTimeString("en-GB");
-            const opt = el("option", { value: r.captureId }, `Run @ ${timeStr}`);
-            if (r.captureId === activeRecord.captureId) opt.selected = true;
-            timeSel.append(opt);
-          });
-          timeSel.onchange = (e) => {
-            e.stopPropagation();
-            const targetId = timeSel.value;
-            const targetIdx = cluster.findIndex(r => r.captureId === targetId);
-            if (targetIdx !== -1) {
-              activeIdx = targetIdx;
-              renderClusterContent();
-            }
-          };
-          tabsRow.append(timeSel);
-        }
-      }
-
-      card.append(promptDiv);
-      if (tabsRow) card.append(tabsRow);
-      card.append(metaRow);
-    };
-
-    renderClusterContent();
-    ul.append(card);
-  });
-  savedCard.append(ul);
-  grid.append(savedCard);
-
-  // Sidebar Column: Top Domains Card
-  const topDomains = [...domainCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 15);
-  if (topDomains.length) {
-    // Card list, not a 3-column table: in the narrow sidebar the "Types" column
-    // (up to 3 badges) pushed the table wider than its card, squashing long
-    // domains like gadgetsnow.indiatimes.com into an unreadable column.
-    const sideCard = el("div", { className: "card" }, el("div", { className: "card-header" }, el("h3", {}, "Top Domains")));
-    const ul = el("ul", { className: "itemlist" });
-    topDomains.forEach(([d, n]) => {
-      const li = el("li", { className: "itemlist-clickable" });
-      const head = el("div", { className: "item-head" });
-      // Clickable, the same as a campaign's Source Domains table — opens the
-      // identical drill-down modal (citations vs. read-only, every URL, and
-      // which of your OWN captures pulled each one in), built from the same
-      // filtered `recs` this whole card is already computed from.
-      const nameBtn = el("button", { className: "linkbtn td-domain-btn item-name domain-name", title: `Click for detailed URLs under ${d}` }, d);
-      nameBtn.onclick = () => openAdhocDomainDetailModal(d, recs);
-      head.append(
-        nameBtn,
-        el("span", { className: "muted", style: "white-space:nowrap" }, `${n} src`)
-      );
-      li.append(head);
-      const tagGroup = el("div", { className: "type-tag-group" });
-      [...(domainTypes.get(d) || [])].forEach((typ) =>
-        tagGroup.append(el("span", { className: `tag ${typ === "news" ? "news" : typ}` }, typ))
-      );
-      if (tagGroup.childNodes.length) li.append(tagGroup);
-      ul.append(li);
+  const t = v.totals;
+  const totalLabel = dbQuery ? `match “${dbQuery.trim()}” ${periodPhrase}` : `prompts captured ${periodPhrase}`;
+  const span = t.from ? `from ${shortDate(t.from)} to ${dayDiff(Date.now(), t.to) === 0 ? "today" : shortDate(t.to)}` : "nothing here yet";
+  if (popup) {
+    const sum = el("section", { className: "db-card db-summary", "aria-label": "Summary" },
+      el("div", { className: "db-total-line" }, el("b", {}, String(t.prompts)), ` ${totalLabel}`,
+        el("span", { className: "db-muted" }, ` · ${t.answers} answer${t.answers === 1 ? "" : "s"}${t.kindLine ? ` · ${t.kindLine}` : ""}`)),
+      bars);
+    wrap.append(sum);
+  } else {
+    const total = el("div", { className: "db-total" },
+      el("div", { className: "db-total-n" }, String(t.prompts)),
+      el("div", { className: "db-total-l" }, totalLabel),
+      el("div", { className: "db-muted" }, `${t.answers} answer${t.answers === 1 ? "" : "s"} on ${t.engines} engine${t.engines === 1 ? "" : "s"}`),
+      el("div", { className: "db-muted" }, span));
+    const when = el("div", { className: "db-when-box" },
+      el("div", { className: "db-box-head" }, el("h2", { className: "db-h" }, "When you asked"), el("span", { className: "db-muted" }, dbWeek ? `Week of ${shortDate(dbWeek)} · click again to clear` : "Click a week to see only those prompts")),
+      bars);
+    const kindBox = el("div", { className: "db-kinds" },
+      el("div", { className: "db-box-head" }, el("h2", { className: "db-h" }, "Kind of answer"), el("span", { className: "db-muted" }, "click to filter")));
+    const stack = el("div", { className: "db-stack", role: "img", "aria-label": KINDS.map((k) => `${v.kindCounts[k.id] || 0} ${k.label}`).join(", ") });
+    KINDS.forEach((k) => { const n = v.kindCounts[k.id] || 0; if (n) stack.append(el("span", { className: `k-${k.id}${v.anyKind && !dbKinds[k.id] ? " dim" : ""}`, style: `flex:${n} 1 0`, title: `${k.label} · ${n}` })); });
+    const kl = el("div", { className: "db-kindlist" });
+    KINDS.forEach((k) => {
+      const n = v.kindCounts[k.id] || 0;
+      const on = !!dbKinds[k.id];
+      const b = el("button", { className: `db-kindbtn k-${k.id}${on ? " on" : ""}${n ? "" : " zero"}`, type: "button", "aria-pressed": on ? "true" : "false" },
+        el("span", { className: "db-kind-ic" }, glyphEl(AK_GLYPH[k.id], 14)), el("span", { className: "db-kind-l" }, k.label), el("span", { className: "db-n" }, String(n)));
+      b.onclick = () => { dbKinds = { ...dbKinds, [k.id]: !on }; renderDashboard(); };
+      kl.append(b);
     });
-    sideCard.append(ul);
-    grid.append(sideCard);
+    kindBox.append(stack, kl);
+    wrap.append(el("section", { className: "db-summary", "aria-label": "Summary" }, el("div", { className: "db-card" }, total), el("div", { className: "db-card" }, when), el("div", { className: "db-card" }, kindBox)));
   }
 
-  root.append(grid);
+  /* --- the list --- */
+  const list = el("section", { className: "db-card db-list", "aria-label": "Your prompts" });
+  wrap.append(list);
+  const head = el("div", { className: "db-list-head" });
+  const views = el("div", { className: "db-views", role: "tablist", "aria-label": "Show" });
+  [["prompts", "Prompts", v.list.length], ["fan", popup ? "Searches" : "Searches the engines ran", v.fan.length]].forEach(([id, label, n]) => {
+    const on = dbView === id;
+    const b = el("button", { className: `db-view${on ? " on" : ""}`, type: "button", role: "tab", "aria-selected": on ? "true" : "false" }, label, el("span", { className: "db-n" }, String(n)));
+    b.onclick = () => { dbView = id; renderDashboard(); };
+    views.append(b);
+  });
+  head.append(views);
+  if (!popup && dbView === "prompts") {
+    const sort = el("select", { className: "db-select", "aria-label": "Sort" });
+    [["newest", "Newest first"], ["asked", "Asked most often"], ["engines", "Most engines"]].forEach(([k, l]) => { const o = el("option", { value: k }, l); if (k === dbSort) o.selected = true; sort.append(o); });
+    sort.onchange = () => { dbSort = sort.value; renderDashboard(); };
+    head.append(el("span", { className: "db-spacer" }), el("label", { className: "db-sort" }, el("span", { className: "db-label" }, "Sort"), sort));
+    if (!dbSelected.size) head.append(dbExportMenu(v.list, "Export"));
+  }
+  list.append(head);
+
+  const selRows = v.list.filter((r) => dbSelected.has(r.key));
+  if (!popup && selRows.length) {
+    const bar = el("div", { className: "db-selbar", role: "toolbar", "aria-label": "Selected prompts" });
+    const one = selRows.length === 1 && selRows[0].engines.length > 1;
+    const side = el("button", { className: "at-btn sm", type: "button", title: one ? "Each engine's answer to this prompt, side by side" : "Pick one prompt that more than one engine answered" }, "Open side by side");
+    side.disabled = !one;
+    // After openCapture() has finished: it resets Analyze's view state.
+    side.onclick = async () => { await openCapture(selRows[0].latestId); atCompare = true; renderAnalyze(); };
+    const rm = el("button", { className: "at-btn sm danger", type: "button" }, "Remove");
+    rm.onclick = () => dbRemove(selRows);
+    const x = el("button", { className: "db-clear", type: "button", title: "Clear the selection", "aria-label": "Clear the selection" }, "×");
+    x.onclick = () => { dbSelected.clear(); renderDashboard(); };
+    bar.append(el("b", {}, `${selRows.length} selected`), side, dbCampaignMenu(selRows), dbExportMenu(selRows, "Export"), rm, el("span", { className: "db-spacer" }), x);
+    list.append(bar);
+  }
+
+  if (dbView === "fan") {
+    if (!v.fan.length) list.append(el("p", { className: "ap-note" }, dbQuery ? "No search the engines ran matches." : "The engines didn't search the web for these prompts, or didn't publish what they searched for."));
+    else {
+      list.append(el("p", { className: "db-muted db-intro" }, `${v.fan.length} search${v.fan.length === 1 ? "" : "es"} the engines ran for ${v.list.length === 1 ? "this prompt" : `these ${v.list.length} prompts`} — how they rephrased what you asked.`));
+      const table = el("div", { className: "db-fan", role: "table", "aria-label": "Searches the engines ran" });
+      if (!popup) table.append(el("div", { className: "db-fan-row db-th", role: "row" }, ...["Search the engine ran", "Times", "Engines", "Ran for your prompt"].map((h) => el("span", { role: "columnheader" }, h))));
+      v.fan.forEach((f) => {
+        const from = el("button", { className: "db-link", type: "button", title: f.from.join("\n") }, (f.from[0].length > 60 ? f.from[0].slice(0, 58) + "…" : f.from[0]) + (f.from.length > 1 ? ` +${f.from.length - 1} more` : ""));
+        from.onclick = () => { const r = v.list.find((x) => x.text === f.from[0]); if (r) openCapture(r.latestId); };
+        const eng = el("span", { className: "db-engines" }, ...f.engines.map((id) => { const ic = engineIconEl(id); ic.setAttribute("title", dbEngineLabel(id)); return ic; }));
+        table.append(el("div", { className: "db-fan-row", role: "row" },
+          el("span", { role: "cell", className: "db-fan-q" }, dbHighlight(f.text, v.tokens), f.lane !== "web" ? el("span", { className: "ap-tag" }, f.lane) : null),
+          el("span", { role: "cell", className: "num" }, `×${f.n}`), el("span", { role: "cell" }, eng), el("span", { role: "cell" }, from)));
+      });
+      list.append(table);
+    }
+    return;
+  }
+  if (!v.list.length) {
+    const msg = dbQuery ? "Nothing you’ve captured matches. Try a shorter word, or look in answers too." : "Nothing here for these filters. Try a longer period.";
+    const p = el("p", { className: "ap-note db-empty" }, msg);
+    if (period !== "all") { const b = el("button", { className: "db-link", type: "button" }, " Show all time"); b.onclick = () => setPeriod("all"); p.append(b); }
+    list.append(p);
+    return;
+  }
+  v.groups.forEach((g) => {
+    const sec = el("div", { className: "db-group-block" },
+      el("h3", { className: "db-group-h" }, g.label, el("span", { className: "db-muted" }, `${g.sub ? ` ${g.sub} ·` : ""} ${g.rows.length} prompt${g.rows.length === 1 ? "" : "s"}`)));
+    const ul = el("ul", { className: "db-rows" });
+    g.rows.forEach((r) => ul.append(dbRow(r, v, popup)));
+    sec.append(ul);
+    list.append(sec);
+  });
+  if (!popup) {
+    const wipe = el("button", { className: "db-link danger", type: "button" }, "Delete everything captured…");
+    wipe.onclick = async () => {
+      if (!confirm("Delete every captured answer, ad-hoc and from campaigns? This can't be undone.")) return;
+      await send({ type: "clear-all" });
+      FULL.clear();
+      viewingId = null;
+      load();
+    };
+    list.append(el("div", { className: "db-foot" }, wipe));
+  }
 }
+
+function dbToast() {
+  const undo = el("button", { className: "db-link", type: "button" }, "Undo");
+  undo.onclick = dbUndoRemoval;
+  return el("div", { className: "db-toast", role: "status" }, dbPending.n === 1 ? "Removed from your history." : `${dbPending.n} prompts removed from your history.`, undo);
+}
+
+// One open menu at a time; a click anywhere else closes it.
+document.addEventListener("click", (e) => {
+  if (dbMenu && !e.target.closest(".db-menu, .menu-wrap")) { dbMenu = null; renderDashboard(); }
+});
 
 /* ---------- exports ---------- */
 function download(name, text, mime) {
@@ -3185,6 +4818,13 @@ async function exportRecordsAsHtml(records) {
   download(name, html, "text/html");
 }
 
+// One answer's designed report (0.53.0, release 6b): ui/report.html lays
+// out two A4 pages and opens the print dialog, where "Save as PDF" writes
+// the file. Several answers at once still go to export.html below.
+function openAnswerReport(rec) {
+  chrome.tabs.create({ url: chrome.runtime.getURL(`ui/report.html?kind=answer&captureId=${encodeURIComponent(rec.captureId)}&print=1`) });
+}
+
 // "Print / Save as PDF" — opens ui/export.html in a new tab, which fetches
 // its own full records via captureId (see ui/export.js); no need to hydrate
 // here. Bulk-composes into one document with a table of contents.
@@ -3202,15 +4842,28 @@ function sanitizeXML(s) {
 
 function downloadDetailedFormat(records, format) {
   if (format === "csv") {
-    let output = `CitoSkeleton Audit Log,,,,,,,,,,\n"Prompt-level tracking of ChatGPT search behaviour, cited vs. fetched sources, and query fan-out",,,,,,,,,,\n,,,,,,,,,,\n#,Date,Time,Platform,User Prompt,Search Used,Cited Sources,Cited Count,Fetched Sources,Fetched Count,Total Sources,Fan-Out Query\n`;
+    // Domains alone didn't say which page: reported "i am not able to see all
+    // the cited, fetched domain and their urls". Each page's full address is
+    // in its own column now, one per line inside the cell, with the brands
+    // the answer named, the places on its map and any ad shown with it.
+    const HEAD = ["#", "Date", "Time", "Platform", "User Prompt", "Search Used", "Cited Sources", "Cited Count", "Cited URLs", "Fetched Sources", "Fetched Count", "Fetched URLs", "Total Sources", "Fan-Out Query", "Brands Named", "Places", "Ad Shown"];
+    const q = (v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`;
+    const pad = ",".repeat(HEAD.length - 1);
+    let output = `CitoSkeleton Audit Log${pad}\n"Prompt-level tracking of AI search behaviour, cited vs. fetched sources, and query fan-out"${pad}\n${pad}\n${HEAD.join(",")}\n`;
     records.forEach((r, i) => {
       const d = new Date(r.capturedAt);
       const dateStr = d.toLocaleDateString("en-GB", {day:"2-digit", month:"short", year:"numeric"}).replace(/ /g, '-');
       const timeStr = d.toLocaleTimeString("en-GB");
-      const cited = r.sources.filter(s => s.outcome === "cited").map(s => s.domain).join("; ");
-      const fetched = r.sources.filter(s => s.outcome === "fetched" || s.outcome === "news").map(s => s.domain).join("; ");
+      const citedS = r.sources.filter(s => s.outcome === "cited");
+      const fetchedS = r.sources.filter(s => s.outcome !== "cited");
       const fan = [...(r.fanout?.search||[]), ...(r.fanout?.shopping||[]), ...(r.fanout?.image||[])].map(f => typeof f === "string" ? f : f?.query || "").filter(Boolean).join(" | ");
-      const row = [i + 1, dateStr, timeStr, r.platform || "chatgpt", `"${(r.userPrompt || "").replace(/"/g, '""')}"`, r.searched ? "Yes" : "No", `"${cited}"`, r.sources.filter(s => s.outcome === "cited").length, `"${fetched}"`, r.sources.filter(s => s.outcome === "fetched" || s.outcome === "news").length, r.sources.length, `"${fan.replace(/"/g, '""')}"`];
+      const brands = (r.brandMentions || []).filter((b) => b.count > 0).map((b) => b.brand).join("; ");
+      const places = (r.places || []).map((p) => [p.name, p.priceRange].filter(Boolean).join(" ")).join("; ");
+      const ads = (r.ads || []).map((a) => [a.advertiser, a.title, a.targetUrl || a.targetDomain].filter(Boolean).join(" — ")).join("; ");
+      const row = [i + 1, dateStr, timeStr, r.platform || "chatgpt", q(r.userPrompt), r.searched ? "Yes" : "No",
+        q(citedS.map(s => s.domain).join("; ")), citedS.length, q(citedS.map(s => s.url || s.domain).join("\n")),
+        q(fetchedS.map(s => s.domain).join("; ")), fetchedS.length, q(fetchedS.map(s => s.url || s.domain).join("\n")),
+        r.sources.length, q(fan), q(brands), q(places), q(ads)];
       output += row.join(",") + "\n";
     });
     download(`citoskeleton-audit-${Date.now()}.csv`, output, "text/csv");
@@ -3517,13 +5170,14 @@ function downloadDetailedFormat(records, format) {
         i + 1, r.userPrompt || "", stamp(r), s.outcome || "", s.type || "",
         s.domain || "", s.title || "", s.url || "",
         (s.platformSpecific && s.platformSpecific.resultSource) || "",
+        (pipelineOf(s.platformSpecific && s.platformSpecific.pipeline) || {}).label || "",
         (s.snippet || "").slice(0, 400),
       ]);
     });
   });
-  addSheet("Sources (full)", "Every cited and fetched source with its page title, URL and snippet.",
-    [60, 200, 120, 70, 70, 140, 240, 300, 90, 400],
-    ["Prompt #", "Prompt", "Captured", "Outcome", "Type", "Domain", "Page title", "URL", "Retrieval", "Snippet"],
+  addSheet("Sources (full)", "Every cited and fetched source with its page title, URL and snippet. Pipeline is the index ChatGPT named for it (only sent 21 May to 21 July 2026).",
+    [60, 200, 120, 70, 70, 140, 240, 300, 90, 90, 400],
+    ["Prompt #", "Prompt", "Captured", "Outcome", "Type", "Domain", "Page title", "URL", "Retrieval", "Pipeline", "Snippet"],
     sourceRows);
 
   // Fan-out queries, one row each.
@@ -3607,14 +5261,23 @@ function downloadDetailedFormat(records, format) {
   download(`citoskeleton-audit-${Date.now()}.xls`, xml, "application/vnd.ms-excel");
 }
 
+// One raw-capture header format, used everywhere a raw payload is handed
+// over (the standalone "Download raw payload" button, the feedback bundle,
+// and the campaign diagnostics export) — this used to be built inline in
+// two separate places with the same three lines, which is exactly how the
+// two copies would eventually drift.
+function formatRawCapture(captureId, meta, rawText) {
+  return (
+    `# CitoSkeleton raw capture ${captureId}\n` +
+    `# url: ${(meta && meta.url) || ""}\n` +
+    `# reqBody: ${(meta && meta.reqBody) || ""}\n\n` + rawText
+  );
+}
+
 async function downloadRaw(captureId, label) {
   const r = await send({ type: "get-raw", captureId });
   if (!r.ok || r.raw == null) { showToast("No raw payload stored for this capture.", "error"); return; }
-  const header =
-    `# CitoSkeleton raw capture ${captureId}\n` +
-    `# url: ${r.meta?.url || ""}\n` +
-    `# reqBody: ${r.meta?.reqBody || ""}\n\n`;
-  download(`citoskeleton-raw-${label || captureId}.txt`, header + r.raw, "text/plain");
+  download(`citoskeleton-raw-${label || captureId}.txt`, formatRawCapture(captureId, r.meta, r.raw), "text/plain");
 }
 function toCsv(records) {
   const rows = [["capturedAt", "platform", "model", "prompt", "searched", "fanoutCount", "sourceCount"]];
@@ -3656,7 +5319,6 @@ function relTime(ts) {
   return new Date(ts).toLocaleDateString([], { month: "short", day: "numeric" });
 }
 const fmtPct = (n) => (n == null ? "—" : `${Number(n).toFixed(Number(n) >= 10 ? 0 : 1)}%`);
-const fmtPos = (n) => (n == null ? "—" : `#${Number(n).toFixed(1)}`);
 
 async function loadGeo() {
   const pr = await send({ type: "geo-profile-list", includeDeleted: true });
@@ -3683,12 +5345,45 @@ function renderCampaignsImpl() {
   if (!root) return;
   root.textContent = "";
   const profile = geoActive();
+  cbHeaderNav = null;
+  setHeaderPage("loader");
 
-  const bar = el("div", { className: "card" });
-  const barHead = el("div", { className: "card-header" }, el("h3", {}, "Campaigns"));
-  barHead.append(el("span", { className: "muted small" }, `${GEO_PROFILES.length} of ${MAX_PROFILES} used`));
-  bar.append(barHead);
+  // A set-up campaign opens on its own header card (renderCampaignHead), which
+  // carries the switcher; the chooser card is for setting one up.
+  if (profile && profile.locked) {
+    // A brand's page against yours stands on its own, with a way back.
+    const detail = cbDetail && cbProfileId === profile.id;
+    if (!detail && TRASHED_PROFILES.length) root.append(renderTrashedCampaigns());
+    if (!detail) root.append(renderCampaignHead(profile));
+    if (!detail && campaignManageOpen) root.append(renderCampaignSetup(profile, true));
+    if (profile.lastRunAt || ALL_RECORDS.some((r) => r.geo && r.geo.profileId === profile.id)) root.append(renderCampaignResults(profile));
+    return;
+  }
 
+  if (!profile) {
+    const bar = el("div", { className: "card" });
+    const barHead = el("div", { className: "card-header" }, el("h3", {}, "Campaigns"));
+    barHead.append(el("span", { className: "muted small" }, `${GEO_PROFILES.length} of ${MAX_PROFILES} used`));
+    bar.append(barHead, renderCampaignSwitcher());
+    root.append(bar);
+    if (TRASHED_PROFILES.length) root.append(renderTrashedCampaigns());
+    root.append(renderCampaignEmptyState());
+    return;
+  }
+
+  if (TRASHED_PROFILES.length) root.append(renderTrashedCampaigns());
+  if (!campaignOnboardDismissed) root.append(renderOnboardingBanner());
+  // As on the canvas: a breadcrumb in the setup's own bar, with the other
+  // campaigns beside it, instead of a chooser card above.
+  const setup = renderCampaignSetup(profile, false);
+  setup.querySelector(".cs-bar-title")?.prepend(el("div", { className: "cs-crumb" },
+    el("nav", { className: "cs-crumb-path", "aria-label": "Breadcrumb" }, el("span", {}, "Campaigns"), el("span", { "aria-hidden": "true" }, "/"), el("span", { "aria-current": "page" }, profile.createdAt && profile.lastRunAt ? "Edit campaign" : "New campaign")),
+    renderCampaignSwitcher()));
+  root.append(setup);
+  if (profile.lastRunAt || ALL_RECORDS.some((r) => r.geo && r.geo.profileId === profile.id)) root.append(renderCampaignResults(profile));
+}
+
+function renderCampaignSwitcher() {
   const switcher = el("div", { className: "geo-switcher" });
   GEO_PROFILES.forEach((p) => {
     const b = el("button", { className: `geo-chip${p.id === geoActiveId ? " active" : ""}` }, p.name || "Untitled");
@@ -3704,24 +5399,996 @@ function renderCampaignsImpl() {
     };
     switcher.append(add);
   }
-  bar.append(switcher);
-  root.append(bar);
+  return switcher;
+}
 
-  if (TRASHED_PROFILES.length) root.append(renderTrashedCampaigns());
+/* ---------- A campaign's results (0.50.0) ----------
+ * Release 4 of the canvas redesign: the campaign board. One brand at a time
+ * ("viewing as", your own by default): how it shows up by kind of answer,
+ * against each competitor, on each engine, run by run, topic by topic and
+ * prompt by prompt, and which sites the engines lean on, including the ones
+ * that cite rivals and never mention it. The figures come from
+ * src/lib/campaignBoard.js through the background's "campaign-board"
+ * message (positions need the answer text). Clicking a brand opens its
+ * detail against yours (renderCampaignBrandDetail).
+ *
+ * It opens on the latest run, so the KPIs can say what changed since the run
+ * before; "All runs combined" is one pick away.
+ */
+let cbRun = null;            // null: the latest run with answers; "all"; or a run id
+let cbViewAs = null;         // brand name; null: your own brand
+let cbFocus = "mentions";    // which KPI view
+let cbTags = [];
+let cbPromptFilter = "all";
+let cbOpenPrompts = new Set();
+let cbDetail = null;         // brand whose detail is open
+let cbProfileId = null;      // the campaign the state above belongs to
+let cbHeaderNav = null;      // the board's section links, shown in the app bar
 
-  if (!profile) {
-    root.append(renderCampaignEmptyState());
+// Setup's names for the board's views ("What this campaign should measure").
+const CS_MEASURE = {
+  mentions: ["Brand named in answers", "Visibility, share of voice, position"],
+  citations: ["Your site cited", "Pages the engines cite, and the gaps"],
+  products: ["Product cards and stores", "Card share, card position, where cards send buyers"],
+  images: ["Images", "Which sites supply images, where clicks land"],
+  local: ["Map listings", "Pin position and listing details, for places"],
+};
+const CB_FOCUS = [
+  ["mentions", "Mentions", "book", "Named in the answer text"],
+  ["citations", "Citations", "pages", "Its site used as a source"],
+  ["products", "Product cards", "cart", "Product carousels, and where each card sends buyers"],
+  ["images", "Images", "image", "Images in answers, and where a click lands"],
+  ["local", "Map listings", "pin", "Map pins and listing details"],
+];
+// Glossary keys for the tiles that have a definition (src/lib/glossary.js).
+const CB_TERMS = { "Visibility": "visibility", "Share of voice": "shareOfVoice", "Avg position": "avgPosition", "Mentions": "mentions", "Citations": "citations", "Source visibility": "sourceVisibility" };
+// Whole percents, except a small non-zero share keeps one decimal so 0.4% of
+// answers doesn't read as none at all.
+const cbPct = (x) => (x == null ? "—" : x > 0 && x < 10 && Math.round(x * 10) % 10 ? `${x.toFixed(1)}%` : `${Math.round(x)}%`);
+const cbPos = (x) => (x == null ? "—" : x.toFixed(1));
+
+function cbSection(id, title, sub, ...kids) {
+  const head = el("div", { className: "cb-sec-head" }, el("h3", { className: "cb-h", id: `${id}-h` }, title));
+  if (sub) head.append(typeof sub === "string" ? el("span", { className: "muted small" }, sub) : sub);
+  return el("section", { className: "cb-sec", id, "aria-labelledby": `${id}-h` }, head, ...kids);
+}
+function cbBar(pctValue, cls = "") {
+  return el("span", { className: `cb-bar ${cls}`, "aria-hidden": "true" }, el("span", { style: `width:${Math.max(0, Math.min(100, pctValue || 0))}%` }));
+}
+
+function renderCampaignResults(profile) {
+  if (cbProfileId !== profile.id) {
+    cbProfileId = profile.id; cbRun = null; cbViewAs = null; cbTags = []; cbFocus = "mentions";
+    cbPromptFilter = "all"; cbOpenPrompts = new Set(); cbDetail = null;
+  }
+  const box = el("section", { className: "campaign-results", id: "campaignResults", "aria-labelledby": "campaignResultsH" });
+  box.append(el("div", { className: "card" }, el("div", { className: "card-header" }, el("h3", { id: "campaignResultsH" }, "Results")), el("div", { className: "muted small" }, "Loading results…")));
+  // Filled once the box is in the page. It starts as one line, so the scroll
+  // position is put back once the board reaches its real height: otherwise
+  // every new capture during a run jumped the page to the top.
+  const scroller = activeScroller();
+  const y = scroller ? scroller.scrollTop : 0;
+  setTimeout(async () => {
+    if (cbDetail) await renderCampaignBrandDetail(box, profile);
+    else await renderCampaignBoard(box, profile);
+    if (scroller && y && scroller.scrollTop !== y) scroller.scrollTop = y; // see withScrollPreserved
+  }, 0);
+  return box;
+}
+
+async function renderCampaignBoard(box, profile) {
+  const r = await send({ type: "campaign-board", profileId: profile.id, runId: cbRun || undefined, viewAs: cbViewAs || undefined, engines: geoEngineFilter, tags: cbTags });
+  box.textContent = "";
+  if (!r || !r.ok) { box.append(el("div", { className: "card" }, el("div", { className: "empty" }, (r && r.error) || "Couldn't load this campaign's results."))); return; }
+  const b = r.board;
+  const rerender = () => renderCampaigns();
+  const view = b.view;
+  const you = view.isOwn ? "you" : view.name;
+
+  /* --- the filters, under the campaign's header (renderCampaignHead) --- */
+  // A campaign that isn't set up has no header card; the filters get one.
+  const slot = document.getElementById("cpFilters");
+  const head = slot || el("div", { className: "card cb-head" });
+  if (slot) slot.textContent = "";
+  const runsWithAnswers = r.runs.filter((x) => x.hasAnswers);
+  const runsAsc = [...r.runs].sort((a, c) => (a.startedAt || 0) - (c.startedAt || 0));
+  const runNo = (id) => runsAsc.findIndex((x) => x.id === id) + 1;
+  const runDate = (t) => new Date(t).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+  const scope = el("span", { className: "muted small cp-scope", id: "campaignResultsH" }, `${r.answers} answer${r.answers === 1 ? "" : "s"} · ${b.runLabel}${b.previousLabel ? ` · compared with ${b.previousLabel}` : ""}`);
+  if (!slot) head.append(el("div", { className: "card-header" }, el("h3", {}, "Results"), scope));
+  const controls = el("div", { className: "cb-controls" });
+  const runSel = el("select", { className: "filter", id: "cbRun", "aria-label": "Run", title: "One run, or every run combined" });
+  runsWithAnswers.forEach((x, i) => runSel.append(el("option", { value: x.id }, `Run ${runNo(x.id)} · ${runDate(x.startedAt)}${i === 0 ? " (latest)" : ""}`)));
+  runSel.append(el("option", { value: "all" }, "All runs combined"));
+  runSel.value = r.runId;
+  runSel.onchange = () => { cbRun = runSel.value; rerender(); };
+  const engine = el("select", { className: "filter", "aria-label": "Engine", title: "Limit every number below to one engine" });
+  [{ id: "", label: "All engines" }, ...availableEngines()].forEach((e) => {
+    const o = el("option", { value: e.id }, e.label);
+    if ((geoEngineFilter[0] || "") === e.id) o.selected = true;
+    engine.append(o);
+  });
+  engine.onchange = () => { geoEngineFilter = engine.value ? [engine.value] : []; rerender(); };
+  // A dropdown, not chips: a campaign can track twenty brands. Each option
+  // carries its visibility so the list still reads as a ranking.
+  const picker = el("select", { className: "filter brand-picker", "aria-label": "Viewing as", title: "Point the whole board at one brand" });
+  const rowOf = (name) => b.brandRows.find((x) => x.name === name);
+  const groups = [["Your brand", r.brands.filter((x) => x.isOwn)], [`Competitors (${r.brands.filter((x) => !x.isOwn && !x.auto).length})`, r.brands.filter((x) => !x.isOwn && !x.auto)], [`Found in the answers (${r.brands.filter((x) => x.auto).length})`, r.brands.filter((x) => x.auto)]];
+  groups.forEach(([label, list]) => {
+    if (!list.length) return;
+    const g = el("optgroup", { label });
+    list.forEach((x) => g.append(el("option", { value: x.name, selected: x.name === view.name }, `${x.isOwn ? `${x.name} (you)` : x.name} · ${cbPct(rowOf(x.name) ? rowOf(x.name).visibility : 0)}`)));
+    picker.append(g);
+  });
+  picker.onchange = () => { const x = r.brands.find((y) => y.name === picker.value); cbViewAs = x && x.isOwn ? null : picker.value; rerender(); };
+  const wb = document.getElementById("cbExport") || el("button", { className: "btn sm ghost", type: "button", id: "cbExport", title: "The campaign as an Excel workbook or CSV tables" }, "Export…");
+  wb.disabled = false;
+  wb.onclick = () => openExportDialog(profile, {
+    engines: b.engines, runs: runsWithAnswers.length, answers: r.answers, latestDate: runsWithAnswers[0] ? runDate(runsWithAnswers[0].startedAt) : "",
+    // Newest first, as the run picker lists them; the PDF reports on one.
+    runList: runsWithAnswers.map((x) => ({ id: x.id, no: runNo(x.id), date: runDate(x.startedAt) })),
+  });
+  controls.append(
+    el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Run"), runSel),
+    el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Engine"), engine),
+    el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Viewing as"), picker));
+  if (!wb.isConnected) controls.append(wb);
+  head.append(controls);
+  if (geoEngineFilter.length) head.append(el("span", { className: "scope-note muted small" }, `${(availableEngines().find((e) => e.id === geoEngineFilter[0]) || {}).label || geoEngineFilter[0]} only`));
+  if (r.tags.length) {
+    const tw = el("div", { className: "cb-tags", role: "group", "aria-label": "Tags" }, el("span", { className: "muted small" }, "Tags"));
+    r.tags.forEach((t) => {
+      const on = cbTags.includes(t);
+      const c = el("button", { className: `db-chip${on ? " on scope" : ""}`, type: "button", "aria-pressed": on ? "true" : "false" }, t);
+      c.onclick = () => { cbTags = on ? cbTags.filter((x) => x !== t) : [...cbTags, t]; rerender(); };
+      tw.append(c);
+    });
+    if (cbTags.length) { const c = el("button", { className: "linkbtn", type: "button" }, "Clear"); c.onclick = () => { cbTags = []; rerender(); }; tw.append(c); }
+    head.append(tw);
+  }
+  // Jump links to the board's sections: in the app bar in the full tab, as
+  // on the canvas; under the filters in the popup, whose bar has no room.
+  const nav = el("nav", { className: "cb-nav", "aria-label": "Sections" });
+  [["cb-brands", "Brands"], ["cb-kinds", "By kind of answer"], ["cb-runs", "Breakdowns"], ["cb-prompts", "Prompts"], ["cb-sources", "Sources"], ["cb-collected", "Data collected"]].forEach(([id, label]) => {
+    const a = el("button", { className: "cb-nav-btn", type: "button" }, label);
+    a.onclick = () => document.getElementById(id)?.scrollIntoView({ block: "start", behavior: "smooth" });
+    nav.append(a);
+  });
+  if (slot) head.append(scope);
+  if (document.body.classList.contains("tab")) { cbHeaderNav = nav; setHeaderPage("loader", nav); } else head.append(nav);
+  if (!slot) box.append(head);
+
+  if (!r.answers) {
+    // Run history lives under "Data collected", which needs answers; a run
+    // that captured nothing is exactly when it matters, so it shows here too.
+    box.append(el("div", { className: "card" }, el("div", { className: "empty" }, "No answers for these filters yet. Run the campaign, or widen the filters above."), renderRunHistory(profile)));
     return;
   }
 
-  if (!profile.locked) {
-    if (!campaignOnboardDismissed) root.append(renderOnboardingBanner());
-    root.append(renderCampaignSetup(profile, false));
-  } else {
-    root.append(renderCampaignSummary(profile));
-    if (campaignManageOpen) root.append(renderCampaignSetup(profile, true));
-    root.append(renderRunCard(profile));
+  /* --- KPIs, five ways --- */
+  // The views the campaign measures (setup); all of them for one set up
+  // before the choice existed.
+  const offered = CB_FOCUS.filter(([id]) => id === "mentions" || !profile.measure || profile.measure[id]);
+  if (!b.available[cbFocus] || !offered.some(([id]) => id === cbFocus)) cbFocus = "mentions";
+  const kp = el("section", { className: "card cb-kpis", id: "cb-kpis", "aria-labelledby": "cb-kpis-h" });
+  const focusTabs = el("div", { className: "cb-focus", role: "tablist", "aria-label": "What matters for this campaign" });
+  offered.forEach(([id, label, glyph]) => {
+    const on = cbFocus === id;
+    const t = el("button", { className: `cb-focus-tab${on ? " on" : ""}${b.available[id] ? "" : " empty"}`, type: "button", role: "tab", "aria-selected": on ? "true" : "false", title: b.available[id] ? "" : "No answer in this view had any" }, glyphEl(glyph, 14), label);
+    t.onclick = () => { cbFocus = id; rerender(); };
+    focusTabs.append(t);
+  });
+  const hint = (CB_FOCUS.find((f) => f[0] === cbFocus) || CB_FOCUS[0])[3];
+  kp.append(el("div", { className: "cb-sec-head" }, el("h3", { className: "cb-h", id: "cb-kpis-h" }, `What matters for ${view.name}`), focusTabs),
+    el("div", { className: "muted small cb-hint" }, `${view.name}${view.isOwn ? " (you)" : ""} · ${hint}`));
+  const tiles = el("div", { className: "cb-tiles" });
+  // The tiles are written for your own brand ("Your cards", "cite you"); viewed
+  // as a competitor they name it instead, labels included.
+  const whose = (t) => (view.isOwn ? t : t.replace(/\b[Yy]our\b/g, `${view.name}’s`).replace(/\byou\b/g, view.name));
+  b.focus[cbFocus].forEach((k, i) => {
+    const term = CB_TERMS[k.label];
+    tiles.append(el("div", { className: `cb-kpi geo-kpi${i === 0 ? " lead" : ""}` },
+      el("div", { className: "k-label", ...(term ? { "data-term": term } : {}) }, whose(k.label)),
+      el("div", { className: "k-value" }, k.value),
+      k.sub ? el("div", { className: "k-sub muted" }, whose(k.sub)) : null,
+      k.delta ? el("div", { className: `k-delta tone-${k.delta.tone > 0 ? "up" : k.delta.tone < 0 ? "down" : "flat"}` }, k.delta.text) : null));
+  });
+  if (cbFocus === "local" && !b.available.local) tiles.append(el("p", { className: "muted small cb-note" }, "No answer in this campaign showed a map. Local campaigns track pin share, pin position and whether the listing links to your site; add prompts like “service centre near me” to track it."));
+  kp.append(tiles);
+  box.append(kp);
+
+  /* --- competitors inferred from the answers, stated, never applied silently --- */
+  const auto = r.brands.filter((x) => x.auto).map((x) => x.name);
+  if (auto.length || r.excludedBrands.length) {
+    const banner = el("div", { className: "card auto-comp-banner" });
+    if (auto.length) {
+      banner.append(el("div", { className: "small" },
+        el("strong", { "data-term": "autoCompetitor" }, "Also named often, but not on your competitor list. "),
+        el("span", { className: "muted" }, `These ${auto.length} brand${auto.length === 1 ? " is" : "s are"} counted as competitors because the answers named ${auto.length === 1 ? "it" : "them"} most. Nothing has been saved to the campaign.`)));
+      const chips = el("div", { className: "tagline" });
+      auto.forEach((n) => {
+        const chip = el("span", { className: "tag tag-removable" }, n);
+        const x = el("button", { className: "tag-x", type: "button", title: `Leave out ${n}`, "aria-label": `Leave out ${n}` }, "×");
+        x.onclick = async () => {
+          x.disabled = true;
+          const res = await send({ type: "geo-brand-exclude", profileId: profile.id, name: n });
+          if (!res.ok) { x.disabled = false; showToast(res.error || "Couldn't leave that brand out", "error"); return; }
+          if (cbViewAs === n) cbViewAs = null;
+          showToast(`${n} is no longer counted as a competitor`);
+          loadGeo();
+        };
+        chip.append(x);
+        chips.append(chip);
+      });
+      const save = el("button", { className: "btn sm ghost", type: "button" }, "Save these as competitors");
+      save.onclick = async () => {
+        save.disabled = true;
+        const res = await send({ type: "geo-profile-save", profile: { ...profile, competitors: [...(profile.competitors || []), ...auto.map((n) => ({ name: n, url: "" }))] } });
+        save.disabled = false;
+        if (!res.ok) { showToast(res.error || "Couldn't save competitors", "error"); return; }
+        showToast(`Saved ${auto.length} competitor${auto.length === 1 ? "" : "s"} to ${profile.name || "this campaign"}`);
+        loadGeo();
+      };
+      banner.append(chips, save);
+    }
+    if (r.excludedBrands.length) {
+      const row = el("div", { className: "excluded-row muted small" }, el("span", {}, "Left out:"));
+      r.excludedBrands.forEach((n) => {
+        const chip = el("span", { className: "tag tag-removable is-excluded" }, n);
+        const undo = el("button", { className: "tag-x", type: "button", title: `Count ${n} as a competitor again`, "aria-label": `Bring back ${n}` }, "↺");
+        undo.onclick = async () => {
+          undo.disabled = true;
+          const res = await send({ type: "geo-brand-exclude", profileId: profile.id, name: n, restore: true });
+          if (!res.ok) { undo.disabled = false; showToast(res.error || "Couldn't bring that brand back", "error"); return; }
+          loadGeo();
+        };
+        chip.append(undo);
+        row.append(chip);
+      });
+      banner.append(row);
+    }
+    box.append(banner);
   }
+
+  /* --- by kind of answer --- */
+  const kinds = el("div", { className: "cb-table cb-kind-table", role: "table", "aria-label": "By kind of answer" });
+  kinds.append(el("div", { className: "cb-tr cb-th", role: "row" }, ...["Kind of answer", "Answers", "Named in text", "Site cited", "Product card", "Images", "Map pin", "The lever that matters here"].map((h) => el("span", { role: "columnheader" }, h))));
+  const KG = { shopping: "cart", info: "book", images: "image", memory: "noglobe", local: "pin", all: "globe" };
+  const AK = { shopping: "shopping", info: "info", images: "images", memory: "memory", local: "local" };
+  b.byKind.forEach((k) => {
+    const tone = (x) => (x == null ? "na" : x >= 60 ? "good" : "plain");
+    kinds.append(el("div", { className: `cb-tr${k.id === "all" ? " total" : ""}${k.answers ? "" : " none"}`, role: "row" },
+      el("span", { role: "rowheader", className: `cb-kindname${AK[k.id] ? ` k-${AK[k.id]}` : ""}` }, el("span", { className: "db-kind-ic" }, glyphEl(KG[k.id], 14)), k.label),
+      el("span", { role: "cell", className: "num" }, String(k.answers)),
+      el("span", { role: "cell", className: `num t-${tone(k.named)}` }, cbPct(k.named)),
+      el("span", { role: "cell", className: `num t-${tone(k.cited)}` }, k.id === "memory" ? "no search" : cbPct(k.cited)),
+      el("span", { role: "cell", className: "num" }, k.card ? `${cbPct(k.card.pct)}${k.card.avg ? ` · avg card ${k.card.avg.toFixed(1)}` : ""}` : "—"),
+      el("span", { role: "cell", className: "num" }, k.images ? `${k.images.mine} of ${k.images.of}` : "—"),
+      el("span", { role: "cell", className: "num" }, cbPct(k.pin)),
+      el("span", { role: "cell", className: "muted small" }, k.answers || k.id === "all" ? k.lever : (k.id === "local" ? "No local prompts. Add one like “service centre near me” to track maps." : ""))));
+  });
+  box.append(cbSection("cb-kinds", `How ${view.name} shows up, by kind of answer`, "Different questions get different answers — a carousel, an explainer, a map. Each has its own way in.", el("div", { className: "cb-scroll" }, kinds)));
+
+  /* --- product cards --- */
+  if (b.products.total) {
+    const t = el("div", { className: "cb-table cb-prod-table", role: "table", "aria-label": "Product cards" });
+    t.append(el("div", { className: "cb-tr cb-th", role: "row" }, ...["Product", "Shown", "Avg card", "Engines", "Card sends buyers to", "Own store"].map((h) => el("span", { role: "columnheader" }, h))));
+    b.products.rows.forEach((p) => t.append(el("div", { className: `cb-tr${p.isView ? " mine" : ""}`, role: "row" },
+      el("span", { role: "rowheader" }, el("b", {}, p.name), el("span", { className: `muted small${p.isView ? " you" : ""}` }, ` ${p.brand}${p.isView && view.isOwn ? " · you" : ""}`)),
+      el("span", { role: "cell", className: "num" }, String(p.shown)),
+      el("span", { role: "cell", className: "num" }, cbPos(p.avgPos)),
+      el("span", { role: "cell", className: "cb-engs" }, ...p.engines.map((e) => { const ic = engineIconEl(e); ic.setAttribute("title", dbEngineLabel(e)); return ic; })),
+      el("span", { role: "cell", className: "small" }, p.dest.join(" · ") || "—"),
+      el("span", { role: "cell", className: p.own ? "t-good" : "t-bad" }, p.own ? "yes" : "no"))));
+    const bars = (rows, title) => {
+      const max = Math.max(1, ...rows.map((x) => x.n));
+      return el("div", { className: "cb-barlist" }, el("h4", { className: "cb-h4" }, title),
+        ...rows.map((x) => el("div", { className: `cb-barrow${x.own ? " own" : ""}` }, el("span", {}, x.name + (x.own ? " · own site" : "")), cbBar((x.n / max) * 100, x.own ? "own" : ""), el("span", { className: "num" }, String(x.n)))));
+    };
+    const side = el("div", { className: "cb-pair" });
+    if (b.products.destinations.length) side.append(bars(b.products.destinations, `Where ${view.name}’s cards send buyers`));
+    if (b.products.cardImages.length) side.append(bars(b.products.cardImages, `Where ${view.name}’s card images come from`));
+    box.append(cbSection("cb-products", "Product cards across the campaign", `${b.products.total} cards in ${b.products.answers} answers`,
+      el("div", { className: "cb-scroll" }, t), side.childNodes.length ? side : null, el("p", { className: "muted small" }, b.products.note)));
+  }
+
+  /* --- brands compared --- */
+  const bt = el("div", { className: "cb-table cb-brand-table", role: "table", "aria-label": "Brands compared" });
+  bt.append(el("div", { className: "cb-tr cb-th", role: "row" },
+    el("span", { role: "columnheader" }, "Brand"),
+    ...[["Visibility", "visibility"], ["Share of voice", "shareOfVoice"], ["Mentions", "mentions"], ["Avg position", "avgPosition"], ["Citations", "citations"], ["Source visibility", "sourceVisibility"]].map(([h, term]) => el("span", { role: "columnheader", className: "num", "data-term": term }, h)),
+    el("span", { role: "columnheader", className: "ap-sr" }, "Remove")));
+  const maxSov = Math.max(1, ...b.brandRows.map((x) => x.shareOfVoice));
+  b.brandRows.forEach((x) => {
+    const tag = x.isOwn ? el("span", { className: "cb-tag you" }, "you") : x.auto ? el("span", { className: "cb-tag found auto-tag", title: "Found in your answers — not a competitor you set" }, "found by us") : el("span", { className: "cb-tag" }, "competitor");
+    const name = el("button", { className: "cb-brand-btn", type: "button", title: `${x.name}: head to head, engines and prompt by prompt` }, x.name);
+    name.onclick = () => { cbDetail = x.name; rerender(); };
+    const row = el("div", { className: `cb-tr cb-brand-row${x.isOwn ? " own-brand" : ""}${x.isView ? " focused-brand" : ""}`, role: "row", "data-brand": x.name },
+      el("span", { role: "rowheader", className: "cb-brand-cell" }, name, tag),
+      el("span", { role: "cell", className: "cb-num-bar" }, el("span", { className: "num" }, cbPct(x.visibility)), cbBar(x.visibility, x.isOwn ? "own" : "")),
+      el("span", { role: "cell", className: "cb-num-bar" }, el("span", { className: "num" }, cbPct(x.shareOfVoice)), cbBar((x.shareOfVoice / maxSov) * 100, x.isOwn ? "own" : "")),
+      el("span", { role: "cell", className: "num" }, String(x.mentions)),
+      el("span", { role: "cell", className: "num" }, cbPos(x.avgPosition)),
+      el("span", { role: "cell", className: "num" }, String(x.citations)),
+      el("span", { role: "cell", className: "cb-num-bar" }, el("span", { className: "num" }, cbPct(x.sourceVisibility)), cbBar(x.sourceVisibility, "src")));
+    const cell = el("span", { role: "cell" });
+    if (!x.isOwn) {
+      const drop = el("button", { className: "row-x", type: "button", title: `Remove ${x.name} from this campaign`, "aria-label": `Remove ${x.name} from this campaign` }, "×");
+      drop.onclick = async () => {
+        drop.disabled = true;
+        // An inferred brand is left out; a competitor you typed comes off
+        // the campaign's competitor list, where you put it.
+        const res = x.auto
+          ? await send({ type: "geo-brand-exclude", profileId: profile.id, name: x.name })
+          : (confirm(`Remove ${x.name} from this campaign's competitors?`) ? await send({ type: "geo-profile-save", profile: { ...profile, competitors: (profile.competitors || []).filter((c) => c.name !== x.name) } }) : { ok: false, cancelled: true });
+        if (!res.ok) { drop.disabled = false; if (!res.cancelled) showToast(res.error || "Couldn't remove that brand", "error"); return; }
+        if (cbViewAs === x.name) cbViewAs = null;
+        showToast(`${x.name} is no longer counted as a competitor`);
+        loadGeo();
+      };
+      cell.append(drop);
+    }
+    row.append(cell);
+    bt.append(row);
+  });
+  box.append(cbSection("cb-brands", "Brands compared", "Click a brand for head-to-head, engines and prompt-by-prompt detail",
+    el("div", { className: "cb-scroll" }, bt),
+    el("p", { className: "muted small" }, el("span", { "data-term": "mentionPool" }, `Share of voice counts ${b.mentionPool} mentions of tracked brands.`), " ", el("span", { title: SENTIMENT_NOTE }, "Tone isn’t scored: a mention counts the same whether the answer praises or criticises the brand."))));
+
+  /* --- as a source, and by engine --- */
+  const pair1 = el("div", { className: "cb-pair" });
+  pair1.append(cbSection("cb-source", `${view.name} as a source`, view.domain || "",
+    el("div", { className: "cb-mini-tiles" },
+      el("div", {}, el("b", {}, cbPct(b.asSource.sourceVisibility)), el("span", { className: "muted small", "data-term": "sourceVisibility" }, "Source visibility")),
+      el("div", {}, el("b", {}, String(b.asSource.citations)), el("span", { className: "muted small", "data-term": "citations" }, "Citations")),
+      el("div", {}, el("b", {}, `${b.asSource.citations}/${b.asSource.answers}`), el("span", { className: "muted small" }, view.domain ? `Answers citing ${view.domain}` : "Answers citing its site"))),
+    el("p", { className: "muted small" }, b.asSource.note)));
+  const eng = el("div", { className: "cb-engine-list engine-split" });
+  b.byEngine.forEach((e) => {
+    const ic = engineIconEl(e.id);
+    eng.append(el("div", { className: "cb-engine-row engine-split-cell" }, el("span", { className: "cb-engine-name" }, ic, e.label), cbBar(e.visibility, view.isOwn ? "own" : ""),
+      el("span", { className: "num engine-split-nums" }, el("span", {}, fmtPct(e.visibility)), el("span", { className: "muted" }, ` · avg ${cbPos(e.avgPosition)}`))));
+  });
+  pair1.append(cbSection("cb-by-engine", `${view.name} by engine`, "visibility · average position", eng));
+  box.append(pair1);
+
+  /* --- data collected --- */
+  const c = b.collected;
+  box.append(cbSection("cb-collected", "Data collected", "",
+    el("div", { className: "cb-mini-tiles wide" },
+      el("div", {}, el("b", {}, String(c.answers)), el("span", { className: "muted small", "data-term": "responses" }, `Answers captured${c.runs > 1 ? `, ${c.runs} runs` : ""}`)),
+      el("div", {}, el("b", {}, String(c.searched)), el("span", { className: "muted small", "data-term": "withSearch" }, "Searched the web")),
+      el("div", {}, el("b", {}, String(c.searches)), el("span", { className: "muted small", "data-term": "fanout" }, "Searches the engines ran")),
+      el("div", {}, el("b", {}, String(c.domains)), el("span", { className: "muted small", "data-term": "uniqueDomains" }, "Unique domains"))),
+    renderRunHistory(profile)));
+
+  /* --- run by run, and brand by engine --- */
+  const pair2 = el("div", { className: "cb-pair" });
+  if (b.acrossRuns.runs.length > 1) {
+    const cols = `minmax(110px, 1fr) repeat(${b.acrossRuns.runs.length}, 96px) 64px`;
+    const t = el("div", { className: "cb-grid", role: "table", style: `grid-template-columns:${cols}`, "aria-label": "Visibility across runs" });
+    t.append(el("div", { className: "cb-grid-row", role: "row" }, el("span", { role: "columnheader" }, "Brand"),
+      ...b.acrossRuns.runs.map((x) => el("span", { role: "columnheader", className: "num nowrap" }, `${x.label} · ${new Date(x.at).toLocaleDateString(undefined, { day: "numeric", month: "short" })}`)),
+      el("span", { role: "columnheader", className: "num" }, "Change")));
+    b.acrossRuns.rows.forEach((x) => t.append(el("div", { className: `cb-grid-row${x.isView ? " mine" : ""}`, role: "row" },
+      el("span", { role: "rowheader", className: x.isView ? "you" : "" }, x.name),
+      ...x.cells.map((v) => el("span", { role: "cell", className: "num" }, v == null ? "—" : `${v}%`)),
+      el("span", { role: "cell", className: `num ${x.delta > 0 ? "t-good" : x.delta < 0 ? "t-bad" : ""}` }, x.delta == null ? "—" : `${x.delta > 0 ? "▲" : x.delta < 0 ? "▼" : "="} ${Math.abs(x.delta)}`))));
+    pair2.append(cbSection("cb-runs", "Visibility across runs", "share of answers that named the brand", el("div", { className: "cb-scroll" }, t)));
+  }
+  if (b.heat.engines.length > 1) {
+    const cols = `minmax(110px, 1fr) repeat(${b.heat.engines.length}, minmax(52px, 70px))`;
+    const t = el("div", { className: "cb-grid cb-heat", role: "table", style: `grid-template-columns:${cols}`, "aria-label": "Each brand on each engine" });
+    t.append(el("div", { className: "cb-grid-row", role: "row" }, el("span", { role: "columnheader" }, "Brand"), ...b.heat.engines.map((e) => el("span", { role: "columnheader", className: "c", title: e.label }, engineIconEl(e.id)))));
+    b.heat.rows.forEach((x) => t.append(el("div", { className: `cb-grid-row${x.isView ? " mine" : ""}`, role: "row" },
+      el("span", { role: "rowheader", className: x.isView ? "you" : "" }, x.name),
+      ...x.cells.map((v, i) => el("span", { role: "cell", className: `cb-heat-cell${v != null && v >= 55 ? " dark" : ""}`, style: v == null ? "" : `--h:${Math.round(8 + v * 0.8)}%`, "aria-label": `${x.name} on ${b.heat.engines[i].label}: ${v == null ? "no answers" : `${v}%`}` }, v == null ? "—" : `${v}%`)))));
+    pair2.append(cbSection(b.acrossRuns.runs.length > 1 ? "cb-heat" : "cb-runs", "Each brand on each engine", "visibility, darker is higher", el("div", { className: "cb-scroll" }, t), b.heat.note ? el("p", { className: "muted small" }, b.heat.note) : null));
+  }
+  if (pair2.childNodes.length) box.append(pair2);
+
+  /* --- topics, and what each brand is recommended for --- */
+  const pair3 = el("div", { className: "cb-pair" });
+  if (b.topics.length) {
+    const t = el("div", { className: "cb-table cb-topic-table", role: "table", "aria-label": "By topic" });
+    t.append(el("div", { className: "cb-tr cb-th", role: "row" }, ...["Tag", "Answers", view.name, "Strongest rival", "Gap"].map((h) => el("span", { role: "columnheader" }, h))));
+    b.topics.forEach((x) => t.append(el("div", { className: "cb-tr", role: "row" },
+      el("span", { role: "rowheader" }, el("span", { className: "tag" }, x.tag)),
+      el("span", { role: "cell", className: "num" }, String(x.answers)),
+      el("span", { role: "cell", className: "num" }, `${x.you}%`),
+      el("span", { role: "cell" }, `${x.rival} · ${x.rivalV}%`),
+      el("span", { role: "cell", className: `num ${x.gap > 0 ? "t-good" : x.gap < 0 ? "t-bad" : ""}` }, `${x.gap > 0 ? "+" : ""}${x.gap} pts`))));
+    pair3.append(cbSection("cb-topics", "By topic", `your prompt tags · ${view.name} against the strongest rival`, t));
+  }
+  if (b.recommend.length) {
+    const list = el("div", { className: "cb-recommend" });
+    b.recommend.forEach((x) => list.append(el("div", { className: `cb-rec-row${x.isView ? " mine" : ""}` }, el("b", {}, x.name),
+      el("span", { className: "ap-chips" }, ...x.aspects.map((a) => el("span", { className: "ap-bchip" }, `${a.label} · ${a.n}`))))));
+    pair3.append(cbSection("cb-recommend", "What the engines recommend each brand for", "times picked for", list));
+  }
+  if (pair3.childNodes.length) box.append(pair3);
+
+  /* --- kinds of sites, and the sites that cite rivals but not you --- */
+  const pair4 = el("div", { className: "cb-pair" });
+  if (b.siteKinds.rows.length) {
+    const max = Math.max(1, ...b.siteKinds.rows.map((x) => x.n));
+    const list = el("div", { className: "cb-barlist" });
+    b.siteKinds.rows.forEach((x) => list.append(el("div", { className: "cb-barrow kinds" },
+      el("span", {}, el("i", { className: "cb-swatch", style: `background:var(${AP_KIND_VAR[x.label]})` }), x.label, el("span", { className: "muted small" }, x.eg ? ` · ${x.eg}` : "")),
+      cbBar((x.n / max) * 100, "kind"), el("span", { className: "num" }, String(x.n)),
+      el("span", { className: "num muted small", title: `cited pages in this kind that mention ${view.name}` }, `${x.you} about ${view.name}`))));
+    pair4.append(cbSection("cb-sitekinds", "Kinds of sites cited", `${b.siteKinds.total} citations`, list));
+  }
+  {
+    const t = el("div", { className: "cb-table cb-gap-table", role: "table", "aria-label": `Sites that cite rivals but not ${view.name}` });
+    t.append(el("div", { className: "cb-tr cb-th", role: "row" }, ...["Site", "Cited", "Brands it mentions", view.name].map((h) => el("span", { role: "columnheader" }, h))));
+    b.gapSites.forEach((x) => t.append(el("div", { className: "cb-tr", role: "row" },
+      el("span", { role: "rowheader" }, el("b", {}, x.site), el("span", { className: "muted small" }, ` ${x.kind}`)),
+      el("span", { role: "cell", className: "num" }, String(x.cited)),
+      el("span", { role: "cell", className: "ap-chips" }, ...x.rivals.map((n) => el("span", { className: "ap-bchip" }, n))),
+      el("span", { role: "cell", className: "t-bad small" }, "not mentioned"))));
+    pair4.append(cbSection("cb-gaps", `Sites that cite rivals but not ${view.name}`, "where to get listed or reviewed",
+      b.gapSites.length ? t : el("p", { className: "ap-note" }, `Every cited page that mentions a rival also mentions ${view.name}.`)));
+  }
+  box.append(pair4);
+
+  /* --- searches --- */
+  const s = b.searches;
+  const sq = el("div", { className: "cb-search-stats" },
+    ...[[String(s.total), "searches"], [s.perAnswer.toFixed(1), "per answer"], [cbPct(s.nameBrand), "name a brand"], [cbPct(s.nameView), `name ${view.name}`], [cbPct(s.reddit), "ask Reddit"], [cbPct(s.year), "include a year"]]
+      .map(([v, l]) => el("div", {}, el("b", {}, v), el("span", { className: "muted small" }, l))));
+  const ql = el("ol", { className: "cb-queries" });
+  s.top.forEach((q) => ql.append(el("li", {}, el("span", { className: "cb-q" }, q.text), el("span", { className: "num muted" }, `×${q.n}`), el("span", { className: "small muted" }, q.lead ? `${q.lead} came first` : ""))));
+  box.append(cbSection("cb-searches", "Searches the engines ran for this campaign", "", sq, s.top.length ? ql : el("p", { className: "ap-note" }, "The engines didn't publish any searches for these answers.")));
+
+  /* --- prompt by prompt --- */
+  const pg = b.prompts;
+  const filters = el("div", { className: "cb-pfilters", role: "group", "aria-label": "Show prompts" });
+  [["all", "All"], ["first", "Named first"], ["lower", "Named lower"], ["not", "Not named"]].forEach(([id, label]) => {
+    const on = cbPromptFilter === id;
+    const f = el("button", { className: `db-chip${on ? " on scope" : ""}`, type: "button", "aria-pressed": on ? "true" : "false" }, `${label} · ${pg.counts[id]}`);
+    f.onclick = () => { cbPromptFilter = id; rerender(); };
+    filters.append(f);
+  });
+  // The prompt keeps at least 160px; the grid scrolls sideways only when the
+  // engine columns leave it less than that (four engines in the popup).
+  const pop = document.body.classList.contains("popup");
+  const fixed = [28, ...b.engines.map(() => (pop ? 50 : 58)), pop ? 44 : 64, pop ? 64 : 90];
+  const cols = `28px minmax(0, 1fr) ${fixed.slice(1).map((w) => `${w}px`).join(" ")}`;
+  const grid = el("div", { className: "cb-grid cb-prompt-grid", role: "table", style: `grid-template-columns:${cols};min-width:${fixed.reduce((a, w) => a + w, 160)}px`, "aria-label": "Prompt by prompt" });
+  grid.append(el("div", { className: "cb-grid-row", role: "row" }, el("span", { role: "columnheader" }, "#"),
+    el("span", { role: "columnheader" }, `Prompt · where ${view.name} came in each engine’s answer`),
+    ...b.engines.map((e) => el("span", { role: "columnheader", className: "c", title: e.label }, engineIconEl(e.id), el("span", { className: "ap-sr" }, e.label))),
+    el("span", { role: "columnheader", className: "num" }, "Cites its site"),
+    el("span", { role: "columnheader", className: "num" }, "Last run")));
+  const posCell = (cell, engLabel) => {
+    if (!cell) return el("span", { role: "cell", className: "c" }, el("span", { className: "cb-pos none", title: `No answer from ${engLabel}` }, "·"));
+    const label = cell.pos === 0 ? "✕" : cell.pos === "shown" ? "card" : `#${cell.pos}`;
+    const cls = cell.pos === 0 ? "out" : cell.pos === 1 ? "first" : "in";
+    const btn = el("button", { className: `cb-pos ${cls}${cell.cited ? " cited" : ""}`, type: "button",
+      title: `${cell.pos === 0 ? `${view.name} not named` : cell.pos === "shown" ? `${view.name} shown on a card, not in the text` : `${view.name} named #${cell.pos}`} by ${engLabel}${cell.cited ? `, and the answer cited ${view.domain || "its site"}` : ""} — open the answer` }, label);
+    btn.onclick = () => openCapture(cell.captureId);
+    return el("span", { role: "cell", className: "c" }, btn);
+  };
+  pg.rows.filter((p) => cbPromptFilter === "all" || p.status === cbPromptFilter).forEach((p) => {
+    const open = cbOpenPrompts.has(p.id);
+    const text = el("span", { role: "cell", className: "cb-ptext" }, el("span", { className: "cb-ptitle", title: p.text }, p.text),
+      el("span", { className: "muted small" }, [p.words > 30 ? `${p.words}-word prompt` : "", ...(p.tags || [])].filter(Boolean).join(" · ")));
+    const more = el("span", { role: "cell", className: "num small" });
+    if (p.lastAt) more.append(el("span", { className: "muted", title: new Date(p.lastAt).toLocaleString() }, relTime(p.lastAt)));
+    if (p.history.length) {
+      const t = el("button", { className: "linkbtn", type: "button", "aria-expanded": open ? "true" : "false", title: open ? "Hide earlier runs" : "Show earlier runs" }, open ? " hide" : ` +${p.history.length}`);
+      t.onclick = () => { if (open) cbOpenPrompts.delete(p.id); else cbOpenPrompts.add(p.id); rerender(); };
+      more.append(t);
+    }
+    grid.append(el("div", { className: `cb-grid-row st-${p.status}`, role: "row" },
+      el("span", { role: "cell", className: "muted" }, String(p.n)), text,
+      ...p.cells.map((cell, i) => posCell(cell, b.engines[i].label)),
+      el("span", { role: "cell", className: "num" }, p.citedYou ? String(p.citedYou) : "—"), more));
+    if (open) p.history.forEach((h) => grid.append(el("div", { className: "cb-grid-row sub", role: "row" },
+      el("span", { role: "cell" }), el("span", { role: "cell", className: "muted small" }, `${h.label} · ${new Date(h.at).toLocaleDateString(undefined, { day: "numeric", month: "short" })}`),
+      ...h.cells.map((cell, i) => posCell(cell, b.engines[i].label)), el("span", { role: "cell" }), el("span", { role: "cell" }))));
+  });
+  box.append(cbSection("cb-prompts", "Prompt by prompt", pg.avgWhenNamed ? `average position when named: ${pg.avgWhenNamed.toFixed(1)}` : "",
+    filters, el("div", { className: "cb-scroll" }, grid),
+    el("p", { className: "muted small cb-legend" }, el("span", { className: "cb-pos first" }, "#1"), " named first  ", el("span", { className: "cb-pos in" }, "#3"), " named lower  ", el("span", { className: "cb-pos out" }, "✕"), " not named  ", el("span", { className: "cb-pos in cited" }, "#2"), ` that answer cited ${view.domain || "its site"}`)));
+
+  /* --- sources --- */
+  const srcBox = cbSection("cb-sources", "Sources the engines used", "", el("div", { className: "muted small" }, "Loading sources…"));
+  box.append(srcBox);
+  renderCampaignSources(srcBox, profile, { runId: r.runId === "all" ? undefined : r.runId, focusBrand: view.isOwn ? undefined : view.name });
+}
+
+/* The sources table: domains or URLs, reach before volume, each row drilling
+ * down (openDomainDetailModal / openUrlDetailModal). Unchanged from the
+ * Prompt Performance card it lived in before 0.50.0; it reads the same
+ * geo-prompt-performance aggregate. */
+async function renderCampaignSources(sec, profile, { runId, focusBrand } = {}) {
+  const r = await send({ type: "geo-prompt-performance", profileId: profile.id, focusBrand, tags: cbTags, engines: geoEngineFilter, runId });
+  [...sec.children].forEach((n, i) => { if (i > 0) n.remove(); });
+  if (!r || !r.ok) { sec.append(el("div", { className: "empty" }, (r && r.error) || "Couldn't load the sources.")); return; }
+  const rerender = () => renderCampaignSources(sec, profile, { runId, focusBrand });
+  // Citation VOLUME and REACH are different numbers and must not be one
+  // column: a domain cited three times in a single answer scores three
+  // citations but one response of visibility. See src/lib/sources.js for the
+  // definitions and test/sources.test.mjs for the worked example.
+  const promptTextById = new Map((GEO_PROMPTS || []).map((p) => [p.id, p.text]));
+  const { domains: domainAgg, urls: urlAgg, totalResponses: srcResponses } = aggregateSources(r.prompts || {}, promptTextById);
+  const head = sec.querySelector(".cb-sec-head");
+  head.querySelector(".src-head-tools")?.remove();
+  const modeToggle = el("div", { className: "filter-bar", style: "margin:0" });
+  [["domain", "Domains"], ["url", "URLs"]].forEach(([v, l]) => {
+    const pill = el("button", { className: `filter-pill${sourceViewMode === v ? " active" : ""}`, type: "button" }, l);
+    pill.onclick = () => { sourceViewMode = v; rerender(); };
+    modeToggle.append(pill);
+  });
+  const search = el("input", { id: "sourceSearch", type: "text", className: "filter search-input", placeholder: sourceViewMode === "domain" ? "Filter domains…" : "Filter URLs…", value: sourceSearch, "aria-label": "Filter sources" });
+  search.oninput = () => {
+    sourceSearch = search.value;
+    const cursor = search.selectionStart;
+    rerender().then(() => { const next = $("#sourceSearch"); if (next) { next.focus(); next.setSelectionRange(cursor, cursor); } });
+  };
+  head.append(el("div", { className: "src-head-tools" }, modeToggle, search));
+  head.querySelector(".muted.small")?.replaceChildren(`from ${srcResponses} answer${srcResponses === 1 ? "" : "s"}`);
+  // Sorted by reach first, volume second: a domain cited nine times inside a
+  // single answer is less useful to know about than one cited once in every
+  // answer, and only the visibility ordering says so.
+  const activeMap = sourceViewMode === "domain" ? domainAgg : urlAgg;
+  const rows = [...activeMap.values()].filter((row) => matchesSearch(row.key, sourceSearch))
+    .sort((a, b) => b.visibility - a.visibility || b.citations - a.citations || b.fetched - a.fetched || a.key.localeCompare(b.key));
+  const shown = rows.slice(0, 50);
+  if (!shown.length) { sec.append(el("div", { className: "empty" }, sourceSearch ? `No sources match "${sourceSearch}".` : "No sources captured yet for these filters.")); return; }
+  const t = el("table", { className: "drill-table src-table" });
+  const hdr = [el("th", { className: "src-col-idx" }, "#"), el("th", {}, sourceViewMode === "domain" ? "Domain" : "URL")];
+  if (sourceViewMode === "domain") hdr.push(el("th", { className: "num", "data-term": "distinctUrls" }, "URLs"));
+  hdr.push(
+    // The bar is on Visibility, not Citations: a percentage has a fixed 0-100
+    // scale a bar can honestly show.
+    el("th", { "data-term": "domainVisibility" }, "Visibility"),
+    el("th", { className: "num", "data-term": "domainCitations" }, "Citations"),
+    el("th", { className: "num", "data-term": "distinctPrompts" }, "Prompts"),
+    el("th", { className: "num", "data-term": "readOnly" }, "Read-only"),
+    el("th", { className: "num", "data-term": "citedRate" }, "Cited %"));
+  t.append(el("tr", {}, ...hdr));
+  shown.forEach((row, i) => {
+    const key = el("button", { className: "linkbtn td-domain-btn", type: "button", title: sourceViewMode === "domain" ? "Click for this domain's URLs and the prompts they came from" : "Click to see which prompts cited this URL" });
+    key.append(highlightMatch(row.key, sourceSearch));
+    key.onclick = () => (sourceViewMode === "domain" ? openDomainDetailModal(row, `Source breakdown · ${profile.name || "Untitled campaign"}`, "prompt") : openUrlDetailModal(row.key, profile));
+    const bar = el("div", { className: "src-bar", title: `Cited in ${row.citedResponses} of ${srcResponses} responses` },
+      el("div", { className: "src-bar-fill", style: `width:${Math.round(row.visibility)}%` }), el("span", { className: "src-bar-n" }, fmtPct(row.visibility)));
+    const cells = [el("td", { className: "src-col-idx muted" }, String(i + 1)), el("td", { className: "td-domain" }, key)];
+    if (sourceViewMode === "domain") cells.push(el("td", { className: "num" }, String(row.urls.size)));
+    cells.push(el("td", { className: "src-bar-cell" }, bar), el("td", { className: "num" }, String(row.citations || 0)), el("td", { className: "num" }, String(row.citedPromptIds.size)),
+      el("td", { className: "num muted" }, String(row.fetched || 0)), el("td", { className: "num" }, fmtPct(row.citedRate)));
+    t.append(el("tr", {}, ...cells));
+  });
+  sec.append(el("div", { className: "drill-scroll" }, t));
+  if (rows.length > shown.length) sec.append(el("div", { className: "muted small", style: "margin-top:6px" }, `Showing the top ${shown.length} of ${rows.length} — narrow it with the filter above.`));
+}
+
+/* ---------- One brand against yours (0.50.0) ----------
+ * The canvas's brand detail, in place of the board: the headline numbers
+ * side by side, head to head across the answers, each engine, which kinds of
+ * site write about each, which sites cite one and not the other, the sites
+ * the engines read when they named it, and prompt by prompt who came first.
+ * Background: "campaign-brand-detail" (brandDetail() + brandSourceDomains()).
+ */
+/* A brand's page against yours (0.50.0; laid out as the canvas's
+ * TabBrandDetail in 0.55.0): the two brands' numbers, one head-to-head bar,
+ * where each is placed on each engine, which kinds of site and which sites
+ * back each, and every prompt's verdict per engine with a score. The figures
+ * are campaignBoard.js's brandDetail(); this only draws them. */
+async function renderCampaignBrandDetail(box, profile) {
+  const r = await send({ type: "campaign-brand-detail", profileId: profile.id, brand: cbDetail, runId: cbRun || undefined, engines: geoEngineFilter, tags: cbTags });
+  box.textContent = "";
+  const back = el("button", { className: "analyze-context-back", type: "button", title: "Back to the campaign" }, el("span", { "aria-hidden": "true" }, "‹"), ` ${profile.name || "Campaign"}`);
+  back.onclick = () => { cbDetail = null; cbVsFilter = "all"; renderCampaigns(); };
+  if (!r || !r.ok || !r.detail) {
+    box.append(el("div", { className: "card" }, back, el("div", { className: "empty" }, (r && r.error) || "That brand has no detail on this campaign.")));
+    return;
+  }
+  const d = r.detail;
+  const them = d.them.name, you = d.you.name;
+  const youLabel = d.you.isOwn ? `${you} (you)` : you;
+  const pct = (v) => (v == null ? "—" : `${Math.round(v)}%`);
+
+  /* --- header: back, "X against Y", the other brands as tabs, the numbers --- */
+  const others = el("div", { className: "cb-vs-switch", role: "tablist", "aria-label": "Another brand" });
+  r.brands.filter((x) => !x.isOwn).forEach((x) => {
+    const on = x.name === them;
+    const c = el("button", { className: `cb-vs-tab${on ? " on" : ""}`, type: "button", role: "tab", "aria-selected": on ? "true" : "false" }, x.name);
+    c.onclick = () => { cbDetail = x.name; cbVsFilter = "all"; renderCampaigns(); };
+    others.append(c);
+  });
+  const head = el("section", { className: "card cb-head cb-detail-head", "aria-labelledby": "cb-detail-h" },
+    el("div", { className: "cb-detail-top" }, back,
+      el("h2", { className: "cb-detail-title", id: "cb-detail-h" }, them, el("span", { className: "muted" }, " against "), youLabel),
+      el("span", { className: `cb-tag${d.them.auto ? " found auto-tag" : ""}` }, d.them.auto ? "found by us" : "competitor"),
+      others),
+    el("span", { className: "muted small cb-detail-scope" }, `${r.answers} answers · ${r.runLabel}`));
+  const fmt = (k, v) => (v == null ? "—" : k.unit === "%" ? `${Math.round(v)}%` : k.unit === "rank" ? v.toFixed(1) : String(v));
+  const kp = el("div", { className: "cb-vs" });
+  d.kpis.forEach((k) => kp.append(el("div", { className: "cb-vs-kpi" },
+    el("div", { className: "k-label", ...(CB_TERMS[k.label] ? { "data-term": CB_TERMS[k.label] } : {}) }, k.label),
+    el("div", { className: "k-value" }, fmt(k, k.them)),
+    el("div", { className: `k-sub${k.better === "them" ? " t-bad" : ""}` }, `${you} ${fmt(k, k.you)}${k.better === "them" ? ` · ${them} ahead` : ""}`))));
+  head.append(kp);
+  box.append(head);
+
+  /* --- head to head: one bar --- */
+  const h = d.h2h;
+  const parts = [["them", h.themOnly, `Only ${them}`, `${you} missing from these answers`, "onlyThem"], ["both", h.both, "Both named", "shared answers", "bothNamed"],
+    ["you", h.youOnly, `Only ${you}`, `${them} missing`, "onlyYou"], ["none", h.neither, "Neither", "other brands only", "neitherNamed"]];
+  const bar = el("div", { className: "cb-stack", role: "img", "aria-label": parts.map(([, n, l]) => `${l}: ${n}`).join(", ") });
+  parts.forEach(([cls, n]) => { if (n) bar.append(el("span", { className: `vs-${cls}`, style: `flex:${n} 1 0` }, String(n))); });
+  const legend = el("div", { className: "cb-stack-legend" });
+  parts.forEach(([cls, n, label, sub, term]) => legend.append(el("div", { className: `cb-h2h-row ${cls}` },
+    el("span", { className: "cb-leg-l", "data-term": term }, el("i", { className: `vs-${cls}` }), label), el("span", { className: "num" }, String(n)), el("span", { className: "muted small" }, sub))));
+  if (h.both) legend.append(el("div", { className: "cb-h2h-first" }, el("span", { className: "cb-leg-l", "data-term": "namedFirst" }, el("i", { className: "vs-first" }), `Named first · ${h.firstThem} vs ${h.firstYou}`), el("span", { className: "muted small" }, `${them} vs ${you}, when both appear`)));
+  box.append(cbSection("cb-h2h", `Head to head, across ${h.answers} answers`, h.line, bar, legend));
+
+  /* --- on each engine: where each is placed, and how often named --- */
+  const pair = el("div", { className: "cb-pair" });
+  const maxPos = Math.max(5, ...d.byEngine.flatMap((e) => [e.them.avgPosition || 0, e.you.avgPosition || 0]).map(Math.ceil));
+  const at = (v) => `${((v - 1) / (maxPos - 1)) * 100}%`;
+  const et = el("div", { className: "cb-dots", role: "table", "aria-label": "On each engine" });
+  et.append(el("div", { className: "cb-tr cb-th", role: "row" }, el("span", { role: "columnheader" }, "Engine"), el("span", { role: "columnheader" }, "Named in"),
+    el("span", { role: "columnheader", className: "cb-dots-axis" }, el("span", {}, "Average position · 1st"), el("span", {}, ORDINAL(maxPos))), el("span", { role: "columnheader" })));
+  d.byEngine.forEach((e) => {
+    const tp = e.them.avgPosition, yp = e.you.avgPosition;
+    const track = el("span", { className: "cb-dots-track", "aria-hidden": "true" });
+    if (tp && yp) track.append(el("span", { className: "cb-dots-line", style: `left:${at(Math.min(tp, yp))};width:calc(${at(Math.max(tp, yp))} - ${at(Math.min(tp, yp))})` }));
+    if (tp) track.append(el("span", { className: "cb-dot vs-them", style: `left:${at(tp)}`, title: `${them} ${tp.toFixed(1)}` }));
+    if (yp) track.append(el("span", { className: "cb-dot vs-you", style: `left:${at(yp)}`, title: `${you} ${yp.toFixed(1)}` }));
+    const themAhead = tp && (!yp || tp < yp);
+    et.append(el("div", { className: "cb-tr", role: "row" },
+      el("span", { role: "rowheader", className: "cb-engine-name" }, engineIconEl(e.id), e.label),
+      el("span", { role: "cell", className: "cb-named" }, el("b", { className: "you" }, `${you} ${pct(e.you.visibility)}`), el("span", {}, `${them} ${pct(e.them.visibility)}`)),
+      el("span", { role: "cell" }, track),
+      el("span", { role: "cell", className: `num small ${themAhead ? "t-bad" : "t-good"}` }, `${you} ${cbPos(yp)} · ${them} ${cbPos(tp)}`)));
+  });
+  pair.append(cbSection("cb-vs-engines", "On each engine", el("span", { className: "ap-legend" }, el("span", {}, el("i", { className: "vs-you" }), you), el("span", {}, el("i", { className: "vs-them" }), them)),
+    et, d.engineLine ? el("p", { className: "muted small" }, `${d.engineLine} Further left is better.`) : null));
+
+  /* --- where each brand's citations come from: mirrored bars --- */
+  if (d.kinds.length) {
+    const max = Math.max(1, ...d.kinds.flatMap((k) => [k.them, k.you]));
+    const list = el("div", { className: "cb-mirror", role: "table", "aria-label": "Cited pages that mention each brand, by kind of site" });
+    list.append(el("div", { className: "cb-mirror-row cb-th", role: "row" }, el("span", { role: "columnheader" }, "Kind of site"), el("span", { role: "columnheader", className: "num" }, them), el("span", { role: "columnheader" }, you)));
+    d.kinds.forEach((k) => list.append(el("div", { className: "cb-mirror-row", role: "row" },
+      el("span", { role: "rowheader" }, k.label),
+      el("span", { role: "cell", className: "cb-mirror-l" }, el("span", { className: "num" }, String(k.them)), el("span", { className: "cb-mbar vs-them", style: `width:${(k.them / max) * 100}%` })),
+      el("span", { role: "cell", className: "cb-mirror-r" }, el("span", { className: "cb-mbar vs-you", style: `width:${(k.you / max) * 100}%` }), el("span", { className: "num" }, String(k.you))))));
+    pair.append(cbSection("cb-vs-kinds", "Where each brand’s citations come from", "pages that mention the brand", list, d.kindsLine ? el("p", { className: "muted small" }, d.kindsLine) : null));
+  }
+  box.append(pair);
+
+  /* --- who cites whom: a diverging bar per site, and a verdict --- */
+  const smax = Math.max(1, ...d.sites.flatMap((x) => [x.them, x.you]));
+  const VERDICT = (x) => (x.them && !x.you ? [`Only ${them}`, "bad"] : x.you && !x.them ? [`Only ${you}`, "good"] : x.them > x.you ? [`${them} ahead`, "warn"] : x.you > x.them ? [`${you} ahead`, "good"] : ["Even", "neutral"]);
+  const st = el("div", { className: "cb-whom", role: "table", "aria-label": "Who cites whom" });
+  st.append(el("div", { className: "cb-whom-row cb-th", role: "row" }, ...["Site", "Kind", `Cites ${them}`, `${them} ◂▸ ${you}`, `Cites ${you}`, "Verdict"].map((x, i) => el("span", { role: "columnheader", className: i === 2 || i === 4 ? "num" : i === 3 ? "c" : "" }, x))));
+  d.sites.forEach((x) => {
+    const [v, tone] = VERDICT(x);
+    const own = !!(profile.brand && profile.brand.url && x.site.includes(normDomainLabel(profile.brand.url).replace(/^www\./, "")));
+    st.append(el("div", { className: "cb-whom-row", role: "row" },
+      el("span", { role: "rowheader" }, el("b", {}, x.site), own ? el("span", { className: "cb-tag you-tag" }, "your site") : null),
+      el("span", { role: "cell", className: "muted small" }, atKindOne(x.kind)),
+      el("span", { role: "cell", className: "num" }, String(x.them)),
+      el("span", { role: "cell", className: "cb-div" }, el("span", { className: "cb-div-l" }, el("span", { className: "cb-mbar vs-them", style: `width:${(x.them / smax) * 100}%` })), el("span", { className: "cb-div-r" }, el("span", { className: "cb-mbar vs-you", style: `width:${(x.you / smax) * 100}%` }))),
+      el("span", { role: "cell", className: "num" }, String(x.you)),
+      el("span", { role: "cell" }, apPill(v, tone))));
+  });
+  box.append(cbSection("cb-whom", "Who cites whom", d.gapLine, d.sites.length ? el("div", { className: "cb-scroll" }, st) : el("p", { className: "ap-note" }, "No cited page mentions either brand.")));
+
+  /* --- what the engines read when they named it --- */
+  if (r.sourceDomains && r.sourceDomains.length) {
+    const list = el("div", { className: "cb-barlist brand-sources", "data-term": "brandSources" });
+    r.sourceDomains.forEach((x) => {
+      const btn = el("button", { className: "linkbtn td-domain-btn", type: "button", title: `${x.domain}: its pages and the prompts that cited them` }, x.domain);
+      btn.onclick = () => openCampaignDomain(profile, x.domain);
+      list.append(el("div", { className: "cb-barrow" }, btn, cbBar(x.visibility, "src"), el("span", { className: "num" }, `${cbPct(x.visibility)} · ${x.citations}`)));
+    });
+    box.append(cbSection("cb-vs-sources", `What the engines read when they named ${them}`, "share of the answers naming it that cited the site · citations", list));
+  }
+
+  /* --- prompt by prompt: a verdict per engine, and a score --- */
+  const ORD = (n) => (n === "shown" ? "shown" : ORDINAL(n));
+  const verdictOf = (c) => {
+    if (!c) return null;
+    const pos = [c.you ? `${you} ${ORD(c.you)}` : "", c.them ? `${them} ${ORD(c.them)}` : ""].filter(Boolean).join(", ");
+    if (c.winner === "neither") return { k: "none", label: "Neither", sub: "not named" };
+    if (c.winner === "both") return { k: "both", label: "Both, no order", sub: pos };
+    const only = c.winner === "them" ? !c.you : !c.them;
+    const who = c.winner === "them" ? them : you;
+    return { k: c.winner, label: only ? `Only ${who}` : `${who} ahead`, sub: pos };
+  };
+  const rows = d.prompts.rows.map((p) => {
+    const v = p.cells.map(verdictOf);
+    return { p, v, you: v.filter((x) => x && x.k === "you").length, them: v.filter((x) => x && x.k === "them").length, none: v.some((x) => x && x.k === "none") };
+  });
+  const cells = rows.flatMap((x) => x.v.filter(Boolean));
+  const tally = { you: cells.filter((x) => x.k === "you").length, them: cells.filter((x) => x.k === "them").length, both: cells.filter((x) => x.k === "both").length, none: cells.filter((x) => x.k === "none").length };
+  const FILTERS = [["all", "All prompts", rows.length], ["them", `Where ${them} beats ${you}`, rows.filter((x) => x.them > 0).length], ["none", "Where neither is named", rows.filter((x) => x.none).length]];
+  if (!FILTERS.some((f) => f[0] === cbVsFilter)) cbVsFilter = "all";
+  const chips = el("div", { className: "cb-vs-filters", role: "group", "aria-label": "Show prompts" });
+  FILTERS.forEach(([id, label, n]) => {
+    const c = el("button", { className: `db-chip${cbVsFilter === id ? " on scope" : ""}`, type: "button", "aria-pressed": cbVsFilter === id ? "true" : "false" }, `${label} `, el("b", {}, String(n)));
+    c.onclick = () => { cbVsFilter = id; renderCampaigns(); };
+    chips.append(c);
+  });
+  const sbar = el("div", { className: "cb-stack thin", role: "img", "aria-label": `${you} ahead in ${tally.you}, ${them} ahead in ${tally.them}, neither named in ${tally.none}` });
+  [["you", tally.you], ["them", tally.them], ["both", tally.both], ["none", tally.none]].forEach(([k, n]) => { if (n) sbar.append(el("span", { className: `vv-${k}`, style: `flex:${n} 1 0` }, String(n))); });
+  const sleg = el("div", { className: "cb-stack-legend inline" },
+    el("span", {}, el("i", { className: "vv-you" }), el("b", {}, `${you} ahead`), ` in ${tally.you} of ${cells.length} answers`),
+    el("span", {}, el("i", { className: "vv-them" }), el("b", {}, `${them} ahead`), ` in ${tally.them}`),
+    tally.both ? el("span", {}, el("i", { className: "vv-both" }), el("b", {}, "Both, no order"), ` in ${tally.both}`) : null,
+    el("span", {}, el("i", { className: "vv-none" }), el("b", {}, "Neither named"), ` in ${tally.none}`));
+  const shown = rows.filter((x) => cbVsFilter === "all" || (cbVsFilter === "them" ? x.them > 0 : x.none));
+  const cols = `28px minmax(200px, 1fr) repeat(${d.engines.length}, 112px) 64px`;
+  const g = el("div", { className: "cb-grid cb-prompt-grid cb-verdicts", role: "table", style: `grid-template-columns:${cols};min-width:${28 + d.engines.length * 112 + 64 + 220}px`, "aria-label": "Prompt by prompt: who came first" });
+  g.append(el("div", { className: "cb-grid-row", role: "row" }, el("span", { role: "columnheader" }, "#"), el("span", { role: "columnheader" }, "Prompt"),
+    ...d.engines.map((e) => el("span", { role: "columnheader", className: "c" }, engineIconEl(e.id), ` ${e.label}`)), el("span", { role: "columnheader", className: "num" }, "Score")));
+  shown.forEach(({ p, v, you: yw, them: tw }) => g.append(el("div", { className: "cb-grid-row", role: "row" },
+    el("span", { role: "cell", className: "muted" }, String(p.n)), el("span", { role: "cell", className: "cb-ptitle", title: p.text }, p.text),
+    ...v.map((x, i) => {
+      if (!x) return el("span", { role: "cell", className: "c" }, el("span", { className: "cb-pos none" }, "·"));
+      const btn = el("button", { className: `cb-win ${x.k}`, type: "button", title: `${d.engines[i].label}: ${x.label}${x.sub ? ` (${x.sub})` : ""} — open the answer` }, el("b", {}, x.label), el("span", {}, x.sub));
+      btn.onclick = () => openCapture(p.cells[i].captureId);
+      return el("span", { role: "cell", className: "c" }, btn);
+    }),
+    el("span", { role: "cell", className: "num cb-score" }, el("b", {}, `${yw} – ${tw}`), el("span", { className: "cb-score-dots", "aria-hidden": "true" }, ...v.map((x) => el("i", { className: `vv-${x ? x.k : "na"}` })))))));
+  if (!shown.length) g.append(el("div", { className: "cb-grid-row", role: "row" }, el("span", { role: "cell", className: "muted small", style: "grid-column:1/-1" }, "No prompt matches.")));
+  const per = d.engines.map((e, i) => { const c = rows.map((x) => x.v[i]).filter(Boolean); return `${c.filter((x) => x.k === "you").length} · ${c.filter((x) => x.k === "them").length}`; });
+  g.append(el("div", { className: "cb-grid-row cb-foot", role: "row" }, el("span", { role: "cell" }), el("span", { role: "cell" }, el("b", {}, "Per engine")),
+    ...per.map((x) => el("span", { role: "cell", className: "c" }, x)), el("span", { role: "cell", className: "num muted small" }, `${you} · ${them}`)));
+  box.append(cbSection("cb-vs-prompts", "Prompt by prompt: who came first", chips, sbar, sleg, el("div", { className: "cb-scroll" }, g)));
+}
+let cbVsFilter = "all";     // the brand page's prompt filter
+const ORDINAL = (n) => { const x = Math.round(n); const s = ["th", "st", "nd", "rd"], v = x % 100; return x + (s[(v - 20) % 10] || s[v] || s[0]); };
+
+/* ---------- Export a campaign (0.52.0) ----------
+ * Release 6 of the canvas redesign: one dialog for every way out of a
+ * campaign. Left, the choices; right, what you will get, with row counts
+ * from the background (positions need the answer text). The file is built
+ * in the background as text parts and zipped here.
+ */
+const EX_TABLES = [
+  ["answers", "Answers", "One row per prompt × engine × run", true],
+  ["mentions", "Brand mentions", "Position, mentions, what it was picked for", true],
+  ["pages", "Pages opened", "Every page read or cited, with its kind of site", false],
+  ["searches", "Engine searches", "The searches behind each answer", false],
+  ["products", "Product cards and stores", "Cards, prices, ratings and every store listed", false],
+  ["images", "Images", "Who supplied each image", false],
+  ["h2h", "Head to head", "You against each rival in every answer", false],
+];
+const EX_SUMMARY = [
+  ["Start here", "Contents, definitions, how to use the pickers", null], ["Overview", "Headline numbers, brands, engines, findings", null],
+  ["Trends", "Every brand across runs, line charts", "multi"], ["Brands", "Scorecard, engine heatmap, head to head", null],
+  ["Prompts", "Every prompt × brand; best rival", null], ["Answer types", "Shopping, informational, images, memory, local", null],
+  ["Sources", "Kinds of site, gaps, top 25 pages", "pages"], ["Products", "Card share, stores, images", "productsOrImages"],
+  ["Searches", "Searches per engine; every distinct search", "searches"], ["Run over run", "Your position per prompt and engine, run by run", "multi"],
+  ["Actions", "Missing prompts, gap sites, store fixes", null],
+];
+// The PDF report's pages (src/lib/campaignReport.js's REPORT_PAGES).
+const EX_PDF_PAGES = [
+  ["summary", "Summary", "Headline numbers, visibility by run, findings"],
+  ["brands", "Brands", "Scorecard, visibility per engine, head to head, backing"],
+  ["prompts", "Prompts", "Position on every prompt and engine; where you are missing"],
+  ["sources", "Sources", "Kinds of site, most-cited sites and pages, gaps"],
+  ["products", "Kinds of answer and products", "Card share, where cards send buyers, images"],
+  ["searches", "Engine searches", "Searches per engine and the most repeated ones"],
+  ["actions", "Actions and method", "Next steps, definitions, runs and the full prompt list"],
+];
+const EX_RAW = [["Answers", "answers", "tAnswers"], ["Mentions", "mentions", "tMentions"], ["Sources data", "pages", "tSources"], ["Engine searches", "searches", "tSearches"],
+  ["Product cards", "products", "tProducts"], ["Store offers", "stores", "tOffers"], ["Images", "images", "tImages"], ["Head to head", "h2h", "tH2H"]];
+const EX_CSV = [["answers.csv", "answers", "One row per prompt × engine × run"], ["mentions.csv", "mentions", "One row per tracked brand an answer named"],
+  ["pages.csv", "pages", "Every page opened; Cited = 1 when linked"], ["searches.csv", "searches", "Every search an engine ran"], ["products.csv", "products", "One row per product card"],
+  ["stores.csv", "stores", "One row per store a card lists"], ["images.csv", "images", "One row per image"], ["head_to_head.csv", "h2h", "One row per answer × rival"]];
+
+function openExportDialog(profile, ctx) {
+  document.getElementById("export-modal-backdrop")?.remove();
+  const runList = ctx.runList || [];
+  const st = {
+    format: "xlsx", scope: "all", engines: new Set(ctx.engines.map((e) => e.id)), inc: { pages: true, searches: true, products: true, images: true, h2h: true }, text: "excerpt", counts: null, filename: null, done: false,
+    pdfRun: runList[0] ? runList[0].id : null, sec: new Set(EX_PDF_PAGES.map(([k]) => k)),
+  };
+  const backdrop = el("div", { id: "export-modal-backdrop", className: "modal-backdrop" });
+  const modal = el("div", { className: "modal-content modal-wide ex-modal", role: "dialog", "aria-modal": "true", "aria-labelledby": "ex-title" });
+  const closeBtn = el("button", { className: "modal-close-btn", type: "button", title: "Close", "aria-label": "Close" }, "×");
+  const sub = el("div", { className: "muted small" });
+  modal.append(el("div", { className: "modal-header" }, el("div", {}, el("h3", { className: "modal-title", id: "ex-title" }, `Export ${profile.name || "campaign"}`), sub), closeBtn));
+  const fmtCol = el("section", { className: "ex-col ex-formats", "aria-label": "Format" });
+  const left = el("section", { className: "ex-col ex-choices", "aria-label": "Options" });
+  const right = el("section", { className: "ex-col ex-get", "aria-label": "What you get" });
+  modal.append(el("div", { className: "modal-body ex-body" }, fmtCol, left, right));
+  const fileName = el("span", { className: "ex-file" });
+  const fileMeta = el("span", { className: "muted small" });
+  const done = el("span", { className: "ex-done", role: "status" });
+  const cancel = el("button", { className: "btn sm ghost", type: "button" }, "Cancel");
+  const go = el("button", { className: "btn sm primary", type: "button", id: "ex-go" });
+  modal.append(el("div", { className: "modal-footer ex-footer" }, el("div", { className: "ex-file-box" }, fileName, fileMeta), done, el("div", { className: "ex-actions" }, cancel, go)));
+  backdrop.append(modal);
+  document.body.append(backdrop);
+  const close = wireModalDismiss(backdrop, modal);
+  closeBtn.onclick = close;
+  cancel.onclick = close;
+
+  const num = (v) => (v || 0).toLocaleString("en-US");
+  const n = (k) => (st.counts ? num(st.counts[k]) : "…");
+  const seg = (label, opts, cur, pick) => el("div", { className: "ex-seg", role: "radiogroup", "aria-label": label }, ...opts.map(([id, text]) => {
+    const b = el("button", { type: "button", className: `ex-seg-btn${cur === id ? " on" : ""}`, role: "radio", "aria-checked": cur === id ? "true" : "false" }, text);
+    b.onclick = () => pick(id);
+    return b;
+  }));
+  const tick = (on, locked) => el("span", { className: `ex-tick${on ? " on" : ""}${locked ? " locked" : ""}`, "aria-hidden": "true" }, on ? "✓" : "");
+  const group = (title, ...kids) => el("div", { className: "ex-group" }, el("h4", { className: "ex-h" }, title), ...kids);
+  const note = (text) => el("p", { className: "muted small ex-note" }, text);
+
+  async function refreshCounts() {
+    st.counts = null;
+    render();
+    const r = await send({ type: "geo-export", format: "counts", profileId: profile.id, scope: st.scope, engines: [...st.engines] });
+    st.counts = r && r.ok ? r.counts : null;
+    if (r && r.ok) st.filename = r.filename;
+    render();
+  }
+
+  function render() {
+    const runs = st.counts ? st.counts.runs : ctx.runs;
+    sub.textContent = `${ctx.engines.length} engine${ctx.engines.length === 1 ? "" : "s"} · ${ctx.runs} run${ctx.runs === 1 ? "" : "s"} · ${ctx.answers} answer${ctx.answers === 1 ? "" : "s"} in the run shown`;
+
+    // Format.
+    fmtCol.textContent = "";
+    const fmts = [
+      ["xlsx", "XLSX", "Excel workbook", ".xlsx · for analysts", "Charts, breakdowns and every raw row. Pick a run or engine inside the file and every sheet follows.", true],
+      ["pdf", "PDF", "PDF report", "A4 pages · to share", "Headline numbers, brands, prompts, sources, products, searches and next steps, for one run.", false],
+      ["csv", "CSV", "CSV tables", ".zip · one file per table", "The raw rows for BI tools, Python or R.", false],
+    ];
+    fmtCol.append(el("h4", { className: "ex-eyebrow" }, "Format"), el("div", { className: "ex-format-list", role: "radiogroup", "aria-label": "Format" }, ...fmts.map(([id, ext, name, subt, text, best]) => {
+      const b = el("button", { type: "button", className: `ex-format${st.format === id ? " on" : ""}`, role: "radio", "aria-checked": st.format === id ? "true" : "false", "data-format": id },
+        el("span", { className: `ex-ext ex-${id}`, "aria-hidden": "true" }, ext),
+        el("span", { className: "ex-format-text" }, el("b", {}, name, best ? el("span", { className: "ex-best" }, "Most complete") : null), el("span", { className: "ex-format-sub" }, subt), el("span", { className: "muted small" }, text)));
+      b.onclick = () => { st.format = id; st.done = false; render(); };
+      return b;
+    })));
+
+    // Options.
+    left.textContent = "";
+    const pdf = st.format === "pdf";
+    if (pdf) {
+      // One run per report. A few runs fit as buttons; more go in a list.
+      const pick = (id) => { st.pdfRun = id; st.done = false; render(); };
+      const label = (x, i) => `Run ${x.no} · ${x.date}${i === 0 ? " (latest)" : ""}`;
+      const picker = runList.length <= 3
+        ? seg("Report on", runList.map((x, i) => [x.id, label(x, i)]), st.pdfRun, pick)
+        : (() => {
+          const sel = el("select", { className: "filter ex-run-select", "aria-label": "Report on" }, ...runList.map((x, i) => el("option", { value: x.id }, label(x, i))));
+          sel.value = st.pdfRun;
+          sel.onchange = () => pick(sel.value);
+          return sel;
+        })();
+      const first = runList.length && runList[runList.length - 1].id === st.pdfRun;
+      left.append(group("Report on", picker, note(first ? "The first run has nothing to compare with, so changes are left out." : "Each number is compared with the run before it.")));
+    } else {
+      left.append(group("Runs", seg("Runs", [["all", `All ${ctx.runs} run${ctx.runs === 1 ? "" : "s"}`], ["latest", "Latest run only"]], st.scope, (id) => { st.scope = id; st.done = false; refreshCounts(); }),
+        note(st.format === "xlsx"
+          ? (st.scope === "all" && runs > 1 ? "Trends and Run over run compare the runs." : "Trends and Run over run need more than one run, so they are left out.")
+          : (st.scope === "all" ? "Every run, with a Run column to tell them apart." : `Only the latest run${ctx.latestDate ? `, ${ctx.latestDate}` : ""}.`))));
+    }
+
+    const engWrap = el("div", { className: "ex-chips", role: "group", "aria-label": "Engines" });
+    ctx.engines.forEach((e) => {
+      const on = st.engines.has(e.id);
+      const b = el("button", { type: "button", className: `ex-chip${on ? " on" : ""}`, "aria-pressed": on ? "true" : "false", "data-engine": e.id }, tick(on), engineIconEl(e.id), e.label);
+      b.onclick = () => { if (on && st.engines.size === 1) return; if (on) st.engines.delete(e.id); else st.engines.add(e.id); st.done = false; refreshCounts(); };
+      engWrap.append(b);
+    });
+    left.append(group("Engines", engWrap,
+      note(st.engines.size === ctx.engines.length ? `All ${ctx.engines.length} engine${ctx.engines.length === 1 ? "" : "s"}.` : st.engines.size === 1 ? "At least one engine stays on." : `${st.engines.size} of ${ctx.engines.length} engines.`)));
+
+    if (pdf) {
+      const list = el("div", { className: "ex-tables" });
+      EX_PDF_PAGES.forEach(([id, name, text]) => {
+        const locked = id === "summary";
+        const on = locked || st.sec.has(id);
+        const b = el("button", { type: "button", className: `ex-table${locked ? " locked" : ""}`, role: "checkbox", "aria-checked": on ? "true" : "false", "aria-disabled": locked ? "true" : "false", "data-page": id },
+          tick(on, locked), el("span", { className: "ex-table-text" }, el("b", {}, name), el("span", { className: "muted small" }, text)), el("span", { className: "ex-rows" }, locked ? "always" : on ? "" : "left out"));
+        if (!locked) b.onclick = () => { if (on) st.sec.delete(id); else st.sec.add(id); st.done = false; render(); };
+        list.append(b);
+      });
+      left.append(group("Pages in the report", list));
+    }
+    const tbl = el("div", { className: "ex-tables" });
+    if (!pdf) EX_TABLES.forEach(([id, name, text, locked]) => {
+      const on = locked || st.inc[id];
+      const rows = id === "products" ? (st.counts ? `${n("products")} cards · ${n("stores")} stores` : "…") : `${n(id)} rows`;
+      const b = el("button", { type: "button", className: `ex-table${locked ? " locked" : ""}`, role: "checkbox", "aria-checked": on ? "true" : "false", "aria-disabled": locked ? "true" : "false", "data-table": id },
+        tick(on, locked), el("span", { className: "ex-table-text" }, el("b", {}, name), el("span", { className: "muted small" }, locked ? `${text} · every summary needs it` : text)),
+        el("span", { className: "ex-rows" }, on ? rows : "left out"));
+      if (!locked) b.onclick = () => { st.inc[id] = !st.inc[id]; st.done = false; render(); };
+      tbl.append(b);
+    });
+    if (!pdf) {
+      left.append(group("Data to include", tbl));
+      left.append(group("Answer text", seg("Answer text", [["excerpt", "First 300 characters"], ["full", "Full answer"]], st.text, (id) => { st.text = id; st.done = false; render(); }),
+        note(st.text === "full" ? "Full text makes the file larger; Excel shows the first 32,767 characters of a cell." : "Enough to recognise the answer; open it in Analyze for the rest.")));
+    }
+
+    // What you get.
+    right.textContent = "";
+    const multi = st.scope === "all" && runs > 1;
+    const incOf = (k) => k === "answers" || k === "mentions" || (k === "stores" ? st.inc.products : st.inc[k]);
+    const head = (text) => el("div", { className: "ex-get-head" }, el("h4", { className: "ex-eyebrow" }, "What you get"), el("span", { className: "ex-get-sum" }, text));
+    const rowsOf = (keys) => (st.counts ? keys.reduce((a, k) => a + (st.counts[k] || 0), 0) : null);
+    if (pdf) {
+      const pages = EX_PDF_PAGES.filter(([id]) => id === "summary" || st.sec.has(id));
+      const r = runList.find((x) => x.id === st.pdfRun) || runList[0] || { no: 1 };
+      right.append(head(`${pages.length} section${pages.length === 1 ? "" : "s"}`),
+        el("ol", { className: "ex-pages" }, ...pages.map(([, name, text], i) => el("li", {}, el("span", { className: "ex-page-no", "aria-hidden": "true" }, String(i + 1)), el("b", {}, name), el("span", { className: "ex-li-text" }, text)))),
+        note("Each section starts on a new A4 page; a long table carries on over the next one. The report opens in a new tab and your browser’s print dialog saves it: choose “Save as PDF”."));
+      fileName.textContent = `${(st.filename && st.filename.xlsx ? st.filename.xlsx.replace(/-\d{4}-\d{2}-\d{2}\.xlsx$/, "") : "citoskeleton")}-run${r.no}.pdf`;
+      fileMeta.textContent = `Run ${r.no} · ${pages.length} section${pages.length === 1 ? "" : "s"} · A4`;
+    } else if (st.format === "xlsx") {
+      const sum = EX_SUMMARY.filter(([, , need]) => need === null || (need === "multi" ? multi : need === "productsOrImages" ? st.inc.products || st.inc.images : st.inc[need]));
+      const raw = EX_RAW.filter(([, k]) => incOf(k));
+      const total = rowsOf(raw.map(([, k]) => k));
+      right.append(head(`${sum.length} summaries · ${raw.length} raw tables`),
+        el("div", { className: "ex-list-h" }, "Summary sheets · charts and live formulas"),
+        el("ul", { className: "ex-list" }, ...sum.map(([name, text]) => el("li", {}, el("span", { className: "ex-dot sum", "aria-hidden": "true" }), el("b", {}, name), el("span", { className: "ex-li-text" }, text)))),
+        el("div", { className: "ex-list-h" }, "Raw tables · filter, sort, pivot"),
+        el("ul", { className: "ex-list raw" }, ...raw.map(([name, k, t]) => el("li", {}, el("span", { className: "ex-dot raw", "aria-hidden": "true" }), el("b", {}, name), el("span", { className: "ex-li-text" }, `Excel table ${t}`), el("span", { className: "ex-rows" }, n(k))))),
+        note("Every value is already calculated, so the file opens ready in Excel 2010 or later, Google Sheets, Numbers and LibreOffice."));
+      fileName.textContent = (st.filename && st.filename.xlsx) || "citoskeleton-….xlsx";
+      fileMeta.textContent = `${sum.length + raw.length} sheets${total === null ? "" : ` · ${num(total)} rows`} · opens in Excel, Google Sheets or Numbers`;
+    } else {
+      const files = EX_CSV.filter(([, k]) => incOf(k));
+      const total = rowsOf(files.map(([, k]) => k));
+      right.append(head(`${files.length} files`),
+        el("ul", { className: "ex-csv" }, ...files.map(([file, k, text]) => el("li", {}, el("b", {}, file),
+          el("span", { className: "ex-rows" }, st.counts ? `${n(k)} rows · ${st.counts.cols[k]} columns` : "…"), el("span", { className: "muted small ex-csv-text" }, text)))),
+        note("UTF-8 with a header row; 1 = yes and 0 = no in flag columns; dates in ISO format. Answer ID joins every file to answers.csv."));
+      fileName.textContent = (st.filename && st.filename.csv) || "citoskeleton-….zip";
+      fileMeta.textContent = `${files.length} files and a README${total === null ? "" : ` · ${num(total)} rows`}`;
+    }
+    done.textContent = !st.done ? "" : pdf ? "✓ Opened in a new tab. Choose “Save as PDF” in the print dialog." : "✓ Exported. Chrome saved it to your Downloads folder.";
+    done.hidden = !st.done;
+    go.textContent = st.format === "xlsx" ? "Export workbook" : pdf ? "Open PDF report" : "Export CSV files";
+    go.disabled = !!(st.counts && st.counts.answers === 0);
+  }
+
+  go.onclick = withBusy(go, "Building…", async () => {
+    if (st.format === "pdf") {
+      const q = new URLSearchParams({ kind: "campaign", profileId: profile.id, runId: st.pdfRun || "", engines: [...st.engines].join(","), sections: [...st.sec].join(","), print: "1" });
+      await chrome.tabs.create({ url: chrome.runtime.getURL(`ui/report.html?${q}`) });
+      st.done = true;
+      render();
+      return;
+    }
+    const x = await send({ type: "geo-export", format: st.format, profileId: profile.id, scope: st.scope, engines: [...st.engines], include: st.inc, text: st.text });
+    if (!x || !x.ok) { showToast((x && x.error) || "Couldn't build the export.", "error"); return; }
+    const zip = await makeZip(x.files);
+    const blob = st.format === "xlsx" ? new Blob([await zip.arrayBuffer()], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }) : zip;
+    const a = el("a", { href: URL.createObjectURL(blob), download: x.filename });
+    document.body.append(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+    st.done = true;
+    render();
+  });
+  render();
+  refreshCounts();
+}
+
+// A domain's drill-down, from the brand detail's source list: the same
+// roll-up the sources table opens, over the same filters.
+async function openCampaignDomain(profile, domain) {
+  const r = await send({ type: "geo-prompt-performance", profileId: profile.id, tags: cbTags, engines: geoEngineFilter, runId: cbRun && cbRun !== "all" ? cbRun : undefined });
+  if (!r.ok) { showToast(r.error || "Couldn't load that domain", "error"); return; }
+  const { domains } = aggregateSources(r.prompts || {}, new Map((GEO_PROMPTS || []).map((p) => [p.id, p.text])));
+  const row = domains.get(domain);
+  if (!row) { showToast(`No captured sources from ${domain} under the current filters.`, "error"); return; }
+  openDomainDetailModal(row, `Source breakdown · ${profile.name || "Untitled campaign"}`, "prompt");
 }
 
 function renderTrashedCampaigns() {
@@ -3761,10 +6428,10 @@ function renderCampaignEmptyState() {
     "A campaign tracks how your brand and competitors show up across LLM answers, for a fixed set of prompts. Set it up once, then lock it in so every run stays comparable."));
   const steps = el("ol", { className: "onboard-steps" });
   [
-    "Name the campaign and set your brand + competitors",
-    "Upload a CSV/Excel of prompts (or type them) and tag them",
-    "Choose which LLMs to track",
-    "Lock the campaign to start measuring",
+    "Name the campaign and add your brand and website",
+    "Pick which AI engines to track",
+    "Upload a CSV/Excel of prompts, or type them in",
+    "Add competitors (optional), then press Save & start tracking",
   ].forEach((s) => steps.append(el("li", {}, s)));
   box.append(steps);
   const cta = el("button", { className: "btn primary" }, "+ Create your first campaign");
@@ -3780,7 +6447,7 @@ function renderOnboardingBanner() {
   const box = el("div", { className: "warn-box onboard-banner" });
   box.append(el("div", {},
     el("b", {}, "Setting up a campaign — "),
-    "add prompts (upload a CSV/Excel or type them), tag them so you can filter later, pick which LLMs to track, then lock the campaign. Locking freezes the setup so your results stay comparable run over run."));
+    "fill in the five required items listed at the top, add competitors if you like, then press Save & start tracking. That locks the setup so your results stay comparable run over run."));
   const dismiss = el("button", { className: "linkbtn" }, "Got it, don't show this again");
   dismiss.onclick = () => {
     campaignOnboardDismissed = true;
@@ -3800,141 +6467,436 @@ function trashCampaign(profile) {
   };
 }
 
-/** Setup card: name/brand/competitors/LLMs + the embedded prompt manager.
- *  Used both for the unlocked wizard and the locked "Manage" panel (dis=true). */
+/* The five things a campaign can't be tracked without, in the order the
+   setup screen asks for them. Competitors are recommended, never required:
+   a campaign with none still measures the brand on its own. */
+const SETUP_REQUIRED = [
+  { key: "name", label: "Campaign name" },
+  { key: "brand", label: "Brand name" },
+  { key: "site", label: "Website" },
+  { key: "engine", label: "AI engine" },
+  { key: "prompt", label: "Prompt" },
+];
+
+// Line icons for the setup screen, drawn in currentColor so they follow the
+// button or chip they sit in, in both themes.
+const SETUP_ICON = {
+  trash: '<path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/>',
+  lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+  unlock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 7.5-2"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  alert: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5"/><path d="M12 16.5h.01"/>',
+  todo: '<circle cx="12" cy="12" r="8"/>',
+  upload: '<path d="M12 15V4"/><path d="M7 9l5-5 5 5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>',
+  pencil: '<path d="M4 20h4L19 9l-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  x: '<path d="M6 6l12 12M18 6L6 18"/>',
+  file: '<path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5"/><path d="M9 14h6"/><path d="M9 17h4"/>',
+};
+const setupIcon = (name, size = 16, weight = 2) => el("span", {
+  className: "cs-icon", "aria-hidden": "true",
+  innerHTML: `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${weight}" stroke-linecap="round" stroke-linejoin="round">${SETUP_ICON[name]}</svg>`,
+});
+
+// What "Download a template" saves: the header row rowsToPrompts() looks for
+// and two example rows, one with tags.
+const PROMPT_TEMPLATE_CSV = 'Prompt,Tags\n"best running shoes for flat feet","footwear, comparison"\n"which running shoe brands last the longest",\n';
+
+function setupCardHead(id, title, help, { pill, count } = {}) {
+  const titleRow = el("div", { className: "cs-title-row" }, el("h3", { id, className: "cs-h" }, title));
+  if (pill) titleRow.append(pill);
+  const text = el("div", { className: "cs-head-text" }, titleRow);
+  if (help) text.append(el("p", { className: "cs-help" }, help));
+  const head = el("div", { className: "cs-card-head" }, text);
+  if (count) head.append(count);
+  return head;
+}
+
+function setupPill(key) {
+  const pill = el("span", { className: "cs-pill" }, "Required");
+  pill.dataset.pill = key;
+  return pill;
+}
+
+function setupField({ id, label, value, placeholder, req, msg, disabled, optional }) {
+  const input = el("input", { type: "text", id, className: "cs-input", value: value || "", placeholder: placeholder || "", disabled: !!disabled, spellcheck: false });
+  const labelEl = el("label", { htmlFor: id, className: "cs-label" }, label);
+  if (optional) labelEl.append(el("span", { className: "cs-optional" }, " (optional)"));
+  const row = el("div", { className: "cs-label-row" }, labelEl);
+  if (req && !disabled) row.append(setupPill(req));
+  const wrap = el("div", { className: "cs-field" }, row, input);
+  let msgEl = null;
+  if (msg) {
+    msgEl = el("p", { className: "cs-msg", id: `${id}-msg`, hidden: true }, msg);
+    wrap.append(msgEl);
+  }
+  return { wrap, input, msgEl };
+}
+
+/** Campaign setup: a bar with the save actions and what's still required,
+ *  then three cards — details (name, brand, AI engines), prompts, and
+ *  competitors. Used for the unlocked setup and, read-only (dis=true), for a
+ *  locked campaign's "Manage" view.
+ *
+ *  The actions used to sit under the whole prompt table, and nothing said
+ *  which fields a campaign needs before it can be tracked; each competitor
+ *  was a full-width row, so every one added pushed the engine picker further
+ *  down. Now the bar is pinned at the top, lists the five required items,
+ *  and turns each missing one red — in the bar and on the box itself — when
+ *  Save & start tracking is pressed with gaps. Competitors are compact chips
+ *  in their own card, after the required things. */
 function renderCampaignSetup(profile, dis) {
-  const card = el("div", { className: "card" });
-  const head = el("div", { className: "card-header" }, el("h3", {}, dis ? "Manage campaign" : "Set up your campaign"));
-  // Everything typed into this form (name/brand/url/competitors/engines)
-  // lives only in these DOM inputs until "Save details" is clicked — reading
-  // collectFormValues() (defined below, once the inputs exist) is how every
-  // OTHER action in this card that touches the profile gets the values the
-  // user can actually see, instead of the `profile` argument, which is a
-  // snapshot from whenever this card was last rendered and goes stale the
-  // moment someone types. Locking against the stale snapshot silently
-  // dropped just-typed details (and could reject a just-picked engine pill
-  // as "none selected" because it was reading the old profile.engines);
-  // adding a prompt triggered loadGeo() -> a full re-render from the DB,
-  // which wiped anything typed here that had never been saved. Both are
-  // fixed by routing through collectFormValues() instead of `profile`.
-  let collectFormValues = () => profile; // reassigned below once inputs exist
-  const persistDetails = async () => send({ type: "geo-profile-save", profile: { ...profile, ...collectFormValues() } });
+  const draft = !dis && setupDraft && setupDraft.id === profile.id ? setupDraft : null;
+  const start = draft ? { ...profile, ...draft } : profile;
+  const root = el("section", { className: `cs${dis ? " cs-readonly" : ""}`, "aria-label": dis ? "Campaign setup" : "Set up your campaign" });
+
+  // Everything typed here lives only in these inputs until it's saved, so
+  // every action reads the form through collectFormValues() rather than the
+  // `profile` argument — a snapshot from the last render that goes stale the
+  // moment someone types. Locking against that snapshot once dropped
+  // just-typed details. Reassigned below, once the inputs exist.
+  let collectFormValues = () => profile;
+  let refresh = () => [];
+  const persistDetails = async () => {
+    const r = await send({ type: "geo-profile-save", profile: { ...profile, ...collectFormValues() } });
+    if (r.ok) setupDraft = null;
+    return r;
+  };
+  // Every prompt add, filter click and search keystroke in this tab rebuilds
+  // it from the database, which used to wipe whatever was typed here but not
+  // saved yet. The draft carries it across those re-renders.
+  const changed = () => {
+    if (!dis) setupDraft = { id: profile.id, ...collectFormValues(true) };
+    refresh();
+  };
+
+  /* ---- the bar ---- */
+  const bar = el("div", { className: "cs-bar" });
+  const titleText = el("h2", { className: "cs-bar-name" });
+  bar.append(el("div", { className: "cs-bar-title" }, titleText,
+    el("p", { className: "cs-bar-sub" }, dis
+      ? "Locked, so every run is measured the same way. Unlocking lets you change it, but results from before and after won't be directly comparable."
+      : "Save & start tracking locks the setup, so every run is measured the same way. You can unlock it later.")));
+
+  const reqButtons = {};
+  const segs = el("div", { className: "cs-segs", "aria-hidden": "true" });
+  const progText = el("span", { className: "cs-progress-text" });
+  const checkText = el("span", { className: "cs-progress-text" });
+  const nextBtn = el("button", { type: "button", className: "linkbtn cs-next" });
+  let saveBtn = null;
+  let draftBtn = null;
+  let saveLabel = null;
   if (!dis) {
-    const delBtn = el("button", { className: "btn sm ghost danger" }, "🗑 Delete campaign");
+    const delBtn = el("button", { type: "button", className: "cs-delete", "aria-label": "Delete campaign", title: "Delete campaign" },
+      setupIcon("trash"), el("span", { className: "cs-delete-label" }, "Delete"));
     delBtn.onclick = trashCampaign(profile);
-    const lockBtn = el("button", { className: "btn sm primary" }, "🔒 Lock & start tracking");
-    lockBtn.onclick = async () => {
-      const current = collectFormValues();
-      if (!GEO_PROMPTS.length) return showToast("Add at least one prompt before locking.", "error");
-      if (!current.engines.length) return showToast("Choose at least one LLM to track before locking.", "error");
-      if (!confirm("Lock this campaign?\n\nLocking freezes the brand set, competitors, prompts and LLMs so your trend data stays comparable day to day. You can unlock any time.")) return;
-      const r = await send({ type: "geo-profile-save", profile: { ...profile, ...current, locked: true }, unlockOverride: true });
-      if (r.ok) loadGeo(); else showToast(r.error, "error");
-    };
-    head.append(delBtn, lockBtn);
+    draftBtn = el("button", { type: "button", className: "btn ghost cs-draft" }, "Save draft");
+    saveLabel = el("span", {}, "Save & start tracking");
+    saveBtn = el("button", { type: "button", className: "btn primary cs-save" }, setupIcon("lock", 15, 2.2), saveLabel);
+    bar.append(delBtn, el("div", { className: "cs-actions" }, draftBtn, saveBtn));
+
+    const reqList = el("ul", { className: "cs-req-list" });
+    SETUP_REQUIRED.forEach((r) => {
+      const b = el("button", { type: "button", className: "cs-req" }, el("span", { className: "cs-req-icon" }), el("span", {}, r.label));
+      b.dataset.req = r.key;
+      b.onclick = () => goTo(r.key);
+      reqButtons[r.key] = b;
+      reqList.append(el("li", {}, b));
+      segs.append(el("span", { className: "cs-seg" }));
+    });
+    bar.append(
+      el("div", { className: "cs-checklist" }, el("span", { className: "cs-checklist-label" }, "Required to start tracking"), reqList, checkText),
+      el("div", { className: "cs-progress" }, progText, segs, nextBtn));
   } else {
-    const unlockBtn = el("button", { className: "btn sm ghost" }, "🔓 Unlock to edit");
+    const unlockBtn = el("button", { type: "button", className: "btn ghost cs-unlock" }, setupIcon("unlock", 15), el("span", {}, "Unlock to edit"));
     unlockBtn.onclick = async () => {
       if (!confirm("Unlock and allow edits?\n\nChanging the brand set, prompts or LLMs changes what the metrics are measured against — numbers before and after this point are NOT directly comparable.")) return;
       const r = await send({ type: "geo-profile-save", profile: { ...profile, locked: false }, unlockOverride: true });
       if (r.ok) loadGeo(); else showToast(r.error, "error");
     };
-    head.append(unlockBtn);
+    bar.append(el("div", { className: "cs-actions" }, unlockBtn));
   }
-  card.append(head);
+  root.append(bar);
 
-  const nameIn = el("input", { type: "text", value: profile.name || "", placeholder: "Campaign name", disabled: dis });
-  const brandIn = el("input", { type: "text", value: profile.brand?.name || "", placeholder: "Your brand name", disabled: dis });
-  const urlIn = el("input", { type: "text", value: profile.brand?.url || "", placeholder: "yourbrand.com", disabled: dis });
-  card.append(el("div", { className: "proj-row" }, nameIn));
-  card.append(el("label", { className: "muted", style: "display:block;margin-top:8px" }, "Your brand"));
-  card.append(el("div", { className: "proj-row" }, brandIn, urlIn));
+  const body = el("div", { className: "cs-body" });
+  const errors = el("div", { className: "cs-errors", role: "alert", hidden: true });
+  const grid = el("div", { className: "cs-grid" });
+  body.append(errors, grid);
+  root.append(body);
 
-  // Competitors: a repeatable name+url row per competitor, rather than a
-  // freeform "name, url per line" textarea — less error-prone to fill in and
-  // to read back.
-  card.append(el("label", { className: "muted", style: "display:block;margin-top:14px" }, "Competitors"));
-  const compWrap = el("div", { className: "competitor-rows" });
-  const addCompetitorRow = (name = "", url = "") => {
-    const row = el("div", { className: "proj-row competitor-row" });
-    row.append(
-      el("input", { type: "text", placeholder: "Competitor name", value: name, disabled: dis, className: "comp-name" }),
-      el("input", { type: "text", placeholder: "competitor.com", value: url, disabled: dis, className: "comp-url" }),
-    );
-    if (!dis) {
-      const rm = el("button", { className: "btn sm ghost danger", title: "Remove competitor" }, "✕");
-      rm.onclick = () => row.remove();
-      row.append(rm);
-    }
-    compWrap.append(row);
-  };
-  (profile.competitors || []).forEach((c) => addCompetitorRow(c.name, c.url));
-  if (dis && !(profile.competitors || []).length) compWrap.append(el("div", { className: "muted small" }, "No competitors added."));
-  card.append(compWrap);
-  if (!dis) {
-    const addCompBtn = el("button", { className: "btn sm ghost", style: "margin-top:8px" }, "➕ Add competitor");
-    addCompBtn.onclick = () => addCompetitorRow();
-    card.append(addCompBtn);
-  }
+  /* ---- campaign details ---- */
+  const details = el("section", { className: "card cs-card cs-card-details", "aria-labelledby": "cs-details-h" });
+  details.append(setupCardHead("cs-details-h", "Campaign details", dis ? null : "Everything here is needed before you can start tracking."));
+  const nameF = setupField({ id: "cs-name", label: "Campaign name", value: start.name, placeholder: "e.g. Running shoes — Q4", req: "name", msg: "Give the campaign a name so you can find it later.", disabled: dis });
+  const brandF = setupField({ id: "cs-brand", label: "Brand name", value: start.brand?.name, placeholder: "e.g. Northwind", req: "brand", msg: "Add your brand name.", disabled: dis });
+  const siteF = setupField({ id: "cs-site", label: "Website", value: start.brand?.url, placeholder: "e.g. northwind.com", req: "site", msg: "Add your website, e.g. northwind.com.", disabled: dis });
+  details.append(nameF.wrap, el("div", { className: "cs-block" },
+    el("div", { className: "cs-block-head" },
+      el("span", { className: "cs-label cs-label-lg" }, "Your brand"),
+      el("p", { className: "cs-help" }, "Answers are scanned for this name, and cited pages are matched to this website.")),
+    el("div", { className: "cs-pair" }, brandF.wrap, siteF.wrap)));
 
-  // LLMs to track: an icon-forward selectable grid instead of plain checkboxes.
-  card.append(el("label", { className: "muted", style: "display:block;margin-top:16px" }, "LLMs to track"));
-  const engCount = el("div", { className: "muted small", style: "margin-top:6px" });
-  const engGrid = el("div", { className: "llm-grid" });
+  const engCount = el("span", {});
+  const engMsg = el("p", { className: "cs-msg", id: "cs-engines-msg", hidden: true }, "Pick at least one AI engine to track.");
+  const engLabelRow = el("div", { className: "cs-label-row" }, el("span", { className: "cs-label cs-label-lg", id: "cs-eng-label" }, "AI engines to track"));
+  if (!dis) engLabelRow.append(setupPill("engine"));
+  const engGroup = el("div", { className: "cs-group", id: "cs-engines", role: "group", "aria-labelledby": "cs-eng-label" },
+    el("div", { className: "cs-block-head" }, engLabelRow, el("p", { className: "cs-help" }, "Every prompt is sent to each engine you pick. ", engCount)));
+  const engGrid = el("div", { className: "cs-engine-grid" });
+  const startEngines = new Set(start.engines || []);
   ENGINES.forEach((e) => {
-    const selected = (profile.engines || []).includes(e.id);
-    const pillDisabled = dis || !e.available;
-    const pill = el("div", {
-      className: `llm-pill${selected ? " selected" : ""}${pillDisabled ? " disabled" : ""}`,
-      role: "checkbox", "aria-checked": String(selected), tabIndex: pillDisabled ? -1 : 0,
+    const off = dis || !e.available;
+    const tile = el("button", {
+      type: "button", className: "cs-engine", disabled: off,
+      "aria-pressed": String(e.available && startEngines.has(e.id)),
     });
-    pill.dataset.value = e.id;
-    pill.append(engineIconEl(e.id));
-    pill.append(el("span", { className: "llm-label" }, e.label));
-    // Unavailable engines are shown disabled rather than hidden: the roadmap
-    // stays visible, and a metric can never silently under-count because a
-    // pill looked selectable but drove nothing.
-    if (!e.available) pill.append(el("span", { className: "soon" }, e.note || "coming soon"));
-    else pill.append(el("span", { className: "llm-check" }, "✓"));
-    if (!pillDisabled) {
-      const toggle = () => {
-        pill.classList.toggle("selected");
-        pill.setAttribute("aria-checked", String(pill.classList.contains("selected")));
-        engCount.textContent = `${engGrid.querySelectorAll(".llm-pill.selected").length} of ${ENGINES.length} selected`;
+    tile.dataset.value = e.id;
+    tile.append(
+      el("span", { className: "cs-engine-mark" }, engineIconEl(e.id)),
+      el("span", { className: "cs-engine-text" },
+        el("span", { className: "cs-engine-name" }, e.label),
+        el("span", { className: "cs-engine-host" }, e.available ? e.host : (e.note || "coming soon"))),
+      el("span", { className: "cs-engine-check" }, setupIcon("check", 12, 3.2)));
+    if (!off) {
+      tile.onclick = () => {
+        tile.setAttribute("aria-pressed", String(tile.getAttribute("aria-pressed") !== "true"));
+        changed();
       };
-      pill.onclick = toggle;
-      pill.onkeydown = (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggle(); } };
     }
-    engGrid.append(pill);
+    engGrid.append(tile);
   });
-  engCount.textContent = `${(profile.engines || []).length} of ${ENGINES.length} selected`;
-  card.append(engGrid, engCount);
+  engGroup.append(engGrid, engMsg);
+  details.append(engGroup);
 
-  // Now that every input exists, collectFormValues can read what's actually
-  // on screen — this is what lockBtn (above) and persistDetails (used by
-  // both Save and, below, adding a prompt) both call instead of trusting
-  // the possibly-stale `profile` argument.
-  collectFormValues = () => ({
-    name: nameIn.value.trim() || profile.name,
-    brand: { name: brandIn.value.trim(), url: urlIn.value.trim() },
-    competitors: [...compWrap.querySelectorAll(".competitor-row")]
-      .map((row) => ({ name: row.querySelector(".comp-name").value.trim(), url: row.querySelector(".comp-url").value.trim() }))
-      .filter((c) => c.name),
-    engines: [...engGrid.querySelectorAll(".llm-pill.selected")].map((p) => p.dataset.value),
+  // What the board leads with (0.55.0, the canvas's setup). Optional: every
+  // answer is captured in full whatever is picked. A new campaign starts on
+  // brand mentions and citations; one from before the choice shows every
+  // view, so its board doesn't change under it.
+  const startMeasure = start.measure || (profile.locked ? { citations: true, products: true, images: true, local: true } : { citations: true });
+  const msGroup = el("div", { className: "cs-group", id: "cs-measure", role: "group", "aria-labelledby": "cs-ms-label" },
+    el("div", { className: "cs-block-head" },
+      el("div", { className: "cs-label-row" }, el("span", { className: "cs-label cs-label-lg", id: "cs-ms-label" }, "What this campaign should measure"), el("span", { className: "cs-pill" }, "Optional")),
+      el("p", { className: "cs-help" }, "Sets the headline numbers on the campaign’s board. Every answer is still captured in full, and you can switch later.")));
+  const msGrid = el("div", { className: "cs-measure-grid" });
+  CB_FOCUS.forEach(([id, , glyph]) => {
+    const fixed = id === "mentions";
+    const on = fixed || !!startMeasure[id];
+    const [label, sub] = CS_MEASURE[id];
+    const tag = el("span", { className: "cs-measure-tag" }, fixed ? "Always on" : on ? "On" : "Off");
+    const b = el("button", { type: "button", className: "cs-measure", disabled: dis || fixed, "aria-pressed": String(on) },
+      el("span", { className: "cs-measure-icon" }, glyphEl(glyph, 18)),
+      el("span", { className: "cs-measure-text" }, el("span", { className: "cs-measure-name" }, label), el("span", { className: "cs-measure-sub" }, sub)), tag);
+    b.dataset.value = id;
+    if (!dis && !fixed) b.onclick = () => { const v = b.getAttribute("aria-pressed") !== "true"; b.setAttribute("aria-pressed", String(v)); tag.textContent = v ? "On" : "Off"; changed(); };
+    msGrid.append(b);
   });
+  msGroup.append(msGrid);
+  details.append(msGroup);
+
+  /* ---- prompts ---- */
+  const promptsCard = el("section", { className: "card cs-card cs-card-prompts", "aria-labelledby": "cs-prompts-h" });
+  promptsCard.append(renderPromptManager(profile, dis, persistDetails));
+
+  /* ---- competitors ---- */
+  let comps = (start.competitors || []).map((c) => ({ name: c.name, url: c.url || "" }));
+  const compCount = el("span", { className: "cs-count" });
+  const compsCard = el("section", { className: "card cs-card cs-card-comps", "aria-labelledby": "cs-comps-h" });
+  compsCard.append(setupCardHead("cs-comps-h", "Competitors",
+    dis ? null : "Compared with your brand in every answer. Optional, add as many as you like.",
+    { pill: dis ? null : el("span", { className: "cs-pill cs-pill-soft" }, "Recommended"), count: compCount }));
+  const compList = el("ul", { className: "cs-comp-list", "aria-label": "Competitors" });
+  const compEmpty = el("p", { className: "cs-empty-line" }, dis ? "No competitors added." : "No competitors yet. Your brand is still tracked without them.");
+  let compNameF = null;
+  const drawComps = () => {
+    compList.textContent = "";
+    comps.forEach((c, i) => {
+      const chip = el("li", { className: "cs-comp-chip" }, el("span", { className: "cs-comp-name" }, c.name));
+      if (c.url) chip.append(el("span", { className: "cs-comp-site" }, c.url));
+      if (!dis) {
+        const rm = el("button", { type: "button", className: "cs-comp-remove", "aria-label": `Remove ${c.name}`, title: `Remove ${c.name}` }, setupIcon("x", 13, 2.6));
+        rm.onclick = () => {
+          comps = comps.filter((_, j) => j !== i);
+          drawComps();
+          changed();
+          compNameF.input.focus();
+        };
+        chip.append(rm);
+      }
+      compList.append(chip);
+    });
+    compList.hidden = !comps.length;
+    compEmpty.hidden = !!comps.length;
+    compCount.textContent = `${comps.length} added`;
+    compCount.hidden = !comps.length;
+  };
+  if (!dis) {
+    compNameF = setupField({ id: "cs-comp-name", label: "Name", placeholder: "e.g. Contoso" });
+    const compSiteF = setupField({ id: "cs-comp-site", label: "Website", optional: true, placeholder: "e.g. contoso.com" });
+    const addBtn = el("button", { type: "button", className: "btn ghost cs-comp-add", disabled: true }, setupIcon("plus", 14, 2.4), el("span", {}, "Add competitor"));
+    const compHint = el("p", { className: "cs-hint", role: "status", hidden: true });
+    const addComp = () => {
+      const name = compNameF.input.value.trim();
+      if (!name) return;
+      const key = name.toLowerCase();
+      let why = "";
+      if (comps.some((c) => c.name.toLowerCase() === key)) why = `${name} is already in the list.`;
+      else if (key === brandF.input.value.trim().toLowerCase()) why = "That's your own brand — it's tracked already.";
+      if (why) { compHint.textContent = why; compHint.hidden = false; return; }
+      comps = comps.concat([{ name, url: compSiteF.input.value.trim() }]);
+      compNameF.input.value = "";
+      compSiteF.input.value = "";
+      addBtn.disabled = true;
+      compHint.hidden = true;
+      drawComps();
+      changed();
+      compNameF.input.focus();
+    };
+    addBtn.onclick = addComp;
+    const onKey = (ev) => { if (ev.key === "Enter") { ev.preventDefault(); addComp(); } };
+    compNameF.input.onkeydown = onKey;
+    compSiteF.input.onkeydown = onKey;
+    compNameF.input.oninput = () => { addBtn.disabled = !compNameF.input.value.trim(); compHint.hidden = true; };
+    compsCard.append(el("div", { className: "cs-comp-form" }, compNameF.wrap, compSiteF.wrap, addBtn), compHint);
+  }
+  compsCard.append(compList, compEmpty);
+  drawComps();
+
+  // DOM order is the one-column order: required things first.
+  grid.append(details, promptsCard, compsCard);
+
+  /* ---- reading and checking the form ---- */
+  collectFormValues = (raw = false) => ({
+    name: raw ? nameF.input.value : (nameF.input.value.trim() || profile.name),
+    brand: { name: brandF.input.value.trim(), url: siteF.input.value.trim() },
+    competitors: comps.map((c) => ({ ...c })),
+    engines: [...engGrid.querySelectorAll('.cs-engine[aria-pressed="true"]')].map((t) => t.dataset.value),
+    measure: Object.fromEntries(["citations", "products", "images", "local"].map((k) => [k, msGrid.querySelector(`.cs-measure[data-value="${k}"]`)?.getAttribute("aria-pressed") === "true"])),
+  });
+  [nameF, brandF, siteF].forEach((f) => { f.input.oninput = changed; });
+
+  const fields = { name: nameF, brand: brandF, site: siteF };
+  const goTo = (key) => {
+    const box = key === "engine" ? engGroup : key === "prompt" ? root.querySelector("#cs-prompts") : fields[key]?.input;
+    const target = key === "engine" ? engGrid.querySelector(".cs-engine:not(:disabled)")
+      : key === "prompt" ? root.querySelector(".cs-mode") : fields[key]?.input;
+    const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (box) box.scrollIntoView({ block: "center", behavior: smooth ? "smooth" : "auto" });
+    if (target) target.focus({ preventScroll: true });
+  };
+  const markField = (f, bad) => {
+    f.wrap.classList.toggle("is-invalid", bad);
+    if (bad) { f.input.setAttribute("aria-invalid", "true"); f.input.setAttribute("aria-describedby", f.msgEl.id); }
+    else { f.input.removeAttribute("aria-invalid"); f.input.removeAttribute("aria-describedby"); }
+    f.msgEl.hidden = !bad;
+  };
+  const markGroup = (group, bad) => {
+    if (!group) return;
+    group.classList.toggle("is-invalid", bad);
+    const msg = group.querySelector(":scope > .cs-msg");
+    if (msg) msg.hidden = !bad;
+  };
+  let shownErrors = "";
+  refresh = () => {
+    const v = collectFormValues(true);
+    const ok = {
+      name: !!v.name.trim(),
+      brand: !!v.brand.name,
+      site: !!v.brand.url,
+      engine: v.engines.length > 0,
+      prompt: GEO_PROMPTS.some((p) => p.active !== false),
+    };
+    const missing = SETUP_REQUIRED.filter((r) => !ok[r.key]);
+    titleText.textContent = v.name.trim() || "New campaign";
+    engCount.textContent = `${v.engines.length} of ${ENGINES.length} selected.`;
+    if (dis) return missing;
+
+    const attempted = setupAttemptedFor === profile.id;
+    SETUP_REQUIRED.forEach((r, i) => {
+      const state = ok[r.key] ? "done" : attempted ? "bad" : "todo";
+      const b = reqButtons[r.key];
+      b.dataset.state = state;
+      b.setAttribute("aria-label", `${r.label}: ${state === "done" ? "done" : "still needed"}`);
+      b.querySelector(".cs-req-icon").replaceChildren(setupIcon(state === "done" ? "check" : state === "bad" ? "alert" : "todo", 13, state === "done" ? 3 : 2.2));
+      segs.children[i].dataset.state = state;
+      root.querySelectorAll(`.cs-pill[data-pill="${r.key}"]`).forEach((p) => p.classList.toggle("is-bad", state === "bad"));
+    });
+    Object.entries(fields).forEach(([key, f]) => markField(f, attempted && !ok[key]));
+    markGroup(engGroup, attempted && !ok.engine);
+    markGroup(root.querySelector("#cs-prompts"), attempted && !ok.prompt);
+
+    const n = SETUP_REQUIRED.length;
+    const text = !missing.length ? `All ${n} required items done`
+      : attempted ? `${missing.length} required item${missing.length === 1 ? "" : "s"} missing`
+      : `${n - missing.length} of ${n} required items done`;
+    progText.textContent = text;
+    checkText.textContent = text;
+    bar.dataset.state = !missing.length ? "ready" : attempted ? "bad" : "todo";
+    nextBtn.hidden = !missing.length;
+    if (missing.length) {
+      nextBtn.textContent = `Next: ${missing[0].label}`;
+      nextBtn.onclick = () => goTo(missing[0].key);
+    }
+
+    // Rebuilt only when what's missing changes: it's a live region, and
+    // redrawing it on every keystroke would re-announce it each time.
+    const errKey = attempted ? missing.map((m) => m.key).join() : "";
+    if (errKey !== shownErrors) {
+      shownErrors = errKey;
+      errors.textContent = "";
+      errors.hidden = !errKey;
+      if (errKey) {
+        const links = el("div", { className: "cs-errors-links" });
+        missing.forEach((m) => {
+          const b = el("button", { type: "button", className: "linkbtn" }, m.label);
+          b.onclick = () => goTo(m.key);
+          links.append(b);
+        });
+        errors.append(setupIcon("alert", 18), el("div", { className: "cs-errors-text" },
+          el("p", { className: "cs-errors-title" }, `Add ${missing.length === 1 ? "1 more thing" : `${missing.length} more things`} before you start tracking:`),
+          links));
+      }
+    }
+    return missing;
+  };
 
   if (!dis) {
-    const save = el("button", { className: "btn sm" }, "💾 Save details");
-    save.onclick = async () => {
-      const r = await persistDetails();
-      if (r.ok) loadGeo(); else showToast(r.error, "error");
+    saveBtn.onclick = async () => {
+      if (saveBtn.disabled) return;
+      setupAttemptedFor = profile.id;
+      const missing = refresh();
+      if (missing.length) { goTo(missing[0].key); return; }
+      saveBtn.disabled = true;
+      draftBtn.disabled = true;
+      saveLabel.textContent = "Saving…";
+      try {
+        const r = await send({ type: "geo-profile-save", profile: { ...profile, ...collectFormValues(), locked: true }, unlockOverride: true });
+        if (r.ok) {
+          setupAttemptedFor = null;
+          setupDraft = null;
+          showToast("Campaign saved and locked. Start a run whenever you're ready.");
+          loadGeo();
+        } else showToast(r.error, "error");
+      } finally {
+        saveBtn.disabled = false;
+        draftBtn.disabled = false;
+        saveLabel.textContent = "Save & start tracking";
+      }
     };
-    card.append(el("div", { className: "ft-actions", style: "margin-top:10px" }, save));
+    draftBtn.onclick = async () => {
+      if (draftBtn.disabled) return;
+      draftBtn.disabled = true;
+      draftBtn.textContent = "Saving…";
+      try {
+        const r = await persistDetails();
+        if (r.ok) { showToast("Draft saved. Nothing is locked yet."); loadGeo(); } else showToast(r.error, "error");
+      } finally {
+        draftBtn.disabled = false;
+        draftBtn.textContent = "Save draft";
+      }
+    };
   }
-
-  card.append(el("div", { className: "wizard-divider" }));
-  card.append(renderPromptManager(profile, dis, persistDetails));
-  return card;
+  refresh();
+  return root;
 }
 
 /* Real brand marks, as inline SVG, instead of the stand-in emoji this used to
@@ -4025,75 +6987,154 @@ function reportAddResult(r) {
   );
 }
 
-/** The prompts table: CSV/Excel upload (primary), manual entry (fallback),
- *  search, tag-filter sidebar (with per-tag rename/delete), "only unassigned"
- *  toggle, inline tag editing, and bulk select for pause/remove. */
+/** The prompts card: two ways in (upload a file, or type them), then the
+ *  prompts table — search, tag-filter sidebar (with per-tag rename/delete),
+ *  "only unassigned" toggle, inline tag editing, and bulk select for
+ *  pause/remove. Upload used to be a small button with manual entry hidden
+ *  behind an "or type prompts manually" link; they're now two equal choices. */
 function renderPromptManager(profile, dis, persistDetails) {
   const wrap = el("div", { className: "prompt-manager" });
-  wrap.append(el("div", { className: "card-header", style: "margin-top:0" },
-    el("h3", {}, "Prompts"),
-    el("span", { className: "muted small" }, `${GEO_PROMPTS.filter((p) => p.active !== false).length} active of ${GEO_PROMPTS.length}`)));
+  const activeCount = GEO_PROMPTS.filter((p) => p.active !== false).length;
+  wrap.append(setupCardHead("cs-prompts-h", "Prompts",
+    dis ? null : "The questions people ask AI engines. Add at least one.", {
+      pill: dis ? null : setupPill("prompt"),
+      count: el("span", { className: "cs-count" }, activeCount === GEO_PROMPTS.length
+        ? `${GEO_PROMPTS.length} prompt${GEO_PROMPTS.length === 1 ? "" : "s"}`
+        : `${activeCount} active of ${GEO_PROMPTS.length}`),
+    }));
 
   if (!dis) {
-    const fileInput = el("input", { type: "file", accept: ".csv,.tsv,.xlsx", style: "display:none" });
-    const uploadBtn = el("button", { className: "btn sm" }, "⬆ Upload prompts (CSV/Excel)");
-    uploadBtn.onclick = () => fileInput.click();
-    fileInput.onchange = async () => {
-      const file = fileInput.files[0];
-      if (!file) return;
-      try {
-        const rows = /\.xlsx$/i.test(file.name) ? await parseXlsx(await file.arrayBuffer()) : parseCsv(await file.text());
-        const prompts = rowsToPrompts(rows);
-        if (!prompts.length) { showToast("No prompts found in that file — make sure column A has your prompts.", "error"); return; }
-        // Adding prompts triggers loadGeo() below, a full re-fetch-and-render
-        // — which used to silently wipe any campaign name/brand/url/
-        // competitor/engine edits still sitting unsaved in this same card's
-        // inputs. Persist them first so nothing typed but not yet saved is
-        // lost just because the user uploaded a prompt list next.
-        const detailsSave = await persistDetails();
-        if (!detailsSave.ok) { showToast(`Couldn't save campaign details: ${detailsSave.error}`, "error"); return; }
-        const r = await send({ type: "geo-prompt-bulk-add-rows", profileId: profile.id, rows: prompts });
-        fileInput.value = "";
-        if (r.ok) { reportAddResult(r); loadGeo(); } else showToast(r.error, "error");
-      } catch (err) {
-        showToast(`Couldn't read that file: ${err.message}`, "error");
-      }
+    // Adding prompts re-fetches and re-renders the whole tab, so whatever is
+    // still unsaved in the campaign details is saved first rather than lost.
+    const addRows = async (rows, verb) => {
+      const detailsSave = await persistDetails();
+      if (!detailsSave.ok) { showToast(`Couldn't save campaign details: ${detailsSave.error}`, "error"); return false; }
+      const r = await send({ type: "geo-prompt-bulk-add-rows", profileId: profile.id, rows });
+      if (!r.ok) { showToast(r.error, "error"); return false; }
+      const dup = (r.duplicates || []).length;
+      promptAddNote = {
+        id: profile.id,
+        text: `${verb} ${r.added} prompt${r.added === 1 ? "" : "s"}${dup ? ` · skipped ${dup} already in this campaign` : ""}`,
+      };
+      reportAddResult(r);
+      loadGeo();
+      return true;
     };
-    wrap.append(el("div", { className: "proj-row" },
-      uploadBtn,
-      el("span", { className: "muted small" }, "Column A = prompt, column B = tags (comma-separated)"),
-      fileInput));
 
-    const manualToggle = el("button", { className: "linkbtn" }, "or type prompts manually");
-    const manualBox = el("div", { style: "display:none; margin-top:8px" });
-    const ta = el("textarea", {
-      rows: 4,
-      placeholder: "One prompt per line — add tags after a comma…\nbest trading app in India, finance, beginner\nbest broker for beginners, finance",
-    });
-    const addBtn = el("button", { className: "btn sm" }, "➕ Add prompts");
-    addBtn.onclick = async () => {
-      const rows = ta.value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((line) => {
-        const parts = line.split(",");
-        const text = (parts.shift() || "").trim();
-        const tags = parts.map((t) => t.trim()).filter(Boolean);
+    const buildUpload = () => {
+      const fileInput = el("input", { type: "file", accept: ".csv,.tsv,.xlsx", hidden: true });
+      const importFile = async (file) => {
+        if (!file) return;
+        if (!/\.(csv|tsv|xlsx)$/i.test(file.name)) {
+          showToast("Use a .csv, .tsv or .xlsx file. An older .xls file needs saving as .xlsx first.", "error");
+          return;
+        }
+        try {
+          const rows = /\.xlsx$/i.test(file.name) ? await parseXlsx(await file.arrayBuffer()) : parseCsv(await file.text());
+          const prompts = rowsToPrompts(rows);
+          if (!prompts.length) { showToast("No prompts found in that file — make sure column A has your prompts.", "error"); return; }
+          await addRows(prompts, "Imported");
+        } catch (err) {
+          showToast(`Couldn't read that file: ${err.message}`, "error");
+        } finally {
+          fileInput.value = "";
+        }
+      };
+      fileInput.onchange = () => importFile(fileInput.files[0]);
+      const choose = el("button", { type: "button", className: "btn primary" }, "Choose file");
+      choose.onclick = () => fileInput.click();
+      const template = el("button", { type: "button", className: "linkbtn" }, "Download a template");
+      template.onclick = () => download("prompts-template.csv", PROMPT_TEMPLATE_CSV, "text/csv");
+      const drop = el("div", { className: "cs-drop" },
+        setupIcon("file", 26, 1.6),
+        el("p", { className: "cs-drop-title" }, "Drop a .csv, .tsv or .xlsx file here"),
+        el("div", { className: "cs-drop-actions" }, choose, template),
+        fileInput);
+      drop.ondragover = (ev) => { ev.preventDefault(); drop.classList.add("is-over"); };
+      drop.ondragleave = () => drop.classList.remove("is-over");
+      drop.ondrop = (ev) => { ev.preventDefault(); drop.classList.remove("is-over"); importFile(ev.dataTransfer.files[0]); };
+      const format = el("table", { className: "cs-format" },
+        el("thead", {}, el("tr", {}, el("th", {}, "A · Prompt"), el("th", {}, "B · Tags (optional)"))),
+        el("tbody", {}, el("tr", {}, el("td", {}, "best running shoes for flat feet"), el("td", {}, "footwear, comparison"))));
+      return el("div", { className: "cs-mode-panel" }, drop, format);
+    };
+
+    const buildManual = () => {
+      const ta = el("textarea", {
+        id: "cs-manual", className: "cs-textarea", rows: 5,
+        placeholder: "One prompt per line — add tags after a | (pipe)…\nbest trading app in India | finance, beginner\nbest broker for beginners | finance",
+      });
+      // Reported: a long prompt's own commas were being read as tag
+      // separators, turning most of the sentence into tags — splitting on
+      // EVERY comma in the line assumed a short "prompt, tag, tag" shape,
+      // but a real prompt ("best phones under 20k, with a good camera and
+      // battery") uses commas as ordinary punctuation just as often. A pipe
+      // never appears in normal prose, so only an explicit `| tag, tag`
+      // suffix is treated as tags now — a comma in the prompt itself is
+      // just a comma, however long the prompt runs.
+      const parse = () => ta.value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((line) => {
+        const bar = line.indexOf("|");
+        const text = (bar === -1 ? line : line.slice(0, bar)).trim();
+        const tags = bar === -1 ? [] : line.slice(bar + 1).split(",").map((t) => t.trim()).filter(Boolean);
         return { text, tags };
       }).filter((r) => r.text);
-      if (!rows.length) return;
-      // Same reasoning as the upload path above: save whatever's currently
-      // in the campaign-details fields before the loadGeo() a successful
-      // add triggers, so it isn't wiped out unsaved.
-      const detailsSave = await persistDetails();
-      if (!detailsSave.ok) { showToast(`Couldn't save campaign details: ${detailsSave.error}`, "error"); return; }
-      const r = await send({ type: "geo-prompt-bulk-add-rows", profileId: profile.id, rows });
-      if (r.ok) { ta.value = ""; reportAddResult(r); loadGeo(); } else showToast(r.error, "error");
+      const count = el("span", { className: "cs-manual-count" }, "Nothing to add yet");
+      const add = el("button", { type: "button", className: "btn primary", disabled: true }, "Add prompts");
+      ta.oninput = () => {
+        const n = parse().length;
+        add.disabled = !n;
+        count.textContent = n ? `${n} prompt${n === 1 ? "" : "s"} ready to add` : "Nothing to add yet";
+      };
+      add.onclick = async () => {
+        const rows = parse();
+        if (!rows.length) return;
+        add.disabled = true;
+        if (!(await addRows(rows, "Added"))) add.disabled = false;
+      };
+      return el("div", { className: "cs-mode-panel" },
+        el("label", { htmlFor: "cs-manual", className: "cs-label" }, "Your prompts"),
+        ta,
+        el("p", { className: "cs-help" }, "One prompt per line. To tag a prompt, add ", el("b", {}, "|"), " then tags separated by commas."),
+        el("div", { className: "cs-manual-foot" }, count, add));
     };
-    manualBox.append(ta, el("div", { className: "proj-row", style: "margin-top:6px" }, addBtn));
-    manualToggle.onclick = () => { manualBox.style.display = manualBox.style.display === "none" ? "block" : "none"; };
-    wrap.append(manualToggle, manualBox);
+
+    const modeButton = (mode, icon, title, sub) => {
+      const b = el("button", { type: "button", className: "cs-mode", "aria-pressed": String(promptAddMode === mode) },
+        el("span", { className: "cs-mode-icon" }, setupIcon(icon, 20, 1.9)),
+        el("span", { className: "cs-mode-text" },
+          el("span", { className: "cs-mode-title" }, title),
+          el("span", { className: "cs-mode-sub" }, sub)));
+      b.dataset.mode = mode;
+      return b;
+    };
+    const uploadBtn = modeButton("upload", "upload", "Upload a file", "CSV or Excel. Prompts in column A, tags in column B");
+    const manualBtn = modeButton("manual", "pencil", "Add manually", "Type or paste, one prompt per line");
+    const host = el("div", { className: "cs-mode-host" });
+    const noteText = promptAddNote && promptAddNote.id === profile.id ? promptAddNote.text : "";
+    const note = el("p", { className: "cs-note", role: "status", hidden: !noteText }, setupIcon("check", 14, 2.6), el("span", {}, noteText));
+    // Switched in place, not by re-rendering the tab, so nothing typed in the
+    // campaign details is disturbed.
+    const showMode = (mode, focus) => {
+      promptAddMode = mode;
+      uploadBtn.setAttribute("aria-pressed", String(mode === "upload"));
+      manualBtn.setAttribute("aria-pressed", String(mode === "manual"));
+      host.replaceChildren(...(mode === "upload" ? [buildUpload()] : mode === "manual" ? [buildManual()] : []));
+      if (focus && mode === "manual") host.querySelector("textarea").focus();
+    };
+    uploadBtn.onclick = () => { note.hidden = true; promptAddNote = null; showMode(promptAddMode === "upload" ? null : "upload", true); };
+    manualBtn.onclick = () => { note.hidden = true; promptAddNote = null; showMode(promptAddMode === "manual" ? null : "manual", true); };
+    showMode(promptAddMode, false);
+    wrap.append(el("div", { className: "cs-group", id: "cs-prompts" },
+      el("div", { className: "cs-modes" }, uploadBtn, manualBtn),
+      host,
+      note,
+      el("p", { className: "cs-msg", id: "cs-prompts-msg", hidden: true }, "Add at least one prompt. Upload a file or type them in.")));
   }
 
   if (!GEO_PROMPTS.length) {
-    wrap.append(el("div", { className: "empty" }, "No prompts yet — upload a CSV/Excel or add them manually above."));
+    wrap.append(el("div", { className: "cs-empty" },
+      el("p", { className: "cs-empty-title" }, "No prompts yet"),
+      el("p", {}, dis ? "This campaign has no prompts." : "Choose Upload a file or Add manually above. Your prompts will be listed here.")));
     return wrap;
   }
 
@@ -4248,43 +7289,37 @@ function renderPromptManager(profile, dis, persistDetails) {
   return wrap;
 }
 
-function renderCampaignSummary(profile) {
-  const card = el("div", { className: "card campaign-summary" });
-  const delBtn = el("button", { className: "btn sm ghost danger" }, "🗑 Delete");
-  delBtn.onclick = trashCampaign(profile);
-  card.append(el("div", { className: "card-header" }, el("h3", {}, profile.name || "Campaign"), el("span", { className: "muted small" }, "🔒 locked"), delBtn));
-  const meta = el("div", { className: "campaign-meta" });
-  const engLabels = ENGINES.filter((e) => (profile.engines || []).includes(e.id)).map((e) => e.label);
-  meta.append(
-    el("span", {}, `Brand: ${profile.brand?.name || "—"}`),
-    el("span", {}, `${GEO_PROMPTS.filter((p) => p.active !== false).length} active prompts`),
-    el("span", {}, `LLMs: ${engLabels.join(", ") || "—"}`),
-    el("span", {}, `Last run: ${profile.lastRunAt ? new Date(profile.lastRunAt).toLocaleDateString() : "never"}`),
-  );
-  card.append(meta);
-  const toggle = el("button", { className: "linkbtn" }, campaignManageOpen ? "Hide setup & prompts" : "Manage setup & prompts");
-  toggle.onclick = () => { campaignManageOpen = !campaignManageOpen; renderCampaigns(); };
-  card.append(el("div", { style: "margin-top:8px" }, toggle));
-  return card;
-}
+/* A set-up campaign's header (0.55.0, the canvas's TabCampaign): its name
+ * and what it covers, Edit setup / Export… / Run again, and under them the
+ * board's filters (renderCampaignBoard fills #cpFilters once it loads). It
+ * replaces three stacked cards — the chooser, a summary and the run card —
+ * that pushed the results below the fold. The run controls and the live
+ * status are the run card's, unchanged: Pause / Resume / Stop show only while
+ * a run is going (renderLoaderStatus sets .live and .paused), and the run
+ * history moved down to "Data collected". */
+// The run's state as last reported, so a header rebuilt mid-run (every
+// capture re-renders the tab) shows Pause / Stop straight away rather than
+// "Run again" until the next status reply.
+let cpLive = { live: false, paused: false };
+function renderCampaignHead(profile) {
+  const head = el("section", { className: `card cp-head${cpLive.live ? " live" : ""}${cpLive.paused ? " paused" : ""}`, id: "cpHead", "aria-labelledby": "cpName" });
+  head.append(el("div", { className: "cp-switch" }, el("span", { className: "muted small" }, `Campaigns · ${GEO_PROFILES.length} of ${MAX_PROFILES}`), renderCampaignSwitcher()));
 
-function renderRunCard(profile) {
-  const rc = el("div", { className: "card" });
-  rc.append(el("div", { className: "card-header" }, el("h3", {}, "Run")));
   const vol = runVolume(GEO_PROMPTS, profile.engines || []);
   const due = runDue(profile);
+  const fmtWhen = (t) => new Date(t).toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+  const brand = profile.brand && profile.brand.name;
+  const sub = [
+    brand ? `Tracking ${brand}` : "",
+    `${plural(vol.prompts, "prompt")} × ${plural(vol.engines, "engine")}`,
+    profile.lastRunAt ? `last run ${fmtWhen(profile.lastRunAt)}` : "not run yet",
+  ].filter(Boolean).join(" · ");
 
-  if (due && vol.submissions) {
-    rc.append(el("div", { className: "geo-due" },
-      `Today's run hasn't happened yet — last run ${profile.lastRunAt ? new Date(profile.lastRunAt).toLocaleDateString() : "never"}.`));
-  }
-  rc.append(el("p", { className: "muted" },
-    `This run will submit ${vol.submissions} prompt${vol.submissions === 1 ? "" : "s"} (${vol.prompts} prompt${vol.prompts === 1 ? "" : "s"} × ${vol.engines} engine${vol.engines === 1 ? "" : "s"}) through your logged-in accounts, paced with human-like gaps.`));
-  if (vol.submissions > 60) {
-    rc.append(el("div", { className: "warn-box" },
-      el("span", {}, `${vol.submissions} automated submissions in one run is a lot of activity on one account. Consider splitting your prompts across campaigns or pausing some, and keep an eye on the run rather than leaving it unattended.`)));
-  }
-  const runBtn = el("button", { className: "btn primary" }, "▶ Start run");
+  const edit = el("button", { className: "btn ghost cp-btn", type: "button", "aria-expanded": campaignManageOpen ? "true" : "false" }, campaignManageOpen ? "Close setup" : "Edit setup");
+  edit.onclick = () => { campaignManageOpen = !campaignManageOpen; renderCampaigns(); };
+  // Filled with the board's figures once it loads (renderCampaignBoard).
+  const exp = el("button", { className: "btn ghost cp-btn", type: "button", id: "cbExport", disabled: true, title: "The campaign as an Excel workbook, CSV tables or a PDF report" }, "Export…");
+  const runBtn = el("button", { className: "btn primary cp-btn cp-run", type: "button" }, profile.lastRunAt ? "Run again" : "Start run");
   runBtn.onclick = withBusy(runBtn, "Starting…", async () => {
     if (!confirm(`Run tracking now?\n\n${vol.submissions} submissions (${vol.prompts} prompts × ${vol.engines} engines) will be sent through your logged-in sessions at a human pace.`)) return;
     // The auth gate can bounce this back (authBlocked) before any tab opens.
@@ -4304,12 +7339,12 @@ function renderRunCard(profile) {
     };
     await attempt(false);
   });
-  const pauseBtn = el("button", { className: "btn ghost" }, "⏸ Pause");
+  const pauseBtn = el("button", { className: "btn ghost cp-btn cp-live cp-pause", type: "button" }, "Pause");
   pauseBtn.onclick = async () => {
     const r = await send({ type: "loader-pause" });
     withScrollPreserved(() => renderLoaderStatus(r));
   };
-  const resumeBtn = el("button", { className: "btn ghost" }, "▶ Resume");
+  const resumeBtn = el("button", { className: "btn primary cp-btn cp-live cp-resume", type: "button" }, "Resume");
   // Resume can genuinely fail now — a run interrupted by the browser closing
   // has no tab left, so resuming has to open one, and Chrome can refuse.
   // Rendering that {ok:false} reply as a status would blank the live panel and
@@ -4319,21 +7354,34 @@ function renderRunCard(profile) {
     if (!r || r.ok === false) { showToast(r?.error || "Couldn't resume the run.", "error"); return; }
     withScrollPreserved(() => renderLoaderStatus(r));
   };
-  const stopBtn = el("button", { className: "btn danger" }, "■ Stop");
+  const stopBtn = el("button", { className: "btn danger cp-btn cp-live", type: "button" }, "Stop");
   stopBtn.onclick = async () => {
     const r = await send({ type: "loader-stop" });
     withScrollPreserved(() => renderLoaderStatus(r));
   };
-  rc.append(el("div", { className: "ft-actions" }, runBtn, pauseBtn, resumeBtn, stopBtn));
-  rc.append(el("div", { id: "loaderStatus", className: "status-msg" }));
+  const actions = el("div", { className: "cp-actions" }, edit, exp, runBtn, pauseBtn, resumeBtn, stopBtn);
+  if (campaignManageOpen) {
+    const del = el("button", { className: "btn ghost danger cp-btn", type: "button" }, "Delete campaign");
+    del.onclick = trashCampaign(profile);
+    actions.prepend(del);
+  }
+  head.append(el("div", { className: "cp-title" },
+    el("div", { className: "cp-name" }, el("h1", { id: "cpName" }, profile.name || "Campaign"), el("span", { className: "cp-sub" }, sub)),
+    actions));
+
+  const notes = [];
+  if (due && vol.submissions) notes.push(el("div", { className: "geo-due" }, `Today's run hasn't happened yet — last run ${profile.lastRunAt ? new Date(profile.lastRunAt).toLocaleDateString() : "never"}.`));
+  if (vol.submissions > 60) notes.push(el("div", { className: "warn-box" }, el("span", {}, `${vol.submissions} automated submissions in one run is a lot of activity on one account. Consider splitting your prompts across campaigns or pausing some, and keep an eye on the run rather than leaving it unattended.`)));
+  head.append(...notes);
+  head.append(el("div", { id: "loaderStatus", className: "status-msg" }));
+  head.append(el("div", { className: "cp-filters", id: "cpFilters" }));
   // Paint status immediately rather than waiting for the next 1.5s poll tick
   // — this card is rebuilt from scratch (root.textContent = "" in
   // renderCampaignsImpl) every time the Campaigns tab re-renders, so
   // without this the status box would flash empty for up to 1.5s on every
   // switch back to this tab while a run is in flight.
-  send({ type: "loader-status" }).then((s) => { if (s.ok) renderLoaderStatus(s); });
-  rc.append(renderRunHistory(profile));
-  return rc;
+  send({ type: "loader-status" }).then((st) => { if (st.ok) renderLoaderStatus(st); });
+  return head;
 }
 
 // Durable per-run history — reads geoRuns, which background.js now keeps in
@@ -4341,8 +7389,8 @@ function renderRunCard(profile) {
 // completion; previously that store was written once at creation and never
 // updated again, so this had nothing real to show and wasn't called at all.
 function renderRunHistory(profile) {
-  const box = el("div", { className: "card loader-history", id: "runHistory" });
-  box.append(el("div", { className: "card-header" }, el("h3", {}, "Run history")));
+  const box = el("div", { className: "loader-history", id: "runHistory" });
+  box.append(el("h4", { className: "cb-sub-h" }, "Run history"));
   const list = el("div", { className: "muted small" }, "Loading…");
   box.append(list);
   send({ type: "geo-run-list", profileId: profile.id }).then((r) => {
@@ -4357,7 +7405,7 @@ function renderRunHistory(profile) {
       // captured fewer than the others gave you no way to go and look at it.
       const row = el("div", {
         className: `loader-history-row status-${run.status} clickable`,
-        title: "Show only this run's results in the Dashboard",
+        title: "Show only this run's results, below",
         style: "cursor:pointer",
       },
         el("span", { className: "muted" }, new Date(run.startedAt).toLocaleString()),
@@ -4366,10 +7414,12 @@ function renderRunHistory(profile) {
         el("span", { className: "muted" }, dur ? `took ${dur}` : ""),
         el("span", { className: "linkbtn" }, "View results →"));
       row.onclick = () => {
-        geoRunFilter = run.id;
+        cbRun = run.id;
+        cbDetail = null;
+        cbProfileId = profile.id;
         geoActiveId = profile.id;
-        showTab("dashboard");
-        renderDashboard();
+        renderCampaigns();
+        document.getElementById("campaignResults")?.scrollIntoView({ block: "start", behavior: "smooth" });
       };
       table.append(row);
     });
@@ -4378,861 +7428,10 @@ function renderRunHistory(profile) {
   return box;
 }
 
-/* ---------- Campaign performance metrics (rendered from the Dashboard) ---------- */
-
-async function refreshGeoMetrics(profile, prompts = [], since, until) {
-  const mc = $("#geoMetrics");
-  if (!mc || !profile) return;
-
-  // Run list feeds the run picker below. Fetched here rather than in the
-  // picker so switching runs doesn't refetch it on every change, and so a
-  // failure to load it degrades to "All runs" instead of an empty control.
-  if (!geoRunsCache.length || geoRunsCache[0]?.profileId !== profile.id) {
-    const rl = await send({ type: "geo-run-list", profileId: profile.id });
-    geoRunsCache = rl && rl.ok ? (rl.runs || []) : [];
-    // A run scope from a previous campaign must not survive into this one.
-    if (geoRunFilter && !geoRunsCache.some((r) => r.id === geoRunFilter)) geoRunFilter = "";
-  }
-
-  const r = await send({
-    type: "geo-metrics",
-    profileId: profile.id,
-    tags: geoTagFilter,
-    engines: geoEngineFilter,
-    runId: geoRunFilter || undefined,
-    since, until,
-  });
-  beginSwap(mc);
-  mc.textContent = "";
-  const head = el("div", { className: "card-header" }, el("h3", {}, `Campaign Performance — ${profile.name || "Untitled"}`));
-  mc.append(head);
-
-  if (!r.ok) { mc.append(el("div", { className: "empty" }, r.error || "Couldn't load metrics.")); return; }
-  const m = r.metrics;
-
-  // The card is ordered by what the campaign is FOR: who am I looking at,
-  // how visible are they, how does that compare. Everything else — the
-  // capture/crawl counts, the per-engine split, whether your own site got
-  // cited — is supporting detail and lives in one disclosure at the bottom.
-  // Twelve tiles of numbers above the fold was the reported clutter.
-  //
-  // Timeframe is the same filter as the rest of the Dashboard (see
-  // renderDashboardImpl) — no separate "Last 7/30/90 days" selector here, so
-  // there's only ever one time filter to reason about.
-  const controls = el("div", { className: "campaign-controls" });
-  head.append(controls);
-
-  /* Run scope.
-   *
-   * Reported: "if I run the same campaign multiple times and I want to open
-   * one, how would I do that in the dashboard — I don't always want the
-   * overall result." Every campaign number here used to be pooled across all
-   * runs with no way to separate them, which is the wrong default for the
-   * question "did last night's run go worse than the one before". The
-   * aggregate stays the default; this narrows it to a single run.
-   */
-  {
-    const runSel = el("select", { className: "filter", id: "geoRunPick",
-      title: "Show results from every run of this campaign, or just one" });
-    runSel.append(el("option", { value: "" }, "All runs (combined)"));
-    for (const run of geoRunsCache) {
-      const when = new Date(run.startedAt).toLocaleString();
-      const outcome = run.failed ? `${run.captured || 0} ok, ${run.failed} failed` : `${run.captured || 0} captured`;
-      runSel.append(el("option", { value: run.id }, `${when} — ${outcome}`));
-    }
-    runSel.value = geoRunFilter || "";
-    runSel.onchange = () => {
-      geoRunFilter = runSel.value;
-      refreshGeoMetrics(profile, prompts, since, until);
-      refreshPromptPerformance(profile, prompts, since, until);
-    };
-    controls.append(runSel);
-
-    /* The whole campaign, as a workbook.
-     *
-     * Sits beside the run picker so it exports exactly what is on screen: no
-     * run selected means every run, a run selected means that run. An export
-     * button whose scope differs from the view above it is a reliable way to
-     * hand someone the wrong numbers. */
-    const wbBtn = el("button", { className: "btn sm ghost",
-      title: "Download every sheet of this campaign's data as an Excel workbook" }, "⬇ Full workbook");
-    wbBtn.onclick = withBusy(wbBtn, "Building…", async () => {
-      const r = await send({
-        type: "geo-export-workbook",
-        profileId: profile.id,
-        runId: geoRunFilter || undefined,
-        tags: geoTagFilter,
-        engines: geoEngineFilter,
-        since, until,
-      });
-      if (!r || !r.ok) { showToast((r && r.error) || "Couldn't build the workbook.", "error"); return; }
-      download(r.filename || `citoskeleton-campaign-${Date.now()}.xls`, r.xml, "application/vnd.ms-excel");
-      showToast("Workbook downloaded — 11 sheets.");
-    });
-    controls.append(wbBtn);
-    if (geoRunFilter) {
-      const clear = el("button", { className: "linkbtn" }, "show all runs");
-      clear.onclick = () => {
-        geoRunFilter = "";
-        refreshGeoMetrics(profile, prompts, since, until);
-        refreshPromptPerformance(profile, prompts, since, until);
-      };
-      controls.append(clear);
-    }
-  }
-
-  // The engine filter lives in the Dashboard's own filter row, above — one
-  // control for the whole tab. A second one here read a different variable
-  // and was the reported "changing the model changes nothing" bug.
-  if (geoEngineFilter.length) {
-    const only = availableEngines().find((e) => e.id === geoEngineFilter[0]);
-    head.append(el("span", { className: "scope-note muted small" },
-      `${only ? only.label : geoEngineFilter[0]} only`));
-  }
-
-  const tags = allTags(prompts);
-  if (tags.length) {
-    const tw = el("div", { className: "tagline", style: "margin-top:8px" });
-    tw.append(el("span", { className: "muted small" }, "Tags: "));
-    // Cap the row so a campaign with many tags doesn't push the actual KPI
-    // numbers off screen. A tag the user has ACTIVELY filtered on always
-    // shows regardless of the cap — collapsing it out of view would hide the
-    // very thing "clear" needs to be visible to undo.
-    const CAP = 10;
-    const shown = geoTagsExpanded ? tags : tags.filter((t, i) => i < CAP || geoTagFilter.includes(t));
-    const hiddenCount = tags.length - shown.length;
-    shown.forEach((t) => {
-      const on = geoTagFilter.includes(t);
-      const chip = el("button", { className: `tag clickable${on ? " on" : ""}` }, t);
-      chip.onclick = () => {
-        geoTagFilter = on ? geoTagFilter.filter((x) => x !== t) : [...geoTagFilter, t];
-        refreshGeoMetrics(profile, prompts, since, until);
-        refreshPromptPerformance(profile, prompts, since, until);
-      };
-      tw.append(chip);
-    });
-    if (hiddenCount > 0) {
-      const more = el("button", { className: "linkbtn" }, `+${hiddenCount} more`);
-      more.onclick = () => { geoTagsExpanded = true; refreshGeoMetrics(profile, prompts, since, until); refreshPromptPerformance(profile, prompts, since, until); };
-      tw.append(more);
-    } else if (geoTagsExpanded && tags.length > CAP) {
-      const less = el("button", { className: "linkbtn" }, "show fewer");
-      less.onclick = () => { geoTagsExpanded = false; refreshGeoMetrics(profile, prompts, since, until); refreshPromptPerformance(profile, prompts, since, until); };
-      tw.append(less);
-    }
-    if (geoTagFilter.length) {
-      const clr = el("button", { className: "linkbtn" }, "clear");
-      clr.onclick = () => {
-        geoTagFilter = [];
-        refreshGeoMetrics(profile, prompts, since, until);
-        refreshPromptPerformance(profile, prompts, since, until);
-      };
-      tw.append(clr);
-    }
-    mc.append(tw);
-  }
-
-  if (!m.totalResponses) {
-    mc.append(el("div", { className: "empty", style: "margin-top:10px" },
-      "No tracked responses yet for these filters. Head to the Campaigns tab to start a run."));
-    return;
-  }
-
-  /* Brand switcher — the campaign view points at one brand at a time.
-     A row in a table can be read but not analysed; pointing the whole view at
-     a brand is what makes a competitor's numbers as inspectable as your own. */
-  const focusRow = geoFocusBrand
-    ? m.brands.find((b) => b.name === geoFocusBrand)
-    : null;
-  // A brand can vanish between renders (filters narrowed, exclusion applied).
-  // Falling back to the own brand beats rendering an empty KPI row.
-  const own = focusRow || m.own;
-  if (!focusRow) geoFocusBrand = null;
-
-  // A dropdown, not chips: a campaign can legitimately end up tracking twenty
-  // brands, and a wrapping chip row would push the numbers off the screen at
-  // exactly the point the campaign gets interesting. Each option carries its
-  // visibility so the list is still a ranking you can read.
-  const picker = el("select", { className: "filter brand-picker", title: "Point the whole campaign view at one brand" });
-  const ownGroup = el("optgroup", { label: "Your brand" });
-  const compGroup = el("optgroup", { label: `Competitors (${m.brands.filter((b) => !b.isOwn).length})` });
-  m.brands.forEach((b) => {
-    const opt = el("option", {
-      value: b.name,
-      selected: !!(own && b.name === own.name),
-    }, `${b.isOwn ? `${b.name} (you)` : b.name} · ${fmtPct(b.visibility)}`);
-    (b.isOwn ? ownGroup : compGroup).append(opt);
-  });
-  if (ownGroup.childNodes.length) picker.append(ownGroup);
-  if (compGroup.childNodes.length) picker.append(compGroup);
-  picker.onchange = () => {
-    const chosen = m.brands.find((b) => b.name === picker.value);
-    geoFocusBrand = chosen && chosen.isOwn ? null : picker.value;
-    refreshGeoMetrics(profile, prompts, since, until);
-    refreshPromptPerformance(profile, prompts, since, until);
-  };
-  controls.append(picker);
-
-  /* KPI row */
-  const kpis = el("div", { className: "geo-kpis" });
-  // `term` is a key into src/lib/glossary.js — the definition, formula and
-  // caveat all come from there so the same metric reads identically wherever
-  // it appears.
-  const kpi = (label, value, sub, term) => {
-    const b = el("div", { className: "geo-kpi" });
-    b.append(el("div", { className: "k-label", ...(term ? { "data-term": term } : {}) }, label));
-    b.append(el("div", { className: "k-value" }, value));
-    if (sub) b.append(el("div", { className: "k-sub muted" }, sub));
-    return b;
-  };
-  // Whose numbers these are. "your" is right for the own brand and actively
-  // misleading once the view is pointed at a competitor.
-  const whose = own?.isOwn ? "your" : `${own?.name || "this brand"}'s`;
-  const Whose = own?.isOwn ? "Your" : `${own?.name || "This brand"}'s`;
-  // Four headline numbers, not six. Source Visibility and Citations are about
-  // whether YOUR WEBSITE got used as a source — a different question from
-  // whether the brand got mentioned, and one most campaigns can't act on
-  // until the first one is answered. They move into the detail below.
-  kpis.append(
-    // The brand is named here rather than on every tile: four big numbers
-    // floating under a dropdown you have already scrolled past need one
-    // anchor, not four repetitions.
-    kpi("Brand Visibility", fmtPct(own?.visibility),
-      `${own?.name || "—"} in ${own?.responsesPresent || 0} of ${m.totalResponses} responses`, "visibility"),
-    kpi("Share of Voice", fmtPct(own?.shareOfVoice),
-      el("span", { "data-term": "mentionPool" }, `${own?.mentions || 0} of ${m.mentionPool} tracked mentions`),
-      "shareOfVoice"),
-    kpi("Avg position", fmtPos(own?.avgPosition), "rank among tracked brands", "avgPosition"),
-    kpi("Mentions", String(own?.mentions ?? 0), "times named in answers", "mentions"),
-  );
-  mc.append(kpis);
-
-  /* Competitors the user never typed.
-     A campaign with no competitors configured measures nothing: Share of
-     Voice, Position and the Brands columns are all computed against the
-     tracked set, which would be the own brand talking to itself. So when the
-     user hasn't said who they compete with, the answers are asked instead —
-     but the inference is stated out loud, and never written into the profile
-     without the user clicking to accept it. */
-  if (r.autoCompetitors && r.autoCompetitors.length) {
-    const banner = el("div", { className: "auto-comp-banner" });
-    banner.append(el("div", { className: "small" },
-      el("strong", { "data-term": "autoCompetitor" }, "Competitors inferred from your captures. "),
-      el("span", { className: "muted" },
-        `You haven't set any competitors on this campaign, so the ${r.autoCompetitors.length} brand${r.autoCompetitors.length === 1 ? "" : "s"} `
-        + "these answers named most often are being used instead. Nothing has been saved to the campaign.")));
-    // Each chip can be dismissed. Detection is industry-agnostic and will
-    // sometimes surface a publisher, a retailer, or one of your own
-    // sub-brands; without a way to say "not a competitor" the only options
-    // were to accept a wrong denominator or ignore the feature.
-    const chips = el("div", { className: "tagline" });
-    r.autoCompetitors.forEach((n) => {
-      const chip = el("span", { className: "tag tag-removable" }, n);
-      const x = el("button", { className: "tag-x", title: `Don't treat ${n} as a competitor` }, "×");
-      x.onclick = async () => {
-        x.disabled = true;
-        const res = await send({ type: "geo-brand-exclude", profileId: profile.id, name: n });
-        if (!res.ok) { x.disabled = false; showToast(res.error || "Couldn't exclude that brand", "error"); return; }
-        showToast(`${n} is no longer counted as a competitor`);
-        if (geoFocusBrand === n) geoFocusBrand = null;
-        refreshGeoMetrics(res.profile, prompts, since, until);
-        refreshPromptPerformance(res.profile, prompts, since, until);
-      };
-      chip.append(x);
-      chips.append(chip);
-    });
-    banner.append(chips);
-    const save = el("button", { className: "btn sm ghost" }, "Save these as competitors");
-    save.onclick = async () => {
-      save.disabled = true;
-      const res = await send({
-        type: "geo-profile-save",
-        profile: { ...profile, competitors: r.autoCompetitors.map((n) => ({ name: n, url: "" })) },
-      });
-      save.disabled = false;
-      if (!res.ok) { showToast(res.error || "Couldn't save competitors", "error"); return; }
-      showToast(`Saved ${r.autoCompetitors.length} competitors to ${profile.name || "this campaign"}`);
-      loadGeo();
-      refreshGeoMetrics(res.profile, prompts, since, until);
-      refreshPromptPerformance(res.profile, prompts, since, until);
-    };
-    banner.append(save);
-    mc.append(banner);
-  }
-
-  /* Anything the user has said is not a competitor, with a way back — an
-     exclusion you can't see and can't undo is a trap. */
-  if (r.excludedBrands && r.excludedBrands.length) {
-    const box = el("div", { className: "excluded-row muted small" });
-    box.append(el("span", {}, "Not counted as competitors:"));
-    r.excludedBrands.forEach((n) => {
-      const chip = el("span", { className: "tag tag-removable is-excluded" }, n);
-      const undo = el("button", { className: "tag-x", title: `Count ${n} as a competitor again` }, "↺");
-      undo.onclick = async () => {
-        undo.disabled = true;
-        const res = await send({ type: "geo-brand-exclude", profileId: profile.id, name: n, restore: true });
-        if (!res.ok) { undo.disabled = false; showToast(res.error || "Couldn't restore that brand", "error"); return; }
-        refreshGeoMetrics(res.profile, prompts, since, until);
-        refreshPromptPerformance(res.profile, prompts, since, until);
-      };
-      chip.append(undo);
-      box.append(chip);
-    });
-    mc.append(box);
-  }
-
-  /* competitor table — every row is clickable, own brand included, so a
-     competitor's numbers can be broken down per-prompt exactly the same way
-     the campaign's own brand can be in the full Prompt Performance table
-     below (see openBrandDetailModal). */
-  const wrap = el("div", { className: "drill-scroll", style: "margin-top:14px" });
-  const t = el("table", { className: "drill-table" });
-  t.append(el("tr", {},
-    el("th", {}, "Brand"),
-    el("th", { className: "num", "data-term": "visibility" }, "Visibility"),
-    el("th", { className: "num", "data-term": "shareOfVoice" }, "Share of Voice"),
-    el("th", { className: "num", "data-term": "mentions" }, "Mentions"),
-    el("th", { className: "num", "data-term": "avgPosition" }, "Avg position"),
-    el("th", { className: "num", "data-term": "citations" }, "Citations"),
-    el("th", { className: "num", "data-term": "sourceVisibility" }, "Source vis.")));
-  m.brands.forEach((b) => {
-    const focused = own && b.name === own.name;
-    const tr = el("tr", {
-      className: `clickable-row${b.isOwn ? " own-brand" : ""}${focused ? " focused-brand" : ""}`,
-      title: `Click for ${b.name}'s per-prompt performance`,
-    });
-    tr.onclick = () => openBrandDetailModal(profile, b, prompts, since, until);
-    const nameCell = el("td", { className: "td-domain" }, b.isOwn ? `${b.name} (you)` : b.name);
-    if (b.auto) nameCell.append(el("span", { className: "auto-tag", title: "Detected in your captures — not a competitor you configured" }, "auto"));
-    if (b.auto) {
-      // Only inferred rows can be excluded here. A competitor the user typed
-      // is removed by editing the campaign, where they put it.
-      const drop = el("button", { className: "row-x", title: `Don't treat ${b.name} as a competitor` }, "×");
-      drop.onclick = async (ev) => {
-        ev.stopPropagation();          // the row itself opens the drill-down
-        drop.disabled = true;
-        const res = await send({ type: "geo-brand-exclude", profileId: profile.id, name: b.name });
-        if (!res.ok) { drop.disabled = false; showToast(res.error || "Couldn't exclude that brand", "error"); return; }
-        showToast(`${b.name} is no longer counted as a competitor`);
-        if (geoFocusBrand === b.name) geoFocusBrand = null;
-        refreshGeoMetrics(res.profile, prompts, since, until);
-        refreshPromptPerformance(res.profile, prompts, since, until);
-      };
-      nameCell.append(drop);
-    }
-    tr.append(nameCell);
-    tr.append(el("td", { className: "num" }, fmtPct(b.visibility)));
-    tr.append(el("td", { className: "num" }, fmtPct(b.shareOfVoice)));
-    tr.append(el("td", { className: "num" }, String(b.mentions)));
-    tr.append(el("td", { className: "num" }, fmtPos(b.avgPosition)));
-    tr.append(el("td", { className: "num" }, String(b.citations)));
-    tr.append(el("td", { className: "num" }, fmtPct(b.sourceVisibility)));
-    t.append(tr);
-  });
-  wrap.append(t);
-  mc.append(wrap);
-
-  /* Supporting detail, in one disclosure rather than three toggles.
-     Everything here is real and sometimes wanted — it just isn't the answer
-     the campaign exists to give, and above the fold it was burying the answer
-     under twelve tiles of numbers. Open state is remembered across re-renders
-     so changing a filter doesn't shut it while you're reading it. */
-  const more = el("details", { className: "more-detail", ...(geoDetailOpen ? { open: "open" } : {}) });
-  more.append(el("summary", {}, "More detail",
-    el("span", { className: "muted small" }, " — your site as a source, by engine, data collected")));
-  more.addEventListener("toggle", () => { geoDetailOpen = more.open; });
-
-  // 1. Your site as a source. A different question from brand visibility:
-  //    "did anyone get MENTIONED" vs "did MY PAGES get used".
-  const siteBox = el("div", { className: "detail-block" });
-  siteBox.append(el("div", { className: "detail-title muted small" }, `${own?.name || "This brand"} as a source`));
-  const siteStats = el("div", { className: "statgrid" });
-  [[fmtPct(own?.sourceVisibility), "Source visibility", "sourceVisibility"],
-   [String(own?.citations ?? 0), "Citations", "citations"],
-   [String(own?.sourceResponses ?? 0), "Responses with your site", "responses"],
-  ].forEach(([n, l, term]) => siteStats.append(
-    el("div", { className: "stat", "data-term": term },
-      el("div", { className: "n" }, n), el("div", { className: "l" }, l))));
-  siteBox.append(siteStats);
-  if (!own?.url) {
-    siteBox.append(el("div", { className: "muted small", style: "margin-top:6px" },
-      own?.isOwn
-        ? "No website set on this campaign, so there is nothing to match sources against — add one in the Campaigns tab."
-        : `No website on record for ${own?.name}, so its pages can't be recognised in the source list.`));
-  }
-  more.append(siteBox);
-
-  /* 2. Per-engine split for the focused brand.
-     "Strong on ChatGPT, invisible on Gemini" is one of the few findings that
-     changes what you would actually do, and a profile-wide average hides it
-     completely. Only shown when there is more than one engine to compare —
-     with one engine these numbers are the KPI row again. */
-  const engineIdsWithData = Object.keys(r.byEngine || {});
-  if (engineIdsWithData.length > 1 && own) {
-    const box = el("div", { className: "detail-block engine-split" });
-    box.append(el("div", { className: "detail-title muted small" }, `${own.name} by engine`));
-    const grid = el("div", { className: "engine-split-grid" });
-    engineIdsWithData.forEach((id) => {
-      const engRow = r.byEngine[id];
-      const row = engRow.metrics.brands.find((b) => b.name === own.name);
-      const cell = el("div", { className: "engine-split-cell" });
-      cell.append(el("div", { className: "engine-split-head" },
-        engineChip(id, ENGINES.find((e) => e.id === id)?.label || id),
-        el("span", { className: "muted small" }, `${engRow.responses} response${engRow.responses === 1 ? "" : "s"}`)));
-      cell.append(el("div", { className: "engine-split-nums" },
-        el("div", {}, el("strong", {}, fmtPct(row?.visibility)), el("span", { className: "muted small" }, "Visibility")),
-        el("div", {}, el("strong", {}, fmtPct(row?.shareOfVoice)), el("span", { className: "muted small" }, "Share of Voice")),
-        el("div", {}, el("strong", {}, fmtPos(row?.avgPosition)), el("span", { className: "muted small" }, "Avg position")),
-        el("div", {}, el("strong", {}, String(row?.mentions ?? 0)), el("span", { className: "muted small" }, "Mentions"))));
-      grid.append(cell);
-    });
-    box.append(grid);
-    more.append(box);
-  }
-
-  // 3. What was collected. Diagnostics about the crawl, not about the brand —
-  //    which is why it used to be the first thing on screen and shouldn't be.
-  if (r.overview) {
-    const ov = r.overview;
-    const box = el("div", { className: "detail-block" });
-    box.append(el("div", { className: "detail-title muted small" }, "Data collected"));
-    const ovStats = el("div", { className: "statgrid" });
-    [[ov.captures, "Captures", "captures"], [ov.searched, "With search", "withSearch"],
-     [ov.fanTotal, "Fan-out queries", "fanout"], [ov.domainCount, "Unique domains", "uniqueDomains"],
-     [ov.citedTotal, "Cited", "citedOutcome"], [ov.fetchedTotal, "Read-only", "readOnly"]].forEach(([n, l, term]) =>
-      ovStats.append(el("div", { className: "stat", "data-term": term },
-        el("div", { className: "n" }, String(n)), el("div", { className: "l" }, l))));
-    box.append(ovStats);
-    more.append(box);
-  }
-  mc.append(more);
-
-  /* honest gap, stated in the UI rather than left for the user to discover */
-  mc.append(el("div", { className: "geo-note muted small", "data-term": "sentiment" },
-    `Sentiment: not measured. ${SENTIMENT_NOTE}`));
-
-  const dl = el("button", { className: "btn sm ghost", style: "margin-top:10px" }, "⬇ Export metrics CSV");
-  dl.onclick = () => {
-    const rows = [["Brand", "Is own", "Auto-detected", "Visibility %", "Share of Voice %", "Mentions", "Avg position", "Citations", "Source visibility %", "Responses present", "Total responses"]];
-    m.brands.forEach((b) => rows.push([b.name, b.isOwn ? "yes" : "no", b.auto ? "yes" : "no", b.visibility.toFixed(2), b.shareOfVoice.toFixed(2), b.mentions, b.avgPosition == null ? "" : b.avgPosition.toFixed(2), b.citations, b.sourceVisibility.toFixed(2), b.responsesPresent, m.totalResponses]));
-    download(`citoskeleton-tracking-${profile.name.replace(/\W+/g, "-")}-${Date.now()}.csv`, csvOf(rows), "text/csv");
-  };
-  mc.append(dl);
-}
-
-// Per-run detail toggle state, keyed by promptId — which prompts' run
-// history is expanded beyond just the latest run.
-let expandedPromptRuns = new Set();
+// The sources table's mode and filter (renderCampaignSources). Module scope:
+// every render rebuilds the section, so a local would reset on each key.
 let sourceViewMode = "domain"; // "domain" | "url"
-// Both live at module scope, not inside refreshPromptPerformance: every
-// render tears the tab down and rebuilds it, so anything held in a local
-// would reset on the next keystroke / filter change.
-let geoPromptSearch = "";
 let sourceSearch = "";
-
-const posLabel = (n) => (n == null ? "—" : `#${n}`);
-
-/* One engine's result for one prompt, as two glanceable badges instead of the
- * old "✓ #1 / Domain cited ✕" string — a tick and a cross answering two
- * different questions in the same cell read as one verdict and were easy to
- * misparse.
- *
- * Both badges are individually clickable, opening THAT run's capture in
- * Analyze — previously only the prompt's own title link opened anything, and
- * it always opened whichever run happened to be most recent, so there was no
- * way to specifically check "what did Gemini say" once ChatGPT had run more
- * recently. Attaching the click handler directly to each badge (rather than
- * a wrapping element) matters because promptPerfCards() below lifts these
- * exact badge nodes out of their <td> into a card layout in the popup — the
- * handler has to travel with the node itself to survive that move.
- *
- * `whose` names whose result this is, for the tooltip copy — "Your brand" /
- * "your own domain" by default (the campaign's own brand, the only caller
- * this used to have), but openBrandDetailModal passes an actual competitor
- * name so a Samsung row doesn't get told "Your brand was not named" about
- * Samsung.
- */
-function resultCell(run, whose = { subject: "Your brand", domain: "Your own domain" }) {
-  if (!run) return el("td", { className: "pp-cell" }, el("span", { className: "pp-badge none", "data-tip": "This prompt has not been run on this engine yet." }, "no run"));
-  const cell = el("td", { className: "pp-cell" });
-  const stack = el("div", { className: "pp-stack" });
-  const openThis = (ev) => { ev.stopPropagation(); openCapture(run.captureId); };
-  const clickable = (node, tip) => {
-    node.classList.add("pp-clickable");
-    node.setAttribute("data-tip", tip);
-    node.title = "Open this capture in Analyze";
-    node.onclick = openThis;
-    return node;
-  };
-  if (!run.mentioned) {
-    stack.append(clickable(el("span", { className: "pp-badge miss" }, "not mentioned"), `${whose.subject} was not named in this answer.`));
-  } else if (run.position == null) {
-    // Present but unrankable — a product-card/carousel appearance with no
-    // position in the prose. The old "✓ —" implied a missing rank; this says
-    // what actually happened.
-    stack.append(clickable(el("span", { className: "pp-badge shown" }, "shown"), `${whose.subject} appeared, but not in the written answer, so it has no rank.`));
-  } else {
-    stack.append(clickable(
-      el("span", { className: `pp-badge rank${run.position <= 3 ? " top" : ""}` }, posLabel(run.position)),
-      `Ranked ${posLabel(run.position)} among the brands tracked on this campaign.`,
-    ));
-  }
-  stack.append(clickable(
-    run.cited ? el("span", { className: "pp-chip cited" }, "domain cited") : el("span", { className: "pp-chip notcited" }, "not cited"),
-    run.cited ? `${whose.domain} was cited as a source in this answer.` : `${whose.domain} was not cited as a source in this answer.`,
-  ));
-  cell.append(stack);
-  return cell;
-}
-
-// `whose` follows the brand switcher: once the view is pointed at a
-// competitor, "your brand" and "your own site" are the wrong words for what
-// these badges mean.
-const promptPerfLegend = (whose = "your") => el("div", { className: "pp-legend muted small" },
-  `#n = ${whose} rank among the brands tracked on this campaign · `,
-  el("span", { className: "pp-badge shown" }, "shown"), " = appeared without a rank (product card) · ",
-  el("span", { className: "pp-chip cited" }, "domain cited"), ` = ${whose} own site was used as a source`);
-
-/* Popup layout for the same data.
- *
- * A table with a prompt column plus one column per engine needs ~530px; the
- * popup gives it ~444px, so in the popup it was always going to be a
- * sideways-scrolling table with half its columns off-screen. Same numbers,
- * stacked vertically instead — nothing scrolls sideways and nothing is
- * hidden behind a scrollbar. The full-tab view keeps the table, where the
- * width is genuinely there and scanning a column beats reading cards.
- */
-function promptPerfCards(filteredPrompts, engineIds, engineLabel, runsOf, rerender, whose) {
-  const wrap = el("div", { className: "pp-cards" });
-  filteredPrompts.forEach((p, i) => {
-    const runs = runsOf(p);
-    const card = el("div", { className: `pp-card${runs.length ? "" : " idle"}` });
-    const titleRow = el("div", { className: "pp-card-title" });
-    titleRow.append(el("span", { className: "pp-card-idx" }, `${i + 1}`));
-    if (runs.length) {
-      const link = el("a", { href: "#", className: "prompt-link", title: "Open the latest capture of this prompt in Analyze" });
-      link.append(highlightMatch(p.text, geoPromptSearch));
-      link.onclick = (ev) => { ev.preventDefault(); openCapture(runs[0].captureId); };
-      titleRow.append(link);
-    } else {
-      titleRow.append(el("span", { className: "muted" }, highlightMatch(p.text, geoPromptSearch)));
-    }
-    card.append(titleRow);
-
-    if ((p.tags || []).length) {
-      const tagWrap = el("div", { className: "tagline" });
-      p.tags.forEach((t) => tagWrap.append(el("span", { className: "tag" }, t)));
-      card.append(tagWrap);
-    }
-
-    const engRows = el("div", { className: "pp-card-engines" });
-    engineIds.forEach((id) => {
-      const run = runs.find((x) => x.platform === id) || null;
-      const row = el("div", { className: "pp-card-engine" });
-      row.append(el("span", { className: "pp-card-engine-name" }, engineChip(id, engineLabel(id))));
-      // resultCell builds a <td>; lift its badges out so the same markup and
-      // the same wording drive both layouts.
-      const cell = resultCell(run, whose);
-      const stack = cell.firstElementChild;
-      row.append(stack && stack.classList.contains("pp-stack")
-        ? el("span", { className: "pp-card-badges" }, ...stack.childNodes)
-        : el("span", { className: "pp-card-badges" }, ...cell.childNodes));
-      engRows.append(row);
-    });
-    card.append(engRows);
-
-    const foot = el("div", { className: "pp-card-foot" });
-    foot.append(el("span", { className: "muted small", title: runs.length ? new Date(runs[0].capturedAt).toLocaleString() : "" },
-      runs.length ? `Last run ${relTime(runs[0].capturedAt)}` : "Never run"));
-    if (runs.length > 1) {
-      const expanded = expandedPromptRuns.has(p.id);
-      const toggle = el("button", { className: "linkbtn" }, expanded ? "hide earlier runs" : `${runs.length - 1} earlier run${runs.length === 2 ? "" : "s"}`);
-      toggle.onclick = () => {
-        if (expanded) expandedPromptRuns.delete(p.id); else expandedPromptRuns.add(p.id);
-        rerender();
-      };
-      foot.append(toggle);
-    }
-    card.append(foot);
-
-    if (runs.length > 1 && expandedPromptRuns.has(p.id)) {
-      const hist = el("div", { className: "pp-card-history" });
-      runs.slice(1).forEach((run) => {
-        const row = el("div", { className: "pp-card-engine" });
-        row.append(el("span", { className: "pp-card-engine-name muted" }, engineChip(run.platform, relTime(run.capturedAt))));
-        const cell = resultCell(run, whose);
-        const stack = cell.firstElementChild;
-        row.append(el("span", { className: "pp-card-badges" }, ...(stack && stack.classList.contains("pp-stack") ? stack.childNodes : cell.childNodes)));
-        hist.append(row);
-      });
-      card.append(hist);
-    }
-    wrap.append(card);
-  });
-  return wrap;
-}
-
-/** Replaces Saved Conversations once a campaign is selected: prompts grouped
- *  with their own-brand mention/position/citation per run (merging reruns
- *  of the same prompt instead of listing every response separately), plus a
- *  domain/URL source breakdown for the same filtered response set. */
-async function refreshPromptPerformance(profile, prompts, since, until) {
-  const root = $("#geoPromptTable");
-  if (!root || !profile) return;
-
-  const r = await send({
-    type: "geo-prompt-performance",
-    profileId: profile.id,
-    // Follows the brand switcher above, so mentioned/position/cited in this
-    // table are about whichever brand the campaign view is pointed at.
-    focusBrand: geoFocusBrand || undefined,
-    tags: geoTagFilter,
-    engines: geoEngineFilter,
-    runId: geoRunFilter || undefined,
-    since, until,
-  });
-  beginSwap(root);
-  root.textContent = "";
-  const rerender = () => refreshPromptPerformance(profile, prompts, since, until);
-
-  // Whose performance this table is about, once the brand switcher can point
-  // it at a competitor.
-  const focused = r.focusBrand && !r.focusIsOwn ? r.focusBrand : null;
-  const ppSubject = focused || "your brand";   // "mention your brand" / "mention OnePlus"
-  const ppPoss = focused ? `${focused}'s` : "your";
-  // resultCell's badge tooltips default to "Your brand was not named" — right
-  // for the own brand, wrong the moment the table is pointed at a competitor.
-  const ppWhoseTip = focused
-    ? { subject: focused, domain: `${focused}'s domain` }
-    : { subject: "Your brand", domain: "Your own domain" };
-  const head = el("div", { className: "card-header" },
-    el("h3", {}, r.focusBrand && !r.focusIsOwn ? `Prompt Performance — ${r.focusBrand}` : "Prompt Performance"));
-  root.append(head);
-
-  if (!r.ok) { root.append(el("div", { className: "empty" }, r.error || "Couldn't load prompt performance.")); return; }
-  if (!r.hasBrand) {
-    root.append(el("div", { className: "empty" }, "Set your brand name on this campaign (Campaigns tab) to see per-prompt mention/citation results."));
-    return;
-  }
-
-  const filteredPrompts = (geoTagFilter.length
-    ? prompts.filter((p) => geoTagFilter.some((t) => (p.tags || []).includes(t)))
-    : prompts
-  ).filter((p) => matchesSearch(p.text, geoPromptSearch));
-
-  // Search sits in the card header next to the title, the same place the
-  // Dashboard puts its filters — this table can run to hundreds of prompts
-  // and previously had no way to narrow it at all.
-  const searchInp = el("input", {
-    id: "geoPromptSearch", type: "text", className: "filter search-input",
-    placeholder: "Search words in prompts…",
-    title: "Type any words — prompts containing every word are shown, in any order",
-    value: geoPromptSearch,
-  });
-  searchInp.oninput = () => {
-    geoPromptSearch = searchInp.value;
-    const cursor = searchInp.selectionStart;
-    rerender().then(() => {
-      const next = $("#geoPromptSearch");
-      if (next) { next.focus(); next.setSelectionRange(cursor, cursor); }
-    });
-  };
-  head.append(searchInp);
-
-  // --- roll-up of the table below, so the headline answer ("how many of my
-  // prompts actually mention me?") doesn't have to be counted by eye ---
-  const engineIds = (profile.engines && profile.engines.length) ? profile.engines : [];
-  const engineLabel = (id) => ENGINES.find((e) => e.id === id)?.label || id;
-  const runsOf = (p) => (r.prompts && r.prompts[p.id]) || [];
-  let withRuns = 0, anyMention = 0, anyCite = 0, rankSum = 0, rankN = 0;
-  filteredPrompts.forEach((p) => {
-    const runs = runsOf(p);
-    if (!runs.length) return;
-    withRuns++;
-    if (runs.some((x) => x.mentioned)) anyMention++;
-    if (runs.some((x) => x.cited)) anyCite++;
-    runs.forEach((x) => { if (x.position != null) { rankSum += x.position; rankN++; } });
-  });
-  const summary = el("div", { className: "pp-summary" });
-  const sChip = (n, l, tone) => el("div", { className: `pp-sum ${tone || ""}` },
-    el("span", { className: "pp-sum-n" }, String(n)), el("span", { className: "pp-sum-l" }, l));
-  summary.append(
-    sChip(`${withRuns}/${filteredPrompts.length}`, "prompts with runs"),
-    sChip(anyMention, `mention ${ppSubject}`, anyMention ? "good" : ""),
-    sChip(anyCite, `cite ${ppPoss} domain`, anyCite ? "good" : ""),
-    sChip(rankN ? `#${(rankSum / rankN).toFixed(1)}` : "—", "average rank"),
-  );
-  root.append(summary);
-
-  if (!filteredPrompts.length) {
-    root.append(el("div", { className: "empty" },
-      geoPromptSearch ? `No prompts match "${geoPromptSearch}".` : "No prompts match the current filters."));
-  } else {
-    // One column per tracked engine (not a single ambiguous "latest run")
-    // so it's clear whether a brand showed up on ChatGPT vs. Gemini rather
-    // than one merged result that could be from either.
-    if (document.body.classList.contains("popup")) {
-      root.append(promptPerfCards(filteredPrompts, engineIds, engineLabel, runsOf, rerender, ppWhoseTip));
-      root.append(promptPerfLegend(ppPoss));
-    } else {
-      const headerCells = [el("th", { className: "pp-col-idx" }, "#"), el("th", {}, "Prompt")];
-      engineIds.forEach((id) => headerCells.push(el("th", {}, engineChip(id, engineLabel(id)))));
-      headerCells.push(el("th", {}, "Last run"), el("th", { className: "pp-col-more" }, ""));
-      const table = el("table", { className: "drill-table prompt-perf-table" }, el("tr", {}, ...headerCells));
-
-      filteredPrompts.forEach((p, i) => {
-        const runs = runsOf(p);
-        // Clicking a prompt opens its most recent capture in Analyze so the
-        // full answer/sources/fan-out can be studied there instead of just
-        // the summarized mention/position/citation flags here.
-        const promptCell = el("td", { className: "prompt-cell" });
-        if (runs.length) {
-          const promptLink = el("a", { href: "#", className: "prompt-link", title: "Open the latest capture of this prompt in Analyze" });
-          promptLink.append(highlightMatch(p.text, geoPromptSearch));
-          promptLink.onclick = (ev) => { ev.preventDefault(); openCapture(runs[0].captureId); };
-          promptCell.append(promptLink);
-        } else {
-          promptCell.append(el("span", { className: "muted" }, highlightMatch(p.text, geoPromptSearch)));
-        }
-        const tagWrap = el("div", { className: "tagline" });
-        (p.tags || []).forEach((t) => tagWrap.append(el("span", { className: "tag" }, t)));
-        if (tagWrap.childNodes.length) promptCell.append(tagWrap);
-
-        const cells = [el("td", { className: "pp-col-idx muted" }, String(i + 1)), promptCell];
-        if (!runs.length) {
-          engineIds.forEach(() => cells.push(resultCell(null, ppWhoseTip)));
-          cells.push(el("td", { className: "muted small" }, "never"), el("td", {}));
-          table.append(el("tr", { className: "pp-row-idle" }, ...cells));
-          return;
-        }
-
-        engineIds.forEach((id) => cells.push(resultCell(runs.find((run) => run.platform === id) || null, ppWhoseTip)));
-        cells.push(el("td", { className: "pp-time", title: new Date(runs[0].capturedAt).toLocaleString() }, relTime(runs[0].capturedAt)));
-
-        const expandCell = el("td", { className: "pp-col-more" });
-        if (runs.length > 1) {
-          const expanded = expandedPromptRuns.has(p.id);
-          const toggle = el("button", { className: "linkbtn" }, expanded ? "hide" : `+${runs.length - 1}`);
-          toggle.title = expanded ? "Hide earlier runs" : `Show ${runs.length - 1} earlier run(s)`;
-          toggle.onclick = () => {
-            if (expanded) expandedPromptRuns.delete(p.id); else expandedPromptRuns.add(p.id);
-            rerender();
-          };
-          expandCell.append(toggle);
-        }
-        cells.push(expandCell);
-        table.append(el("tr", {}, ...cells));
-
-        if (runs.length > 1 && expandedPromptRuns.has(p.id)) {
-          runs.slice(1).forEach((run) => {
-            const subCells = [el("td", { className: "pp-col-idx" }), el("td", { className: "muted small" }, "earlier run")];
-            engineIds.forEach((id) => subCells.push(run.platform === id ? resultCell(run, ppWhoseTip) : el("td", {})));
-            subCells.push(el("td", { className: "pp-time muted small", title: new Date(run.capturedAt).toLocaleString() }, relTime(run.capturedAt)), el("td", {}));
-            table.append(el("tr", { className: "prompt-perf-subrow" }, ...subCells));
-          });
-        }
-      });
-      root.append(el("div", { className: "drill-scroll" }, table));
-      root.append(promptPerfLegend(ppPoss));
-    }
-  }
-
-  // --- source domains, aggregated from this same filtered response set ---
-  // Citation VOLUME and REACH are different numbers and must not be one
-  // column: a domain cited three times in a single answer scores three
-  // citations but one response of visibility. See src/lib/sources.js for the
-  // definitions and test/sources.test.mjs for the worked example.
-  const promptTextById = new Map((prompts || []).map((p) => [p.id, p.text]));
-  const { domains: domainAgg, urls: urlAgg, totalResponses: srcResponses } =
-    aggregateSources(r.prompts || {}, promptTextById);
-
-  root.append(el("div", { className: "wizard-divider" }));
-  const srcHead = el("div", { className: "card-header", style: "margin-top:0" }, el("h3", {}, "Source Domains"));
-  const modeToggle = el("div", { className: "filter-bar", style: "margin:0" });
-  [["domain", "Domains"], ["url", "URLs"]].forEach(([v, l]) => {
-    const pill = el("button", { className: `filter-pill${sourceViewMode === v ? " active" : ""}` }, l);
-    pill.onclick = () => { sourceViewMode = v; rerender(); };
-    modeToggle.append(pill);
-  });
-  const srcSearchInp = el("input", {
-    id: "sourceSearch", type: "text", className: "filter search-input",
-    placeholder: sourceViewMode === "domain" ? "Filter domains…" : "Filter URLs…",
-    value: sourceSearch,
-  });
-  srcSearchInp.oninput = () => {
-    sourceSearch = srcSearchInp.value;
-    const cursor = srcSearchInp.selectionStart;
-    rerender().then(() => {
-      const next = $("#sourceSearch");
-      if (next) { next.focus(); next.setSelectionRange(cursor, cursor); }
-    });
-  };
-  srcHead.append(el("div", { className: "src-head-tools" }, modeToggle, srcSearchInp));
-  root.append(srcHead);
-
-  const activeMap = sourceViewMode === "domain" ? domainAgg : urlAgg;
-  // Sorted by REACH first, volume second. A domain cited nine times inside a
-  // single answer used to outrank one cited once in every answer; the second
-  // is the more useful source to know about, and only the visibility ordering
-  // says so.
-  const rows = [...activeMap.values()]
-    .filter((row) => matchesSearch(row.key, sourceSearch))
-    .sort((a, b) => b.visibility - a.visibility || b.citations - a.citations
-      || b.fetched - a.fetched || a.key.localeCompare(b.key));
-  const shown = rows.slice(0, 50);
-
-  if (!shown.length) {
-    root.append(el("div", { className: "empty" },
-      sourceSearch ? `No sources match "${sourceSearch}".` : "No sources captured yet for these filters."));
-  } else {
-    const unit = sourceViewMode === "domain" ? "domain" : "page";
-    const srcTable = el("table", { className: "drill-table src-table" });
-    const hdr = [el("th", { className: "src-col-idx" }, "#"), el("th", {}, sourceViewMode === "domain" ? "Domain" : "URL")];
-    if (sourceViewMode === "domain") hdr.push(el("th", { className: "num", "data-term": "distinctUrls" }, "URLs"));
-    hdr.push(
-      // The bar is on Visibility, not Citations: a percentage has a fixed 0-100
-      // scale a bar can honestly represent, where a bar over an unbounded count
-      // only ever shows the ratio to whatever the top row happens to be.
-      el("th", { "data-term": "domainVisibility" }, "Visibility"),
-      el("th", { className: "num", "data-term": "domainCitations" }, "Citations"),
-      el("th", { className: "num", "data-term": "distinctPrompts" }, "Prompts"),
-      el("th", { className: "num", "data-term": "readOnly" }, "Read-only"));
-    srcTable.append(el("tr", {}, ...hdr));
-
-    shown.forEach((row, i) => {
-      // Both views drill down now. A domain used to be plain text, with a
-      // comment claiming it had "no single source to drill into" — but the
-      // domain roll-up is exactly what people want first (how much of my
-      // citation volume is this publisher, and through which pages), so it
-      // opens a breakdown of its own URLs, each of which opens the prompts.
-      const keyCell = el("button", {
-        className: "linkbtn td-domain-btn",
-        title: sourceViewMode === "domain" ? "Click for this domain's URLs and the prompts they came from" : "Click to see which prompts cited this URL",
-      });
-      keyCell.append(highlightMatch(row.key, sourceSearch));
-      keyCell.onclick = () => (sourceViewMode === "domain"
-        ? openDomainDetailModal(row, `Source breakdown · ${profile.name || "Untitled campaign"}`, "prompt")
-        : openUrlDetailModal(row.key, profile, since, until));
-
-      const bar = el("div", { className: "src-bar", title: `Cited in ${row.citedResponses} of ${srcResponses} responses` },
-        el("div", { className: "src-bar-fill", style: `width:${Math.round(row.visibility)}%` }),
-        el("span", { className: "src-bar-n" }, fmtPct(row.visibility)));
-
-      const cells = [el("td", { className: "src-col-idx muted" }, String(i + 1)), el("td", { className: "td-domain" }, keyCell)];
-      if (sourceViewMode === "domain") cells.push(el("td", { className: "num" }, String(row.urls.size)));
-      cells.push(
-        el("td", { className: "src-bar-cell" }, bar),
-        el("td", { className: "num" }, String(row.citations || 0)),
-        el("td", { className: "num" }, String(row.citedPromptIds.size)),
-        el("td", { className: "num muted" }, String(row.fetched || 0)));
-      srcTable.append(el("tr", {}, ...cells));
-    });
-    root.append(el("div", { className: "drill-scroll" }, srcTable));
-    if (rows.length > shown.length) {
-      root.append(el("div", { className: "muted small", style: "margin-top:6px" }, `Showing the top ${shown.length} of ${rows.length} — narrow it with the filter above.`));
-    }
-  }
-}
 
 /* Shared modal chrome, so the URL and domain drill-downs can't drift apart. */
 // A handful of fixed gradients, picked by a cheap hash of the name — not
@@ -5312,27 +7511,6 @@ const modalStat = (n, l, tone, tip, term) => el(
   el("div", { className: "l" }, l),
 );
 
-/** Build the same drill-down row shape openDomainDetailModal expects, but
- *  from ad-hoc (non-campaign) capture data instead of a campaign's tracked
- *  runs — this is what lets the plain Dashboard's "Top Domains" list open
- *  the identical drill-down a campaign's Source Domains table does, instead
- *  of being permanently plain text. Same aggregation, same definitions of
- *  citations and visibility (src/lib/sources.js), so the two paths cannot
- *  drift into reporting different numbers for the same data. */
-function adhocDomainRow(domain, recs) {
-  const { domains, totalResponses } = aggregateSourcesFromCaptures(recs);
-  const row = domains.get(domain);
-  if (!row) {
-    return { key: domain, citations: 0, fetched: 0, citedResponses: 0, visibility: 0,
-             totalResponses, urls: new Set(), citedPromptIds: new Set(), urlList: [] };
-  }
-  return { ...row, totalResponses };
-}
-
-function openAdhocDomainDetailModal(domain, recs) {
-  openDomainDetailModal(adhocDomainRow(domain, recs), "Source breakdown · across your captures", "capture");
-}
-
 /** Domain drill-down: this publisher's totals, then every URL of theirs that
  *  surfaced, then — expanded per URL — the exact prompts (or, for the ad-hoc
  *  Dashboard, captures) that pulled it in. Clicking one jumps to that
@@ -5340,9 +7518,8 @@ function openAdhocDomainDetailModal(domain, recs) {
  *
  *  `unit` is "prompt" for a campaign's tracked runs or "capture" for plain
  *  ad-hoc browsing — the two label their counts differently ("N prompts
- *  cited on" vs. "N captures cited in") but are otherwise the same shape,
- *  built by either refreshPromptPerformance's aggregation or adhocDomainRow
- *  above. */
+ *  cited on" vs. "N captures cited in") but are otherwise the same shape.
+ *  Campaign rows come from aggregateSources() (renderCampaignSources). */
 function openDomainDetailModal(row, subtitle, unit = "prompt") {
   const plural = (n) => (n === 1 ? unit : `${unit}s`);
   const inOn = unit === "prompt" ? "cited on" : "cited in";
@@ -5440,7 +7617,7 @@ async function openUrlDetailModal(url, profile, since, until) {
   const { backdrop, body } = openDetailModal("Rankings by Source URL", url, { wide: true });
   body.append(el("div", { className: "muted small" }, "Loading…"));
 
-  const r = await send({ type: "geo-url-detail", profileId: profile.id, url, tags: geoTagFilter, engines: geoEngineFilter, since, until });
+  const r = await send({ type: "geo-url-detail", profileId: profile.id, url, tags: cbTags, engines: geoEngineFilter, since, until });
   body.textContent = "";
   if (!r.ok) { body.append(el("div", { className: "empty" }, r.error || "Couldn't load this URL's detail.")); return; }
   if (!r.rows.length) { body.append(el("div", { className: "empty" }, "No responses matched for this URL under the current filters.")); return; }
@@ -5512,221 +7689,6 @@ async function openUrlDetailModal(url, profile, since, until) {
  * geo-prompt-performance data through the same aggregateSources() — the two
  * paths cannot report different numbers for the same domain.
  */
-async function openCampaignDomainModal(profile, domain, prompts, since, until) {
-  const r = await send({
-    type: "geo-prompt-performance", profileId: profile.id,
-    tags: geoTagFilter, engines: geoEngineFilter, since, until,
-  });
-  if (!r.ok) { showToast(r.error || "Couldn't load that domain", "error"); return; }
-  const { domains } = aggregateSources(r.prompts || {},
-    new Map((prompts || []).map((p) => [p.id, p.text])));
-  const row = domains.get(domain);
-  if (!row) { showToast(`No captured sources from ${domain} under the current filters.`, "error"); return; }
-  openDomainDetailModal(row, `Source breakdown · ${profile.name || "Untitled campaign"}`, "prompt");
-}
-
-/**
- * Everything about ONE brand on this campaign — own brand or any competitor.
- *
- * Reported: "when I click on any brand I don't get to know much about that
- * competition's visibility, I don't get data to analyse it."
- *
- * It used to show four chips and a per-prompt list. The chips were already on
- * the table behind the modal, so opening it added almost nothing. What a
- * competitor actually raises is a comparative question the aggregate metrics
- * can't answer, because computeMetrics reduces each brand to its own column
- * and throws the PAIRING away:
- *
- *   - which answers let them in and kept you out          (headToHead)
- *   - when you both appear, who gets named first          (headToHead)
- *   - what the engine was reading when it named them      (brandSourceDomains)
- *   - whether that differs by engine                      (byEngine)
- *   - and then, per prompt, both brands side by side
- *
- * All of it needs answerText to rank by first appearance, so it is assembled
- * in one geo-brand-detail round trip rather than reconstructed here.
- */
-async function openBrandDetailModal(profile, brand, prompts, since, until) {
-  const { backdrop, body } = openDetailModal(
-    brand.isOwn ? `${brand.name} (you)` : brand.name,
-    `Brand analysis · ${profile.name || "Untitled campaign"}`,
-    { avatarText: brand.name.slice(0, 1).toUpperCase(), avatarKey: brand.name, wide: true },
-  );
-  body.append(el("div", { className: "muted small" }, "Loading…"));
-
-  const r = await send({
-    type: "geo-brand-detail", profileId: profile.id, brand: brand.name,
-    tags: geoTagFilter, engines: geoEngineFilter, since, until,
-  });
-  body.textContent = "";
-  if (!r.ok) { body.append(el("div", { className: "empty" }, r.error || "Couldn't load this brand's analysis.")); return; }
-  const row = r.row;
-  if (!row) { body.append(el("div", { className: "empty" }, `${brand.name} couldn't be matched against the tracked runs.`)); return; }
-
-  const engineLabel = (id) => ENGINES.find((e) => e.id === id)?.label || id;
-
-  /* --- headline --- */
-  const stats = el("div", { className: "statgrid modal-statgrid" });
-  stats.append(
-    modalStat(fmtPct(row.visibility), "Visibility", "accent", null, "visibility"),
-    modalStat(fmtPct(row.shareOfVoice), "Share of Voice", "accent", null, "shareOfVoice"),
-    modalStat(fmtPos(row.avgPosition), "Avg position", "", null, "avgPosition"),
-    modalStat(row.mentions, "Mentions", "", null, "mentions"),
-    modalStat(row.citations, "Citations", row.citations ? "good" : "muted", null, "citations"),
-  );
-  body.append(stats);
-  if (r.auto) {
-    body.append(el("div", { className: "muted small", style: "margin-bottom:10px" },
-      "Inferred from your captures — not a competitor you configured."));
-  }
-
-  /* --- head to head: the question a competitor actually raises --- */
-  if (r.headToHead && r.ownBrand) {
-    const h = r.headToHead;
-    body.append(el("div", { className: "modal-section-title" }, `${r.brand} vs ${r.ownBrand}`));
-    const h2h = el("div", { className: "h2h" });
-    const seg = (n, label, tone, term) => {
-      const pct = h.responses ? (n / h.responses) * 100 : 0;
-      const cell = el("div", { className: `h2h-seg tone-${tone}`, "data-term": term });
-      cell.append(el("div", { className: "h2h-n" }, String(n)));
-      cell.append(el("div", { className: "h2h-l muted small" }, label));
-      cell.append(el("div", { className: "h2h-bar" }, el("div", { className: "h2h-fill", style: `width:${pct}%` })));
-      return cell;
-    };
-    h2h.append(
-      // Listed first on purpose: this is the gap you can act on.
-      seg(h.aOnly, `Only ${r.brand}`, "bad", "onlyThem"),
-      seg(h.both, "Both named", "neutral", "bothNamed"),
-      seg(h.bOnly, `Only ${r.ownBrand}`, "good", "onlyYou"),
-      seg(h.neither, "Neither", "muted", "neitherNamed"),
-    );
-    body.append(h2h);
-
-    if (h.both) {
-      const lead = el("div", { className: "h2h-lead muted small" });
-      lead.append(el("span", { "data-term": "namedFirst" }, "When both appear: "));
-      lead.append(el("strong", {}, `${r.brand} first in ${h.aheadA}`));
-      lead.append(el("span", {}, " · "));
-      lead.append(el("strong", {}, `${r.ownBrand} first in ${h.aheadB}`));
-      if (h.bothUnranked) {
-        lead.append(el("span", {},
-          ` · ${h.bothUnranked} with no order (shown in a product card rather than written about, so neither is "first")`));
-      }
-      body.append(lead);
-    }
-  }
-
-  /* --- by engine --- */
-  const engineIds = Object.keys(r.byEngine || {});
-  if (engineIds.length > 1) {
-    body.append(el("div", { className: "modal-section-title" }, "By engine"));
-    const grid = el("div", { className: "engine-split-grid" });
-    engineIds.forEach((id) => {
-      const e = r.byEngine[id];
-      const cell = el("div", { className: "engine-split-cell" });
-      cell.append(el("div", { className: "engine-split-head" },
-        engineChip(id, engineLabel(id)),
-        el("span", { className: "muted small" }, `${e.responses} response${e.responses === 1 ? "" : "s"}`)));
-      cell.append(el("div", { className: "engine-split-nums" },
-        el("div", {}, el("strong", {}, fmtPct(e.row?.visibility)), el("span", { className: "muted small" }, "Visibility")),
-        el("div", {}, el("strong", {}, fmtPct(e.row?.shareOfVoice)), el("span", { className: "muted small" }, "Share of Voice")),
-        el("div", {}, el("strong", {}, fmtPos(e.row?.avgPosition)), el("span", { className: "muted small" }, "Avg position")),
-        el("div", {}, el("strong", {}, String(e.row?.mentions ?? 0)), el("span", { className: "muted small" }, "Mentions"))));
-      grid.append(cell);
-    });
-    body.append(grid);
-  }
-
-  /* --- what the engine was reading --- */
-  if (r.sourceDomains && r.sourceDomains.length) {
-    body.append(el("div", { className: "modal-section-title", "data-term": "brandSources" },
-      `Sources cited when ${r.brand} is named`));
-    // Named for what it measures. This is NOT "sites that write about this
-    // brand" — a source can be cited for a reason unrelated to a name three
-    // paragraphs later. It is "when the engine says this name, what was it
-    // reading", which is the honest version and still the useful one.
-    body.append(el("div", { className: "muted small", style: "margin-bottom:8px" },
-      `Domains cited in the ${row.responsesPresent} answer${row.responsesPresent === 1 ? "" : "s"} that mention ${r.brand}. `
-      + "Not proof the page is about them — but it is what the engine had in front of it."));
-    const t = el("table", { className: "drill-table" });
-    t.append(el("tr", {}, el("th", {}, "Domain"),
-      el("th", { className: "num", "data-tip": `Share of the answers mentioning ${r.brand} that cited this domain.` }, "Share"),
-      el("th", { className: "num", "data-term": "domainCitations" }, "Citations")));
-    r.sourceDomains.forEach((d) => {
-      // Clickable, exactly like the campaign's Source Domains table — the
-      // question "which pages on this host, under which prompts" is the same
-      // question wherever a domain is shown, so it gets the same answer.
-      // Aggregated over the whole campaign, not just this brand's answers,
-      // because the drill-down is about the SOURCE; the brand context is the
-      // list you arrived from.
-      const btn = el("button", {
-        className: "linkbtn td-domain-btn",
-        title: `Click for ${d.domain}'s pages and the prompts they came from`,
-      }, d.domain);
-      btn.onclick = () => { backdrop.remove(); openCampaignDomainModal(profile, d.domain, prompts, since, until); };
-      t.append(el("tr", {},
-        el("td", { className: "td-domain" }, btn),
-        el("td", { className: "num" }, fmtPct(d.visibility)),
-        el("td", { className: "num" }, String(d.citations))));
-    });
-    body.append(el("div", { className: "drill-scroll" }, t));
-  }
-
-  /* --- per prompt, both brands side by side --- */
-  if (!r.prompts.length) {
-    body.append(el("div", { className: "empty" }, "No tracked prompts matched the current filters."));
-    return;
-  }
-  body.append(el("div", { className: "modal-section-title" }, "Prompt by prompt"));
-  body.append(el("div", { className: "muted small", style: "margin-bottom:8px" },
-    r.isOwn
-      ? "Prompts are listed with the runs behind them — click one to open that capture in Analyze."
-      : `Prompts where ${r.brand} appears and ${r.ownBrand || "your brand"} does not are listed first — that is the gap. Click a prompt to open the capture.`));
-
-  const table = el("table", { className: "drill-table" });
-  table.append(el("tr", {},
-    el("th", {}, "Prompt"),
-    el("th", {}, "Engine"),
-    el("th", {}, r.brand),
-    ...(r.isOwn ? [] : [el("th", {}, r.ownBrand || "You")]),
-    el("th", {}, "Date")));
-
-  const verdict = (present, position) => {
-    if (!present) return el("span", { className: "pp-badge miss" }, "absent");
-    if (position == null) return el("span", { className: "pp-badge shown" }, "shown");
-    return el("span", { className: "pp-badge rank" }, `#${position}`);
-  };
-
-  r.prompts.forEach((p) => {
-    p.runs.forEach((run, i) => {
-      const promptCell = el("td", { className: "prompt-cell" });
-      if (i === 0) {
-        const link = el("a", { href: "#", className: "prompt-link" }, p.promptText);
-        link.onclick = (ev) => { ev.preventDefault(); backdrop.remove(); openCapture(run.captureId); };
-        promptCell.append(link);
-        if (p.tags.length) {
-          const tw = el("div", { className: "tagline" });
-          p.tags.forEach((t) => tw.append(el("span", { className: "tag" }, t)));
-          promptCell.append(tw);
-        }
-      }
-      // A row where they are in and you are out is the one to notice.
-      const gap = !r.isOwn && run.present && run.ownPresent === false;
-      const cells = [
-        promptCell,
-        el("td", {}, engineChip(run.platform, engineLabel(run.platform))),
-        el("td", {}, verdict(run.present, run.position)),
-      ];
-      if (!r.isOwn) cells.push(el("td", {}, run.ownPresent == null
-        ? el("span", { className: "pp-badge none" }, "—")
-        : verdict(run.ownPresent, run.ownPosition)));
-      cells.push(el("td", { className: "muted small", title: new Date(run.capturedAt).toLocaleString() }, relTime(run.capturedAt)));
-      table.append(el("tr", { className: gap ? "h2h-gap-row" : "" }, ...cells));
-    });
-  });
-  body.append(el("div", { className: "drill-scroll" }, table));
-}
-
 /* ---------- wiring ---------- */
 document.querySelectorAll("[data-tab]").forEach((btn) =>
   btn.addEventListener("click", () => {
@@ -5735,7 +7697,7 @@ document.querySelectorAll("[data-tab]").forEach((btn) =>
     // openCapture() no longer applies once they've navigated on their own.
     returnTab = null;
     // clicking the Analyze tab directly returns to the latest capture
-    if (btn.dataset.tab === "analyze") { viewingId = null; renderAnalyze(); }
+    if (btn.dataset.tab === "analyze") { viewingId = null; apSheet = null; apMenuOpen = false; apFanAll = false; apPromptOpen = false; atResetState(); renderAnalyze(); }
     if (btn.dataset.tab === "loader") loadGeo();
     showTab(btn.dataset.tab);
   })
@@ -5744,28 +7706,25 @@ $("#openTab").addEventListener("click", () =>
   chrome.tabs.create({ url: chrome.runtime.getURL("ui/panel.html") })
 );
 
-function updateThemeIcon(theme) {
-  const btn = $("#themeToggle");
-  if (!btn) return;
-  const label = btn.querySelector(".theme-label");
-  if (label) label.textContent = theme === "dark" ? "Dark" : "Light";
+// Light or dark, kept in this browser (the popup and the full tab share it).
+// Picked in About → Settings since 0.56.0; the top bar's button went, as on
+// the canvas.
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  document.querySelectorAll("#setTheme [data-theme-pick]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.themePick === theme)));
 }
-
 function initTheme() {
-  try {
-    const current = localStorage.getItem("cito-theme") || "light";
-    document.documentElement.setAttribute("data-theme", current);
-    updateThemeIcon(current);
-  } catch (_) {}
+  let current = "light";
+  try { current = localStorage.getItem("cito-theme") || "light"; } catch (_) {}
+  applyTheme(current);
 }
-
-$("#themeToggle")?.addEventListener("click", () => {
-  const current = document.documentElement.getAttribute("data-theme") || "light";
-  const next = current === "dark" ? "light" : "dark";
-  document.documentElement.setAttribute("data-theme", next);
+document.querySelectorAll("#setTheme [data-theme-pick]").forEach((b) => b.addEventListener("click", () => {
+  const next = b.dataset.themePick;
+  applyTheme(next);
   try { localStorage.setItem("cito-theme", next); } catch (_) {}
-  updateThemeIcon(next);
-});
+}));
+// The other view (popup or tab) follows a change made here.
+window.addEventListener("storage", (e) => { if (e.key === "cito-theme" && e.newValue) applyTheme(e.newValue); });
 initTheme();
 
 $("#exportJson")?.addEventListener("click", () =>
@@ -5842,15 +7801,22 @@ function fmtBytes(n) {
  */
 async function buildDiagnosticReport() {
   const manifest = chrome.runtime.getManifest();
-  const [statsRes, runsRes] = await Promise.all([
+  const [statsRes, runsRes, buildRes] = await Promise.all([
     send({ type: "stats" }),
     send({ type: "geo-run-list" }), // no profileId = every campaign's runs
+    send({ type: "build-info" }),
   ]);
 
   const lines = [];
   lines.push(`${manifest.name} diagnostic report`);
   lines.push(`Generated: ${new Date().toISOString()}`);
   lines.push(`Extension version: ${manifest.version}`);
+  // The manifest can say one version while older code actually runs — see
+  // lib/build.js. Both builds are printed so a half-updated install is plain
+  // from the first lines of any report, instead of being inferred from
+  // capture fingerprints after a wasted run.
+  const bgBuild = buildRes && buildRes.ok ? buildRes.build : "older than 0.42.0 (doesn't report a build)";
+  lines.push(`Code builds: interface ${BUILD} · background ${bgBuild}${bgBuild === BUILD ? "" : "  ← MISMATCH: reload the extension"}`);
   lines.push(`Browser: ${navigator.userAgent}`);
   lines.push("");
   lines.push("Storage");
@@ -5924,7 +7890,7 @@ async function openFeedbackModal(rec) {
 
   // Unlike the About tab's diagnostic report, this bundle carries real
   // content. Say so, itemised, with a way to leave any part out.
-  body.append(el("p", { className: "small", style: "margin:12px 0 6px;font-weight:600;color:var(--fg-primary);" },
+  body.append(el("p", { className: "small", style: "margin:12px 0 6px;font-weight:500;color:var(--fg-primary);" },
     "What gets included"));
   const boxes = {};
   const list = el("div", { style: "display:flex;flex-direction:column;gap:8px;" });
@@ -5934,7 +7900,7 @@ async function openFeedbackModal(rec) {
     if (part.key === "note") { cb.checked = true; cb.disabled = true; }
     boxes[part.key] = cb;
     row.append(cb, el("span", {},
-      el("span", { style: "font-weight:600;color:var(--fg-primary);" }, part.label),
+      el("span", { style: "font-weight:500;color:var(--fg-primary);" }, part.label),
       el("span", { className: "muted" }, ` — ${part.detail}`)));
     list.append(row);
   }
@@ -5978,11 +7944,7 @@ async function openFeedbackModal(rec) {
     if (include.raw) {
       try {
         const r = await send({ type: "get-raw", captureId: full.captureId });
-        if (r && r.ok && r.raw != null) {
-          raw = `# CitoSkeleton raw capture ${full.captureId}\n` +
-                `# url: ${(r.meta && r.meta.url) || ""}\n` +
-                `# reqBody: ${(r.meta && r.meta.reqBody) || ""}\n\n` + r.raw;
-        }
+        if (r && r.ok && r.raw != null) raw = formatRawCapture(full.captureId, r.meta, r.raw);
       } catch (_) { /* a capture whose raw was pruned still sends the rest */ }
       if (!raw) include.raw = false;
     }
@@ -6157,10 +8119,15 @@ $("#diagReport")?.addEventListener("click", () => openDiagnosticReportModal());
 
 const reprocessBtn = $("#reprocess");
 reprocessBtn?.addEventListener("click", withBusy(reprocessBtn, "Reprocessing…", async () => {
-  const st = $("#setStatus"); // was "#status" — that id doesn't exist, so this never showed
-  if (st) st.textContent = "Reprocessing…";
+  const st = $("#reprocessStatus");
+  if (st) st.textContent = "";
   const r = await send({ type: "reprocess-all" });
-  if (st) st.textContent = r.ok ? `Reprocessed ${r.reprocessed}/${r.total} captures.` : "Reprocess failed";
+  if (st) {
+    st.textContent = !r.ok ? "Reprocessing failed." : r.reprocessed === r.total
+      ? `Done. ${r.reprocessed.toLocaleString("en-US")} capture${r.reprocessed === 1 ? "" : "s"} re-read.`
+      : `Done. ${r.reprocessed.toLocaleString("en-US")} of ${r.total.toLocaleString("en-US")} captures re-read.`;
+    st.classList.toggle("bad", !r.ok);
+  }
   FULL.clear(); // records were re-derived; drop stale hydrated copies
   load();
 }));
@@ -6217,7 +8184,34 @@ let loaderAckedRunId = null;
 function renderLoaderStatus(s) {
   const box = $("#loaderStatus");
   if (!box) return;
+  // Each engine's prompt list is its own scroll box (.loader-prompt-rows,
+  // max-height 180px), and this whole status block is rebuilt on every 1.5s
+  // poll — so each list came back as a new element scrolled to the top.
+  // Reported as "if i scroll down they automatically scroll up after 2 sec".
+  // withScrollPreserved around the poll only holds the PAGE's scroller, not
+  // these; they're carried across the rebuild here, keyed by engine.
+  const listScroll = {};
+  box.querySelectorAll(".loader-prompt-rows[data-plat]").forEach((r) => { listScroll[r.dataset.plat] = r.scrollTop; });
+  // The cooldown banner has a slide-in entrance (panelFadeIn: 4px down, then
+  // up). Rebuilt every poll, it replayed that slide every 1.5s — reported as
+  // "the box which shows the time is going up and down". It animates when it
+  // first appears; a refresh of one already showing keeps it still.
+  const hadCooldownBanner = !!box.querySelector(".cooldown-banner");
   box.textContent = "";
+  const wasLive = cpLive.live;
+  cpLive = { live: !!(s && s.total && s.running), paused: !!(s && s.running && s.paused) };
+  // The run history is drawn once per render; when a run ends, redraw it so
+  // it doesn't keep saying "Running".
+  if (wasLive && !cpLive.live) {
+    const old = document.getElementById("runHistory");
+    const p = geoActive();
+    if (old && p) old.replaceWith(renderRunHistory(p));
+  }
+  const cpHead = document.getElementById("cpHead");
+  if (cpHead) {
+    cpHead.classList.toggle("live", cpLive.live);
+    cpHead.classList.toggle("paused", cpLive.paused);
+  }
   if (!s || !s.total) { loaderWasRunning = false; return; }
 
   if (!s.running) {
@@ -6318,6 +8312,7 @@ function renderLoaderStatus(s) {
         el("button", { className: "btn primary small", style: "flex-shrink:0" }, "Resume Now")
       );
       banner.querySelector("button").onclick = () => send({ type: "loader-resume" }).then(refresh);
+      if (hadCooldownBanner) banner.style.animation = "none";
       box.append(banner);
     } else {
       const note = el("div", { className: "loader-interrupted" },
@@ -6376,6 +8371,7 @@ function renderLoaderStatus(s) {
     const list = el("div", { className: "loader-prompt-list" });
     list.append(el("div", { className: "loader-prompt-list-head" }, label));
     const rows = el("div", { className: "loader-prompt-rows" });
+    rows.dataset.plat = plat;
     (ps.prompts || []).forEach((p, i) => {
       const row = el("div", { className: `loader-prompt-row status-${p.status}` },
         el("span", { className: "loader-prompt-icon", title: PROMPT_STATUS_LABEL[p.status] }, PROMPT_STATUS_ICON[p.status]),
@@ -6388,6 +8384,10 @@ function renderLoaderStatus(s) {
     lists.append(list);
   }
   box.append(lists);
+  for (const r of lists.querySelectorAll(".loader-prompt-rows[data-plat]")) {
+    const y = listScroll[r.dataset.plat];
+    if (y) r.scrollTop = y;
+  }
 }
 
 // poll loader status while the Campaigns tab is open
@@ -6406,85 +8406,69 @@ setInterval(async () => {
   if (s.ok) withScrollPreserved(() => renderLoaderStatus(s));
 }, 1500);
 
-/* ---------- Capture debug ---------- */
-async function renderDebug() {
-  const r = await send({ type: "get-debug" });
-  const log = $("#dbgLog");
-  log.textContent = "";
-  if (!r.ok || !r.events.length) { log.append(el("div", { className: "muted" }, "No events yet. Load a supported engine and run a prompt.")); return; }
-  // group counts by host+kind for a quick summary
-  const summ = {};
-  r.events.forEach((e) => { const k = `${e.host} · ${e.kind}`; summ[k] = (summ[k] || 0) + 1; });
-  log.append(el("div", { className: "muted", style: "margin:4px 0" }, Object.entries(summ).map(([k, n]) => `${k}: ${n}`).join("  |  ")));
-  r.events.slice().reverse().forEach((e) => {
-    const time = new Date(e.t).toLocaleTimeString();
-    const d = e.data || {};
-    let line = `${time}  [${e.kind}]`;
-    if (e.kind === "fetch") line += `  ${d.status} ${d.matched ? "CAP" : "—"}  ${d.url}`;
-    else if (e.kind === "xhr") line += `  ${d.matched ? "CAP" : "—"}  ${d.url}`;
-    else if (e.kind === "xhr-done") line += `  len=${d.len}${d.rt && d.rt !== "text" ? " " + d.rt : ""}  ${d.url}`;
-    else if (e.kind === "worker") line += `  WORKER  ${d.url}`;
-    else if (e.kind === "installed") line += `  ${e.host}  ${d.href || ""}`;
-    else line += `  ${e.host}`;
-    // highlight big matched responses (candidate answer payloads)
-    const cls = e.kind === "xhr-done" && d.len > 2000 ? "dbgline big" : "dbgline";
-    log.append(el("div", { className: cls }, line));
-  });
-}
-$("#dbgRefresh").addEventListener("click", renderDebug);
-$("#dbgClear").addEventListener("click", async () => { await send({ type: "clear-debug" }); renderDebug(); });
-
-/* ---------- Error log ---------- */
+/* ---------- Diagnostics log ----------
+ * One merged log — replaces what used to be two disconnected mechanisms:
+ * an error log (durable) and a "Capture debugger log" (in-memory, wiped on
+ * every service-worker restart). Entries carry a `cat` — "error", "turn" (a
+ * per-prompt outcome) or "capture" (a network-capture breadcrumb) — see
+ * lib/errorlog.js's header for why these were folded into one store rather
+ * than staying three separate things a user had to know to check.
+ */
+const DIAG_CAT_LABEL = { error: "Error", turn: "Turn", capture: "Capture" };
 
 // Kept as plain text so "Copy log" produces something a person can paste into
 // a message without any of the surrounding UI coming with it.
-function errorLogText(grouped) {
-  if (!grouped.length) return "No errors recorded.";
-  return grouped.map((g) => {
-    const when = new Date(g.lastAt).toLocaleString();
-    const rep = g.count > 1 ? ` (x${g.count}, first ${new Date(g.firstAt).toLocaleString()})` : "";
-    const ctx = g.context && Object.keys(g.context).length
-      ? `\n    context: ${Object.entries(g.context).map(([k, v]) => `${k}=${v}`).join(", ")}` : "";
-    const trace = g.trace ? `\n    trace: ${g.trace}` : "";
-    const stack = g.stack ? `\n    ${g.stack.slice(0, 300)}` : "";
-    return `${when}${rep}\n  [${g.where}] ${g.kind}: ${g.message}${ctx}${trace}${stack}`;
+function diagLogText(entries) {
+  if (!entries.length) return "Nothing recorded.";
+  return entries.map((e) => {
+    const when = new Date(e.at).toLocaleString();
+    const cat = DIAG_CAT_LABEL[e.cat] || "Error";
+    const ctx = e.context && Object.keys(e.context).length
+      ? `\n    context: ${Object.entries(e.context).map(([k, v]) => `${k}=${v}`).join(", ")}` : "";
+    const trace = e.trace ? `\n    trace: ${e.trace}` : "";
+    const stack = e.stack ? `\n    ${e.stack.slice(0, 300)}` : "";
+    return `${when}\n  [${cat}] [${e.where}] ${e.message}${ctx}${trace}${stack}`;
   }).join("\n\n");
 }
 
-async function renderErrorLog() {
-  const box = $("#errLog");
-  if (!box) return;
-  box.textContent = "Loading…";
-  const r = await send({ type: "error-log" });
-  const grouped = (r && r.ok && r.grouped) || [];
-  const countEl = $("#errLogCount");
-  if (countEl) {
-    countEl.textContent = grouped.length
-      ? `— ${grouped.reduce((n, g) => n + g.count, 0)} recorded, ${grouped.length} distinct`
-      : "— nothing recorded";
-  }
-  // Open itself when there is something to see, so a user who has hit a
-  // problem doesn't have to know this disclosure exists to find it.
-  const details = $("#errLogBox");
-  if (details && grouped.length) details.open = true;
+// The whole log, fetched once per visit; the chips filter it here, so each
+// chip can say how many entries it would show.
+async function renderDiagLog() {
+  if (!$("#diagLog")) return;
+  const r = await send({ type: "error-log", limit: 300 });
+  abLogEntries = (r && r.ok && r.entries) || [];
+  abLogLoaded = true;
+  renderAboutNav(abCurrent());
+  renderDiagRows();
+}
 
+function renderDiagRows() {
+  const box = $("#diagLog");
+  const chipsBox = $("#diagChips");
+  if (!box || !chipsBox) return;
+  const v = logView(abLogEntries, abLogFilter);
+  chipsBox.textContent = "";
+  v.chips.forEach((c) => {
+    const b = el("button", { type: "button", className: `ab-chip-btn${c.on ? " on" : ""}`, "aria-pressed": c.on ? "true" : "false" }, c.label, el("span", { className: "ab-chip-n" }, String(c.count)));
+    b.onclick = () => { abLogFilter = c.id; renderDiagRows(); };
+    chipsBox.append(b);
+  });
   box.textContent = "";
-  if (!grouped.length) {
-    box.append(el("div", { className: "muted small" },
-      "Nothing has failed since the log was last cleared."));
+  if (!abLogLoaded) { box.append(el("p", { className: "ab-sub ab-log-empty" }, "Loading…")); return; }
+  if (!v.rows.length) {
+    box.append(el("p", { className: "ab-sub ab-log-empty" }, abLogEntries.length ? "Nothing of this kind recorded." : "The log is empty. New events appear here as they happen."));
     return;
   }
-  grouped.forEach((g) => {
-    const head = `${new Date(g.lastAt).toLocaleString()}  [${g.where}]  ${g.kind}: ${g.message}`;
-    const line = el("div", { className: g.count > 1 ? "dbgline big" : "dbgline" },
-      el("div", {}, head));
-    if (g.count > 1) {
-      line.append(el("div", { className: "muted small" },
-        `repeated ${g.count} times — first at ${new Date(g.firstAt).toLocaleString()}`));
-    }
-    if (g.context && Object.keys(g.context).length) {
-      line.append(el("div", { className: "muted small" },
-        Object.entries(g.context).map(([k, v]) => `${k}=${v}`).join("  ·  ")));
+  v.rows.forEach((e) => {
+    const catKey = e.cat || "error";
+    const line = el("div", { className: `ab-log-row cat-${catKey}` },
+      el("time", { className: "ab-log-time", dateTime: new Date(e.at).toISOString(), title: new Date(e.at).toLocaleString() }, new Date(e.at).toLocaleTimeString()),
+      el("span", { className: `ab-log-cat cat-${catKey}` }, DIAG_CAT_LABEL[catKey] || "Error"),
+      el("span", { className: "ab-log-msg" }, e.message),
+      el("code", { className: "ab-log-where" }, e.where));
+    const more = el("div", { className: "ab-log-more" });
+    if (e.context && Object.keys(e.context).length) {
+      more.append(el("div", { className: "muted small" }, Object.entries(e.context).map(([k, v]) => `${k}=${v}`).join("  ·  ")));
     }
     /* The turn timeline, spelled out.
      *
@@ -6492,65 +8476,527 @@ async function renderErrorLog() {
      * the composer was ever found, whether the text landed, whether the send
      * control was usable, and how far the sequence got before it stopped —
      * which is the difference between a fixable report and a shrug. */
-    if (g.trace) {
-      line.append(el("div", { className: "err-trace" },
-        el("span", { className: "muted small" }, "turn timeline: "),
-        el("code", {}, g.trace)));
+    if (e.trace) more.append(el("div", { className: "err-trace" }, el("span", { className: "muted small" }, "turn timeline: "), el("code", {}, e.trace)));
+    if (e.stack) more.append(el("details", { className: "err-stack" }, el("summary", { className: "muted small" }, "stack"), el("pre", { className: "muted small" }, e.stack)));
+    // Raw capture data reachable straight from the log.
+    if (e.context && e.context.captureId) {
+      const viewRaw = el("button", { type: "button", className: "btn sm ghost" }, "View raw capture");
+      viewRaw.onclick = () => downloadRaw(e.context.captureId, "diag");
+      more.append(viewRaw);
     }
-    if (g.stack) {
-      const st = el("details", { className: "err-stack" },
-        el("summary", { className: "muted small" }, "stack"),
-        el("pre", { className: "muted small" }, g.stack));
-      line.append(st);
-    }
+    if (more.childNodes.length) line.append(more);
     box.append(line);
   });
 }
 
-$("#errLogRefresh")?.addEventListener("click", renderErrorLog);
-$("#errLogClear")?.addEventListener("click", async () => {
+$("#diagClear")?.addEventListener("click", async () => {
   await send({ type: "error-log-clear" });
-  renderErrorLog();
+  abLogFilter = "all";
+  renderDiagLog();
 });
-$("#errLogCopy")?.addEventListener("click", async () => {
-  const r = await send({ type: "error-log" });
-  const text = errorLogText((r && r.ok && r.grouped) || []);
+$("#diagCopy")?.addEventListener("click", async () => {
+  const text = diagLogText(logView(abLogEntries, abLogFilter).rows);
   try {
     await navigator.clipboard.writeText(text);
-    showToast("Error log copied.");
+    showToast("Activity log copied.");
   } catch (_) {
     showToast("Couldn't copy — select the log text and copy manually.", "error");
   }
 });
+
+/* ---------- Export campaign diagnostics ----------
+ * "Share all the issues and data of a campaign with you in one go" — one
+ * zip with the full diagnostic log, every raw capture and derived record
+ * for the chosen campaign, and the run-by-run completeness numbers.
+ */
+async function populateDiagExportProfiles() {
+  const sel = $("#diagExportProfile");
+  if (!sel) return;
+  const r = await send({ type: "geo-profile-list" });
+  const profiles = (r && r.ok && r.profiles) || [];
+  sel.textContent = "";
+  if (!profiles.length) {
+    sel.append(el("option", { value: "" }, "No campaigns yet"));
+    return;
+  }
+  for (const p of profiles) sel.append(el("option", { value: p.id }, p.name || p.id));
+}
+
+$("#diagExportBtn")?.addEventListener("click", async () => {
+  const profileId = $("#diagExportProfile")?.value;
+  if (!profileId) { showToast("No campaign selected.", "error"); return; }
+  const btn = $("#diagExportBtn");
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Building…";
+  try {
+    const r = await send({ type: "get-campaign-diagnostics", profileId });
+    if (!r || !r.ok) { showToast((r && r.error) || "Couldn't build the export.", "error"); return; }
+    const files = [
+      { name: "summary.txt", text: buildCampaignDiagSummaryText(r) },
+      { name: "campaign.json", text: JSON.stringify({ campaign: r.campaign, perRun: r.perRun, env: r.env, generatedAt: r.generatedAt }, null, 2) },
+      { name: "diagnostics.json", text: JSON.stringify(r.errors, null, 2) },
+      { name: "turns.json", text: JSON.stringify(r.turns, null, 2) },
+      // Named for what it holds: the log's network-capture breadcrumbs, NOT
+      // the captured answers (those are the captures/ folder). As
+      // "captures.json" it sat empty beside 22 capture files and read as a
+      // second failure.
+      { name: "capture-events.json", text: JSON.stringify(r.captures, null, 2) },
+    ];
+    // Records in batches and raw payloads one at a time: the handler returns
+    // only an index, because a whole campaign in one message overran Chrome's
+    // 64 MiB message cap and the export failed for a real ten-prompt run. A
+    // payload that can't be fetched is noted in the zip rather than failing it.
+    const ids = r.recordIds || [];
+    const unreadable = r.unreadable || [];
+    const total = ids.length + unreadable.length;
+    let done = 0;
+    const tick = () => { btn.textContent = `Building… ${Math.min(done, total)}/${total}`; };
+    const skipped = [];
+    const addRaw = async (captureId, name) => {
+      const raw = await send({ type: "get-raw", captureId });
+      if (raw && raw.ok && raw.raw != null) files.push({ name, text: formatRawCapture(captureId, raw.meta, raw.raw) });
+      else skipped.push(`${name}: ${(raw && raw.error) || "not available"}`);
+    };
+    for (let i = 0; i < ids.length; i += 20) {
+      const batch = await send({ type: "get-diagnostics-records", captureIds: ids.slice(i, i + 20) });
+      for (const rec of (batch && batch.ok && batch.records) || []) {
+        files.push({ name: `captures/${rec.captureId}.json`, text: JSON.stringify(rec, null, 2) });
+        await addRaw(rec.captureId, `captures/${rec.captureId}-raw.txt`);
+        done++; tick();
+      }
+    }
+    // What an engine sent that no adapter could read — the payloads behind
+    // capture-events.json's "capture:unreadable" entries, one per kind.
+    for (const u of unreadable) {
+      await addRaw(u.captureId, `unreadable/${u.platform || "unknown"}-${u.captureId}-raw.txt`);
+      done++; tick();
+    }
+    if (skipped.length) files.push({ name: "skipped.txt", text: skipped.join("\n") + "\n" });
+    const zip = await makeZip(files);
+    const slug = String(r.campaign?.name || "campaign").replace(/[^\w]+/g, "-").replace(/^-|-$/g, "").toLowerCase();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(zip);
+    a.download = `citoskeleton-diagnostics-${slug || "campaign"}-${Date.now()}.zip`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    showToast("Diagnostics export saved.");
+  } catch (err) {
+    showToast("Couldn't build the export.", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+});
+
+function buildCampaignDiagSummaryText(r) {
+  const lines = [];
+  lines.push("CitoSkeleton campaign diagnostics");
+  lines.push("=================================");
+  lines.push("");
+  lines.push(`Campaign  : ${r.campaign?.name || "—"} (${r.campaign?.profileId || "—"})`);
+  lines.push(`Engines   : ${(r.campaign?.engines || []).join(", ") || "—"}`);
+  lines.push(`Runs      : ${r.campaign?.runCount ?? "—"}`);
+  lines.push(`Prompts   : ${r.campaign?.promptCount ?? "—"}`);
+  lines.push(`Generated : ${new Date(r.generatedAt).toISOString()}`);
+  lines.push(`Extension : ${r.env?.version || "—"}`);
+  lines.push(`Browser   : ${r.env?.userAgent || "—"}`);
+  lines.push("");
+  lines.push("Per run");
+  for (const run of r.perRun || []) {
+    lines.push(`  Run ${run.runNo ?? "?"}  ${new Date(run.startedAt).toLocaleString()}  ${run.status}`);
+    lines.push(`    expected ${run.expected}  answered ${run.stored}${run.captures != null && run.captures !== run.stored ? ` (${run.captures} captures)` : ""}  missing ${run.missing}  failed ${run.failed}`);
+    const reasons = Object.entries(run.reasons || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} (${v})`).join("; ");
+    if (reasons) lines.push(`    reasons: ${reasons}`);
+  }
+  lines.push("");
+  lines.push(`Errors: ${(r.errors || []).length}   Turns: ${(r.turns || []).length}   Capture events: ${(r.captures || []).length}`);
+  return lines.join("\n");
+}
+
 // Painted on load rather than only on demand, so the count in the summary is
 // accurate the first time the About tab is opened.
-renderErrorLog();
+renderDiagLog();
+populateDiagExportProfiles();
 
-/* ---------- Settings ---------- */
+/* ---------- About (0.51.0) ----------
+ * Release 5 of the canvas redesign. Five pages — Overview, Metric glossary,
+ * Settings, Data & tools, Diagnostics — one at a time. The full tab has a
+ * side menu; the popup opens on a home screen ("Get started", then a list of
+ * the pages) and goes one page deep, with a glossary term as a page of its
+ * own. What has rules in it (the glossary search, the checklist, unsaved
+ * settings, the storage meter, the log's counts, the version check) is in
+ * src/lib/aboutView.js; this file only draws it.
+ */
+const AB_TAB_SECTIONS = ["overview", "glossary", "settings", "data", "diagnostics"];
+const AB_PAGES = {
+  overview: { label: "Overview", glyph: "info" },
+  glossary: { label: "Metric glossary", glyph: "book", sub: "What every number means, and how to use it" },
+  settings: { label: "Settings", glyph: "sliders", sub: "How much is kept on this device" },
+  data: { label: "Data & tools", glyph: "tools", sub: "Reprocess captures, sample data, the tour" },
+  diagnostics: { label: "Diagnostics", glyph: "pulse", sub: "Version check, report a problem" },
+  news: { label: "What’s new", glyph: "spark", sub: `Changes in version ${BUILD}` },
+};
+const AB_POPUP_SUB = {
+  glossary: "What every number in the tool means. Hover a metric anywhere to see the same text.",
+  settings: "How much CitoSkeleton keeps on this device.",
+  data: "Housekeeping on what’s stored. None of it touches your campaigns.",
+};
+// Where each engine is asked — the first "Get started" step links to them.
+const AB_ENGINE_HOME = { chatgpt: "https://chatgpt.com/", gemini: "https://gemini.google.com/app", perplexity: "https://www.perplexity.ai/", grok: "https://grok.com/" };
+const AB_ANALYZED_KEY = "cito-analyzed-real";
+
+let abSection = null;   // null until picked: the layout's own first page
+let abGlossQuery = "";
+let abGlossGroup = "all";
+let abTerm = "visibility";
+let abLogFilter = "all";
+let abLogEntries = [];
+let abLogLoaded = false;
+let abBuildReply = null; // the build-info reply, from checkBuildMatch()
+let abStats = null;      // the "stats" reply, for the storage meter
+let abSaved = null;      // settings as stored
+let abJustSaved = false;
+let abDemo = null;       // the demo-status reply
+
+const abPopup = () => document.body.classList.contains("popup");
+const abIsDemo = (r) => !!(r && (r.isDemo || String(r.captureId || "").startsWith("demo-")));
+
+// The page to show, mapped onto what this layout has: the popup's home holds
+// the overview, and the tab shows a glossary term and what's new in place.
+function abCurrent() {
+  const s = abSection || (abPopup() ? "home" : "overview");
+  if (abPopup()) return s === "overview" ? "home" : s;
+  if (s === "home" || s === "news") return "overview";
+  return s === "term" ? "glossary" : s;
+}
+
+function abGo(section) {
+  abSection = section;
+  renderAbout();
+  const sc = activeScroller();
+  if (sc) sc.scrollTop = 0;
+}
+
+// Step two of "Get started" is done by reading a real answer in Analyze, not
+// by the sample, and not by Analyze rendering in the background.
+function abNoteAnalyzed(rec) {
+  if (!rec || abIsDemo(rec) || !$("#analyze")?.classList.contains("active")) return;
+  try { localStorage.setItem(AB_ANALYZED_KEY, "1"); } catch (_) { /* a per-viewer nicety */ }
+}
+function abAnalyzed() {
+  try { return localStorage.getItem(AB_ANALYZED_KEY) === "1"; } catch (_) { return false; }
+}
+
+// Opening About: draw it, then fetch what can have changed since.
+function aboutEnter() {
+  renderAbout();
+  renderDiagLog();
+  refreshDemoControls();
+  populateDiagExportProfiles();
+  send({ type: "stats" }).then(renderStorageInfo).catch(() => {});
+}
+
+function renderAbout() {
+  const root = $("#about");
+  if (!root) return;
+  const sec = abCurrent();
+  root.dataset.ab = sec;
+  root.querySelectorAll(".ab-sec").forEach((n) => { n.hidden = n.dataset.sec !== sec; });
+  renderAboutNav(sec);
+  renderAboutBuild();
+  renderAboutSubhead(sec);
+  if (sec === "home") renderAboutHome();
+  if (sec === "overview") renderAboutOverview();
+  if (sec === "news") { const box = $("#abNews"); box.textContent = ""; box.append(abNewsCard(false)); }
+  if (sec === "glossary") renderAboutGlossary();
+  if (sec === "term") renderAboutTerm();
+  if (sec === "settings") { renderStorageMeter(); updateSettingsStatus(); }
+  if (sec === "diagnostics") renderDiagRows();
+}
+
+function renderAboutNav(sec) {
+  const nav = $("#abNav");
+  if (!nav) return;
+  nav.textContent = "";
+  AB_TAB_SECTIONS.forEach((id) => {
+    const p = AB_PAGES[id];
+    const on = id === sec;
+    const b = el("button", { type: "button", className: `ab-nav-btn${on ? " on" : ""}`, "aria-current": on ? "page" : "false" }, glyphEl(p.glyph, 18), el("span", { className: "ab-nav-label" }, p.label));
+    if (id === "glossary") b.append(el("span", { className: "ab-nav-count" }, String(glossaryEntries().length)));
+    const errors = logView(abLogEntries).errors;
+    if (id === "diagnostics" && errors) b.append(el("span", { className: "ab-nav-badge", title: `${errors} error${errors === 1 ? "" : "s"} in the activity log` }, String(errors)));
+    b.onclick = () => abGo(id);
+    nav.append(b);
+  });
+}
+
+function renderAboutBuild() {
+  const st = buildStatus(abBuildReply, BUILD);
+  const mini = $("#abBuild");
+  if (mini) {
+    mini.className = `ab-build${st.stale ? " stale" : st.known ? " ok" : ""}`;
+    mini.textContent = "";
+    mini.append(el("span", { className: "ab-dot", "aria-hidden": "true" }), el("span", { className: "ab-build-text" }, el("b", {}, st.title), el("span", {}, st.sub)));
+    mini.onclick = st.stale ? () => abGo("diagnostics") : null;
+    mini.style.cursor = st.stale ? "pointer" : "";
+  }
+  const full = $("#abBuildFull");
+  if (full) {
+    full.className = `ab-buildline${st.stale ? " stale" : st.known ? " ok" : ""}`;
+    full.textContent = "";
+    if (st.stale) {
+      full.append(el("b", {}, "Part of CitoSkeleton is out of date"), el("p", {}, st.line),
+        el("ol", {},
+          el("li", {}, "Open chrome://extensions and press the reload ↻ icon on CitoSkeleton. Restarting Chrome is not enough."),
+          el("li", {}, "Still seeing this? Close Chrome, extract the update over the folder again so every file is replaced, reopen Chrome and press reload ↻ once more.")));
+    } else {
+      full.append(glyphEl(st.known ? "check" : "info", 16), el("span", {}, st.line || st.title));
+    }
+  }
+}
+
+function renderAboutSubhead(sec) {
+  const h = $("#abSubhead");
+  if (!h) return;
+  h.textContent = "";
+  h.hidden = !abPopup() || sec === "home";
+  if (h.hidden) return;
+  const back = el("button", { type: "button", className: "ab-back" }, el("span", { "aria-hidden": "true" }, "←"), sec === "term" ? " Glossary" : " About");
+  back.onclick = () => abGo(sec === "term" ? "glossary" : "home");
+  const t = sec === "term" ? GLOSSARY[abTerm] : null;
+  const title = t ? t.term : sec === "news" ? `What’s new in ${BUILD}` : AB_PAGES[sec].label;
+  // Element.append() would write a null out as the text "null".
+  h.append(...[back, t ? el("div", { className: "ab-eyebrow" }, t.group) : null, el("h2", { className: "ab-title" }, title),
+    AB_POPUP_SUB[sec] ? el("p", { className: "ab-sub" }, AB_POPUP_SUB[sec]) : null].filter(Boolean));
+}
+
+function abEngineChips(asLinks) {
+  return el("div", { className: "ab-engines" }, ...availableEngines().map((e) => (asLinks
+    ? el("a", { className: "ab-engine", href: AB_ENGINE_HOME[e.id] || "#", target: "_blank", rel: "noreferrer" }, engineIconEl(e.id), e.label)
+    : el("span", { className: "ab-engine" }, engineIconEl(e.id), e.label))));
+}
+
+function abGoTab(tab) {
+  document.querySelector(`[data-tab="${tab}"]`)?.click();
+}
+
+function abNewsCard(withTitle) {
+  const card = el("div", { className: "card ab-card" });
+  if (withTitle) card.append(el("div", { className: "ab-head" }, el("div", {}, el("h2", { className: "ab-title" }, `What’s new in ${BUILD}`))));
+  card.append(el("ul", { className: "ab-news" }, ...ABOUT_NEWS.map((w) => el("li", {}, el("b", {}, w.head), " ", el("span", {}, w.body)))));
+  return card;
+}
+
+function renderAboutHome() {
+  const box = $("#abHome");
+  box.textContent = "";
+  const real = ALL_RECORDS.filter((r) => !abIsDemo(r)).length;
+  const prog = startProgress({ realCaptures: real, analyzed: abAnalyzed(), campaigns: (GEO_PROFILES || []).length });
+  box.append(el("div", { className: "card ab-card ab-home" },
+    el("div", { className: "ab-home-top" }, el("img", { src: "../icons/icon128.png", width: 36, height: 36, alt: "", className: "ab-logo" }),
+      el("h2", { className: "ab-title", id: "abHomeTitle" }, prog.title), el("span", { className: "version-badge" }, `v${BUILD}`)),
+    el("p", { className: "ab-lead" }, "See what ChatGPT, Gemini, Perplexity and Grok read before they answer."),
+    el("p", { className: "ab-private" }, glyphEl("lock", 15), "Stays on this device. No account, no server.")));
+
+  if (abDemo && abDemo.ok && abDemo.present) {
+    const rm = el("button", { type: "button", className: "btn sm ghost" }, "Remove");
+    rm.onclick = withBusy(rm, "Removing…", abToggleSample);
+    box.append(el("div", { className: "card ab-card ab-sample" },
+      el("div", { className: "ab-tool-text" }, el("b", {}, "Sample data is on"), el("span", {}, "One example answer, labelled Sample, so every tab has something to show.")), rm));
+  }
+
+  const start = el("div", { className: "card ab-card ab-start" });
+  if (prog.allDone) {
+    start.append(el("p", { className: "ab-alldone" }, glyphEl("check", 16), "You’re all set. Replay the tour any time from Data & tools."));
+  } else {
+    start.append(el("div", { className: "ab-start-head" }, el("h3", { className: "ab-h3" }, "Get started"), el("span", { className: "ab-progress-text" }, prog.text)),
+      el("div", { className: "ab-progress", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": String(prog.steps.length), "aria-valuenow": String(prog.done), "aria-label": "Get started" },
+        ...prog.steps.map((s) => el("span", { className: s.done ? "done" : "" }))));
+    const list = el("ol", { className: "ab-steps-list" });
+    prog.steps.forEach((s, i) => {
+      const li = el("li", { className: `ab-step${s.done ? " done" : ""}`, "data-step": s.id },
+        el("span", { className: "ab-step-mark", "aria-hidden": "true" }, s.done ? glyphEl("check", 14) : String(i + 1)),
+        el("div", { className: "ab-step-body" }, el("b", {}, s.title), el("span", {}, s.done ? "Done." : s.text)));
+      if (!s.done) {
+        const body = li.querySelector(".ab-step-body");
+        if (s.id === "ask") body.append(abEngineChips(true));
+        if (s.id === "analyze") { const b = el("button", { type: "button", className: "btn sm ghost" }, "Open Analyze"); b.onclick = () => abGoTab("analyze"); body.append(b); }
+        if (s.id === "campaign") { const b = el("button", { type: "button", className: "btn sm ghost" }, "Set up a campaign"); b.onclick = () => abGoTab("loader"); body.append(b); }
+      }
+      list.append(li);
+    });
+    start.append(list);
+  }
+  box.append(start);
+
+  const st = buildStatus(abBuildReply, BUILD);
+  const more = el("div", { className: "card ab-card ab-more" }, el("h3", { className: "ab-h3" }, "More"));
+  ["glossary", "settings", "data", "diagnostics", "news"].forEach((id) => {
+    const p = AB_PAGES[id];
+    let trail = null;
+    if (id === "glossary") trail = el("span", { className: "ab-nav-count" }, String(glossaryEntries().length));
+    if (id === "diagnostics") trail = el("span", { className: `ab-pill${st.stale ? " stale" : st.known ? " ok" : ""}` }, el("span", { className: "ab-dot", "aria-hidden": "true" }), st.stale ? "Needs reload" : st.known ? "Up to date" : st.title);
+    const b = el("button", { type: "button", className: "ab-more-row", "data-go": id }, el("span", { className: "ab-more-ic" }, glyphEl(p.glyph, 18)),
+      el("span", { className: "ab-more-text" }, el("b", {}, p.label), el("span", {}, p.sub)), trail, el("span", { className: "ab-chev", "aria-hidden": "true" }, "›"));
+    b.onclick = () => abGo(id);
+    more.append(b);
+  });
+  box.append(more);
+}
+
+function renderAboutOverview() {
+  const box = $("#abOverview");
+  box.textContent = "";
+  box.append(el("div", { className: "card ab-card ab-hero" },
+    el("div", { className: "ab-hero-row" }, el("img", { src: "../icons/icon128.png", width: 56, height: 56, alt: "", className: "ab-logo lg" }),
+      el("div", { className: "ab-hero-text" },
+        el("h2", { className: "ab-hero-title" }, "CitoSkeleton ", el("span", { className: "version-badge" }, `v${BUILD}`)),
+        el("p", { className: "ab-lead" }, "See what ChatGPT, Gemini, Perplexity and Grok actually read before they answer: the searches they run, the pages they fetch, the sources they cite, and which brands make it into the reply."),
+        el("p", { className: "ab-sub" }, "Formerly listed as ", el("em", {}, "LLM Citation & Fan-Out Checker"), "."))),
+    el("div", { className: "ab-facts" },
+      el("div", { className: "ab-facts-text" }, glyphEl("lock", 18), el("span", {}, el("b", {}, "Everything stays on this device"), el("span", {}, "CitoSkeleton only reads what your browser already received."))),
+      el("div", { className: "ab-facts-chips" }, ...["No account", "No server", "No requests of its own"].map((t) => el("span", { className: "ab-fact" }, glyphEl("check", 13), t)))),
+    el("div", { className: "ab-works" }, el("span", { className: "ab-label" }, "Works with"), abEngineChips(false))));
+
+  const steps = el("ol", { className: "ab-how" });
+  ABOUT_STEPS.forEach((s) => {
+    const where = s.tab
+      ? el("button", { type: "button", className: "linkbtn ab-where" }, `${s.where} →`)
+      : el("span", { className: "ab-where muted" }, s.where);
+    if (s.tab) where.onclick = () => abGoTab(s.tab);
+    steps.append(el("li", {}, el("span", { className: "ab-num", "aria-hidden": "true" }, String(s.n)), el("b", {}, s.title), el("span", { className: "ab-how-text" }, s.text), where));
+  });
+  box.append(el("div", { className: "card ab-card" },
+    el("div", { className: "ab-head" }, el("div", {}, el("h2", { className: "ab-title" }, "How it works"), el("p", { className: "ab-sub" }, "Four tabs, one job each."))),
+    steps,
+    el("p", { className: "ab-sub" }, "Brand detection is automatic for every industry. Your brand, competitors, prompts and engines are set per campaign, in Campaigns.")));
+  box.append(abNewsCard(true));
+}
+
+/* The glossary: the same entries the hover definitions come from
+   (src/lib/glossary.js), so the reference and the tooltips can't disagree. */
+function abTermBody(t) {
+  const body = el("div", { className: "ab-term-body" }, el("p", { className: "ab-lead" }, t.what));
+  if (t.formula) body.append(el("div", { className: "ab-formula" }, el("span", { className: "ab-label" }, "Formula"), el("code", {}, t.formula)));
+  if (t.howToUse) body.append(el("div", { className: "ab-term-part" }, el("span", { className: "ab-label" }, "How to use it"), el("p", {}, t.howToUse)));
+  if (t.note) body.append(el("div", { className: "ab-term-part" }, el("span", { className: "ab-label" }, "Keep in mind"), el("p", {}, t.note)));
+  return body;
+}
+
+function renderAboutGlossary() {
+  const v = glossaryView(glossaryEntries(), { query: abGlossQuery, group: abGlossGroup });
+  const count = $("#abGlossCount");
+  if (count) count.textContent = `${v.total} terms`;
+  const inp = $("#abGlossSearch");
+  if (inp && inp.value !== abGlossQuery) inp.value = abGlossQuery;
+  const chips = $("#abGlossChips");
+  chips.textContent = "";
+  v.chips.forEach((c) => {
+    const b = el("button", { type: "button", className: `ab-chip-btn${c.on ? " on" : ""}`, "aria-pressed": c.on ? "true" : "false" }, c.label, el("span", { className: "ab-chip-n" }, String(c.count)));
+    b.onclick = () => { abGlossGroup = c.id; renderAboutGlossary(); };
+    chips.append(b);
+  });
+  const host = $("#glossaryList");
+  host.textContent = "";
+  if (!v.matches.length) {
+    const clear = el("button", { type: "button", className: "btn sm ghost" }, "Clear the search");
+    clear.onclick = () => { abGlossQuery = ""; abGlossGroup = "all"; renderAboutGlossary(); };
+    host.append(el("div", { className: "ab-empty" }, el("p", {}, `No terms match “${abGlossQuery}”`), clear));
+    return;
+  }
+  const picked = pickedTerm(v, abTerm);
+  const list = el("div", { className: "ab-gloss-list" });
+  v.groups.forEach((g) => {
+    list.append(el("h3", { className: "ab-gloss-group" }, g.name));
+    g.rows.forEach((t) => {
+      const on = !abPopup() && picked && t.key === picked.key;
+      const b = el("button", { type: "button", className: `ab-term-row${on ? " on" : ""}`, "aria-pressed": on ? "true" : "false", "data-key": t.key },
+        el("b", {}, t.term), el("span", {}, t.what), abPopup() ? el("span", { className: "ab-chev", "aria-hidden": "true" }, "›") : null);
+      b.onclick = () => { abTerm = t.key; if (abPopup()) abGo("term"); else renderAboutGlossary(); };
+      list.append(b);
+    });
+  });
+  if (abPopup()) { host.append(list); return; }
+  host.append(list, el("aside", { className: "ab-gloss-detail", "aria-live": "polite" },
+    el("div", { className: "ab-eyebrow" }, picked.group), el("h3", { className: "ab-detail-title" }, picked.term), abTermBody(picked)));
+}
+
+function renderAboutTerm() {
+  const box = $("#abTerm");
+  box.textContent = "";
+  const t = GLOSSARY[abTerm];
+  if (t) box.append(el("div", { className: "card ab-card" }, abTermBody(t)));
+}
+
+$("#abGlossSearch")?.addEventListener("input", (e) => { abGlossQuery = e.target.value; renderAboutGlossary(); });
+
+/* ---------- Settings: saved, or changed and not yet saved ---------- */
+function abDraft() {
+  return {
+    retentionMax: settingValue("retentionMax", $("#setRetention").value),
+    maxCaptureMB: settingValue("maxCaptureMB", $("#setMaxMB").value),
+    debugCapture: !!$("#setDebug").checked,
+  };
+}
+function abFillSettings(s) {
+  $("#setRetention").value = s.retentionMax;
+  $("#setMaxMB").value = s.maxCaptureMB;
+  $("#setDebug").checked = !!s.debugCapture;
+}
+function updateSettingsStatus() {
+  const status = $("#setStatus");
+  if (!status || !abSaved) return;
+  const st = settingsState(abSaved, abDraft(), { justSaved: abJustSaved });
+  status.textContent = st.status;
+  status.className = `ab-status ${st.tone}`;
+  $("#setUndo").disabled = !st.dirty;
+  $("#setSave").disabled = !st.dirty;
+  $("#setDebugText").textContent = $("#setDebug").checked ? "On" : "Off";
+}
 async function loadSettings() {
   const r = await send({ type: "settings-get" });
   // Guard the PAYLOAD, not just the ok flag. An {ok:true} reply that somehow
   // carries no settings object threw here, and because loadSettings() is
   // called without a catch during boot that surfaced as an unhandled
-  // rejection rather than a visible failure — the class of thing that leaves
-  // a user staring at a half-rendered panel with nothing in the console they
-  // would think to look at.
-  if (!r || !r.ok || !r.settings) return;
+  // rejection rather than a visible failure.
+  if (!r || !r.ok || !r.settings || !$("#setRetention")) return;
   const s = r.settings;
-  if ($("#setDebug")) $("#setDebug").checked = !!s.debugCapture;
-  if ($("#setRetention")) $("#setRetention").value = s.retentionMax;
-  if ($("#setMaxMB")) $("#setMaxMB").value = s.maxCaptureMB;
+  abSaved = { retentionMax: s.retentionMax, maxCaptureMB: s.maxCaptureMB, debugCapture: !!s.debugCapture };
+  abFillSettings(abSaved);
+  updateSettingsStatus();
+  renderStorageMeter();
 }
-if ($("#setSave")) {
-  $("#setSave").addEventListener("click", async () => {
-    const patch = {
-      debugCapture: $("#setDebug").checked,
-      retentionMax: Math.max(50, parseInt($("#setRetention").value, 10) || 2000),
-      maxCaptureMB: Math.max(1, parseInt($("#setMaxMB").value, 10) || 8),
-    };
-    const r = await send({ type: "settings-set", patch });
-    $("#setStatus").textContent = r.ok ? "Saved." : "Failed to save.";
-  });
+["#setRetention", "#setMaxMB", "#setDebug"].forEach((id) => $(id)?.addEventListener(id === "#setDebug" ? "change" : "input", () => { abJustSaved = false; updateSettingsStatus(); }));
+document.querySelectorAll(".ab-stepbtn[data-step]").forEach((b) => b.addEventListener("click", () => {
+  const input = document.getElementById(b.dataset.step);
+  const key = b.dataset.step === "setRetention" ? "retentionMax" : "maxCaptureMB";
+  const { step } = SETTING_LIMITS[key];
+  input.value = settingValue(key, (parseInt(input.value, 10) || 0) + step * Number(b.dataset.dir));
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}));
+$("#setUndo")?.addEventListener("click", () => { if (abSaved) { abFillSettings(abSaved); updateSettingsStatus(); } });
+$("#setSave")?.addEventListener("click", async () => {
+  const patch = abDraft();
+  const r = await send({ type: "settings-set", patch });
+  if (!r || !r.ok) { $("#setStatus").textContent = "Couldn't save the settings."; $("#setStatus").className = "ab-status warn"; return; }
+  abSaved = patch;
+  abJustSaved = true;
+  abFillSettings(patch);
+  updateSettingsStatus();
+  renderStorageMeter();
+});
+
+function renderStorageMeter() {
+  const box = $("#storageInfo");
+  if (!box) return;
+  box.textContent = "";
+  if (!abStats || !abStats.ok || !abSaved) return;
+  const m = storageMeter({ stored: abStats.derived, keep: abSaved.retentionMax, usedBytes: abStats.usage ? abStats.usage.usedBytes : null });
+  box.append(el("div", { className: "ab-meter-top" }, el("b", {}, "Captures stored"), el("span", { className: "ab-meter-num" }, m.text)),
+    el("div", { className: `ab-meter-bar${m.warn ? " warn" : ""}`, role: "meter", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(m.pct), "aria-label": "Captures stored, of the number kept" },
+      el("span", { style: `width:${Math.max(2, m.pct)}%` })),
+    el("div", { className: "ab-sub" }, m.sub));
 }
 
 /* ---------- Compare: one prompt across many timelines ----------
@@ -6819,7 +9265,7 @@ function renderCompare() {
       },
         el("div", { style: "display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;" },
           el("strong", { style: "font-size:12px;" }, b.label),
-          el("span", { className: "tag", style: "font-size:10.5px;" }, `${b.count} queries`)
+          el("span", { className: "tag", style: "font-size:11px;" }, `${b.count} queries`)
         )
       );
       const qList = el("ul", { style: "list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:4px;" });
@@ -6861,7 +9307,7 @@ function renderCompare() {
 
       exclData.exclusiveDomains.slice(0, 10).forEach((ed) => {
         exclTable.append(el("tr", {},
-          el("td", { style: "font-weight:600;" }, ed.domain),
+          el("td", { style: "font-weight:500;" }, ed.domain),
           el("td", {}, engineChip(ed.exclusiveEngine, engineName(ed.exclusiveEngine))),
           el("td", { className: "num" }, el("span", { className: "tag cited", style: "font-size:10px;" }, "Exclusive"))
         ));
@@ -7044,7 +9490,7 @@ function renderCompare() {
   out.append(el("div", { className: "card" },
     el("div", { className: "muted small" },
       "Not shown here: your brand's rank position per run. Ranking needs the full answer text, which the fast list view doesn't load — " +
-      "the Dashboard's Campaign Performance computes it properly for tracked campaigns instead of estimating it here.")));
+      "a campaign's results in Campaigns compute it properly for tracked campaigns instead of estimating it here.")));
 
   // --- export this timeline ---
   const bar = el("div", { className: "dlbar" });
@@ -7074,6 +9520,8 @@ if (cmpSearchInp) {
   });
 }
 
+$("#cmpBack")?.addEventListener("click", () => showTab("analyze"));
+
 ["#cmpPrompt", "#cmpProject", "#cmpModel"].forEach((id) => {
   const node = $(id);
   if (!node) return;
@@ -7087,29 +9535,7 @@ if (cmpSearchInp) {
 
 loadSettings();
 
-/* The metric reference in About, generated from the same glossary the hover
-   definitions come from — a reference that can drift from the tooltips is
-   worse than none. Rendered once; the table is static. */
-(function renderGlossary() {
-  const host = $("#glossaryList");
-  if (!host) return;
-  // Grouped, because two different things are legitimately both called
-  // "Citations" — a brand's own site being cited, and a source being cited.
-  // A flat list showed the same word twice with no way to tell them apart.
-  glossaryGroups().forEach(({ group, terms }) => {
-    host.append(el("div", { className: "glossary-group-title muted small" }, group));
-    const grid = el("div", { className: "glossary-list" });
-    terms.forEach((g) => {
-      const item = el("div", { className: "glossary-item" });
-      item.append(el("div", { className: "glossary-term" }, g.term));
-      item.append(el("div", { className: "glossary-what" }, g.what));
-      if (g.formula) item.append(el("div", { className: "glossary-formula" }, g.formula));
-      if (g.note) item.append(el("div", { className: "glossary-note muted small" }, g.note));
-      grid.append(item);
-    });
-    host.append(grid);
-  });
-})();
+
 // .catch() is the whole point here: load() is fired-and-forgotten (nothing
 // awaits it), so ANY exception anywhere in its chain — not just the
 // send()-throws case handled inside load() itself — becomes a silent
@@ -7164,22 +9590,17 @@ const TOUR_STEPS = [
   {
     tab: "analyze",
     title: "Analyze — one answer, in full",
-    body: "The full captured answer, plus the brands it named and the sources behind them. 'Sources cited' vs 'retrieved' is the key number: a source the engine read but never quoted is a very different signal from one it built its answer on.",
+    body: "The searches the engine ran, the brands it named and the pages behind them. 'Cited' vs 'read' is the key number: a page the engine read but never cited is a very different signal from one it built its answer on. Asked the same prompt more than once? 'All answers to this prompt' compares them run by run and engine by engine.",
   },
   {
     tab: "dashboard",
     title: "Dashboard — everything you've captured",
-    body: "Every saved conversation, with share of voice across brands and the domains that keep getting cited. This is where patterns show up that a single answer can't tell you.",
+    body: "Every prompt you've asked, on any engine, in one list. Search the prompts, the answers and what the engines searched for; narrow it by when, which engine and what kind of answer came back.",
   },
   {
     tab: "loader",
     title: "Campaigns — run prompts on a schedule",
-    body: "Give it a list of prompts and the engines to run them on, and it drives your own logged-in sessions at a human pace. It now checks you're signed in before opening anything, so a run can't quietly fail into a login page.",
-  },
-  {
-    tab: "compare",
-    title: "Compare — engines side by side",
-    body: "The same prompt across ChatGPT, Gemini, Perplexity and Grok. Each engine retrieves and cites differently, and that difference is usually the actionable part.",
+    body: "Give it a list of prompts and the engines to run them on, and it drives your own logged-in sessions at a human pace. It checks you're signed in before opening anything, so a run can't quietly fail into a login page. Each campaign's results show under it.",
   },
   {
     tab: "about",
@@ -7278,22 +9699,24 @@ async function maybeFirstRun() {
 }
 
 /* About-tab controls for the sample data and the tour. */
+/* About's sample-data and tour controls. The popup's home also says when the
+   sample is on, with its own Remove. */
 async function refreshDemoControls() {
-  const btn = $("#demoToggle");
-  const status = $("#demoStatus");
-  if (!btn) return;
   let st = null;
   try { st = await send({ type: "demo-status" }); } catch (_) {}
+  abDemo = st;
   const present = !!(st && st.ok && st.present);
-  btn.textContent = present ? "Remove sample" : "Load sample";
-  if (status) {
-    status.textContent = present
-      ? `Sample data is loaded. You have ${st.real} real capture${st.real === 1 ? "" : "s"}.`
-      : "";
+  const btn = $("#demoToggle");
+  if (btn) btn.textContent = present ? "Remove sample" : "Load sample";
+  const chip = $("#demoStatus");
+  if (chip) {
+    chip.textContent = present ? "Loaded" : "Not loaded";
+    chip.className = `ab-chip${present ? " on" : ""}`;
   }
+  if (abCurrent() === "home" && $("#about")?.classList.contains("active")) renderAboutHome();
 }
 
-$("#demoToggle")?.addEventListener("click", withBusy($("#demoToggle"), "Working…", async () => {
+async function abToggleSample() {
   let st = null;
   try { st = await send({ type: "demo-status" }); } catch (_) {}
   const present = !!(st && st.ok && st.present);
@@ -7301,7 +9724,9 @@ $("#demoToggle")?.addEventListener("click", withBusy($("#demoToggle"), "Working�
   FULL.clear();
   await load();
   await refreshDemoControls();
-}));
+}
+
+$("#demoToggle")?.addEventListener("click", withBusy($("#demoToggle"), "Working…", abToggleSample));
 
 $("#replayTour")?.addEventListener("click", () => runTour(0));
 

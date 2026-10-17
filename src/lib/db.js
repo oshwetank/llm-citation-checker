@@ -9,7 +9,7 @@
  */
 
 const DB_NAME = "lcfc";
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 
 let dbPromise = null;
 
@@ -67,6 +67,20 @@ function openDb() {
         const er = db.createObjectStore("errors", { keyPath: "id" });
         er.createIndex("at", "at", { unique: false });
         er.createIndex("where", "where", { unique: false });
+      }
+      // v6: the error log became the one unified diagnostics log — entries
+      // now carry a `kind` ("error" | "capture" | "turn", folding in what
+      // used to be the separate in-memory DEBUG ring buffer plus per-turn
+      // outcome history) and a `runId` so a campaign export can pull every
+      // entry for its runs in one indexed query instead of a full scan.
+      // The store already exists for any install that ran v5, so this adds
+      // the index onto it rather than recreating it — `contains` above only
+      // covers a fresh install.
+      {
+        const er = e.target.transaction.objectStore("errors");
+        if (!er.indexNames.contains("runId")) {
+          er.createIndex("runId", "context.runId", { unique: false });
+        }
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -155,6 +169,21 @@ export const db = {
         };
         req.onerror = () => reject(req.error);
       });
+    });
+  },
+
+  // Records captured between two times, via the capturedAt index. Used to
+  // find other copies of the same answer (lib/sameAnswer.js) without loading
+  // the whole store.
+  getByTimeRange(store, from, to) {
+    return tx(store, "readonly", (os) => {
+      let idx;
+      try {
+        idx = os.index("capturedAt");
+      } catch (_) {
+        return Promise.resolve([]);
+      }
+      return reqToPromise(idx.getAll(IDBKeyRange.bound(from, to)));
     });
   },
 

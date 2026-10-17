@@ -1,4 +1,6 @@
-/* errorlog.js — a durable record of what broke, where, and when.
+/* errorlog.js — the one durable diagnostics log: what broke, where, when,
+ * plus the capture-trace breadcrumbs and per-turn outcomes that used to live
+ * in two other, disconnected places.
  *
  * Reported: "can we have an error log thing so that we can know exactly what
  * broke and where." Before this there was nowhere for a failure to go:
@@ -17,6 +19,20 @@
  * into an unattended thousand-prompt run, long before anyone thinks to turn
  * logging on.
  *
+ * Reported again, later: "I need ONE error/problem detection tool" — the
+ * error log, the DEBUG ring buffer (never migrated off its in-memory,
+ * MV3-wiped storage), and per-turn outcome history (never durable at all,
+ * only visible in the live progress view) were three unrelated mechanisms.
+ * This module now carries all three, discriminated by `cat` (category —
+ * `kind` was already taken: it holds the JS exception name, e.g.
+ * "TypeError", on "error" entries):
+ *   "error"   — an exception or failure reason, same shape as before.
+ *   "capture" — a network-capture breadcrumb (what the DEBUG buffer held).
+ *   "turn"    — a per-prompt outcome (success or fail, timing, retries) —
+ *               new: this history used to vanish once a run view closed.
+ * One store, one export, one place to look — see get-campaign-diagnostics
+ * in background.js for the bulk export this makes possible.
+ *
  * PRIVACY. This extension's whole promise is that nothing leaves the device,
  * and an error log is exactly the kind of thing that quietly breaks such a
  * promise by hoovering up prompt text and URLs. Entries carry a short `where`
@@ -25,7 +41,13 @@
  * way in rather than trusting each call site.
  */
 
-const MAX_ENTRIES = 500;   // enough to cover a long run; small enough to read
+// Trimmed per-category rather than as one shared pool, so a chatty run's
+// "capture" breadcrumbs can never crowd real "error" entries out of the
+// window. Numbers mirror what each mechanism already capped itself at
+// before being folded in here (errors: unchanged; capture: the old DEBUG
+// ring buffer's 200; turn: generous enough to cover a long campaign).
+const MAX_ENTRIES_BY_CAT = { error: 500, capture: 200, turn: 300 };
+const DEFAULT_MAX_ENTRIES = 500;
 const MAX_MSG = 400;
 const MAX_STACK = 1200;
 const MAX_CTX_VALUE = 120;
@@ -79,17 +101,38 @@ function scrubText(s, cap) {
  * still scrubbed for URLs, because a rule that is only a convention is not
  * one worth relying on.
  */
-export function makeErrorEntry(where, err, ctx, trace) {
+export function makeErrorEntry(where, err, ctx, trace, cat = "error") {
   const isErr = err && typeof err === "object" && ("message" in err || "stack" in err);
   return {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     at: Date.now(),
+    cat,
     where: scrubText(where || "unknown", 80),
     kind: isErr && err.name ? scrubText(err.name, 40) : "Error",
     message: scrubText(isErr ? err.message : err, MAX_MSG) || "(no message)",
     stack: isErr && err.stack ? scrubText(err.stack, MAX_STACK) : "",
     context: redact(ctx),
     trace: trace ? scrubText(trace, MAX_TRACE) : "",
+  };
+}
+
+/* A lighter sibling for entries with no exception object — capture
+ * breadcrumbs and per-turn outcomes. Same fields, same privacy scrubbing
+ * (`ctx` still goes through redact()), just no `err`/`stack`/`trace` to
+ * unpack. `message` is a short human-readable summary the caller composes
+ * directly (e.g. "loading" or "ok" / "tab reloaded repeatedly").
+ */
+export function makeEventEntry(where, cat, message, ctx) {
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    at: Date.now(),
+    cat,
+    where: scrubText(where || "unknown", 80),
+    kind: cat,
+    message: scrubText(message, MAX_MSG) || "(no message)",
+    stack: "",
+    context: redact(ctx),
+    trace: "",
   };
 }
 
@@ -112,21 +155,59 @@ export function createErrorLog(db) {
     return entry;
   }
 
+  /* For "capture"/"turn" breadcrumbs — no exception object, just a category
+   * and a short message. Same store, same trim/list/export path as errors.
+   */
+  async function recordEvent(where, cat, message, ctx) {
+    const entry = makeEventEntry(where, cat, message, ctx);
+    try {
+      await db.put("errors", entry);
+      if (++trimCounter % 25 === 0) await trim();
+    } catch (_) { /* logging must never throw into the caller */ }
+    return entry;
+  }
+
   async function trim() {
     try {
       const all = await db.getAll("errors");
-      if (all.length <= MAX_ENTRIES) return;
-      const sorted = all.sort((a, b) => (a.at || 0) - (b.at || 0));
-      for (const e of sorted.slice(0, all.length - MAX_ENTRIES)) {
-        try { await db.delete("errors", e.id); } catch (_) { /* skip */ }
+      // Per-category, not one shared pool — see MAX_ENTRIES_BY_CAT above.
+      const byCat = new Map();
+      for (const e of all) {
+        const cat = e.cat || "error";
+        if (!byCat.has(cat)) byCat.set(cat, []);
+        byCat.get(cat).push(e);
+      }
+      for (const [cat, entries] of byCat) {
+        const cap = MAX_ENTRIES_BY_CAT[cat] ?? DEFAULT_MAX_ENTRIES;
+        if (entries.length <= cap) continue;
+        const sorted = entries.sort((a, b) => (a.at || 0) - (b.at || 0));
+        for (const e of sorted.slice(0, entries.length - cap)) {
+          try { await db.delete("errors", e.id); } catch (_) { /* skip */ }
+        }
       }
     } catch (_) { /* best effort */ }
   }
 
-  async function list(limit = 200) {
+  async function list(limit = 200, cat) {
     try {
       const all = await db.getAll("errors");
-      return all.sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, limit);
+      const filtered = cat ? all.filter((e) => (e.cat || "error") === cat) : all;
+      return filtered.sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, limit);
+    } catch (_) { return []; }
+  }
+
+  /* Every entry whose context.runId is one of the given runIds — the join
+   * key a campaign export needs. Entries logged before this field existed
+   * simply have no context.runId and are excluded, same as an index miss.
+   */
+  async function listByRunIds(runIds, limit = 5000) {
+    try {
+      const wanted = new Set(runIds);
+      const all = await db.getAll("errors");
+      return all
+        .filter((e) => e.context && wanted.has(e.context.runId))
+        .sort((a, b) => (b.at || 0) - (a.at || 0))
+        .slice(0, limit);
     } catch (_) { return []; }
   }
 
@@ -137,10 +218,13 @@ export function createErrorLog(db) {
   /* Grouped by where+message, because the same failure repeating 400 times in
    * one run is one problem, not four hundred. A flat reverse-chronological
    * list of identical lines is what makes a log unreadable exactly when it
-   * matters most.
+   * matters most. Scoped to `cat:"error"` by default — the grouping is
+   * meant for repeated failures, not capture breadcrumbs or turn outcomes,
+   * which have their own shape and are better read as a timeline than
+   * grouped by message.
    */
-  async function summary(limit = 40) {
-    const all = await list(MAX_ENTRIES);
+  async function summary(limit = 40, cat = "error") {
+    const all = await list(MAX_ENTRIES_BY_CAT[cat] ?? DEFAULT_MAX_ENTRIES, cat);
     const groups = new Map();
     for (const e of all) {
       const key = `${e.where} ${e.message}`;
@@ -163,5 +247,8 @@ export function createErrorLog(db) {
     return [...groups.values()].sort((a, b) => b.lastAt - a.lastAt).slice(0, limit);
   }
 
-  return { record, list, clear, summary, trim, MAX_ENTRIES };
+  return {
+    record, recordEvent, list, listByRunIds, clear, summary, trim,
+    MAX_ENTRIES: MAX_ENTRIES_BY_CAT.error,
+  };
 }

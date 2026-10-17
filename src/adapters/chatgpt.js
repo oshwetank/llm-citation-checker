@@ -19,10 +19,11 @@
  */
 
 import { makeRecord, makeSource } from "../schema.js";
+import { isKnownRetrievalName, enginesNamedIn } from "../lib/retrieval.js";
 import { walk, collectByKey, collectObjects, firstPath, isHttpUrl, domainOf } from "../lib/deep.js";
 import { detectBrands } from "../lib/brands.js";
 
-export const ADAPTER_VERSION = "chatgpt@0.2.0";
+export const ADAPTER_VERSION = "chatgpt@0.4.0";
 
 function parseSse(raw) {
   const nodes = [];
@@ -383,14 +384,30 @@ function extractSources(nodes, diag) {
     // ("Gadgets 360"), so it must not drive grouping.
     const attribution = typeof value.attribution === "string" ? value.attribution : null;
 
-    // resultSource / pipeline: current ChatGPT tags each source's retrieval
-    // channel via ref_type (search | reddit | news | product | youtube …) on
-    // ref_id (search_results) or refs[] (grouped/cited items). This is the real
-    // "result source" — Labrador/Bright/Oxylabs no longer appear in the payload.
+    // Two different things, see lib/retrieval.js. ref_type (search | news |
+    // academia | reddit | youtube | product …, on ref_id or refs[]) is the
+    // KIND of result, present on every one. result_source is the PIPELINE
+    // that supplied it — labrador (OpenAI's own index), bright, oxylabs or
+    // serp — and ChatGPT only sent it from 21 May to 21 July 2026. Kept
+    // exactly as sent; nothing is inferred when it's missing.
+    // (`resultSource` has always held the ref_type — the name predates the
+    // pipeline field — so it stays, for the screens and exports that read it.)
     const refType =
       (value.ref_id && value.ref_id.ref_type) ||
       (Array.isArray(value.refs) && value.refs[0] && value.refs[0].ref_type) ||
       null;
+    // result_source as sent; otherwise an engine or source field on the
+    // same result, but only if it is EXACTLY a name from the leaked engine
+    // registry — a field called "source" holding anything else is not one.
+    const pipeline =
+      (typeof value.result_source === "string" && value.result_source) ||
+      (value.metadata && typeof value.metadata.result_source === "string" && value.metadata.result_source) ||
+      ["engine", "engine_name", "search_engine", "retrieval_engine", "source"].map((k) => value[k]).find(isKnownRetrievalName) ||
+      null;
+    const retrieval = {
+      ...(refType ? { resultSource: refType, refType } : {}),
+      ...(pipeline ? { pipeline: pipeline.toLowerCase() } : {}),
+    };
 
     const markerIds = [
       markerId(value.ref_id),
@@ -411,7 +428,7 @@ function extractSources(nodes, diag) {
         markerIds,
         platformSpecific: {
           ...(attribution ? { attribution } : {}),
-          ...(refType ? { resultSource: refType } : {}),
+          ...retrieval,
           ...(pubDate ? { pubDate } : {}),
         },
       });
@@ -427,7 +444,7 @@ function extractSources(nodes, diag) {
         markerIds,
         outcome: "cited",
         type: pubDate ? "news" : "citation",
-        platformSpecific: { attribution, ...(refType ? { resultSource: refType } : {}), ...(pubDate ? { pubDate } : {}) },
+        platformSpecific: { attribution, ...retrieval, ...(pubDate ? { pubDate } : {}) },
       });
     }
   });
@@ -468,6 +485,9 @@ function extractProducts(nodes) {
       image: (p.image_urls && p.image_urls[0]) || prev.image || null,
       cite: p.cite || prev.cite || null,
       renderAs,
+      // The feed behind the listing (see lib/retrieval.js): `provider` is
+      // "deprecated" on current payloads, the codes live in providers[].
+      supplier: (Array.isArray(p.providers) && p.providers[0]) || (p.provider !== "deprecated" && p.provider) || prev.supplier || null,
     });
   });
   return [...byId.values()];
@@ -524,6 +544,8 @@ function extractPlaces(nodes) {
       hours: formatHours(ed.hours) || prev.hours || null,
       isOpen: typeof ed.is_open === "boolean" ? ed.is_open : prev.isOpen ?? null,
       placeId,
+      // The feed behind the listing (b1, b3, serp, yelp…) — lib/retrieval.js.
+      supplier: (typeof ed.provider === "string" && ed.provider) || (typeof value.provider === "string" && value.provider) || prev.supplier || null,
     });
   });
   return [...byKey.values()];
@@ -573,6 +595,52 @@ function extractImages(nodes, products) {
   return out;
 }
 
+// Ads: ChatGPT can follow an answer with a sponsored card, sent as its own
+// SSE event { type: "ads", content: { type: "single_advertiser_ad_unit",
+// preamble, advertiser_brand: { name, url }, ad_cards: [{ title, body,
+// target: { value }, image_url, card_header: { subtitle: "Sponsored" },
+// format }] }, placement_name: "conversational_bottom" }. Reported: "The
+// chatgpt pushed an ad in the bottom, we should have a section to show that
+// and its data." Kept: who advertised, what the card said, where it links,
+// where it sat. Dropped: the inline logos (data: URLs, ~20 KB each) and the
+// tracking tokens, which say nothing about the answer.
+const AD_PLACEMENT = { conversational_bottom: "Below the answer", conversational_top: "Above the answer" };
+function extractAds(nodes) {
+  const out = [];
+  const seen = new Set();
+  const str = (v, max = 400) => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : null);
+  for (const ev of collectObjects({ nodes }, (o) => o.type === "ads" && o.content && typeof o.content === "object")) {
+    if (ev.visibility && ev.visibility.status && ev.visibility.status !== "allowed") continue;
+    const c = ev.content;
+    const brand = c.advertiser_brand || {};
+    const cards = Array.isArray(c.ad_cards) && c.ad_cards.length ? c.ad_cards : Array.isArray(c.carousel_cards) ? c.carousel_cards : [];
+    for (const card of cards.length ? cards : [{}]) {
+      const target = card.target && isHttpUrl(card.target.value) ? card.target.value : null;
+      const header = card.card_header || {};
+      const ad = {
+        advertiser: str(brand.name, 80) || str(card.company_name, 80) || str(header.title, 80),
+        advertiserUrl: str(brand.url, 200),
+        label: str(header.subtitle, 40) || "Sponsored",
+        preamble: str(c.preamble),
+        title: str(card.title, 200),
+        body: str(card.body),
+        targetUrl: target,
+        targetDomain: target ? domainOf(target) : brand.url ? domainOf(`https://${String(brand.url).replace(/^https?:\/\//, "")}`) : null,
+        imageUrl: isHttpUrl(card.image_url) ? card.image_url : null,
+        format: str(card.format, 60),
+        unit: str(c.type, 60),
+        placement: AD_PLACEMENT[ev.placement_name] || str(ev.placement_name, 60),
+      };
+      if (!ad.advertiser && !ad.title) continue;
+      const key = `${ad.advertiser}|${ad.title}|${ad.targetDomain}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(ad);
+    }
+  }
+  return out;
+}
+
 export async function adapt(rawCapture, opts = {}) {
   const diag = { adapterVersion: ADAPTER_VERSION, usedFallback: false, notes: [] };
   const nodes = parseSse(rawCapture.raw || "");
@@ -581,6 +649,7 @@ export async function adapt(rawCapture, opts = {}) {
   const sources = extractSources(nodes, diag);
   const products = extractProducts(nodes);
   const places = extractPlaces(nodes);
+  const ads = extractAds(nodes);
   const searched =
     fanout.search.length + fanout.shopping.length + fanout.image.length > 0 ||
     sources.some((s) => s.outcome !== "unknown") ||
@@ -631,6 +700,11 @@ export async function adapt(rawCapture, opts = {}) {
     abExperiment,
     wordCount,
   };
+  // Engines from the leaked retrieval registry that this stream names, if any
+  // (see lib/retrieval.js): which of OpenAI's own and external engines the
+  // answer's search touched.
+  const enginesNamed = enginesNamedIn(rawCapture.raw);
+  if (enginesNamed.length) platformSpecific.enginesNamed = enginesNamed;
 
   return makeRecord({
     captureId: rawCapture.captureId,
@@ -653,6 +727,7 @@ export async function adapt(rawCapture, opts = {}) {
     brandMentions,
     carousels,
     referenceTypes,
+    ads,
     answerChars: answerText.length,
     answerText, // capped by makeRecord; the UI needs this for rank/aspect analysis
     platformSpecific,

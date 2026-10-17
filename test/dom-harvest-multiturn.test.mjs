@@ -265,6 +265,52 @@ ${STEPS}\nlet lastHarvestedSig = null;\nlet sourcesExpandAttempts = 99;\nconst t
   }
 }
 
+/* Today's grok.com (grok-brain's site map, verified on the live site
+ * 2026-09): the user's turn is [data-testid="user-message"], and
+ * .message-bubble holds BOTH sides — an answer is a bubble that is not
+ * inside a user message. The harvester used to look only for .message-row /
+ * .user-message, which that page doesn't have, so it could never read an
+ * answer off it. */
+if (body) {
+  console.log("\ndom-harvest-multiturn: today's Grok layout — shared .message-bubble");
+  const turns = [
+    { q: "best gaming phone under 50000", a: "A".repeat(200) + " first answer about phones" },
+    { q: "what about under 30000", a: "B".repeat(200) + " second answer about cheaper phones" },
+  ];
+  const userMsgs = turns.map((t) => node(t.q));
+  const bubbles = [];
+  turns.forEach((t, i) => {
+    // The user's own bubble sits inside its user-message container.
+    bubbles.push(node(t.q, { closest: (sel) => (sel === '[data-testid="user-message"]' ? userMsgs[i] : null), querySelector: () => null }));
+    bubbles.push(node(t.a, { closest: () => null, querySelector: () => null }));
+  });
+  const sent = [];
+  const scope = {
+    getPlatform: () => "grok",
+    document: {
+      title: "Grok",
+      querySelector: () => null,
+      querySelectorAll: (sel) => {
+        if (sel.includes('[data-testid="user-message"]')) return userMsgs;
+        if (sel === ".message-bubble") return bubbles;
+        return [];
+      },
+    },
+    location: { href: "https://grok.example/c/1" },
+    setTimeout: () => 0,
+    chrome: { runtime: { sendMessage: (m) => sent.push(m), get lastError() { return undefined; } } },
+  };
+  const names = Object.keys(scope);
+  const fn = new Function(...names,
+    `${DOM2MD}\n${STEPS}\nlet lastHarvestedSig = null;\nlet sourcesExpandAttempts = 99;\nconst tryHarvest = () => {};\n${body}`);
+  fn(...names.map((n) => scope[n]));
+  check("grok: the answer is read from the page", sent.length === 1, `got ${sent.length}`);
+  const got = sent.length ? JSON.parse(sent[0].payload.raw) : {};
+  check("grok: with the latest question", got.query === turns[1].q, JSON.stringify(got.query));
+  check("grok: and that turn's own answer, not a user bubble", String(got.text || "").includes("second answer") && !String(got.text || "").includes(turns[1].q),
+    JSON.stringify(String(got.text || "").slice(-60)));
+}
+
 if (failures) {
   console.log(`\n${failures} FAILED`);
   process.exit(1);

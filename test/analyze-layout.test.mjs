@@ -10,9 +10,11 @@
  * so the popup opened on metadata rather than on the result.
  *
  * Order here is measured by real on-screen geometry — getBoundingClientRect()
- * after layout — not by DOM position, because the popup layout is driven by
- * flex `order` and a `display: contents` sidebar. DOM order and paint order
- * are deliberately different, so only the painted result proves anything.
+ * after layout — not by DOM position: up to 0.46.0 the layout was driven by
+ * flex `order` and a `display: contents` sidebar, so DOM order and paint
+ * order differed and only the painted result proved anything. Since 0.47.0
+ * (popup) and 0.48.0 (full tab) each view has its own layout; the order the
+ * owner asked for still holds in both.
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -44,26 +46,6 @@ try {
   process.exit(1);
 }
 
-// Vertical position of each Analyze card that has a stable id, in painted
-// order. Cards absent for this capture are simply omitted.
-const PROBE = () => {
-  const ids = [
-    "card-general", "card-brand-mentions", "card-omitted-analysis", "card-fanout",
-    "card-cited-domains", "card-sources", "card-technical", "card-global-stats", "card-summary",
-    "card-products", "card-images", "card-entities", "card-grounding-integrity",
-  ];
-  const out = [];
-  for (const id of ids) {
-    const n = document.getElementById(id);
-    if (!n) continue;
-    const r = n.getBoundingClientRect();
-    if (r.width === 0 && r.height === 0) continue;
-    out.push({ id, top: Math.round(r.top + window.scrollY), left: Math.round(r.left) });
-  }
-  out.sort((a, b) => a.top - b.top || a.left - b.left);
-  return out;
-};
-
 async function seedFixtures(context, extId) {
   const page = await context.newPage();
   await page.goto(`chrome-extension://${extId}/ui/panel.html`);
@@ -91,113 +73,6 @@ async function seedFixtures(context, extId) {
   await page.close();
 }
 
-async function orderAt(context, extId, width, height) {
-  const page = await context.newPage();
-  await page.setViewportSize({ width, height });
-  await page.goto(`chrome-extension://${extId}/ui/panel.html${width > 640 ? "?mode=tab" : ""}`);
-  await page.waitForTimeout(1200);
-  const order = await page.evaluate(PROBE);
-  await page.close();
-  return order;
-}
-
-const idx = (order, id) => order.findIndex((o) => o.id === id);
-
-/*
- * The redesign asked for: cited domains straight after Brand Mentions, every
- * source listed (it used to stop at ten), the snippet-based citation matrix
- * as the very last card, and no image frame left empty. Image hosts are
- * blocked for this run (see the route below), so every frame must fall back
- * to naming what it was.
- */
-function checkRedesign(fullOrder, shape, where) {
-  // Full screen has two columns, and the sidebar's cards interleave with the
-  // wide column's by height. Reading order is per column, so compare within
-  // the column Brand Mentions heads; the popup is one column already.
-  const brandLeft = fullOrder.find((o) => o.id === "card-brand-mentions")?.left;
-  const order = fullOrder.filter((o) => o.left === brandLeft);
-  const brand = idx(order, "card-brand-mentions");
-  const domains = idx(order, "card-cited-domains");
-  const matrix = idx(order, "card-omitted-analysis");
-  check(`${where}: Cited Domains is present`, domains !== -1);
-  check(`${where}: Cited Domains comes right after Brand Mentions`,
-    domains === brand + 1, order.map((o) => o.id).join(" -> "));
-  if (matrix !== -1) {
-    check(`${where}: the citation matrix is the last card on the page`,
-      matrix === order.length - 1, order.map((o) => o.id).join(" -> "));
-  }
-  check(`${where}: Top Domains table is gone (replaced by Cited Domains)`, !shape.topDomains);
-  check(`${where}: cited domains are ranked first`, shape.citedFirst, shape.domainOrder.join(", "));
-  check(`${where}: every source is listed, no "show all" cut-off`,
-    shape.sourceRows === shape.sourceCount && !shape.showAll,
-    `${shape.sourceRows} of ${shape.sourceCount} listed`);
-  check(`${where}: a domain row opens to its URLs`, shape.expandedUrls > 0, `${shape.expandedUrls} URLs`);
-  if (shape.frames.length) {
-    check(`${where}: no image frame is left empty`,
-      shape.frames.every((f) => f.loaded || f.label), JSON.stringify(shape.frames.slice(0, 3)));
-  }
-}
-
-async function redesignShape(context, extId, width, height) {
-  const page = await context.newPage();
-  await page.setViewportSize({ width, height });
-  await page.goto(`chrome-extension://${extId}/ui/panel.html${width > 640 ? "?mode=tab" : ""}`);
-  await page.waitForTimeout(1200);
-  // Lazy images below the fold would never start loading in a headless run.
-  await page.evaluate(() => document.querySelectorAll("#analyze img").forEach((i) => { i.loading = "eager"; }));
-  await page.waitForTimeout(1500);
-  const out = await page.evaluate(() => {
-    const rows = [...document.querySelectorAll("#card-cited-domains .domain-rank")];
-    const firstHead = document.querySelector("#card-cited-domains .domain-rank-head");
-    firstHead && firstHead.click();
-    const h3 = document.querySelector("#card-sources h3");
-    return {
-      topDomains: !!document.getElementById("card-top-domains"),
-      domainOrder: rows.map((r) => (r.classList.contains("is-cited") ? "cited:" : "") +
-        r.querySelector(".domain-rank-name").textContent),
-      citedFirst: rows.findIndex((r) => !r.classList.contains("is-cited")) === -1 ||
-        !rows.slice(rows.findIndex((r) => !r.classList.contains("is-cited"))).some((r) => r.classList.contains("is-cited")),
-      expandedUrls: document.querySelectorAll("#card-cited-domains .domain-rank.open .domain-rank-urls a").length,
-      sourceCount: h3 ? Number((h3.textContent.match(/\((\d+)\)/) || [])[1]) : 0,
-      sourceRows: document.querySelectorAll("#card-sources .src-item").length,
-      showAll: !!document.querySelector("#card-sources .src-more"),
-      frames: [...document.querySelectorAll("#analyze .cap-img-wrap")].map((w) => ({
-        loaded: w.classList.contains("cap-img-loaded"),
-        label: getComputedStyle(w.querySelector(".cap-img-missing-label")).visibility === "visible" &&
-          w.querySelector(".cap-img-missing-label").textContent.trim().length > 0,
-      })),
-    };
-  });
-  await page.close();
-  return out;
-}
-
-/** Shape of the Brand Mentions card as actually rendered. */
-async function brandCardShape(context, extId, width, height) {
-  const page = await context.newPage();
-  await page.setViewportSize({ width, height });
-  await page.goto(`chrome-extension://${extId}/ui/panel.html${width > 640 ? "?mode=tab" : ""}`);
-  await page.waitForTimeout(1200);
-  const out = await page.evaluate(() => {
-    const card = document.getElementById("card-brand-mentions");
-    if (!card) return null;
-    const rows = [...card.querySelectorAll(".brand-item")];
-    const heights = rows.map((r) => Math.round(r.getBoundingClientRect().height));
-    return {
-      rows: rows.length,
-      quotes: card.querySelectorAll(".brand-quote").length,
-      ordinals: card.querySelectorAll(".brand-ordinal").length,
-      meters: card.querySelectorAll(".brand-meter").length,
-      chips: [...card.querySelectorAll(".tag")].map((t) => t.textContent),
-      minHeight: Math.min(...heights),
-      maxHeight: Math.max(...heights),
-      cardHeight: Math.round(card.getBoundingClientRect().height),
-    };
-  });
-  await page.close();
-  return out;
-}
-
 const context = await chromium.launchPersistentContext(PROFILE_BASE, {
   headless: false,
   args: [
@@ -212,65 +87,98 @@ try {
   let sw = context.serviceWorkers()[0];
   if (!sw) sw = await context.waitForEvent("serviceworker", { timeout: 20000 });
   const extId = sw.url().split("/")[2];
-  // Image hosts are unreachable here anyway; failing them outright makes the
-  // empty-frame check deterministic instead of depending on a timeout.
-  await context.route(/images\.openai\.com|gstatic\.com/, (r) => r.abort());
   await seedFixtures(context, extId);
 
-  console.log("\nPOPUP (540px) — result first, reference last");
+  // Since 0.47.0 the popup has its own Analyze layout (renderAnalyzePopup;
+  // analyze-popup.test.mjs covers it in depth). The reading order is the
+  // owner's, from the design canvas: the searches the engine ran directly
+  // under the prompt, then what led the answer, then the brands and pages.
+  console.log("\nPOPUP (540px) — searches, then what led, then brands and pages");
   {
-    const order = await orderAt(context, extId, 540, 900);
-    console.log("  painted order: " + order.map((o) => o.id).join(" -> "));
-    const brand = idx(order, "card-brand-mentions");
-    const funnel = idx(order, "card-omitted-analysis");
-    const general = idx(order, "card-general");
-    const tech = idx(order, "card-technical");
-
-    check("Brand Mentions is present", brand !== -1);
-    if (funnel !== -1) {
-      // The reported bug, stated as an assertion.
-      check("Search Funnel comes AFTER Brand Mentions", funnel > brand, `funnel@${funnel} brand@${brand}`);
-    }
-
-    // Reported: "Brand Mention section doesn't need snippet information for
-    // each mentioned brand." The quote was the tallest element in each card
-    // and the least reliable — a brand introduced inside a markdown table
-    // arrived as a wall of rating cells, and two brands named in the same
-    // sentence showed the identical block of text.
-    const bm = await brandCardShape(context, extId, 540, 900);
-    check("no per-brand quote block", bm.quotes === 0, `${bm.quotes} quotes`);
-    check("every brand still shows its position in the answer",
-      bm.ordinals === bm.rows, `${bm.ordinals} of ${bm.rows}`);
-    check("and its mention count as a comparable bar",
-      bm.meters > 0 && bm.meters <= bm.rows, `${bm.meters} of ${bm.rows}`);
-    // Uniform rows are what makes the list read as a ranking.
-    check("rows are the same height, give or take one wrapped chip line",
-      bm.maxHeight - bm.minHeight < 40, `${bm.minHeight}-${bm.maxHeight}px`);
-    check("the card is no longer the tallest thing on the page",
-      bm.cardHeight < 520, `${bm.cardHeight}px for ${bm.rows} brands`);
-    // A chip that ran into the next table column read "… Reliability Approx".
-    check("no chip label trails into the next table column",
-      !bm.chips.some((c) => /\b(approx|₹|\$)\b/i.test(c)), bm.chips.join(" | "));
-    if (general !== -1) {
-      check("General Information comes before Brand Mentions", general < brand, `general@${general} brand@${brand}`);
-    }
-    if (tech !== -1) {
-      check("Technical Information is pushed below Brand Mentions", tech > brand, `tech@${tech} brand@${brand}`);
-    }
-    checkRedesign(order, await redesignShape(context, extId, 540, 900), "popup");
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 540, height: 900 });
+    await page.goto(`chrome-extension://${extId}/ui/panel.html`);
+    await page.waitForTimeout(1200);
+    const order = await page.evaluate(() => [...document.querySelectorAll("#analyze .ap > section")]
+      .map((n) => ({ id: n.id, top: Math.round(n.getBoundingClientRect().top) }))
+      .sort((a, b) => a.top - b.top).map((n) => n.id));
+    await page.close();
+    console.log("  painted order: " + order.join(" -> "));
+    const at = (id) => order.indexOf(id);
+    check("the popup uses its own Analyze layout", order.length > 0);
+    check("searches come first", at("ap-searches") === 0, order.join(" -> "));
+    check("brands come after the searches", at("ap-brands") > at("ap-searches"), order.join(" -> "));
+    if (at("ap-sites") !== -1) check("the sites it used come after the brands", at("ap-sites") > at("ap-brands"), order.join(" -> "));
+    // 0.58.0: "What backs each brand" is an inference from titles and
+    // snippets; requested at the very bottom of the popup.
+    if (at("ap-backing") !== -1) check("what backs each brand is the last section", at("ap-backing") === order.length - 1, order.join(" -> "));
+    if (at("ap-products") !== -1) check("product cards lead the analysis, before brands", at("ap-products") < at("ap-brands"), order.join(" -> "));
   }
 
-  console.log("\nFULL SCREEN (1280px) — Brand Mentions heads the wide column");
+  // Since 0.48.0 the full tab has its own layout too (renderAnalyzeTab;
+  // analyze-tab.test.mjs covers it in depth): the analysis in a left column,
+  // the answer pinned on the right. Since 0.54.0 it follows the canvas: an
+  // "at a glance" card (brands named, pages cited, searches) heads it, then
+  // what led the answer, then what backs each brand, and Details last.
+  console.log("\nFULL SCREEN (1280px) — at a glance first, then what backs each brand, Details last");
   {
-    const order = await orderAt(context, extId, 1280, 900);
-    console.log("  painted order: " + order.map((o) => o.id).join(" -> "));
-    const brand = idx(order, "card-brand-mentions");
-    const funnel = idx(order, "card-omitted-analysis");
-    check("Brand Mentions is present", brand !== -1);
-    if (funnel !== -1) {
-      check("Search Funnel still comes after Brand Mentions", funnel > brand, `funnel@${funnel} brand@${brand}`);
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto(`chrome-extension://${extId}/ui/panel.html?mode=tab`);
+    await page.waitForTimeout(1200);
+    const order = await page.evaluate(() => [...document.querySelectorAll("#analyze .at-main > section, #analyze .at-main > .at-pair > .at-sec")]
+      .map((n) => ({ id: n.id, top: Math.round(n.getBoundingClientRect().top + window.scrollY) }))
+      .sort((a, b) => a.top - b.top).map((n) => n.id));
+    console.log("  painted order: " + order.join(" -> "));
+    const at = (id) => order.indexOf(id);
+    check("the at-a-glance card comes first", at("at-glance") === 0, order.join(" -> "));
+    // 0.58.0, as requested: every site it used follows the glance card, and
+    // what backs each brand moves to the very bottom, after Details.
+    check("the sites it used come right after it", at("at-sites") === 1, order.join(" -> "));
+    check("what backs each brand is the last section", at("at-backing") === order.length - 1, order.join(" -> "));
+    check("Details comes just before it", at("at-details") === order.length - 2, order.join(" -> "));
+    const matrixFirst = await page.evaluate(() => {
+      const m = document.getElementById("card-omitted-analysis");
+      const b = document.getElementById("at-glance");
+      return !!(m && b && m.getBoundingClientRect().top < b.getBoundingClientRect().top);
+    });
+    check("the funnel matrix never paints above the brands", !matrixFirst);
+
+    // Reported: "Brand Mention section doesn't need snippet information for
+    // each mentioned brand." The quote was the tallest element in each row
+    // and the least reliable — a brand introduced inside a markdown table
+    // arrived as a wall of rating cells, and two brands named in the same
+    // sentence showed the identical block of text. The brands now show as
+    // one line each in the glance, and as one row each in "what backs it".
+    const bm = await page.evaluate(() => {
+      const glance = document.getElementById("at-glance");
+      const back = document.getElementById("at-backing");
+      if (!glance || !back) return null;
+      const rows = [...glance.querySelectorAll(".at-glance-brand")];
+      const heights = rows.map((r) => Math.round(r.getBoundingClientRect().height));
+      return {
+        rows: rows.length,
+        backRows: back.querySelectorAll(".at-backing-row:not(.dropped)").length,
+        quotes: document.querySelectorAll("#analyze .at-main .brand-quote, #analyze .at-main blockquote").length,
+        ordinals: rows.filter((r) => /^\d+$/.test(r.querySelector(".at-rank")?.textContent || "")).length,
+        counts: rows.filter((r) => /^×\d+$/.test(r.querySelector(".at-glance-n")?.textContent || "")).length,
+        chips: [...back.querySelectorAll(".at-backer")].map((t) => t.textContent),
+        minHeight: Math.min(...heights),
+        maxHeight: Math.max(...heights),
+      };
+    });
+    await page.close();
+    check("the brand list renders", !!bm && bm.rows > 0, JSON.stringify(bm));
+    if (bm) {
+      check("no per-brand quote block", bm.quotes === 0, `${bm.quotes} quotes`);
+      check("every brand still shows its position in the answer", bm.ordinals === bm.rows, `${bm.ordinals} of ${bm.rows}`);
+      check("and how often it was named", bm.counts === bm.rows, `${bm.counts} of ${bm.rows}`);
+      check("each named brand gets a row in what backs it", bm.backRows >= bm.rows, `${bm.backRows} vs ${bm.rows}`);
+      check("brand lines are all one line high", bm.maxHeight - bm.minHeight < 4, `${bm.minHeight}-${bm.maxHeight}px`);
+      // A chip that ran into the next table column read "… Reliability Approx".
+      check("no chip label trails into the next column",
+        !bm.chips.some((c) => /\b(approx|₹|\$)\b/i.test(c)), bm.chips.join(" | "));
     }
-    checkRedesign(order, await redesignShape(context, extId, 1280, 900), "full screen");
   }
 } finally {
   await context.close();

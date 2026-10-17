@@ -22,7 +22,10 @@ import { detectBrands } from "../lib/brands.js";
 // from answerText before brand detection and display, so cited-source
 // domains stop being reported as brand mentions. Re-run "Reprocess all
 // captures" to apply this to existing captures.
-export const ADAPTER_VERSION = "perplexity@0.4.0";
+// 0.4.1: records say where their answer came from (platformSpecific.
+// answerSource / previewUpdatedAt), so a campaign run can refuse a thread-
+// list preview that belongs to another tab's prompt or to an earlier run.
+export const ADAPTER_VERSION = "perplexity@0.5.0";
 
 function extractJsonPayload(line) {
   const t = line.trim();
@@ -93,6 +96,144 @@ function parsePayloads(raw) {
   return nodes;
 }
 
+/* Perplexity's current answer stream (/rest/sse/perplexity_ask).
+ *
+ * Each SSE event carries ids and flags (backend_uuid, display_model,
+ * text_completed, final_sse_message...) and a `blocks` array; the answer is
+ * no longer in a top-level field. A real v0.42 run logged every one of these
+ * streams as unreadable — 150-430 KB answers, captured and then dropped as
+ * 0-signal — so Perplexity results came only from the slower DOM harvest.
+ * The block shapes follow henrique-coder/perplexity-webui-scraper
+ * (core/parser.py), a maintained client of the same endpoint:
+ *
+ *   markdown_block    { chunks[], chunk_starting_offset, answer }
+ *                     chunks land at their offset; offset 0 starts over
+ *   workflow_block    { steps[].items[].payload.text_payload.{text,chunks} }
+ *   diff_block        { patches[] } JSON Patch (add/replace/remove) against
+ *                     the last workflow_block
+ *   web_result_block  { web_results[]: {name, snippet, url} }
+ *
+ * The request body is {params, query_str}. Inline citations are [n], a
+ * 1-based index into web_results; they become the [[cite:URL]] marker the
+ * DOM harvester writes, and only sources the answer cites are "cited" — the
+ * rest were fetched. As with Grok, the stream is folded into one node in
+ * the shape the readers below already understand.
+ */
+function applyJsonPatch(doc, op) {
+  if (!op || typeof op !== "object" || typeof op.path !== "string" || !op.path.startsWith("/")) return;
+  const tokens = op.path.slice(1).split("/").map((t) => t.replace(/~1/g, "/").replace(/~0/g, "~"));
+  let target = doc;
+  for (const t of tokens.slice(0, -1)) {
+    target = Array.isArray(target) ? target[Number(t)] : target && target[t];
+    if (!target || typeof target !== "object") return;
+  }
+  const key = tokens[tokens.length - 1];
+  if (Array.isArray(target)) {
+    const i = key === "-" ? target.length : Number(key);
+    if (!Number.isInteger(i) || i < 0) return;
+    if (op.op === "add") target.splice(i, 0, op.value);
+    else if (op.op === "replace") target[i] = op.value;
+    else if (op.op === "remove") target.splice(i, 1);
+  } else if (op.op === "add" || op.op === "replace") target[key] = op.value;
+  else if (op.op === "remove") delete target[key];
+}
+
+const longer = (a, b) => (String(b || "").length > String(a || "").length ? String(b) : String(a || ""));
+
+function workflowText(workflow) {
+  let best = "";
+  for (const step of Array.isArray(workflow && workflow.steps) ? workflow.steps : []) {
+    for (const item of Array.isArray(step && step.items) ? step.items : []) {
+      const tp = item && item.payload && item.payload.text_payload;
+      if (!tp || typeof tp !== "object") continue;
+      const chunks = Array.isArray(tp.chunks) ? tp.chunks.filter((c) => c != null).map(String).join("") : "";
+      best = longer(best, longer(typeof tp.text === "string" ? tp.text : "", chunks));
+    }
+  }
+  return best;
+}
+
+// Search queries, wherever a block lists them: arrays under "queries" or
+// "search_queries" holding strings or {query}. Not "related_queries" — those
+// are follow-up suggestions, not what the engine searched.
+function collectQueries(value, out, depth = 0) {
+  if (!value || typeof value !== "object" || depth > 8) return;
+  if (Array.isArray(value)) { value.forEach((v) => collectQueries(v, out, depth + 1)); return; }
+  for (const [k, v] of Object.entries(value)) {
+    if ((k === "queries" || k === "search_queries") && Array.isArray(v)) {
+      for (const q of v) {
+        if (typeof q === "string") out.push(q);
+        else if (q && typeof q.query === "string") out.push(q.query);
+      }
+    } else if (k !== "related_queries" && v && typeof v === "object") collectQueries(v, out, depth + 1);
+  }
+}
+
+function readBlockStream(nodes) {
+  const events = nodes.filter((n) => n && typeof n === "object" && Array.isArray(n.blocks));
+  if (!events.length) return null;
+  let md = [];
+  let mdAnswer = "";
+  let workflow = null;
+  let results = [];
+  const queries = [];
+  let prompt = "";
+  let model = null;
+  let final = false;
+  for (const ev of events) {
+    if (!prompt && typeof ev.query_str === "string") prompt = ev.query_str;
+    if (!model && typeof ev.display_model === "string" && ev.display_model) model = ev.display_model;
+    if (ev.text_completed || ev.final_sse_message || ev.final) final = true;
+    for (const b of ev.blocks) {
+      if (!b || typeof b !== "object") continue;
+      const mb = b.markdown_block;
+      if (mb && typeof mb === "object") {
+        if (Array.isArray(mb.chunks)) {
+          const off = Number.isInteger(mb.chunk_starting_offset) && mb.chunk_starting_offset >= 0 ? mb.chunk_starting_offset : 0;
+          if (off === 0) md = [];
+          while (md.length < off) md.push("");
+          mb.chunks.forEach((c, i) => { md[off + i] = c == null ? "" : String(c); });
+        }
+        if (typeof mb.answer === "string") mdAnswer = longer(mdAnswer, mb.answer);
+      }
+      if (b.workflow_block && typeof b.workflow_block === "object") {
+        try { workflow = structuredClone(b.workflow_block); } catch (_) { workflow = null; }
+      }
+      if (b.diff_block && workflow && Array.isArray(b.diff_block.patches)) {
+        for (const op of b.diff_block.patches) { try { applyJsonPatch(workflow, op); } catch (_) { /* skip a patch that doesn't fit */ } }
+      }
+      const wr = b.web_result_block;
+      if (wr && Array.isArray(wr.web_results)) results = wr.web_results.filter((r) => r && typeof r === "object");
+      const { workflow_block: _w, diff_block: _d, markdown_block: _m, web_result_block: _r, ...rest } = b;
+      collectQueries(rest, queries);
+    }
+  }
+  if (workflow) collectQueries(workflow, queries);
+
+  let text = longer(md.join(""), mdAnswer);
+  if (!text && workflow) text = workflowText(workflow);
+
+  const cited = new Set();
+  text = text.replace(/\[(\d{1,2})\]/g, (whole, n) => {
+    const r = results[Number(n) - 1];
+    const url = r && typeof r.url === "string" ? r.url : null;
+    if (!url || !isHttpUrl(url)) return whole;
+    cited.add(url);
+    return `[[cite:${url}]]`;
+  });
+  return {
+    node: {
+      answer: text,
+      web_results: results.map((r) => ({ ...r, outcome: cited.has(r.url) ? "cited" : "fetched" })),
+      queries,
+      query_str: prompt,
+      display_model: model,
+    },
+    prompt,
+    final,
+  };
+}
+
 function extractPrompt(reqBody, nodes) {
   if (reqBody && typeof reqBody === "string") {
     try {
@@ -103,6 +244,7 @@ function extractPrompt(reqBody, nodes) {
       const parsed = JSON.parse(raw);
 
       // Check direct properties
+      if (typeof parsed.query_str === "string" && parsed.query_str.length > 1) return parsed.query_str;
       if (parsed.query && typeof parsed.query === "string" && parsed.query.length > 1) return parsed.query;
       if (parsed.message && typeof parsed.message === "string") return parsed.message;
       if (parsed.text && typeof parsed.text === "string") return parsed.text;
@@ -190,7 +332,14 @@ const REAL_ANSWER_FIELDS = ["text", "answer", "output", "completion", "response"
 // brittle for what should be "obviously the same query".
 const normTitle = (s) => String(s || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
-function extractAnswer(nodes, userPrompt) {
+// `info`, when passed, is told where the answer came from — "real" (a live
+// answer field), "preview" (a thread-list entry's answerPreview, with that
+// thread's updatedAt), or "none". A preview is a truncated summary of some
+// thread in the user's ACCOUNT-WIDE history, so whoever consumes the record
+// may need to judge whether that thread is really the one being captured —
+// see isUnusableCampaignPreview in background.js.
+function extractAnswer(nodes, userPrompt, info = {}) {
+  info.source = "none";
   let longest = "";
   for (const n of nodes) {
     if (!n || typeof n !== "object") continue;
@@ -209,7 +358,7 @@ function extractAnswer(nodes, userPrompt) {
       }
     }
   }
-  if (longest) return longest;
+  if (longest) { info.source = "real"; return longest; }
 
   // Fallback tier: `answerPreview`-only nodes, most often the entries of a
   // sidebarRecentThreads push — the user's thread history, which can
@@ -228,13 +377,16 @@ function extractAnswer(nodes, userPrompt) {
   const promptNorm = normTitle(userPrompt);
   if (!promptNorm) return "";
   let matched = "";
+  let matchedAt = null;
   for (const n of nodes) {
     if (!n || typeof n !== "object") continue;
     const title = normTitle(n.name || n.query || n.user_query);
     if (title && title === promptNorm && typeof n.answerPreview === "string" && n.answerPreview.length > matched.length) {
       matched = n.answerPreview;
+      matchedAt = typeof n.updatedAt === "string" ? n.updatedAt : null;
     }
   }
+  if (matched) { info.source = "preview"; info.updatedAt = matchedAt; }
   return matched;
 }
 
@@ -400,8 +552,12 @@ function extractGeneratedTitle(nodes, userPrompt) {
 }
 
 export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, options = {}) {
-  const nodes = parsePayloads(raw);
-  const userPrompt = extractPrompt(reqBody, nodes);
+  const parsed = parsePayloads(raw);
+  const stream = readBlockStream(parsed);
+  // A block-stream capture is read through its folded node alone — see
+  // readBlockStream. Everything else goes through the readers as before.
+  const nodes = stream ? [stream.node] : parsed;
+  const userPrompt = extractPrompt(reqBody, nodes) || (stream && stream.prompt) || "";
   const generatedTitle = extractGeneratedTitle(nodes, userPrompt);
   const model = extractModel(nodes);
   const sources = extractSources(nodes);
@@ -411,7 +567,8 @@ export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, op
   // see stripCitationFootnotes above. Cleaning it out of the returned
   // answerText too (not just a brand-detection-only copy) also fixes the
   // same tokens showing up as visible clutter inline in the rendered answer.
-  const answerText = stripCitationFootnotes(extractAnswer(nodes, userPrompt), sources);
+  const answerInfo = {};
+  const answerText = stripCitationFootnotes(extractAnswer(nodes, userPrompt, answerInfo), sources);
   const fanout = extractFanout(nodes);
   // Detection-only text: strips [[cite:URL]] markers so a cited domain can't
   // match itself inside its own citation marker (see stripCiteMarkersForDetection
@@ -440,6 +597,10 @@ export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, op
     platformSpecific: {
       adapterVersion: ADAPTER_VERSION,
       nodeCount: nodes.length,
+      answerSource: answerInfo.source,
+      previewUpdatedAt: answerInfo.updatedAt || null,
+      transport: stream ? "blocks" : "legacy",
+      streamFinal: stream ? stream.final : undefined,
     },
   });
 }

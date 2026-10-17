@@ -1,0 +1,276 @@
+/*
+ * historyView.js — the Dashboard as a record of what you asked (0.49.0).
+ *
+ * Release 3 of the canvas redesign. The owner's feedback on the old
+ * Dashboard: it must not be brand-centric; "it is a record of prompts,
+ * search is central, and the right-hand side should go". On the canvas it
+ * became a searchable history: one row per prompt, grouped by day, with the
+ * engines that answered it, how many times it was asked, what the answer
+ * held (searches, pages, brands, product cards, a map, images), and filters
+ * for the period, the engines, the kind of answer and the week. A second
+ * view lists the searches the engines ran, which is how they rephrased what
+ * you asked.
+ *
+ * Everything here reads the light capture rows (no answer text), so it is
+ * pure and unit-tested; panel.js draws it. Matches inside answer text come
+ * from the background's "search-answers" message and are passed in.
+ */
+import { normalizeMentions } from "./mention-list.js";
+import { sameBrand } from "./funnel-omitted.js";
+import { normPrompt, knownVendors, answerKind } from "./analyzeView.js";
+import { searchTokens, matchesTokens } from "./answerSearch.js";
+
+export const ENGINE_ORDER = ["chatgpt", "gemini", "perplexity", "grok"];
+
+export const PERIODS = [
+  { id: "today", label: "Today", phrase: "today" },
+  { id: "yesterday", label: "Yesterday", phrase: "yesterday" },
+  { id: "3d", label: "Last 3 days", phrase: "in the last 3 days" },
+  { id: "7d", label: "7 days", phrase: "in the last 7 days" },
+  { id: "30d", label: "30 days", phrase: "in the last 30 days" },
+  { id: "all", label: "All time", phrase: "in all your history" },
+];
+
+// The kinds of answer, in the canvas's order. "task" is a prompt that asked
+// for work (an email, a summary) rather than information: nothing to track.
+export const KINDS = [
+  { id: "shopping", label: "Shopping" },
+  { id: "info", label: "Informational" },
+  { id: "local", label: "Local" },
+  { id: "images", label: "Images" },
+  { id: "memory", label: "From memory" },
+  { id: "task", label: "Tasks · not research" },
+];
+
+// When several engines answered one prompt, the row takes the richest kind:
+// one engine showing product cards makes it a shopping prompt.
+const KIND_RANK = { shopping: 0, local: 1, images: 2, info: 3, memory: 4, task: 5 };
+
+const TASK_VERB = /^(?:please\s+|can you\s+|could you\s+)?(?:write|rewrite|re-write|draft|summari[sz]e|translate|proofread|paraphrase|reword|compose|format|fix|debug|refactor|convert|correct|edit|reply|respond|turn this|make this|generate a|create a|calculate|solve)\b/i;
+
+/** A prompt that asks for work rather than information, answered without searching. */
+export function isTaskPrompt(text, { searched, brands } = {}) {
+  if (searched || brands) return false;
+  return TASK_VERB.test(String(text || "").trim());
+}
+
+const queriesOf = (rec) => [].concat(
+  ((rec.fanout && rec.fanout.search) || []).map((q) => ["web", q]),
+  ((rec.fanout && rec.fanout.shopping) || []).map((q) => ["shopping", q]),
+  ((rec.fanout && rec.fanout.image) || []).map((q) => ["image", q]),
+).map(([lane, q]) => ({ lane, text: String(typeof q === "string" ? q : (q && q.query) || "").trim() })).filter((q) => q.text);
+
+const namedBrands = (rec) => normalizeMentions(rec.brandMentions || [], knownVendors(rec)).filter((b) => b.count > 0).map((b) => b.brand);
+
+/**
+ * One row per prompt (normalised text), newest first. A prompt asked on
+ * several engines, or asked again, is one row: `asked` is how many times it
+ * was asked on the engine it was asked on most, so a campaign run of four
+ * engines counts once. The figures describe the latest answer from each
+ * engine.
+ *
+ * @param {object[]} records  light capture rows
+ * @param {{ profiles?: object[] }} opts  campaigns, to name a campaign's prompts
+ */
+export function historyRows(records, { profiles = [] } = {}) {
+  const byKey = new Map();
+  for (const r of records || []) {
+    if (!r || !r.captureId) continue;
+    const key = normPrompt(r.userPrompt);
+    if (!key) continue;
+    if (!byKey.has(key)) byKey.set(key, []);
+    byKey.get(key).push(r);
+  }
+  const rows = [];
+  for (const [key, caps] of byKey) {
+    caps.sort((a, b) => (b.capturedAt || 0) - (a.capturedAt || 0));
+    const latest = caps[0];
+    const perEngine = new Map();
+    const countPerEngine = new Map();
+    for (const c of caps) {
+      if (!perEngine.has(c.platform)) perEngine.set(c.platform, c);
+      countPerEngine.set(c.platform, (countPerEngine.get(c.platform) || 0) + 1);
+    }
+    const engines = [...ENGINE_ORDER.filter((e) => perEngine.has(e)), ...[...perEngine.keys()].filter((e) => !ENGINE_ORDER.includes(e))];
+    const latestPer = engines.map((e) => perEngine.get(e));
+    const brands = [];
+    latestPer.forEach((c) => namedBrands(c).forEach((b) => { if (!brands.some((x) => sameBrand(x, b))) brands.push(b); }));
+    const searched = latestPer.some((c) => c.searched);
+    let kind = latestPer.map((c) => answerKind(c).id).sort((a, b) => KIND_RANK[a] - KIND_RANK[b])[0] || "info";
+    if (kind === "memory" && isTaskPrompt(latest.userPrompt, { searched, brands: brands.length })) kind = "task";
+    const sum = (f) => latestPer.reduce((a, c) => a + f(c), 0);
+    const profileIds = [...new Set(caps.map((c) => c.geo && c.geo.profileId).filter(Boolean))];
+    const campaign = profileIds.map((id) => (profiles.find((p) => p.id === id) || {}).name).filter(Boolean)[0] || (profileIds.length ? "a campaign" : "");
+    const fan = [];
+    caps.forEach((c) => queriesOf(c).forEach((q) => { if (!fan.some((x) => x.text.toLowerCase() === q.text.toLowerCase())) fan.push(q); }));
+    const text = String(latest.userPrompt || "").trim();
+    rows.push({
+      key, text, words: text.split(/\s+/).filter(Boolean).length,
+      latestId: latest.captureId, latestAt: latest.capturedAt || 0, firstAt: caps[caps.length - 1].capturedAt || 0,
+      captureIds: caps.map((c) => c.captureId), captures: caps.length,
+      engines, latestByEngine: Object.fromEntries(latestPer.map((c) => [c.platform, c.captureId])),
+      asked: Math.max(...countPerEngine.values()),
+      kind, searched,
+      searches: sum((c) => queriesOf(c).length),
+      unpublished: latestPer.some((c) => c.searched && !queriesOf(c).length),
+      pages: sum((c) => (c.sources || []).length),
+      brands: brands.length,
+      products: sum((c) => (c.products || []).length),
+      places: sum((c) => (c.places || []).length),
+      images: sum((c) => (c.images || []).length),
+      campaign, fromCampaign: profileIds.length > 0,
+      // Sample answers loaded on a fresh install say so wherever they show.
+      sample: caps.every((c) => c.isDemo || String(c.captureId).startsWith("demo-")),
+      fan,
+    });
+  }
+  return rows.sort((a, b) => b.latestAt - a.latestAt);
+}
+
+/* ---------- time ---------- */
+
+const startOfDay = (t) => { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); };
+/** Whole calendar days between two times, in local time (0 = same day). */
+export function dayDiff(now, t) {
+  return Math.round((startOfDay(now) - startOfDay(t)) / 86400000);
+}
+/** Monday 00:00 of the week `t` falls in, local time. */
+export function weekStart(t) {
+  const d = new Date(startOfDay(t));
+  const dow = (d.getDay() + 6) % 7; // Monday = 0
+  d.setDate(d.getDate() - dow);
+  return d.getTime();
+}
+const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTH = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const DOW = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+export const shortDate = (t) => { const d = new Date(t); return `${d.getDate()} ${MON[d.getMonth()]}`; };
+
+function inPeriod(period, now, t) {
+  const dd = dayDiff(now, t);
+  switch (period) {
+    case "today": return dd === 0;
+    case "yesterday": return dd === 1;
+    case "3d": return dd <= 2;
+    case "7d": return dd <= 6;
+    case "30d": return dd <= 29;
+    default: return true;
+  }
+}
+
+/** Day groups for the list: Today, Yesterday, Earlier this week, then months. */
+export function groupRows(rows, now) {
+  const thisWeek = weekStart(now);
+  const nowYear = new Date(now).getFullYear();
+  const groups = [];
+  const put = (id, label, sub, row) => {
+    let g = groups.find((x) => x.id === id);
+    if (!g) { g = { id, label, sub, rows: [] }; groups.push(g); }
+    g.rows.push(row);
+  };
+  for (const r of rows) {
+    const dd = dayDiff(now, r.latestAt);
+    const d = new Date(r.latestAt);
+    if (dd === 0) put("today", "Today", `${DOW[d.getDay()]}, ${d.getDate()} ${MONTH[d.getMonth()]}`, r);
+    else if (dd === 1) put("yesterday", "Yesterday", `${DOW[d.getDay()]}, ${d.getDate()} ${MONTH[d.getMonth()]}`, r);
+    else if (r.latestAt >= thisWeek) put("week", "Earlier this week", "", r);
+    else {
+      const id = `${d.getFullYear()}-${d.getMonth()}`;
+      put(id, MONTH[d.getMonth()] + (d.getFullYear() !== nowYear ? ` ${d.getFullYear()}` : ""), "", r);
+    }
+  }
+  return groups;
+}
+
+/* ---------- search ---------- */
+
+// searchTokens() and matchesTokens() live in answerSearch.js, shared with
+// the background's answer search so both read a query the same way.
+export { searchTokens, matchesTokens };
+/** Split text into plain and matching runs, for highlighting. */
+export function highlightRuns(text, toks) {
+  const s = String(text || "");
+  if (!toks.length) return [{ t: s, hit: false }];
+  const esc = toks.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const re = new RegExp(`(${esc.join("|")})`, "gi");
+  return s.split(re).filter(Boolean).map((t) => ({ t, hit: toks.includes(t.toLowerCase()) }));
+}
+
+/**
+ * Everything the Dashboard shows, for one set of filters.
+ *
+ * @param {object[]} rows  historyRows()
+ * @param {object} f  { query, scope: {prompts, answers, fan}, engines: {id: bool}, period,
+ *                      kinds: {id: bool}, week (weekStart ms | null), repeat, campaign, sort }
+ * @param {{ now: number, answerHits?: Map<string,string> }} ctx  captureId -> snippet
+ */
+export function historyView(rows, f, { now = Date.now(), answerHits = new Map() } = {}) {
+  const scope = f.scope || { prompts: true, answers: true, fan: true };
+  const toks = searchTokens(f.query);
+  const hasQ = toks.length > 0;
+  const engineOn = (e) => !f.engines || f.engines[e] !== false;
+
+  // 1. the search
+  const matched = rows.map((r) => {
+    if (!hasQ) return { ...r, hitPrompt: false, hitAnswer: null, hitFan: null };
+    const hitPrompt = !!scope.prompts && matchesTokens(r.text, toks);
+    const answerId = scope.answers ? r.captureIds.find((id) => answerHits.has(id)) : null;
+    const hitFan = scope.fan ? (r.fan.find((q) => matchesTokens(q.text, toks)) || null) : null;
+    return { ...r, hitPrompt, hitAnswer: answerId ? { captureId: answerId, snippet: answerHits.get(answerId) } : null, hitFan };
+  }).filter((r) => !hasQ || r.hitPrompt || r.hitAnswer || r.hitFan);
+
+  // 2. engines, period, toggles
+  const engineCounts = Object.fromEntries(ENGINE_ORDER.map((e) => [e, matched.filter((r) => r.engines.includes(e)).length]));
+  const pre = matched.filter((r) => r.engines.some(engineOn)
+    && inPeriod(f.period || "all", now, r.latestAt)
+    && (!f.repeat || r.asked > 1)
+    && (!f.campaign || r.fromCampaign));
+
+  // 3. kind of answer
+  const anyKind = !!f.kinds && Object.values(f.kinds).some(Boolean);
+  const kindCounts = Object.fromEntries(KINDS.map((k) => [k.id, pre.filter((r) => r.kind === k.id).length]));
+  const base = pre.filter((r) => !anyKind || f.kinds[r.kind]);
+
+  // 4. the week picked on the chart
+  const lastWeek = weekStart(now);
+  const weekStarts = [];
+  for (let i = 7; i >= 0; i--) { const d = new Date(lastWeek); d.setDate(d.getDate() - 7 * i); weekStarts.push(d.getTime()); }
+  const weeks = weekStarts.map((ws, i) => ({
+    start: ws, label: i === 7 ? "This week" : shortDate(ws),
+    n: base.filter((r) => weekStart(r.latestAt) === ws).length,
+  }));
+  let list = base.filter((r) => !f.week || weekStart(r.latestAt) === f.week);
+  if (f.sort === "asked") list = [...list].sort((a, b) => b.asked - a.asked || b.latestAt - a.latestAt);
+  else if (f.sort === "engines") list = [...list].sort((a, b) => b.engines.length - a.engines.length || b.latestAt - a.latestAt);
+
+  // 5. the searches the engines ran, for the prompts in the list
+  const fanMap = new Map();
+  for (const r of list) {
+    for (const q of r.fan) {
+      if (hasQ && scope.fan && !r.hitPrompt && !matchesTokens(q.text, toks)) continue;
+      const k = q.text.toLowerCase();
+      if (!fanMap.has(k)) fanMap.set(k, { text: q.text, lane: q.lane, n: 0, engines: [], from: [] });
+      const e = fanMap.get(k);
+      e.n++;
+      r.engines.forEach((x) => { if (!e.engines.includes(x)) e.engines.push(x); });
+      if (!e.from.includes(r.text)) e.from.push(r.text);
+    }
+  }
+  const fan = [...fanMap.values()].sort((a, b) => b.n - a.n || a.text.localeCompare(b.text));
+
+  const enginesUsed = ENGINE_ORDER.filter((e) => base.some((r) => r.engines.includes(e)));
+  const times = base.map((r) => r.latestAt).sort((a, b) => a - b);
+  const totals = {
+    prompts: base.length,
+    answers: base.reduce((a, r) => a + r.captures, 0),
+    engines: enginesUsed.length,
+    from: times.length ? times[0] : null,
+    to: times.length ? times[times.length - 1] : null,
+    kindLine: KINDS.filter((k) => kindCounts[k.id]).slice(0, 3).map((k) => `${kindCounts[k.id]} ${k.label.split(" ")[0].toLowerCase()}`).join(", "),
+  };
+
+  return {
+    tokens: toks, matched, pre, base, list, engineCounts, kindCounts, anyKind, weeks, fan, totals,
+    groups: f.sort && f.sort !== "newest" ? [{ id: "all", label: f.sort === "asked" ? "Asked most often" : "Most engines", sub: "", rows: list }] : groupRows(list, now),
+  };
+}

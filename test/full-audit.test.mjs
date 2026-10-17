@@ -247,7 +247,9 @@ try {
   await page.waitForTimeout(3000);
   drain();
 
-  const TABS = ["analyze", "dashboard", "loader", "compare", "about"];
+  // Compare left the top menu in 0.47.0 (it opens from an answer instead);
+  // compare-tab.test.mjs renders it that way.
+  const TABS = ["analyze", "dashboard", "loader", "about"];
   /* The interactive surface each tab MUST have once data exists.
    *
    * Without this, a tab that silently rendered its empty state satisfied
@@ -258,7 +260,8 @@ try {
    */
   const MIN_CONTROLS = {
     analyze: { buttons: 6, selects: 0 },
-    dashboard: { buttons: 4, selects: 2 },
+    // Since 0.49.0 the period is a row of buttons and Sort the one select.
+    dashboard: { buttons: 12, selects: 1 },
     loader: { buttons: 3, selects: 0 },
     compare: { buttons: 0, selects: 3 },
     about: { buttons: 2, selects: 0 },
@@ -363,8 +366,8 @@ try {
   /* The path a user actually takes: Dashboard -> click a saved conversation ->
    * Analyze opens on that capture. The first cut looked for `tbody tr`, found
    * zero, and reported "clicked 0 without error" — a green line for a
-   * drilldown that was never tested. Saved conversations are .capture-prompt
-   * divs with an onclick, so that is what gets clicked.
+   * drilldown that was never tested. Since 0.49.0 each Dashboard row's prompt
+   * is a .db-prompt button, so that is what gets clicked.
    */
   console.log("\nDrilldowns open without throwing");
   await page.reload();
@@ -374,14 +377,14 @@ try {
   await page.waitForTimeout(1800);
 
   const rowCount = await page.evaluate(() =>
-    document.getElementById("dashboard").querySelectorAll(".capture-prompt").length);
-  check("the dashboard lists saved conversations to drill into", rowCount > 0, `${rowCount} rows`);
+    document.getElementById("dashboard").querySelectorAll(".db-prompt").length);
+  check("the dashboard lists prompts to drill into", rowCount > 0, `${rowCount} rows`);
 
   for (let i = 0; i < Math.min(rowCount, 3); i++) {
     const opened = await page.evaluate(async (idx) => {
       document.querySelector('[data-tab="dashboard"]')?.click();
       await new Promise((r) => setTimeout(r, 500));
-      const rows = [...document.getElementById("dashboard").querySelectorAll(".capture-prompt")];
+      const rows = [...document.getElementById("dashboard").querySelectorAll(".db-prompt")];
       if (!rows[idx]) return { clicked: false };
       const label = rows[idx].innerText.trim().slice(0, 40);
       rows[idx].click();
@@ -394,23 +397,31 @@ try {
       };
     }, i);
     const errs = drain();
-    check(`opening saved conversation ${i + 1} lands on a populated Analyze`,
+    check(`opening Dashboard prompt ${i + 1} lands on a populated Analyze`,
       opened.clicked && opened.onAnalyze && opened.len > 200 && errs.length === 0,
       `${JSON.stringify(opened).slice(0, 180)} errors=${errs.join(" | ")}`);
   }
 
-  // Brand and URL drilldown modals, reached from the campaign view.
-  console.log("\nCampaign brand/URL drilldown modals open and close");
-  for (const sel of [".brand-name-link", ".geo-brand-row", ".url-row-link", ".geo-url-row"]) {
+  // Brand and source drill-downs, reached from the campaign's results board
+  // in Campaigns (0.50.0): a brand opens its detail in place of the board, a
+  // domain opens a modal.
+  console.log("\nCampaign brand/source drill-downs open and close");
+  await page.evaluate(() => document.querySelector('[data-tab="loader"]')?.click());
+  await page.waitForTimeout(2500);
+  drain();
+  check("the campaign's results show in Campaigns", await page.evaluate(() => !!document.querySelector("#loader #campaignResults #cb-kpis")));
+  for (const sel of ["#cb-brands .cb-brand-btn", "#cb-sources td.td-domain button", "#cb-gaps .cb-tr", "#cb-kpis .cb-focus-tab:nth-child(3)"]) {
     const found = await page.evaluate((s) => document.querySelectorAll(s).length, sel);
     if (!found) continue;
     await page.evaluate(async (s) => {
       const n = document.querySelector(s);
-      if (n) { n.click(); await new Promise((r) => setTimeout(r, 1200)); }
-      document.querySelector(".modal-backdrop, .backdrop")?.remove();
+      if (n) { n.click(); await new Promise((r) => setTimeout(r, 1500)); }
+      document.querySelector(".modal-backdrop, .backdrop, #url-modal-backdrop")?.remove();
+      const back = document.querySelector(".cb-detail-head .analyze-context-back");
+      if (back) { back.click(); await new Promise((r) => setTimeout(r, 1500)); }
     }, sel);
     const errs = drain();
-    check(`${sel} drilldown opens cleanly`, errs.length === 0, errs.join(" | "));
+    check(`${sel} opens cleanly`, errs.length === 0, errs.join(" | "));
   }
 
   /* ---------- 5. exports ---------- */

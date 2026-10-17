@@ -237,3 +237,51 @@ export function breadthVerdict(count) {
   }
   return { band: "broad", label: `broad — above the usual ${b.typicalBandHigh}` };
 }
+
+/* Does a page's title share a meaningful word with any sub-query the engine
+ * ran? Ahrefs found pages the engines cite have titles measurably closer to
+ * the fan-out queries than pages they read and pass over (0.602 vs 0.484
+ * similarity), so a read-but-uncited page whose title echoes none of the
+ * searches is a concrete thing to fix: retitle it in the searcher's words.
+ *
+ * Word overlap, not semantic similarity, so it only flags the clear case —
+ * no word in common at all. Filler words and years don't count as a match,
+ * plurals fold to one form, and site: operators are dropped because the
+ * domain a search was scoped to is not what it searched for. null when there
+ * is nothing to compare, so the caller shows no verdict rather than a guess.
+ */
+const TITLE_FILLER = new Set((
+  "a an and are as at be best by can do does for from get how i if in into is it its " +
+  "me my new near no not of on or our so than that the their them these this those to top " +
+  "up us vs versus was we what when where which who why will with you your guide review reviews"
+).split(" "));
+
+function stemWord(w) {
+  if (w.length > 4 && w.endsWith("ies")) return `${w.slice(0, -3)}y`;
+  if (w.length > 4 && /(ss|x|z|ch|sh)es$/.test(w)) return w.slice(0, -2);
+  if (w.length > 3 && w.endsWith("s") && !w.endsWith("ss")) return w.slice(0, -1);
+  return w;
+}
+
+function meaningfulWords(text) {
+  const out = new Set();
+  for (const raw of String(text || "").toLowerCase().split(/[^\p{L}\p{M}\p{N}]+/u)) {
+    if (raw.length < 2 || TITLE_FILLER.has(raw) || /^(19|20)\d\d$/.test(raw)) continue;
+    out.add(stemWord(raw));
+  }
+  return out;
+}
+
+export function titleMatchesQueries(title, queries) {
+  const titleWords = meaningfulWords(title);
+  if (!titleWords.size) return null;
+  let compared = false;
+  for (const q of queries || []) {
+    const text = typeof q === "string" ? q : q?.query || "";
+    const words = meaningfulWords(parseQueryOperators(text).bare);
+    if (!words.size) continue;
+    compared = true;
+    for (const w of words) if (titleWords.has(w)) return true;
+  }
+  return compared ? false : null;
+}

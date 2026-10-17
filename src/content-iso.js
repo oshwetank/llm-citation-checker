@@ -24,6 +24,59 @@
     return CHANNEL;
   }
 
+  /* A clock that survives Chrome throttling this tab.
+   *
+   * A campaign's engine tabs are never the visible tab, and Chrome throttles
+   * timers in hidden pages: setTimeout/setInterval run at most once a second
+   * from the moment a tab is hidden, and once a MINUTE after five minutes
+   * hidden ("intensive wake-up throttling", Chrome 88+). The submit loop
+   * counts 400ms ticks, so in a hidden tab it ran 2.5x slow from the start —
+   * its budget outlasted the 90s watchdog, which killed the turn before the
+   * loop could report where it stood — and after five minutes it barely ran
+   * at all. Real runs in two browsers stopped succeeding at 4.96 and 4.97
+   * minutes, on every engine at once, and not one failure carried a trace.
+   *
+   * Message delivery isn't throttled, so while a turn runs here the service
+   * worker — whose own timers aren't throttled — drives the clock over a
+   * port. The page timer is only the fallback for when no port can be opened
+   * or the worker goes away mid-turn. Anything on a run's critical path that
+   * waits on time should hang off this rather than off setTimeout.
+   */
+  const clockSubscribers = new Set();
+  const clockState = { source: "none" };
+  function onClockTick(fn) {
+    clockSubscribers.add(fn);
+    return () => clockSubscribers.delete(fn);
+  }
+  function startClock(ms) {
+    let stopped = false;
+    let port = null;
+    let fallback = null;
+    const fire = () => {
+      if (stopped) return;
+      for (const fn of [...clockSubscribers]) { try { fn(); } catch (_) {} }
+    };
+    const usePageTimer = () => {
+      if (stopped || fallback) return;
+      clockState.source = "page";
+      fallback = setInterval(fire, ms);
+    };
+    try {
+      port = chrome.runtime.connect({ name: "lcfc-clock" });
+      port.onMessage.addListener(fire);
+      port.onDisconnect.addListener(() => { void chrome.runtime.lastError; port = null; usePageTimer(); });
+      port.postMessage({ everyMs: ms });
+      clockState.source = "worker";
+    } catch (_) {
+      usePageTimer();
+    }
+    return () => {
+      stopped = true;
+      if (fallback) clearInterval(fallback);
+      try { if (port) port.disconnect(); } catch (_) {}
+    };
+  }
+
   // Turn the MAIN-world diagnostic channel on only if the user enabled it.
   chrome.storage.local.get("lcfcSettings", (got) => {
     if (got && got.lcfcSettings && got.lcfcSettings.debugCapture) {
@@ -33,6 +86,7 @@
     }
   });
 
+  const engineSubmit = { at: 0, via: "" };
   window.addEventListener("message", (event) => {
     if (event.source !== window) return;
     if (event.origin !== location.origin) return;
@@ -47,6 +101,17 @@
           () => void chrome.runtime.lastError
         );
       } catch (_) {}
+      return;
+    }
+
+    // The engine's own submit request left the page (content-main.js's
+    // SUBMIT_RE) — proof the prompt went out; see submittedWhy.
+    if (data.type === "engine-submit") {
+      engineSubmit.at = Date.now();
+      engineSubmit.via = String(data.via || "").slice(0, 10);
+      // Straight away, not on the next tick: if the engine redirects right
+      // after its send, the run must already know not to hand the turn on.
+      if (pageFacts.turnToken) reportSent(pageFacts.turnToken);
       return;
     }
 
@@ -111,22 +176,51 @@
       userTurn: '[data-testid="user-query"], .font-display, h1',
       turns: ".prose, [data-testid='thread-message']",
     },
+    /* grok.com, as mapped by grok-brain (github.com/ops120/grok-brain,
+     * references/site-map.md, verified on the live site 2026-09) and matched
+     * by every open-source multi-AI extension that drives it (PromptCast,
+     * Mosaic, GenAIPromptExtension, Parallel AI): the composer is a
+     * Tiptap/ProseMirror contenteditable inside [data-testid="chat-input"],
+     * and the send control is [data-testid="chat-submit"], labelled
+     * "Submit". The page ALSO carries a hidden textarea (aria-hidden,
+     * tabindex -1, 14px) with an "Ask Grok…" placeholder — typing into it
+     * does nothing, and it used to be this list's first match. Labels change
+     * with the UI language, so structure comes first and text last.
+     */
     grok: {
-      composer: ['textarea[placeholder*="Ask" i]', 'div[contenteditable="true"]', "textarea"],
-      send: ['button[aria-label*="Send" i]', 'button[aria-label*="Grok" i]', 'button[type="submit"]'],
+      composer: ['[data-testid="chat-input"] [contenteditable="true"]', '.ProseMirror[contenteditable="true"]', 'div[contenteditable="true"]', 'textarea[placeholder*="Ask" i]', "textarea"],
+      send: ['[data-testid="chat-submit"]', 'button[aria-label="Submit"]', 'button[type="submit"]', 'button[aria-label*="Submit" i]', 'button[aria-label*="Send" i]'],
       streaming: ['button[aria-label*="Stop" i]'],
-      userTurn: '.user-message, [data-message-author="user"]',
-      turns: ".message-row, [data-message-author]",
+      userTurn: '[data-testid="user-message"], .user-message, [data-message-author="user"]',
+      turns: '.message-bubble, [data-testid="user-message"], .message-row, [data-message-author]',
     },
   };
 
+  /* The first element a selector list finds that a person could actually
+   * use: not aria-hidden (itself or an ancestor) and laid out. A list is in
+   * priority order, but a match that is hidden loses to a later one that
+   * isn't — grok.com's decoy textarea is the case in point. With nothing
+   * visible it falls back to the first match, as before, so a page this
+   * can't lay out (a test harness, an odd renderer) still gets one.
+   */
+  const usable = (el) => {
+    try {
+      if (el.closest('[aria-hidden="true"]')) return false;
+      return el.getClientRects().length > 0;
+    } catch (_) { return true; }
+  };
   const pick = (list) => {
     if (!list) return null;
+    let fallback = null;
     for (const s of list) {
-      const el = document.querySelector(s);
-      if (el) return el;
+      let els;
+      try { els = document.querySelectorAll(s); } catch (_) { continue; }
+      for (const el of els) {
+        if (usable(el)) return el;
+        if (!fallback) fallback = el;
+      }
     }
-    return null;
+    return fallback;
   };
 
   const getPlatform = () => {
@@ -137,13 +231,82 @@
     return "chatgpt";
   };
 
+  /* What this page can say about itself when the run asks after a turn that
+   * isn't running here.
+   *
+   * The turn's own probe responder (inside begin(), below) only exists once a
+   * turn has started in THIS document. Every Grok turn in a real v0.42 run
+   * timed out as "page script not responding": the script was there (Chrome
+   * delivered the probe) but no turn was — typically because the page
+   * reloaded or navigated after the run's markers were stripped from its URL,
+   * so the new document never started one. This answers in that case with
+   * facts, not guesses: how the document was loaded, whether it carried the
+   * run's markers, what verification said, where it is, and whether it is a
+   * verification/challenge page. No prompt, answer or query text.
+   */
+  const pageFacts = {
+    loadedAt: Date.now(),
+    hadMarkers: false,
+    token: "",
+    verify: "none",      // none | pending | ok | rejected | error | already-fired | claim-pending | claimed | not-claimed
+    turnToken: "",
+  };
+  // Tells the run this turn's prompt has gone out (see loader-sent), once.
+  let sentReported = "";
+  const reportSent = (token) => {
+    if (!token || sentReported === token) return;
+    sentReported = token;
+    try { chrome.runtime.sendMessage({ type: "loader-sent", token }, () => void chrome.runtime.lastError); } catch (_) { /* worker gone */ }
+  };
+  const navigationType = () => {
+    try { return (performance.getEntriesByType("navigation")[0] || {}).type || "unknown"; } catch (_) { return "unknown"; }
+  };
+  const pathShape = () =>
+    location.pathname.replace(/[0-9a-f][0-9a-f-]{15,}/gi, ":id").replace(/\/\d{4,}(?=\/|$)/g, "/:n").slice(0, 60);
+  const looksLikeChallenge = () => {
+    try {
+      if (/just a moment|attention required|verify you are human|checking your browser|are you a robot/i.test(document.title || "")) return true;
+      return !!document.querySelector('#challenge-form, #cf-challenge-running, iframe[src*="challenges.cloudflare.com"], iframe[src*="recaptcha"], iframe[src*="hcaptcha"]');
+    } catch (_) { return false; }
+  };
+  chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
+    if (!msg || msg.type !== "loader-probe") return;
+    if (pageFacts.turnToken && msg.token === pageFacts.turnToken) return; // the turn answers for itself
+    try {
+      reply({
+        ok: true,
+        stage: "no-turn",
+        navType: navigationType(),
+        hadMarkers: pageFacts.hadMarkers,
+        sameToken: !!pageFacts.token && pageFacts.token === msg.token,
+        verify: pageFacts.verify,
+        path: pathShape(),
+        docAgeMs: Date.now() - pageFacts.loadedAt,
+        readyState: document.readyState,
+        challenge: looksLikeChallenge(),
+        visibility: document.visibilityState,
+      });
+    } catch (e) {
+      reply({ ok: true, stage: "no-turn", error: String((e && e.message) || e).slice(0, 80) });
+    }
+  });
+
   (function loaderAutoSubmit() {
     const params = new URLSearchParams(location.search);
-    if (params.get("lcfc") !== "1") return;
-    const q = params.get("q") || "";
-    const token = params.get("lcfctok") || "";
-    const wantSearch = params.get("lcfcsearch") === "1";
+    // Set from the address, or from the run when a page claims the turn.
+    let q = "";
+    let token = "";
+    let wantSearch = false;
+    // Where dropQ() leaves the address once ?q= has served its purpose. A
+    // claimed page never had our ?q=, so its own address is left alone.
+    let bareUrl = location.pathname + location.search;
+    if (params.get("lcfc") !== "1") { claimTurn(); return; }
+    q = params.get("q") || "";
+    token = params.get("lcfctok") || "";
+    wantSearch = params.get("lcfcsearch") === "1";
     if (!q || !token) return;
+    pageFacts.hadMarkers = true;
+    pageFacts.token = token;
 
     /* Strip OUR markers immediately — a crafted ?lcfc=1&lcfctok=… link must
      * not be replayable — but deliberately KEEP ?q= for now.
@@ -168,7 +331,7 @@
     const keepQ = new URLSearchParams(location.search);
     ["lcfc", "lcfctok", "lcfcsearch"].forEach((k) => keepQ.delete(k));
     const qOnlyUrl = location.pathname + (keepQ.toString() ? `?${keepQ}` : "");
-    const bareUrl = location.pathname;
+    bareUrl = location.pathname;
     try { history.replaceState(null, "", qOnlyUrl); } catch (_) {}
 
     // Per-tab, per-token guard. The re-fire protection used to come from
@@ -176,15 +339,52 @@
     // double-run if this script somehow evaluates twice for one navigation.
     try {
       const fired = sessionStorage.getItem("lcfcFired");
-      if (fired === token) return;
+      if (fired === token) { pageFacts.verify = "already-fired"; return; }
       sessionStorage.setItem("lcfcFired", token);
     } catch (_) { /* sessionStorage unavailable — proceed, the token check still gates us */ }
 
+    pageFacts.verify = "pending";
     chrome.runtime.sendMessage({ type: "loader-verify", token }, (res) => {
-      if (chrome.runtime.lastError) return;
-      if (!res || !res.ok) return; // not a genuine Loader navigation — do nothing
+      if (chrome.runtime.lastError) { pageFacts.verify = "error"; return; }
+      if (!res || !res.ok) { pageFacts.verify = "rejected"; return; } // not a genuine Loader navigation — do nothing
+      pageFacts.verify = "ok";
+      pageFacts.turnToken = token;
       begin();
     });
+
+    /* A page the tab reached WITHOUT the run's markers: the engine
+     * redirected, or the tab reloaded. The prompt only ever lived in the
+     * address, so it is gone — but the run still holds it, and hands the
+     * turn to this page if it is still waiting (background.js,
+     * loader-claim). (Written for grok.com's /tos-gate hop, which turned
+     * out to happen inside the same document — see submittedWhy — but a
+     * real reload or cross-page redirect loses the prompt exactly this way.)
+     *
+     * Only asked in a tab that has been a run's tab on this site (the
+     * per-tab mark below), so ordinary browsing never messages the run.
+     */
+    function claimTurn() {
+      let runTab = false;
+      try { runTab = !!sessionStorage.getItem("lcfcFired"); } catch (_) { /* unavailable */ }
+      if (!runTab || window.top !== window) return;
+      pageFacts.verify = "claim-pending";
+      try {
+        chrome.runtime.sendMessage({ type: "loader-claim" }, (res) => {
+          if (chrome.runtime.lastError || !res || !res.ok || !res.token || !res.q) {
+            pageFacts.verify = "not-claimed";
+            return;
+          }
+          q = String(res.q);
+          token = String(res.token);
+          wantSearch = !!res.search;
+          pageFacts.token = token;
+          pageFacts.verify = "claimed";
+          pageFacts.turnToken = token;
+          try { sessionStorage.setItem("lcfcFired", token); } catch (_) { /* unavailable */ }
+          begin();
+        });
+      } catch (_) { pageFacts.verify = "error"; }
+    }
 
     function begin() {
       const plat = getPlatform();
@@ -237,26 +437,53 @@
         trace.push(detail === undefined ? `${ticks}:${ev}` : `${ticks}:${ev}:${detail}`);
       };
 
+      /* Does the tab being backgrounded/foregrounded break submission? A user
+       * report ("prompts fail when I open and look at the tab") is not
+       * provable from a bare "send control never accepted the prompt" —
+       * that string alone doesn't say whether the tab was hidden, visible, or
+       * flipping between the two while the send button went missing. Record
+       * every visibilitychange during this turn, tagged with the tick it
+       * happened on, so a future failure either lines up with a flip or
+       * clearly doesn't — evidence instead of another guess. Page Visibility
+       * API state only (visible/hidden + a blurred flag); never anything
+       * about page content. */
+      document.addEventListener("visibilitychange", () => T("vis", document.visibilityState));
+
       /* The path this tab started on, for the submit detector below. */
       const startPath = location.pathname;
 
       /* Which signal proves the prompt actually went out — or null.
        *
-       * The URL check is first because it is the one signal that does not
-       * depend on markup. Both engines move the tab to a per-conversation
-       * path the moment a turn is really sent (chatgpt.com/ -> /c/<id>,
+       * The engine's own submit request (seen by content-main.js) comes
+       * first: it is proof on the wire, not a reading of the page. After
+       * it, the URL check is the one signal that does not depend on markup.
+       * Both engines move the tab to a per-conversation path the moment a
+       * turn is really sent (chatgpt.com/ -> /c/<id>,
        * gemini.google.com/app -> /app/<id>), and that behaviour is part of
        * how the products work rather than an implementation detail of their
        * DOM. The two selector-based signals below are kept as corroboration,
        * but they are exactly the kind of thing that goes stale silently —
        * which is how a turn could look "sent" while nothing had happened.
        *
-       * The length guard matters: a redirect to a SHORTER path (a sign-out
-       * bouncing the tab to a login page) must not read as success.
+       * Only a CONVERSATION path counts, and only once this script has put
+       * the prompt in. Any longer path used to: grok.com routes a fresh
+       * page to /tos-gate and back in the same document, and every Grok turn
+       * in a real v0.45.4 run read that hop as "sent" before anything was
+       * typed. A native ?q= submit (ChatGPT) is already proven by its
+       * request ("net"), so nothing is lost by waiting for our own typing.
        */
+      const CONVERSATION_PATH = {
+        chatgpt: /\/c\/[\w-]{6,}/i,
+        gemini: /^\/app\/[\w-]{6,}/i,
+        grok: /^\/c\/[\w-]{6,}/i,
+        perplexity: /^\/search\/[\w-]/i,
+      }[plat];
       const submittedWhy = () => {
+        // Each turn loads a fresh document, so any submit request seen in
+        // it — ours, or the engine's own from ?q= — is this turn's prompt.
+        if (engineSubmit.at) return "net";
         const path = location.pathname;
-        if (path !== startPath && path.length > startPath.length) return "url";
+        if (injected && path !== startPath && CONVERSATION_PATH && CONVERSATION_PATH.test(path)) return "url";
         if (pick(sel.streaming)) return "stream";
         try {
           const turns = document.querySelectorAll(sel.userTurn || "[data-message-author-role='user']");
@@ -289,7 +516,28 @@
         } catch (_) { /* best effort */ }
       };
 
+      // A programmatic .focus() alone is not what a lot of composer UIs are
+      // actually gated on — several of the send-button implementations
+      // across these four engines only render/enable it once the textarea
+      // has registered a REAL pointer interaction, not just DOM focus (this
+      // is a common pattern for a floating action button whose visibility
+      // is driven by a hover/press state, not the focus state alone). A
+      // synthetic pointerdown/mousedown/mouseup/click sequence right before
+      // focusing gets far closer to what an actual click produces than
+      // .focus() does by itself, and costs nothing when it isn't needed.
+      const clickBox = (box) => {
+        const at = { bubbles: true, cancelable: true, view: window, buttons: 1 };
+        try {
+          box.dispatchEvent(new PointerEvent("pointerdown", at));
+          box.dispatchEvent(new MouseEvent("mousedown", at));
+          box.dispatchEvent(new PointerEvent("pointerup", at));
+          box.dispatchEvent(new MouseEvent("mouseup", at));
+          box.dispatchEvent(new MouseEvent("click", at));
+        } catch (_) { /* PointerEvent unsupported in some contexts — mouse events alone still help */ }
+      };
+
       const insertText = (box, text) => {
+        clickBox(box);
         box.focus();
         let ok = false;
         try { ok = document.execCommand("insertText", false, text); } catch (_) { ok = false; }
@@ -323,6 +571,7 @@
       const giveUp = (reason) => {
         dropQ();
         T("giveup");
+        endTurnLock();
         try {
           // The trace is the point of this message now: a reason alone says
           // WHAT failed, the trace says WHERE in the sequence it stopped.
@@ -440,7 +689,30 @@
        */
       const GRACE_AFTER_COMPOSER = plat === "gemini" ? 2 : 8;  // ~0.8s / ~3.2s
       const MAX_WAIT_TICKS = 75;       // ~30s for the composer to appear
-      const MAX_SEND_TICKS = 20;       // ~8s of submit attempts once text is in
+      // Was 20 (~8s). Real failures traced to "send control never accepted
+      // the prompt" showed the button simply never found within that window
+      // on Gemini, Grok and ChatGPT alike, then giving up while the rest of
+      // a 45s+ per-turn budget sat unused. Widened rather than left as a
+      // guess: it costs nothing on a turn that WOULD have succeeded (this
+      // only extends a retry loop that is currently failing anyway), and it
+      // gives a composer that's slow to render its send control — a real
+      // possibility on a backgrounded tab a run doesn't bring to the
+      // foreground — meaningfully more chances before this turn is recorded
+      // as a failure.
+      const MAX_SEND_TICKS = 45;       // ~18s of submit attempts once text is in
+      /* Space the send attempts out, and cap them. Each click or Enter the
+       * page accepts is a SUBMISSION, and a hidden tab can take seconds to
+       * act on one — Chrome runs a background page's work slowly — while
+       * this loop ticks every 400ms off the service-worker clock. In a real
+       * run the loop clicked or pressed Enter 8-10 times before Gemini's
+       * first request left, and Gemini answered up to nine new
+       * conversations for one prompt (identical request bodies), filling the
+       * user's history with duplicates and the campaign with 30 records for
+       * 7 prompts. One attempt at a time, at least RETRY_GAP_MS apart. */
+      const RETRY_GAP_MS = 3000;
+      const MAX_SEND_ATTEMPTS = 5;
+      let lastAttemptAt = 0;
+      let attempts = 0;
       // After the prompt goes out, keep watching for a limit notice — on
       // ChatGPT the model cap typically appears INSTEAD of the answer, i.e.
       // strictly after submission. Stopping at submit (what the code did)
@@ -450,11 +722,19 @@
       const POST_SUBMIT_WATCH_TICKS = 150;  // ~60s
       const POST_SUBMIT_EVERY = 5;          // scan every ~2s, not every tick
       let ticks = 0;
+      // Real time between ticks. A hidden tab on the page clock shows ~1000ms
+      // gaps (and ~60000ms after five minutes) instead of TICK_MS — reported
+      // with every outcome, so a throttled turn says so instead of just
+      // "timeout".
+      let lastTickAt = 0;
+      let maxTickGap = 0;
       let sendTicks = 0;
       let searchDone = false;
       let injected = false;
+      let tosTicks = 0;           // ticks spent on grok.com's /tos-gate
       let submitTried = 0;
       let sentOk = false;
+      let sentWhy = "";
       let watchTicks = 0;
       let composerSeenTick = 0;   // tick the composer first existed; 0 = not yet
       let clearedTick = 0;        // tick the composer emptied after a send attempt
@@ -481,7 +761,8 @@
       };
 
       const reportLimit = (detail) => {
-        clearInterval(timer);
+        stopLoop();
+        endTurnLock(); // the run pauses this engine; the next turn reloads the tab
         dismissLimitModals();
         dropQ();
         try {
@@ -490,21 +771,28 @@
         } catch (_) { /* worker gone; the watchdog still covers us */ }
       };
 
-      const timer = setInterval(() => {
+      const loopTick = () => {
+        const tickAt = Date.now();
+        if (lastTickAt) maxTickGap = Math.max(maxTickGap, tickAt - lastTickAt);
+        lastTickAt = tickAt;
         ticks++;
 
         // Prompt already sent: nothing left to do but watch for a cap notice
         // landing in place of the answer.
         if (sentOk) {
           watchTicks++;
-          if (watchTicks > POST_SUBMIT_WATCH_TICKS) { clearInterval(timer); return; }
+          if (watchTicks > POST_SUBMIT_WATCH_TICKS) { stopLoop(); return; }
           if (watchTicks % POST_SUBMIT_EVERY !== 0) return;
           const late = limitHit();
           if (late) reportLimit(late);
           return;
         }
 
-        if (ticks === 1) T("run", plat);
+        if (ticks === 1) {
+          T("run", plat);
+          T("vis", document.visibilityState);
+          if (!document.hasFocus()) T("blurred");
+        }
 
         // An upstream limit outranks everything else: stop, and tell the run
         // to pause rather than letting this turn time out as a failure.
@@ -515,18 +803,34 @@
         // otherwise sit out the full timeout and report "composer never
         // appeared" — true, but it hides the actual cause.
         if (signedOut()) {
-          clearInterval(timer);
+          stopLoop();
           giveUp("not signed in to this engine — the tab was redirected to a login page");
+          return;
+        }
+
+        /* grok.com's terms gate. Normally it is passed through in a blink
+         * (every turn of the v0.45.4 run hopped /tos-gate → / in under half
+         * a second), but after a terms update the page STAYS there until a
+         * person accepts — grok-brain documents the screen. Accepting terms
+         * is the owner's decision, so this never clicks it: it waits ~10s
+         * for the hop, then says what to do instead of timing out. */
+        if (plat === "grok" && /tos-gate/i.test(location.pathname)) {
+          tosTicks++;
+          if (tosTicks === 1) T("tosgate");
+          if (tosTicks > 25) {
+            stopLoop();
+            giveUp("Grok is asking you to accept its updated terms — open grok.com in a normal tab, accept them, then run again");
+          }
           return;
         }
 
         // Positive proof the turn went out — native auto-submit landed, or our
         // own send did. Nothing left for this script but the limit watch.
         const why = submittedWhy();
-        if (why) { T("sent", why); sentOk = true; dropQ(); return; }
+        if (why) { T("sent", why); sentOk = true; sentWhy = why; reportSent(token); dropQ(); return; }
 
         if (ticks > MAX_WAIT_TICKS) {
-          clearInterval(timer);
+          stopLoop();
           giveUp(injected ? "prompt typed but never submitted" : "composer never appeared");
           return;
         }
@@ -581,7 +885,7 @@
            */
           if (!clearedTick) { clearedTick = ticks; T("cleared"); }
           if (ticks - clearedTick > CONFIRM_TICKS) {
-            clearInterval(timer);
+            stopLoop();
             giveUp("send emptied the composer but the prompt never reached the conversation");
           }
           return;
@@ -597,32 +901,120 @@
         // is present but inert" are different bugs with different fixes, and a
         // generic failure conflates them.
         if (sendTicks === 1) T(send ? (isUsable(send) ? "send-ready" : "send-inert") : "send-missing");
+        const mayAttempt = Date.now() - lastAttemptAt >= RETRY_GAP_MS && attempts < MAX_SEND_ATTEMPTS;
+        const attempted = () => { lastAttemptAt = Date.now(); attempts++; };
         if (isUsable(send) && submitTried === 0) {
           (send.closest ? send.closest("button") || send : send).click();
           submitTried = 1;
+          attempted();
           T("click");
           return; // verify on the next tick instead of assuming it worked
         }
         if (submitTried <= 1) {
+          if (!mayAttempt) return; // give the page time to act on the click
           pressEnter(box);
           submitTried = 2;
+          attempted();
           T("enter");
           return;
         }
 
         if (sendTicks > MAX_SEND_TICKS) {
-          clearInterval(timer);
+          stopLoop();
           giveUp("send control never accepted the prompt");
           return;
         }
-        if (sendTicks % 2 === 0) {
-          const s3 = pick(sel.send);
-          if (isUsable(s3)) { (s3.closest ? s3.closest("button") || s3 : s3).click(); T("reclick"); }
-        } else {
-          pressEnter(box);
-          T("reenter");
+        // Still no send control at all, several ticks in: periodically
+        // re-engage the composer itself, not just re-click a button that
+        // isn't there or re-press Enter. Some composer UIs only mount/enable
+        // their send control after a fresh pointer interaction — one that
+        // may have been lost if the tab was backgrounded right as this turn
+        // started (see clickBox's own note above) — so repeating that
+        // interaction mid-retry gives a stuck composer another chance to
+        // wake up instead of only ever retrying the two things that were
+        // already failing.
+        if (!send && sendTicks % 5 === 0) { clickBox(box); T("recomposer"); return; }
+        if (!mayAttempt) return;
+        const s3 = pick(sel.send);
+        if (attempts % 2 === 0 && isUsable(s3)) { (s3.closest ? s3.closest("button") || s3 : s3).click(); attempted(); T("reclick"); }
+        else { pressEnter(box); attempted(); T("reenter"); }
+      };
+      /* Freezing is the throttle's harsher sibling: a frozen page runs
+       * nothing at all — not the messages the worker clock sends, not the
+       * answer stream, not the probe. Holding a Web Lock is one of the
+       * reasons Chromium's freezing policy will not freeze a page
+       * (CannotFreezeReason::kHoldingWebLock), so one is held for this turn.
+       *
+       * For the WHOLE turn, not just until the send. In a real v0.45.3 run
+       * every turn still waiting at about a minute was frozen: Chromium
+       * calls a page that never goes quiet "loaded" at most a minute after
+       * it stops loading (kWaitingForIdleTimeout), and a hidden tab with no
+       * exemption is freezable from then on. The lock used to be released
+       * when the post-send watch ended — a minute after the send — so a slow
+       * answer lost its exemption exactly when it needed it. It is now let
+       * go when the turn gives up, when the page goes away (the next turn
+       * navigates the tab), or after TURN_LOCK_MAX_MS, which outlasts the
+       * longest turn the run allows (150s budget + two 60s extensions).
+       * Scoped by token, so it can never collide with the site's own locks.
+       */
+      const TURN_LOCK_MAX_MS = 5 * 60 * 1000;
+      let releaseTurnLock = null;
+      let turnLockDone = false;
+      const endTurnLock = () => {
+        turnLockDone = true;
+        if (releaseTurnLock) { releaseTurnLock(); releaseTurnLock = null; }
+      };
+      try {
+        if (navigator.locks && navigator.locks.request) {
+          navigator.locks.request(`citoskeleton-turn-${token}`, () => new Promise((resolve) => {
+            releaseTurnLock = resolve;
+            if (turnLockDone) endTurnLock(); // the turn ended before the lock was granted
+          })).catch(() => {});
+          setTimeout(endTurnLock, TURN_LOCK_MAX_MS);
         }
-      }, TICK_MS);
+      } catch (_) {}
+      const stopClock = startClock(TICK_MS);
+      const unsubscribeLoop = onClockTick(loopTick);
+      const stopLoop = () => {
+        unsubscribeLoop();
+        stopClock();
+      };
+
+      /* Answers the run's "where did this turn get to?" when its watchdog
+       * fires. Every timeout in real runs used to arrive with nothing
+       * attached — a turn that never submitted and one whose answer simply
+       * wasn't captured were indistinguishable, and 57 of 57 failures in one
+       * pair of runs said only "timeout". Stage, timing and event codes only:
+       * no prompt or answer text crosses this. Scoped to this turn's token so
+       * a stale page can't answer for a newer turn.
+       */
+      chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
+        if (!msg || msg.type !== "loader-probe" || msg.token !== token) return;
+        // Always answer: an exception here used to mean no reply at all,
+        // which the run reads as "page script not responding".
+        try {
+          let streaming = false;
+          try { streaming = !!pick(sel.streaming); } catch (_) {}
+          let isSignedOut = false;
+          try { isSignedOut = signedOut(); } catch (_) {}
+          reply({
+            ok: true,
+            stage: sentOk ? "sent" : submitTried ? "send-attempted" : injected ? "typed"
+              : composerSeenTick ? "composer-found" : "no-composer",
+            sentWhy,
+            ticks,
+            maxTickGap,
+            clock: clockState.source,
+            visibility: document.visibilityState,
+            focused: document.hasFocus(),
+            streaming,
+            signedOut: isSignedOut,
+            trace: trace.join(" "),
+          });
+        } catch (e) {
+          reply({ ok: true, stage: "probe-error", error: String((e && e.message) || e).slice(0, 80), trace: trace.join(" ") });
+        }
+      });
     }
   })();
 
@@ -931,7 +1323,7 @@
         // nothing between them. Rejecting the whole row (what the bare-clock
         // check below does) would have thrown away a perfectly good query;
         // stripped instead, salvaging the real text before it.
-        let t = item.text.replace(/(\d{1,2}:\d{2}(\s*[·•]\s*\d+\s*s)?)$/i, "").trim();
+        let t = item.text.replace(/(\d{1,2}:\d{2}(?:\s*[ap]\.?\s?m\.?)?(\s*[·•]\s*\d+\s*s)?)$/i, "").trim();
         // Same capture: the fan-out list also picked up the answer's own
         // heading ("Top camera phones under ₹80,000...") and several table
         // cells verbatim (a product name, a price, a spec list) — content
@@ -950,7 +1342,7 @@
         if (t.length < 3 || t.length > 160) continue;      // prose or a bare glyph
         if (/^\+\d+\s*more$/i.test(t)) continue;
         if (/^(finished|sources?|steps?|searched)$/i.test(t)) continue;
-        if (/^\d{1,2}:\d{2}(\s*[·•]\s*\d+\s*s)?$/i.test(t)) continue;
+        if (/^\d{1,2}:\d{2}(?:\s*[ap]\.?\s?m\.?)?(\s*[·•]\s*\d+\s*s)?$/i.test(t)) continue;
         // Reported (a follow-up capture, "best camera phone under 30000"):
         // the fan-out list also picked up "gadgets360+1" as its own entry —
         // the citation-chip UI element under the answer (favicon stack +
@@ -992,6 +1384,24 @@
   (function initDomHarvester() {
     let lastHarvestedSig = "";
     let harvestTimer = null;
+    // A due time as well as a page timer. In a campaign tab the page timer is
+    // throttled (see startClock) and a harvest waiting on it can land up to a
+    // minute late — after the turn's watchdog has already given up — so the
+    // run's own clock also checks the due time on every tick. Whichever gets
+    // there first runs it, once.
+    let harvestDueAt = 0;
+    const runDueHarvest = () => {
+      if (!harvestDueAt) return;
+      harvestDueAt = 0;
+      if (harvestTimer) { clearTimeout(harvestTimer); harvestTimer = null; }
+      tryHarvest();
+    };
+    const scheduleHarvest = (ms) => {
+      if (harvestTimer) clearTimeout(harvestTimer);
+      harvestDueAt = Date.now() + ms;
+      harvestTimer = setTimeout(runDueHarvest, ms);
+    };
+    onClockTick(() => { if (harvestDueAt && Date.now() >= harvestDueAt) runDueHarvest(); });
     // Capped retry budget for expanding Perplexity's collapsible "Sources"
     // panel (see the perplexity branch below) — reset once a harvest
     // actually succeeds, so every new answer gets a fresh budget, but a
@@ -1097,7 +1507,10 @@
         // clock time must never be the "last resort, better than nothing"
         // answer either, unlike an answer heading (below), which is at least
         // real text the model wrote.
-        const looksLikeClock = (s) => /^\d{1,2}:\d{2}(\s*[·•]\s*\d+\s*s)?$/i.test(String(s || "").trim());
+        // 12-hour form too: a real campaign capture on a Windows machine with
+        // an en-IN locale recorded its question as "2:16 PM", which the
+        // original 24-hour-only pattern ("21:51") let straight through.
+        const looksLikeClock = (s) => /^\d{1,2}:\d{2}(?:\s*[ap]\.?\s?m\.?)?(\s*[·•]\s*\d+\s*s)?$/i.test(String(s || "").trim());
         if (looksLikeClock(promptText)) promptText = "";
 
         // Prompt fallbacks, in order of how much they can be trusted. This
@@ -1170,7 +1583,7 @@
             // lastHarvestedSig for this answer yet, so it won't be blocked
             // by the dedup guard below the way a MutationObserver-triggered
             // re-run of THIS same signature would be.
-            setTimeout(tryHarvest, 400);
+            scheduleHarvest(400);
             return;
           }
         } catch (_) {}
@@ -1346,12 +1759,18 @@
       } else if (plat === "grok") {
         // LAST turn, not first — same follow-up bug as the Perplexity branch
         // above. Reported on Grok too.
-        const userEls = document.querySelectorAll('.user-message, [data-message-author="user"]');
+        // Today's grok.com (grok-brain's site map, 2026-09): the user's turn
+        // is [data-testid="user-message"], and .message-bubble holds BOTH
+        // sides — an answer is a bubble outside any user message. The older
+        // class names stay as a fallback.
+        const userEls = document.querySelectorAll('[data-testid="user-message"], .user-message, [data-message-author="user"]');
         if (userEls.length) promptText = (userEls[userEls.length - 1].textContent || "").trim();
 
-        const msgEls = document.querySelectorAll('.message-row, [data-message-author="assistant"]');
+        let msgEls = Array.from(document.querySelectorAll(".message-bubble")).filter((el) =>
+          !(el.closest && el.closest('[data-testid="user-message"]')) && !(el.querySelector && el.querySelector('[data-testid="user-message"]')));
+        if (!msgEls.length) msgEls = Array.from(document.querySelectorAll('.message-row, [data-message-author="assistant"]'));
         if (msgEls.length) {
-          const els = Array.from(msgEls);
+          const els = msgEls;
           const perTurn = userEls.length > 0 && els.length === userEls.length;
           const chosen = perTurn ? [els[els.length - 1]] : els;
           // Markdown, not innerText — see domToMarkdown's header. The structural
@@ -1416,8 +1835,7 @@
     };
 
     const observer = new MutationObserver(() => {
-      if (harvestTimer) clearTimeout(harvestTimer);
-      harvestTimer = setTimeout(tryHarvest, 1200);
+      scheduleHarvest(1200);
     });
 
     try {

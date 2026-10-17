@@ -19,10 +19,17 @@ import {
   parseCooldownFromNotice, formatCooldown,
 } from "./lib/pacing.js";
 import { createErrorLog } from "./lib/errorlog.js";
+import { BUILD } from "./lib/build.js";
 import { checkEnginesAuth, AUTH_COOKIES } from "./lib/auth-check.js";
 import { buildDemoRecords, isDemoRecord } from "./lib/demo-data.js";
-import { buildCampaignWorkbook } from "./lib/campaignWorkbook.js";
+import { buildCampaignXlsx, campaignCsvFiles, campaignExportCounts } from "./lib/campaignXlsx.js";
+import { campaignReport } from "./lib/campaignReport.js";
+import { findPrevious } from "./lib/analyzeView.js";
+import { summarizeRunDiagnostics } from "./lib/diagnosticsSummary.js";
 import { gzipString, gunzipToString } from "./lib/gzip.js";
+import { searchAnswers } from "./lib/answerSearch.js";
+import { answerKey, sameAnswer, mergeAnswers, SAME_ANSWER_WINDOW_MS } from "./lib/sameAnswer.js";
+import { campaignBoard, brandDetail } from "./lib/campaignBoard.js";
 import { adapt as adaptChatGpt, cleanPassage } from "./adapters/chatgpt.js";
 import { enrichBrandsWithAI, enrichBrandStance } from "./lib/ai-brands.js";
 import { adapt as adaptGemini } from "./adapters/gemini.js";
@@ -141,6 +148,39 @@ function platformFromUrl(url) {
 }
 
 /* ---------- Capture ---------- */
+const unreadableKindsLogged = new Set();
+
+// The path of a captured request with ids folded to ":id" — which endpoint a
+// payload came from, without the conversation it belongs to. Pages often
+// request a relative path, so it's resolved against the page it came from.
+function endpointShape(url, pageUrl) {
+  try {
+    return new URL(url, pageUrl || "https://page.invalid/").pathname
+      .replace(/[0-9a-f][0-9a-f-]{15,}/gi, ":id").slice(0, 80);
+  } catch (_) { return null; }
+}
+
+// What a payload is made of, never what it says: the gateway event types it
+// carries, or the top-level keys of its JSON frames. Compact (no spaces) so
+// the log's context filter keeps it.
+function payloadShape(rawText) {
+  const types = new Set();
+  const keys = new Set();
+  const lines = String(rawText || "").split(/\r?\n/).slice(0, 400);
+  for (const line of lines) {
+    let t = line.trim();
+    if (t.startsWith("data:")) t = t.slice(5).trim();
+    if (!t.startsWith("{")) continue;
+    try {
+      const o = JSON.parse(t);
+      if (o && o.event && typeof o.event.type === "string") types.add(o.event.type);
+      else if (o && typeof o === "object") Object.keys(o).slice(0, 6).forEach((k) => keys.add(k));
+    } catch (_) { /* not one JSON object per line */ }
+  }
+  const out = types.size ? `types=${[...types].join(",")}` : keys.size ? `keys=${[...keys].join(",")}` : "unparsed";
+  return out.replace(/\s+/g, "").slice(0, 120);
+}
+
 async function storeCapture(payload, meta) {
   const platform = platformFromUrl(payload.pageUrl || payload.url);
   const settings = await getSettings();
@@ -192,9 +232,79 @@ async function storeCapture(payload, meta) {
   };
   await db.put("raw", rawRow);
 
-  const record = await deriveAndStore(rawRow, rawText, settings);
+  // Not yet merged with other copies of this answer: a campaign capture is
+  // judged and attributed on its own first (rejectCapture, attributeGeo),
+  // then settled.
+  let record = await deriveAndStore(rawRow, rawText, settings, { settle: false });
+
+  // A campaign capture the adapter could read nothing from is dropped by
+  // deriveAndStore as 0-signal — and until now that was silent. It is how
+  // every Grok answer vanished once grok.com moved chat onto a WebSocket
+  // gateway this adapter didn't know: captured, dropped, never logged, and
+  // the turn reported only as a timeout. The entry names the payload's shape
+  // (event types or top-level keys, never values) and keeps its id, so the
+  // diagnostics export can include the payload itself.
+  if (!record && meta && meta.runId) {
+    const endpoint = endpointShape(payload.url, payload.pageUrl);
+    const shape = payloadShape(rawText);
+    // Once per kind per run: a real run logged ~80 identical Perplexity
+    // entries, which pushed everything else out of the 200-entry capture log.
+    const kind = `${meta.runId}|${platform}|${endpoint}|${shape}`;
+    if (!unreadableKindsLogged.has(kind)) {
+      unreadableKindsLogged.add(kind);
+      if (unreadableKindsLogged.size > 500) unreadableKindsLogged.clear();
+      logEvent(`capture:unreadable:${platform}`, "capture", "the adapter found no prompt, answer or sources in this payload", {
+        platform,
+        runId: meta.runId,
+        captureId,
+        transport: payload.transport || null,
+        bytes: rawText.length,
+        endpoint,
+        shape,
+      });
+    }
+    if (typeof meta.onUnreadable === "function") meta.onUnreadable(shape);
+  }
+
+  // Some campaign captures can only be judged once the adapter has read them
+  // (see isUnusableCampaignPreview). A rejected one is removed outright and
+  // the reason logged, so the diagnostics export shows what was dropped and
+  // why rather than it silently never having existed.
+  if (record && meta && typeof meta.rejectCapture === "function") {
+    const reason = meta.rejectCapture(record);
+    if (reason) {
+      await db.delete("derived", captureId);
+      await db.delete("raw", captureId);
+      logEvent(`capture:discarded:${record.platform}`, "capture", reason, {
+        platform: record.platform, runId: (meta && meta.runId) || null,
+      });
+      return null;
+    }
+  }
+
+  // Which prompt a campaign capture answers can only be read off the capture
+  // itself, and its question text doesn't exist until the adapter has run —
+  // so meta.geo arrives as a guess from the tab's position and is corrected
+  // here. The raw row is rewritten too: reprocessing rebuilds geo from it,
+  // and would otherwise quietly restore the wrong prompt. Done on this
+  // capture alone, before it merges with other copies of its answer, so
+  // every raw copy carries its own corrected prompt.
+  if (record && record.geo && meta && typeof meta.attributeGeo === "function") {
+    const fixed = meta.attributeGeo(record);
+    if (fixed && fixed.promptId !== record.geo.promptId) {
+      record.geo = { ...record.geo, promptId: fixed.promptId, tags: fixed.tags };
+      rawRow.geo = record.geo;
+      await db.put("raw", rawRow);
+      await db.put("derived", record);
+    }
+  }
+
+  if (record) record = await settleSameAnswer(record);
+
   await enforceRetention(settings);
-  return { captureId, record };
+  // A copy of an answer already stored is merged into that record, which
+  // keeps its id; that is the capture the panel should show.
+  return { captureId: record ? record.captureId : captureId, record };
 }
 
 // Build a derived record from a raw row. `rawText` optional (avoids re-gunzip).
@@ -250,7 +360,7 @@ async function enrichCaptureWithAI(record) {
   }
 }
 
-async function deriveAndStore(rawRow, rawText, settings) {
+async function deriveAndStore(rawRow, rawText, settings, { settle = true } = {}) {
   const raw = rawText ?? (await gunzipToString(rawRow.gz));
   const cfg = settings || (await getSettings());
   const adapter = ADAPTERS[rawRow.platform] || ADAPTERS.chatgpt;
@@ -274,7 +384,31 @@ async function deriveAndStore(rawRow, rawText, settings) {
   }
 
   await db.put("derived", record);
-  return record;
+  return settle ? settleSameAnswer(record) : record;
+}
+
+/* One answer, one record (lib/sameAnswer.js). Another copy of this answer
+ * captured within a few minutes (same reply id, or same conversation,
+ * question and opening words) is merged with this one into a single record
+ * under the earliest copy's id; the copies it absorbed are dropped from
+ * "derived". Every raw copy stays, so a reprocess rebuilds the same merge,
+ * and deleting or pruning the record removes them with it (dropCapture). */
+async function settleSameAnswer(record) {
+  if (!answerKey(record) || !record.capturedAt) return record;
+  const near = await db.getByTimeRange("derived", record.capturedAt - SAME_ANSWER_WINDOW_MS, record.capturedAt + SAME_ANSWER_WINDOW_MS);
+  const same = near.filter((r) => r.captureId !== record.captureId && sameAnswer(r, record));
+  if (!same.length) return record;
+  const merged = mergeAnswers([...same, record]);
+  for (const r of [...same, record]) if (r.captureId !== merged.captureId) await db.delete("derived", r.captureId);
+  await db.put("derived", merged);
+  return merged;
+}
+
+// A record and every raw copy it holds (see settleSameAnswer).
+async function dropCapture(captureId) {
+  const rec = await db.get("derived", captureId);
+  for (const id of [captureId, ...((rec && rec.mergedFrom) || [])]) await db.delete("raw", id);
+  await db.delete("derived", captureId);
 }
 
 // Keep the store bounded: prune the oldest AD-HOC captures beyond the
@@ -288,17 +422,18 @@ async function enforceRetention(settings) {
   const count = await db.count("derived");
   if (count <= limit) return;
   const keys = await db.getOldestPrunableKeys("derived", count - limit, isPrunableCapture);
-  for (const id of keys) {
-    await db.delete("raw", id);
-    await db.delete("derived", id);
-  }
+  for (const id of keys) await dropCapture(id);
 }
 
 // Re-derive every stored capture. Uses a cursor + chunking so a large store
 // doesn't pull every gzipped blob into memory at once (SW OOM risk).
 async function reprocessAll() {
   const settings = await getSettings();
-  const ids = await db.getAllKeys("raw");
+  // Oldest first, so copies of one answer merge in the order they arrived
+  // (a row without a capture time isn't in that index; it goes last).
+  const timed = await db.getAllKeysSortedByTime("raw", Number.MAX_SAFE_INTEGER);
+  const seen = new Set(timed);
+  const ids = [...timed, ...(await db.getAllKeys("raw")).filter((k) => !seen.has(k))];
   let ok = 0;
   for (const id of ids) {
     try {
@@ -367,6 +502,12 @@ const MIN_ADVANCE_GAP_MS = 2500; // ignore a second "done" arriving right after 
  * logging. */
 const errorLog = createErrorLog(db);
 const logErr = (where, err, ctx, trace) => { try { errorLog.record(where, err, ctx, trace); } catch (_) {} };
+// The "capture" (network-trace breadcrumbs, replacing the old in-memory
+// DEBUG ring buffer) and "turn" (per-prompt outcome history, previously
+// only visible in the live progress view) categories of the same durable
+// log — see lib/errorlog.js's header for why these were folded in here
+// instead of staying three disconnected mechanisms.
+const logEvent = (where, cat, message, ctx) => { try { errorLog.recordEvent(where, cat, message, ctx); } catch (_) {} };
 
 const LOADER_STATE_KEY = "lcfcLoaderState";
 const HEARTBEAT_ALARM = "lcfcHeartbeat";
@@ -430,6 +571,10 @@ async function persistLoaderState() {
       errors: loader.errors,
       total: loader.total,
       runId: loader.runId,
+      // What "during this run" means when judging whether a Perplexity
+      // thread-list preview is this run's answer or an older run's — see
+      // isUnusableCampaignPreview. Has to survive a restart like the rest.
+      startedAt: loader.startedAt || null,
       // Stamped fresh on every write so a resume always compares against the
       // CURRENT session's nonce, not a stale one cached from before this
       // worker instance's own restart.
@@ -448,6 +593,10 @@ async function persistLoaderState() {
               startedAt: leg.startedAt || 0,
               token: leg.token || null,
               expectedPrompt: leg.expectedPrompt || null,
+              inFlightIdx: Number.isInteger(leg.inFlightIdx) ? leg.inFlightIdx : -1,
+              // The turn whose prompt has gone out — see loader-claim. Kept
+              // across a restart so a resumed turn can't be handed out twice.
+              sentToken: leg.sentToken || null,
               durations: leg.durations || [],
               outcomes: leg.outcomes || [],
               // Set only on a rate-limit hit — see loader-rate-limited — so
@@ -470,7 +619,7 @@ async function persistLoaderState() {
     // Still best-effort — a persistence failure must not break a run in
     // flight — but no longer silent: this is exactly the failure that makes a
     // run unresumable later, and it used to leave no trace at all.
-    logErr("persistLoaderState", err, { running: loader.running, total: loader.total });
+    logErr("persistLoaderState", err, { running: loader.running, total: loader.total, runId: loader.runId });
   }
 }
 /* Moving to storage.local bought resumability across a browser restart, but
@@ -584,13 +733,160 @@ async function heartbeatTick() {
 // after-restart path (resumeFromSnapshot) can never drift apart. Takes the
 // LEG directly (not looked up by plat) because a platform can now have more
 // than one concurrent leg.
+// A turn whose answer is still streaming when its watchdog fires gets this
+// much more time, at most this many times — see armWatchdog.
+const STREAM_EXTENSION_MS = 60 * 1000;
+const MAX_STREAM_EXTENSIONS = 2;
 function armWatchdog(plat, leg, ms) {
   if (!leg) return;
-  leg.watchdog = setTimeout(() => {
+  leg.watchdog = setTimeout(async () => {
     if (!loader.running || loader.paused || leg.paused) return;
     if (leg.idx >= leg.prompts.length) return;
-    failTurnAndAdvance(plat, leg, "timeout");
+    // Ask the tab where the turn got to before calling it — see
+    // probeLoaderTab. The turn may complete while the probe is in flight
+    // (an answer landing in the last second), so it's re-checked after.
+    const idxAtFire = leg.idx;
+    const tokenAtFire = leg.token;
+    const probe = await probeLoaderTab(leg);
+    if (!loader.running || loader.paused || leg.paused) return;
+    if (leg.idx !== idxAtFire || leg.token !== tokenAtFire) return;
+    // Still streaming its answer: not a failure yet. Two real ChatGPT turns
+    // were failed at 90s with the stop button still showing — a long answer,
+    // not a lost one. The extensions are capped so a stuck indicator can't
+    // hold a turn forever.
+    if (probe && probe.ok && probe.stage === "sent" && probe.streaming && (leg.streamExtensions || 0) < MAX_STREAM_EXTENSIONS) {
+      leg.streamExtensions = (leg.streamExtensions || 0) + 1;
+      armWatchdog(plat, leg, STREAM_EXTENSION_MS);
+      return;
+    }
+    const unreadable = leg.unreadable && leg.unreadable.token === leg.token ? leg.unreadable : null;
+    const tab = probe && probe.ok ? null : await tabFacts(leg.tabId);
+    const nav = leg.navLogToken === leg.token ? leg.navLog || [] : [];
+    const { reason, trace, ctx } = describeTimeout(probe, unreadable, tab, nav);
+    if (leg.streamExtensions) {
+      ctx.streamExtensions = leg.streamExtensions;
+    }
+    failTurnAndAdvance(plat, leg, reason, 0, trace, ctx);
   }, ms);
+}
+
+/* What a timed-out tab says about itself.
+ *
+ * A watchdog timeout used to be recorded as the bare word "timeout", which
+ * covers opposite failures: a prompt that never went out, and one that went
+ * out and was answered but whose answer the extension never caught. Across
+ * two real runs 57 of 57 failures were bare timeouts, so nothing in the
+ * export could say which. The content script answers with its stage, how it
+ * confirmed a send, its tick timing and its clock (a hidden tab on the page
+ * clock shows ~1000ms or ~60000ms gaps instead of 400ms), whether it's
+ * visible, and its event trace. No answer at all within a moment is itself
+ * informative: the script never started in that tab, or the tab is frozen.
+ */
+// 4s, not less: a hidden engine tab under load can take a moment to get to
+// the message, and "no answer" must mean the page is gone or hung, not busy.
+const PROBE_WAIT_MS = 4000;
+function probeLoaderTab(leg) {
+  const sentAt = Date.now();
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (r) => { if (!settled) { settled = true; resolve({ ...r, probeMs: Date.now() - sentAt }); } };
+    setTimeout(() => done({ ok: false, error: "no answer" }), PROBE_WAIT_MS);
+    try {
+      chrome.tabs.sendMessage(leg.tabId, { type: "loader-probe", token: leg.token }, { frameId: 0 }, (res) => {
+        if (chrome.runtime.lastError) done({ ok: false, error: "unreachable" });
+        else done(res && res.ok ? res : { ok: false, error: "no answer" });
+      });
+    } catch (_) {
+      done({ ok: false, error: "unreachable" });
+    }
+  });
+}
+
+// `unreadable` — this turn's tab delivered an answer payload the adapter
+// could read nothing from (storeCapture). That outranks what the probe says:
+// the prompt went out and an answer came back; the reader is what failed.
+// It is exactly how every Grok turn failed once grok.com changed transport,
+// while the log said only "timeout".
+function describeTimeout(probe, unreadable = null, tab = null, nav = []) {
+  const unreadableCtx = unreadable ? { unreadableShape: unreadable.shape } : {};
+  const unreadableReason = "timeout: engine replied, but the reply couldn't be read";
+  const navTrace = nav.length ? ` | tab: ${nav.join(" ")}` : "";
+  if (!probe || !probe.ok) {
+    const t = tab || {};
+    const reason = unreadable ? unreadableReason
+      : t.frozen ? "timeout: Chrome froze the tab"
+      : t.discarded ? "timeout: Chrome discarded the tab"
+      : t.challenge ? "timeout: blocked by a verification page"
+      : t.status === "loading" ? "timeout: page never finished loading"
+      : t.status === "gone" ? "timeout: the tab was closed"
+      : "timeout: page script not responding";
+    return {
+      reason,
+      trace: `probe:${(probe && probe.error) || "none"}${probe && probe.probeMs != null ? ` after ${probe.probeMs}ms` : ""}`
+        + ` tab=${t.status || "?"}${t.frozen ? " frozen" : ""}${t.discarded ? " discarded" : ""}${t.challenge ? " challenge" : ""} at=${t.where || "?"}`
+        + `${unreadable ? ` unreadable=${unreadable.shape}` : ""}${navTrace}`,
+      ctx: {
+        stage: (probe && probe.error) || "none",
+        probeMs: probe && probe.probeMs,
+        tabStatus: t.status,
+        frozen: !!t.frozen,
+        discarded: !!t.discarded,
+        where: t.where,
+        ...unreadableCtx,
+      },
+    };
+  }
+  // No turn is running in the page that answered (see pageFacts in
+  // content-iso.js): the document the prompt was sent to is gone.
+  if (probe.stage === "no-turn" && !unreadable) {
+    const reason = probe.challenge ? "timeout: blocked by a verification page"
+      : !probe.hadMarkers ? (probe.navType === "reload" ? "timeout: page reloaded and lost the prompt" : "timeout: page navigated away from the prompt")
+      : probe.verify === "rejected" ? "timeout: run did not recognise this tab"
+      : probe.verify === "already-fired" ? "timeout: prompt already used in this tab"
+      : "timeout: page never confirmed the prompt with the run";
+    return {
+      reason,
+      trace: `probe stage=no-turn nav=${probe.navType} markers=${probe.hadMarkers ? "yes" : "no"} verify=${probe.verify}`
+        + ` path=${probe.path} age=${probe.docAgeMs}ms ready=${probe.readyState}${probe.challenge ? " challenge" : ""} vis=${probe.visibility}${navTrace}`,
+      ctx: {
+        stage: "no-turn",
+        navType: probe.navType,
+        hadMarkers: !!probe.hadMarkers,
+        verify: probe.verify,
+        path: probe.path,
+        docAgeMs: probe.docAgeMs,
+        challenge: !!probe.challenge,
+        visibility: probe.visibility,
+      },
+    };
+  }
+  if (probe.stage === "probe-error") {
+    return {
+      reason: unreadable ? unreadableReason : "timeout: page script failed while reporting",
+      trace: `probe stage=probe-error ${probe.error || ""} | ${probe.trace || ""}`,
+      ctx: { stage: "probe-error", ...unreadableCtx },
+    };
+  }
+  const reason = probe.signedOut ? "timeout: signed out"
+    : unreadable ? unreadableReason
+    : probe.stage === "sent" ? "timeout: sent, no answer captured"
+    : "timeout: prompt never went out";
+  const head = `probe stage=${probe.stage}${probe.sentWhy ? ` via=${probe.sentWhy}` : ""} ticks=${probe.ticks}`
+    + ` maxgap=${probe.maxTickGap}ms clock=${probe.clock} vis=${probe.visibility}`
+    + `${probe.streaming ? " streaming" : ""}${unreadable ? ` unreadable=${unreadable.shape}` : ""}`;
+  return {
+    reason,
+    trace: `${head} | ${probe.trace || ""}${navTrace}`,
+    ctx: {
+      stage: probe.stage,
+      ticks: probe.ticks,
+      maxTickGapMs: probe.maxTickGap,
+      clock: probe.clock,
+      visibility: probe.visibility,
+      streaming: !!probe.streaming,
+      ...unreadableCtx,
+    },
+  };
 }
 
 // The one place a turn is counted as failed and the run moves on — shared by
@@ -601,15 +897,22 @@ function armWatchdog(plat, leg, ms) {
 // behaviour); the tab-closed path passes a short delay to avoid hammering
 // chrome.tabs.update in a tight loop if every remaining prompt in the list
 // would also fail against the same closed tab.
-function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "") {
+function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "", extraCtx = null) {
   if (!leg) return;
   loader.errors++;
   leg.failed = (leg.failed || 0) + 1;
   leg.outcomes = leg.outcomes || [];
   leg.outcomes[leg.idx] = { status: "failed", reason, at: Date.now() };
+  leg.inFlightIdx = -1;
   leg.idx++;
   leg.lastAdvanceAt = Date.now();
   leg.lastFailReason = reason;
+  const reloadRetriesAtFailure = leg.reloadRetries || 0;
+  // This leg is genuinely moving to a new prompt now — the reload-retry
+  // budget (chrome.tabs.onUpdated listener below) is per-prompt, not
+  // per-leg, so it resets here rather than carrying over to whatever comes
+  // next.
+  leg.reloadRetries = 0;
   /* A failed prompt is the breakage the user actually cares about — "prompts
    * missing from the results" is how it gets reported. The reason already
    * lands in the run's own histogram, but that is per-campaign and gets
@@ -622,17 +925,30 @@ function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "") {
    * it across tabs) is enough to find it, and the log is deliberately free
    * of user content (see lib/errorlog.js).
    */
+  const promptIndex = (leg.startOffset || 0) + leg.idx - 1;
+  const elapsedMs = leg.startedAt ? Date.now() - leg.startedAt : 0;
   logErr(`run:turn-failed:${plat}`, reason, {
     platform: plat,
-    promptIndex: (leg.startOffset || 0) + leg.idx - 1,
+    promptIndex,
     totalPrompts: platformTotal(plat),
     failedSoFar: leg.failed,
     // Whether the content script ever reported anything for this turn. A
     // timeout with reported=false means the page-side script went quiet,
     // which is a different bug from one that tried and failed.
     reported: !!trace,
-    elapsedMs: leg.startedAt ? Date.now() - leg.startedAt : 0,
+    elapsedMs,
+    runId: loader.runId,
+    ...(extraCtx || {}),
   }, trace);
+  // A durable per-turn outcome, alongside the error entry above — this is
+  // what lets a campaign export show a full turn-by-turn timeline (status,
+  // timing, retries) after the run view is long closed, not just the
+  // aggregated "N failed" count the live progress view already had.
+  logEvent(`run:turn:${plat}`, "turn", reason, {
+    platform: plat, promptIndex, status: "failed", elapsedMs,
+    retries: reloadRetriesAtFailure, runId: loader.runId,
+    ...(extraCtx || {}),
+  });
   persistLoaderState();
   syncGeoRun(undefined, reason);
   if (retryDelayMs > 0) setTimeout(() => loaderRunLeg(plat, leg), retryDelayMs);
@@ -748,7 +1064,7 @@ async function resumeFromSnapshot(snap) {
       // Under-reconciled is recoverable (worst case one duplicate capture,
       // or a prompt that did complete showing as still pending); stuck
       // invisibly forever is not.
-      logErr("resumeFromSnapshot:getAll", err);
+      logErr("resumeFromSnapshot:getAll", err, { runId: snap.runId });
       all = [];
     }
   }
@@ -764,6 +1080,7 @@ async function resumeFromSnapshot(snap) {
     errors: snap.errors || 0,
     total: snap.total || 0,
     runId: snap.runId,
+    startedAt: snap.startedAt || null,
     platforms: {},
   };
 
@@ -795,6 +1112,11 @@ async function resumeFromSnapshot(snap) {
         startedAt: sl.startedAt || Date.now(),
         token: sl.token || null,
         expectedPrompt: sl.expectedPrompt || null,
+        // The prompt that was in flight is still in flight only if the
+        // restored position is still on it. A snapshot from before this field
+        // existed keeps the old behaviour: a token meant a turn was running.
+        inFlightIdx: idx === (sl.idx || 0) && (Number.isInteger(sl.inFlightIdx) ? sl.inFlightIdx === sl.idx : !!sl.token) ? idx : -1,
+        sentToken: sl.sentToken || null,
         durations: sl.durations || [],
         outcomes,
         watchdog: null,
@@ -865,6 +1187,7 @@ async function resumeFromSnapshot(snap) {
     loader.running = false;
     syncGeoRun("done");
     notifyRunComplete();
+    closeRunTabs();
   }
   await persistLoaderState();
 }
@@ -983,6 +1306,33 @@ async function notifyRunComplete() {
   }
 }
 
+// Every engine tab this run opened, closed once every prompt across every
+// platform has actually finished — never on an explicit user-initiated stop
+// (see notifyRunComplete above), since the user stopping a run is usually
+// them wanting to go look at one of those tabs, not have it vanish under
+// them. Unlike a bare chrome.tabs.remove, this reuses checkTabOwnership —
+// the same "is this still our tab, on the expected engine, not navigated
+// away" check the run's own navigation path is gated on — so a tab the user
+// has reclaimed mid-run for their own browsing gets left alone instead of
+// silently destroyed out from under them; only a tab still genuinely idle on
+// the engine (or never navigated past about:blank) is closed. Best-effort
+// per tab either way: a tab already closed by the user just rejects.
+async function closeRunTabs() {
+  const closes = [];
+  for (const [plat, pd] of Object.entries(loader.platforms || {})) {
+    for (const leg of pd.legs) {
+      if (leg.tabId == null) continue;
+      closes.push(
+        checkTabOwnership(plat, leg).then((ownership) => {
+          if (!ownership.ok) return;
+          return chrome.tabs.remove(leg.tabId).catch(() => {});
+        })
+      );
+    }
+  }
+  await Promise.all(closes);
+}
+
 // Average completed-turn duration and remaining-time estimate for one
 // platform, from its rolling window of real durations (populated in
 // loaderOnCapture). null until at least one turn has completed — an ETA
@@ -994,13 +1344,6 @@ function turnEta(p) {
   // on the one number whose job is telling the user when to come back.
   const e = legEta(p);
   return e ? { avgMs: e.avgTurnMs, remainingMs: e.remainingMs } : null;
-}
-
-// Diagnostic ring buffer (in-memory) for the Debug view.
-const DEBUG = [];
-function pushDebug(event) {
-  DEBUG.push(event);
-  if (DEBUG.length > 200) DEBUG.shift();
 }
 
 function loaderStatus() {
@@ -1157,6 +1500,7 @@ async function loaderRunLeg(plat, leg) {
       loader.running = false;
       syncGeoRun("done");
       notifyRunComplete();
+      closeRunTabs();
     }
     await persistLoaderState();
     return;
@@ -1186,11 +1530,19 @@ async function loaderRunLeg(plat, leg) {
   leg.token = crypto.randomUUID();
   leg.expectedPrompt = prompt;
   leg.startedAt = Date.now();
+  // The one prompt this leg can currently complete — see loaderOnCapture.
+  leg.inFlightIdx = leg.idx;
+  leg.streamExtensions = 0;
   await persistLoaderState();
 
   const search = plat === "chatgpt" && loader.options.forceSearch ? "&lcfcsearch=1" : "";
   const url = `${engineBaseUrl(plat)}?q=${q}&lcfc=1&lcfctok=${leg.token}${search}`;
 
+  // Marks how long to IGNORE this tab's own navigation events for — see the
+  // chrome.tabs.onUpdated listener below for why this has to be time-based
+  // rather than counting discrete "loading" ticks. Set immediately before
+  // the navigation THIS call is about to cause.
+  leg.navGraceUntil = Date.now() + RELOAD_DETECT_GRACE_MS;
   try {
     await chrome.tabs.update(leg.tabId, { url });
   } catch (_) {
@@ -1203,6 +1555,199 @@ async function loaderRunLeg(plat, leg) {
   // continue. Without this a rate-limited or errored turn stalls the whole run.
   armWatchdog(plat, leg, turnBudgetMs(leg));
 }
+
+// Reported: Gemini (and, less predictably, other engines) prompts start
+// failing specifically when the user opens/looks at the tab a run is using.
+// Best-evidenced explanation: Chrome auto-discards long-backgrounded tabs
+// under memory pressure — exactly what a multi-engine Campaign run creates,
+// since only one tab can be foreground at a time and the rest sit
+// backgrounded for the run's whole duration — and switching back to a
+// discarded tab reloads it from scratch. A reload wipes the ?q=/lcfc
+// querystring loaderAutoSubmit depends on (already stripped from history
+// the moment it was first read) and all in-page state, so the turn was
+// silently dead from that instant — previously undetectable until the full
+// 90s watchdog gave up on it, indistinguishable from any other timeout.
+//
+// This turns that ~90s dead wait into a fast retry: a "loading" event on an
+// in-flight leg's own tab, arriving well after the navigation loaderRunLeg
+// itself just issued, means the tab left and came back on its own — so
+// re-submit the same prompt right away rather than waiting out a watchdog
+// that can no longer resolve.
+//
+// Why time-based rather than counting "this is the Nth loading event since
+// we navigated": measured directly against a real Chromium instance
+// (launchPersistentContext + the real extension, see the PR discussion) —
+// ONE chrome.tabs.update() call reliably produces TWO separate
+// loading-then-complete cycles back to back, roughly 10-50ms apart, not
+// one. Counting ticks (even "the first loading after a complete") reads the
+// second, entirely expected cycle as a reload and fires a spurious retry —
+// confirmed as a real regression this way: a live run advanced two prompts
+// deep within milliseconds, `failTurnAndAdvance` racking up "tab reloaded
+// repeatedly" almost instantly. A grace window sidesteps the question of
+// how many ticks one real navigation produces entirely: nothing inside it
+// is ever treated as a reload, however noisy. 3s is enormous headroom over
+// the ~50ms of measured noise while remaining a ~30x improvement over the
+// 90s watchdog it replaces.
+const RELOAD_DETECT_GRACE_MS = 3000;
+// checkTabOwnership (inside loaderRunLeg) still runs on the retry, so this
+// composes safely with the existing trust-boundary protections: if what
+// actually happened is the user navigating this tab to something else
+// entirely (not a reload back to the same engine), that still parks the
+// run instead of resubmitting into a page the user is using.
+/* The clock for a campaign turn running in a hidden tab.
+ *
+ * Chrome throttles timers in hidden pages — to once a second at once, and to
+ * once a MINUTE after five minutes — and a run's engine tabs are always
+ * hidden. The content script's submit loop is tick-driven, so it opens a port
+ * here and this worker, whose timers aren't throttled, supplies the ticks;
+ * message delivery into the page isn't throttled either. See startClock in
+ * content-iso.js. The page disconnects when its turn ends, and navigating
+ * away disconnects it too, so an interval can't outlive the turn it serves.
+ */
+chrome.runtime.onConnect?.addListener((port) => {
+  if (port.name !== "lcfc-clock") return;
+  let iv = null;
+  const stop = () => { if (iv) { clearInterval(iv); iv = null; } };
+  port.onMessage.addListener((m) => {
+    if (iv || !m || !m.everyMs) return;
+    const ms = Math.min(5000, Math.max(100, Number(m.everyMs) || 400));
+    iv = setInterval(() => {
+      try { port.postMessage(1); } catch (_) { stop(); }
+    }, ms);
+  });
+  port.onDisconnect.addListener(stop);
+});
+
+const MAX_RELOAD_RETRIES = 2;
+// How many pages may pick up one turn after redirects (see loader-claim).
+// Grok's bounce is two pages (/tos-gate, then home); this leaves headroom
+// without letting a page that bounces forever hold a turn.
+const MAX_TURN_CLAIMS = 4;
+// How long a load event gets to prove itself before it counts as a lost
+// prompt. This is NOT "how long an engine takes to answer" — that is
+// unknowable and is what the 90s watchdog is for. It is only how long the
+// content script needs to run at document_start and call `loader-verify`,
+// which is bounded by extension injection rather than by the site, so it
+// stays stable across engines, machines and network conditions.
+const RELOAD_VERIFY_WAIT_MS = 8000;
+/* What a loader tab did during its turn, seen from outside the page: each
+ * load start (L) and finish (C), where it went, and whether Chrome froze or
+ * discarded it. Every Grok turn in a real v0.43 run timed out with the page
+ * not answering at all — no page-side report can explain a page that isn't
+ * running — so the timeout carries this instead. Host and path only (ids
+ * folded): the query string holds the prompt.
+ */
+function tabPlace(url) {
+  try {
+    const u = new URL(url);
+    if (!/^https?:$/.test(u.protocol)) return u.protocol.replace(":", "");
+    return (u.hostname.replace(/^www\./, "") + u.pathname.replace(/[0-9a-f][0-9a-f-]{15,}/gi, ":id")).slice(0, 60);
+  } catch (_) { return "?"; }
+}
+chrome.tabs.onUpdated?.addListener((tabId, changeInfo) => {
+  if (!loader.running) return;
+  const found = legForTab(tabId);
+  if (!found || !found.leg.startedAt) return;
+  const { leg } = found;
+  const bits = [];
+  if (changeInfo.status === "loading") bits.push("L");
+  if (changeInfo.status === "complete") bits.push("C");
+  if (changeInfo.url) bits.push(tabPlace(changeInfo.url));
+  if (changeInfo.discarded) bits.push("discarded");
+  if (changeInfo.frozen !== undefined) bits.push(changeInfo.frozen ? "frozen" : "unfrozen");
+  if (!bits.length) return;
+  noteTabEvent(leg, bits.join(","));
+});
+
+// One entry in the turn's tab log, timed from the turn's start. Also carries
+// the run's own events for the tab (a page claiming the turn, the send), so
+// the log reads as one sequence.
+function noteTabEvent(leg, what) {
+  if (!leg || !leg.startedAt) return;
+  if (leg.navLogToken !== leg.token) { leg.navLog = []; leg.navLogToken = leg.token; }
+  if (leg.navLog.length < 24) leg.navLog.push(`${((Date.now() - leg.startedAt) / 1000).toFixed(1)}s:${what}`);
+}
+
+// The tab itself, when its page doesn't answer: frozen, discarded, still
+// loading, a verification page (judged from the title, which is not kept),
+// or where it ended up.
+async function tabFacts(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    return {
+      status: tab.status || "?",
+      frozen: !!tab.frozen,
+      discarded: !!tab.discarded,
+      where: tabPlace(tab.url || tab.pendingUrl || ""),
+      challenge: /just a moment|attention required|verify you are human|checking your browser|are you a robot/i.test(tab.title || ""),
+    };
+  } catch (_) {
+    return { status: "gone", frozen: false, discarded: false, where: "?", challenge: false };
+  }
+}
+
+chrome.tabs.onUpdated?.addListener((tabId, changeInfo) => {
+  if (changeInfo.status !== "loading") return;
+  const found = legForTab(tabId);
+  if (!found) return;
+  const { plat, leg } = found;
+  if (!loader.running || loader.paused || leg.paused) return;
+  if (!leg.startedAt || leg.idx >= leg.prompts.length) return; // no turn in flight on this leg
+  if (Date.now() < (leg.navGraceUntil || 0)) return; // still settling our own navigation
+
+  /* Positive evidence beats elapsed time.
+   *
+   * `loader-verify` fires from the content script on every real document
+   * load carrying this turn's token — so once it has matched, the prompt is
+   * demonstrably in the content script's hands and this turn is under way.
+   * Every navigation after that point is the engine doing its normal job:
+   * accepting the prompt and moving the tab to the conversation it just
+   * created. Treating those as a spontaneous reload is what made two
+   * consecutive real runs lose the large majority of their prompts to "tab
+   * reloaded repeatedly" across all four engines at once — and because each
+   * retry re-issues the navigation, which produces the next late load event,
+   * the retry caused the next detection and the turn burned its whole budget
+   * in seconds. A verified turn that then genuinely dies is still covered:
+   * the content script reports its own submit failures, and the watchdog
+   * closes out anything that goes quiet.
+   */
+  if (leg.verifiedToken && leg.verifiedToken === leg.token) return;
+
+  // Not yet verified. This is still far more likely to be our own navigation
+  // (slow engine, or the second load cycle one chrome.tabs.update produces)
+  // than a lost prompt, so give the content script its window to claim the
+  // turn rather than retrying into the same cycle. One pending check per
+  // turn: a slow load emits several loading events, and letting each arm its
+  // own timer would spend the whole retry budget in a single burst.
+  if (leg.reloadCheckPending) return;
+  leg.reloadCheckPending = true;
+  const token = leg.token;
+  setTimeout(() => {
+    leg.reloadCheckPending = false;
+    if (!loader.running || loader.paused || leg.paused) return;
+    if (leg.token !== token) return; // this turn is already over
+    if (leg.verifiedToken === token) return; // the content script claimed it
+
+    // Nothing ever claimed this turn: the tab really did land somewhere
+    // without the prompt, which is the case this recovery path exists for.
+    leg.reloadRetries = (leg.reloadRetries || 0) + 1;
+    if (leg.reloadRetries > MAX_RELOAD_RETRIES) {
+      // Reloading repeatedly without ever completing isn't a one-off
+      // discard-and-reactivate — stop retrying and let it fail normally
+      // rather than looping on a tab that will apparently never hold still.
+      failTurnAndAdvance(plat, leg, "tab reloaded repeatedly", 500);
+      return;
+    }
+    logErr(`run:tab-reloaded:${plat}`, "Loader tab reloaded mid-turn — retrying", {
+      platform: plat,
+      promptIndex: (leg.startOffset || 0) + leg.idx,
+      totalPrompts: platformTotal(plat),
+      attempt: leg.reloadRetries,
+      runId: loader.runId,
+    });
+    loaderRunLeg(plat, leg);
+  }, RELOAD_VERIFY_WAIT_MS);
+});
 
 async function loaderStart(prompts, options) {
   // Guard against a second run stomping the first: `loader` is one shared
@@ -1264,7 +1809,13 @@ async function loaderStart(prompts, options) {
   loader.running = true;
   loader.options = options || {};
   loader.total = clean.length * supported.length;
-  loader.runId = crypto.randomUUID();
+  // A campaign run passes its geo run id through so the run is known by ONE
+  // id everywhere. It used to mint a second, unrelated one here — every log
+  // entry and capture got this one, the campaign's run record got the other,
+  // and nothing linked them, so the campaign diagnostics export (which looks
+  // runs up by the campaign's id) could never find a single log entry.
+  loader.runId = (options && options.geo && options.geo.runId) || crypto.randomUUID();
+  loader.startedAt = Date.now();
   // Clear any badge left over from a previous run's completion so it never
   // reads as this run's status by mistake.
   try {
@@ -1303,6 +1854,7 @@ async function loaderStart(prompts, options) {
   // requested for 1 prompt), and an empty shard gets no tab at all: opening
   // a second automated tab with nothing to do would be pure extra footprint
   // on the account for zero benefit.
+  const runTabIds = [];
   for (const plat of supported) {
     const shards = shardPrompts(clean, CONCURRENT_TABS_PER_ENGINE).filter((s) => s.prompts.length > 0);
     const legs = [];
@@ -1310,6 +1862,18 @@ async function loaderStart(prompts, options) {
       const created = windowId
         ? await chrome.tabs.create({ windowId, url: "about:blank" })
         : await chrome.tabs.create({ url: "about:blank", active: false });
+      runTabIds.push(created.id);
+      // Loader tabs sit backgrounded for the whole run — 4 heavy engine SPAs
+      // at once is exactly what Chrome's Memory Saver targets for automatic
+      // discarding, and a discarded tab reloads itself the instant anything
+      // touches it, which the chrome.tabs.onUpdated listener below reads as
+      // "Loader tab reloaded mid-turn" and retries, then fails after
+      // MAX_RELOAD_RETRIES. Opting each tab out up front is what stops the
+      // browser from ever unloading it mid-run in the first place — this is
+      // a real, observed failure mode (a run losing the large majority of
+      // its prompts to "tab reloaded repeatedly" across every engine within
+      // minutes of starting), not a defensive guess.
+      chrome.tabs.update(created.id, { autoDiscardable: false }).catch(() => {});
       legs.push({
         tabId: created.id, startOffset: shard.startOffset, prompts: shard.prompts,
         idx: 0, failed: 0, lastAdvanceAt: 0, durations: [], outcomes: [],
@@ -1317,6 +1881,20 @@ async function loaderStart(prompts, options) {
     }
     loader.platforms[plat] = { legs };
   }
+  // Every engine tab this run owns, grouped and collapsed so they don't take
+  // over the window — one shared group for the whole run rather than one per
+  // engine, since the point is minimizing footprint, not organizing by
+  // platform. Best-effort: a browser too old for chrome.tabGroups, or a
+  // grouping call that races a tab the user already closed, must never fail
+  // the run over a footprint nicety.
+  try {
+    if (runTabIds.length && chrome.tabs.group) {
+      const groupId = await chrome.tabs.group({ tabIds: runTabIds });
+      if (chrome.tabGroups && chrome.tabGroups.update) {
+        await chrome.tabGroups.update(groupId, { title: "CitoSkeleton", collapsed: true });
+      }
+    }
+  } catch (_) { /* footprint nicety only — never block the run over it */ }
   await persistLoaderState();
   // Staggered rather than all at once: the first submission across tabs
   // landing in the exact same instant is a much stronger automation signal
@@ -1430,11 +2008,108 @@ function platformTotal(plat) {
 }
 
 // Called after each capture; advances the loader only for a real, completed turn.
+// One comparison, shared by the two places that ask "is this capture's
+// question this prompt?" — crediting a capture to the run (loaderOnCapture)
+// and deciding which prompt it's filed under (attributeCaptureToPrompt) —
+// so they can never disagree. Loose on purpose: adapters normalise
+// whitespace differently from the string the run navigated with.
+function normPrompt(t) {
+  return String(t || "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+function promptTextMatches(a, b) {
+  const x = normPrompt(a), y = normPrompt(b);
+  if (!x || !y) return false;
+  return y.includes(x.slice(0, 60)) || x.includes(y.slice(0, 60));
+}
+
+/* Which of this leg's prompts a campaign capture actually answers.
+ *
+ * The capture handler files each capture under the prompt the tab is on WHEN
+ * THE ANSWER ARRIVES. That's right for an answer that lands in time, and
+ * wrong for every one that doesn't: a turn that times out often finishes
+ * afterwards, by which point the leg has moved on, so its answer was stored
+ * under the NEXT prompt — and once a leg had finished its batch, under the
+ * first prompt of another batch entirely. A real 40-prompt run showed several
+ * of these, silently feeding one prompt's answer into another's metrics.
+ * The run itself already refused to COUNT such captures (loaderOnCapture);
+ * it just filed them wrong.
+ *
+ * Returns null to keep the position-based guess, which it does whenever it
+ * can't be sure: no usable question text, the text agrees with the position
+ * anyway, or it matches no prompt (or several) in this tab's batch. Only
+ * this leg's own prompts are searched — the answer came from this tab, and
+ * this tab only ever ran this batch.
+ */
+function attributeCaptureToPrompt(leg, record) {
+  const got = record && record.userPrompt;
+  // Too short to outweigh the tab's position — a scraped clock ("2:16 PM")
+  // or a stray fragment would otherwise match whatever happened to contain it.
+  if (normPrompt(got).length < 12) return null;
+  const geoPrompts = loader.options.geoPrompts || [];
+  const atPosition = leg.prompts[leg.idx];
+  if (atPosition && promptTextMatches(atPosition, got)) return null;
+  const hits = [];
+  leg.prompts.forEach((text, i) => { if (promptTextMatches(text, got)) hits.push((leg.startOffset || 0) + i); });
+  if (hits.length === 1) {
+    const tp = geoPrompts[hits[0]] || {};
+    return tp.id ? { promptId: tp.id, tags: tp.tags || [] } : null;
+  }
+  // Past the end of its batch, the position guess names another batch's
+  // prompt — certainly wrong — so leave the capture unattributed instead.
+  if (leg.idx >= leg.prompts.length) return { promptId: null, tags: [] };
+  return null;
+}
+
+/* Whether a campaign capture built from Perplexity's thread LIST should be
+ * thrown away rather than stored. Returns the reason, or null to keep it.
+ *
+ * Perplexity pushes the account's recent-threads list over its GraphQL
+ * socket, and when no real answer stream is intercepted that list is all a
+ * capture holds: the adapter takes the newest thread's title as the question
+ * and that thread's truncated preview as the answer. In a real 40-prompt run
+ * every network capture from Perplexity was this, and it goes wrong in three
+ * ways a campaign can't afford:
+ *   - the list is ACCOUNT-WIDE, so with two Perplexity tabs running, one
+ *     tab's capture is usually the OTHER tab's newest thread;
+ *   - campaigns re-ask identical prompts every run, so last week's thread
+ *     with the same title is indistinguishable by title alone;
+ *   - with no preview for the thread it names, the "capture" is empty.
+ * Only a preview for one of this tab's own prompts, from a thread updated
+ * during this run, is kept. Ad-hoc browsing captures never reach this.
+ */
+const PREVIEW_CLOCK_SLACK_MS = 60 * 1000; // thread times are Perplexity's clock, not this machine's
+function isUnusableCampaignPreview(leg, record) {
+  const ps = record && record.platformSpecific;
+  const src = ps && ps.answerSource;
+  if (!src || src === "real") return null;
+  if (src === "none") return record.sources && record.sources.length ? null : "thread list only, no answer for the thread it names";
+  if (!leg.prompts.some((t) => promptTextMatches(t, record.userPrompt))) return "thread list names another tab's prompt";
+  const at = Date.parse(ps.previewUpdatedAt || "");
+  if (Number.isFinite(at) && loader.startedAt && at < loader.startedAt - PREVIEW_CLOCK_SLACK_MS) {
+    return "thread list preview is from before this run";
+  }
+  return null;
+}
+
 function loaderOnCapture(tabId, record) {
   if (!loader.running) return;
   const found = legForTab(tabId);
   if (!found) return;
   const { plat, leg } = found;
+
+  /* Only a turn that is actually in flight can be completed.
+   *
+   * After a turn completes, the next prompt is only sent 2-8s later (the
+   * pacing gap), and until then the leg still expects the OLD prompt. Gemini
+   * sends several captures per answer, so a second capture of the answer
+   * just counted landed in that gap, matched the old prompt, and "completed"
+   * the next prompt before it was ever asked — skipping it while the run
+   * logged it as ok. A real run had four such phantom turns on Gemini alone,
+   * two past the end of their legs ("prompt 10" of 10), and reported 35/40
+   * captured with far fewer prompts actually asked. MIN_ADVANCE_GAP_MS
+   * couldn't catch it: the second capture came 3-4s after the first.
+   */
+  if (leg.idx >= leg.prompts.length || leg.inFlightIdx !== leg.idx) return;
 
   // Ignore empty race-loser captures — advancing on those silently SKIPS prompts.
   if (!hasSignal(record)) return;
@@ -1464,28 +2139,43 @@ function loaderOnCapture(tabId, record) {
    * either side is missing the old behaviour stands, so this can only ever
    * reject a capture it is certain does not belong.
    */
-  const norm = (t) => String(t || "").replace(/\s+/g, " ").trim().toLowerCase();
-  const wantPrompt = norm(leg.expectedPrompt);
-  const gotPrompt = norm(record && record.userPrompt);
+  const wantPrompt = normPrompt(leg.expectedPrompt);
+  const gotPrompt = normPrompt(record && record.userPrompt);
   if (wantPrompt && gotPrompt) {
-    const head = wantPrompt.slice(0, 60);
-    if (!gotPrompt.includes(head) && !wantPrompt.includes(gotPrompt.slice(0, 60))) {
+    if (!promptTextMatches(wantPrompt, gotPrompt)) {
       logErr(`run:late-capture:${plat}`, "capture did not match the prompt in flight", {
         platform: plat,
         promptIndex: (leg.startOffset || 0) + leg.idx,
         totalPrompts: platformTotal(plat),
+        runId: loader.runId,
       });
       return;
     }
   }
 
   clearWatchdog(leg);
-  if (leg.startedAt) leg.durations = [...(leg.durations || []), Date.now() - leg.startedAt].slice(-DURATION_WINDOW);
+  const turnElapsedMs = leg.startedAt ? Date.now() - leg.startedAt : 0;
+  if (leg.startedAt) leg.durations = [...(leg.durations || []), turnElapsedMs].slice(-DURATION_WINDOW);
   leg.outcomes = leg.outcomes || [];
   leg.outcomes[leg.idx] = { status: "done", reason: null, at: Date.now() };
   leg.lastAdvanceAt = Date.now();
   loader.done++;
+  leg.inFlightIdx = -1;
+  const donePromptIndex = (leg.startOffset || 0) + leg.idx;
+  const reloadRetriesAtSuccess = leg.reloadRetries || 0;
   leg.idx++;
+  // This leg is genuinely moving to a new prompt now — the reload-retry
+  // budget (chrome.tabs.onUpdated listener below) is per-prompt, not
+  // per-leg, so it resets here rather than carrying over to whatever comes
+  // next.
+  leg.reloadRetries = 0;
+  // The success half of the durable per-turn timeline — see the matching
+  // "turn" event in failTurnAndAdvance for why this exists as its own
+  // category rather than living only in the live progress view.
+  logEvent(`run:turn:${plat}`, "turn", "ok", {
+    platform: plat, promptIndex: donePromptIndex, status: "ok", elapsedMs: turnElapsedMs,
+    retries: reloadRetriesAtSuccess, runId: loader.runId, captureId: record.captureId,
+  });
   // Persisted synchronously, before scheduling the next turn — this is the
   // step that closes the restart-duplicate window: if the worker dies
   // between here and the next capture, a resume will see this completion
@@ -1523,6 +2213,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             if (found) {
               const { leg } = found;
               meta = { projectId: loader.options.projectId || null, runId: loader.runId };
+              // An answer that arrives but can't be read still ends in a
+              // timeout — this lets that timeout say so (see describeTimeout).
+              const turnToken = leg.token;
+              meta.onUnreadable = (shape) => { leg.unreadable = { token: turnToken, shape }; };
               // A GEO tracking run stamps per-prompt provenance so the metrics
               // engine can attribute each response to the right tracked prompt
               // and its tags. loader.options.geoPrompts is index-aligned with
@@ -1542,6 +2236,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                   promptId: tp.id || null,
                   tags: tp.tags || [],
                 };
+                // The position above is only a first guess — storeCapture
+                // corrects it once the adapter has read the capture's question.
+                meta.attributeGeo = (record) => attributeCaptureToPrompt(leg, record);
+                meta.rejectCapture = (record) => isUnusableCampaignPreview(leg, record);
               }
             }
           }
@@ -1551,7 +2249,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             // Notify the popup if it's open. Use a callback so a missing receiver
             // doesn't surface as an unhandled promise rejection.
             try {
-              chrome.runtime.sendMessage({ type: "new-capture", captureId: res.captureId }, () => void chrome.runtime.lastError);
+              // duringRun lets the panel tell an expected campaign capture
+              // from an ad-hoc browsing one. For a browsing capture the toast
+              // IS the notification; during a run the progress card already
+              // counts every prompt, so one toast per prompt is noise layered
+              // over the thing the user is trying to read.
+              chrome.runtime.sendMessage(
+                { type: "new-capture", captureId: res.captureId, duringRun: !!loader.running },
+                () => void chrome.runtime.lastError);
             } catch (_) {}
             // Deliberately NOT awaited: the capture is already saved and shown.
             enrichCaptureWithAI(res.record);
@@ -1568,8 +2273,75 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (loader.running && tabId != null) {
             const found = legForTab(tabId);
             ok = !!(found && found.leg.token && found.leg.token === msg.token);
+            // Doubles as the run's proof that this turn's prompt reached the
+            // page and the content script has taken it on — which is what
+            // the reload detector (chrome.tabs.onUpdated, above) reads to
+            // tell the engine's own post-submit navigation apart from a tab
+            // that genuinely came back without the prompt. Recorded against
+            // the token, so it can never carry over to a later turn.
+            if (ok) found.leg.verifiedToken = msg.token;
           }
           sendResponse({ ok });
+          break;
+        }
+
+        // The page this turn is running in saw its prompt go out: the
+        // engine's own submit request, or the conversation moving on. From
+        // here the turn is never handed to another page (loader-claim).
+        case "loader-sent": {
+          const tabId = sender?.tab?.id;
+          const found = loader.running && tabId != null ? legForTab(tabId) : null;
+          const ok = !!(found && found.leg.token && found.leg.token === msg.token);
+          if (ok && found.leg.sentToken !== msg.token) {
+            found.leg.sentToken = msg.token;
+            noteTabEvent(found.leg, "sent");
+            persistLoaderState();
+          }
+          sendResponse({ ok });
+          break;
+        }
+
+        /* A page without the run's markers, in a tab that had them, asking
+         * whether a turn is waiting for it.
+         *
+         * The prompt reached the engine only in the tab's address, and a
+         * reload or a cross-page redirect drops it. (Written after grok.com's
+         * /tos-gate hop, which a later run showed happens inside the same
+         * document — that one was a false "sent", fixed in content-iso.js.)
+         * The run holds the prompt, so it hands the turn to the page the tab
+         * ended up on — the same checks loader-verify makes, plus two of its own:
+         * the page must be on this tab's engine, and the prompt must not
+         * have gone out yet, so a redirect after a send can't send it twice.
+         * Capped per turn, so a page that keeps bouncing can't loop.
+         */
+        case "loader-claim": {
+          const tabId = sender?.tab?.id;
+          const found = loader.running && !loader.paused && tabId != null && (sender.frameId || 0) === 0
+            ? legForTab(tabId) : null;
+          const leg = found && found.leg;
+          let host = "";
+          try { host = new URL(sender.url || "").hostname; } catch (_) { /* no host */ }
+          const onEngine = !!found && (ENGINE_HOSTS[found.plat] || []).includes(host);
+          const claims = leg && leg.claimToken === leg.token ? leg.claims || 0 : 0;
+          const grant = !!leg && onEngine && !leg.paused && !!leg.token
+            && leg.idx < leg.prompts.length && leg.inFlightIdx === leg.idx
+            && leg.sentToken !== leg.token && claims < MAX_TURN_CLAIMS
+            && typeof leg.expectedPrompt === "string" && !!leg.expectedPrompt;
+          if (grant) {
+            leg.claimToken = leg.token;
+            leg.claims = claims + 1;
+            leg.verifiedToken = leg.token; // the turn is in a page's hands again
+            noteTabEvent(leg, "claimed");
+            sendResponse({
+              ok: true,
+              token: leg.token,
+              q: leg.expectedPrompt,
+              search: found.plat === "chatgpt" && !!loader.options.forceSearch,
+            });
+          } else {
+            if (leg && onEngine && leg.inFlightIdx === leg.idx) noteTabEvent(leg, leg.sentToken === leg.token ? "claim:sent" : "claim:refused");
+            sendResponse({ ok: false });
+          }
           break;
         }
 
@@ -1605,7 +2377,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 for (const leg of p.legs || []) {
                   leg.paused = false;
                 }
-                logErr(`run:auto-resume:${matched}`, "Cooldown expired, auto-resuming platform queue", { platform: matched });
+                logErr(`run:auto-resume:${matched}`, "Cooldown expired, auto-resuming platform queue", { platform: matched, runId: loader.runId });
                 (p.legs || []).forEach((l) => loaderAdvanceLeg(p, l));
                 persistLoaderState();
                 syncGeoRun();
@@ -1862,42 +2634,155 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
 
-        /* The whole campaign as one workbook.
-         *
-         * Assembled and rendered HERE rather than in the panel: the raw
-         * material is every derived record for the campaign, which for a
-         * thousand-prompt run is tens of megabytes of sources and mentions.
-         * Shipping that across the message boundary so the UI could format it
-         * would be slow and pointless — the worker already has the database
-         * open. One XML string goes back instead.
-         */
-        case "geo-export-workbook": {
+        /* The export dialog (0.52.0): an Excel workbook or CSV tables, or just
+         * the row counts its "What you get" shows. Built here because
+         * positions need the answer text the panel's rows don't carry. The
+         * reply is the file's parts as text — the panel zips them — so no
+         * binary has to cross the message channel. */
+        case "geo-export": {
           const profile = await db.get("profiles", msg.profileId);
           if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
-          const all = await db.getAll("derived");
-          const records = selectTracked(all, {
-            profileId: msg.profileId,
-            runId: msg.runId || undefined,
-            engines: msg.engines,
-            tags: msg.tags,
-            since: msg.since,
-            until: msg.until,
-          });
+          let records = selectTracked(await db.getAll("derived"), { profileId: msg.profileId, engines: msg.engines && msg.engines.length ? msg.engines : undefined });
+          let runs = (await db.getAll("geoRuns")).filter((r) => r.profileId === msg.profileId)
+            .filter((r) => records.some((x) => x.geo && x.geo.runId === r.id))
+            .sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
+          if (msg.scope === "latest" && runs.length) {
+            const last = runs[runs.length - 1];
+            runs = [last];
+            records = records.filter((x) => x.geo && x.geo.runId === last.id);
+          }
           const prompts = (await db.getAll("trackedPrompts")).filter((t) => t.profileId === msg.profileId);
+          const bundle = {
+            profile, prompts, runs, records, brands: effectiveTrackedBrands(profile, records),
+            include: msg.include, answerText: msg.text === "full" ? "full" : "excerpt", generatedAt: Date.now(),
+          };
+          const slug = String(profile.name || "campaign").replace(/[^\w]+/g, "-").replace(/^-|-$/g, "").toLowerCase() || "campaign";
+          const day = new Date().toISOString().slice(0, 10);
+          const filename = { csv: `citoskeleton-${slug}-${day}-tables.zip`, xlsx: `citoskeleton-${slug}-${day}.xlsx` };
+          if (msg.format === "counts") { sendResponse({ ok: true, counts: campaignExportCounts(bundle), filename }); break; }
+          if (!records.length) { sendResponse({ ok: false, error: "No answers to export for these choices." }); break; }
+          if (msg.format === "csv") {
+            sendResponse({ ok: true, files: campaignCsvFiles(bundle), filename: filename.csv });
+          } else {
+            const { wb, stats } = buildCampaignXlsx(bundle);
+            sendResponse({ ok: true, files: wb.files(), filename: filename.xlsx, stats });
+          }
+          break;
+        }
+
+        /* The campaign PDF report (0.53.0): one run, laid out by
+         * ui/report.html. Worked out here for the same reason as the board:
+         * positions need the answer text. */
+        case "campaign-report": {
+          const profile = await db.get("profiles", msg.profileId);
+          if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
+          const engines = msg.engines && msg.engines.length ? msg.engines : undefined;
+          const records = selectTracked(await db.getAll("derived"), { profileId: msg.profileId, engines });
           const runs = (await db.getAll("geoRuns")).filter((r) => r.profileId === msg.profileId);
-          const brands = effectiveTrackedBrands(profile, records);
-          const metrics = computeMetrics(records, profile, brands);
-          // answerText is the single biggest field on a record and no sheet
-          // uses it, so it is dropped before aggregation rather than carried
-          // through and ignored.
-          const lite = records.map(({ answerText, platformSpecific, _extraction, ...rest }) => rest);
-          const xml = buildCampaignWorkbook({
-            profile, prompts, runs, records: lite, brands, metrics,
-            errors: await errorLog.summary(60),
+          const prompts = (await db.getAll("trackedPrompts")).filter((t) => t.profileId === msg.profileId);
+          const report = campaignReport({
+            profile, prompts, runs, records, brands: effectiveTrackedBrands(profile, records),
+            runId: msg.runId, sections: msg.sections, engines, generatedAt: Date.now(),
+          });
+          sendResponse(report.ok ? { ok: true, report } : report);
+          break;
+        }
+
+        /* Everything about one campaign, in one message — "share all the
+         * issues and data of a campaign with you in one go." Built here
+         * rather than the panel fetching pieces one at a time (as the old
+         * per-capture "Download raw payload" button did): a campaign can
+         * have hundreds of captures, and gunzipping each raw payload in the
+         * service worker and returning them all at once avoids hundreds of
+         * round trips. The panel turns this into a zip (see
+         * ui/panel.js's Export Diagnostics action) — the same makeZip()
+         * the feedback bundle already uses, just fed more files.
+         */
+        case "get-campaign-diagnostics": {
+          const profile = await db.get("profiles", msg.profileId);
+          if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
+          const runs = (await db.getAll("geoRuns")).filter((r) => r.profileId === msg.profileId);
+          const runIds = runs.map((r) => r.id);
+          const all = await db.getAll("derived");
+          // Every capture, duplicates included: they are evidence here.
+          const records = selectTracked(all, { profileId: msg.profileId, allCaptures: true });
+          const prompts = (await db.getAll("trackedPrompts")).filter((t) => t.profileId === msg.profileId);
+
+          const runNo = new Map([...runs].sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0)).map((r, i) => [r.id, i + 1]));
+          const { perRun } = summarizeRunDiagnostics({ runs, records }, runNo);
+
+          // The diagnostic log, split back into its three categories for the
+          // zip's separate files — see lib/errorlog.js's header for why one
+          // store carries all three.
+          //
+          // Runs started before the loader adopted the geo run's id (see
+          // loaderStart) are known to the log only by the loader's own id,
+          // which the campaign's run records never stored. Every capture still
+          // carries both, so that id is recovered from this campaign's own
+          // captures — without it the log section of this export was empty
+          // for every run, which is most of what the export is for. A run
+          // that captured nothing at all can't be recovered this way.
+          const logRunIds = new Set(runIds);
+          for (const r of records) if (r.runId) logRunIds.add(r.runId);
+          const diagEntries = await errorLog.listByRunIds([...logRunIds], 5000);
+          const errorEntries = diagEntries.filter((e) => (e.cat || "error") === "error");
+          const turnEntries = diagEntries.filter((e) => e.cat === "turn");
+          const captureEntries = diagEntries.filter((e) => e.cat === "capture");
+
+          // Records and raw payloads are NOT in this response. A message
+          // between the service worker and a page is capped at 64 MiB, and a
+          // real ten-prompt, four-engine campaign crossed it (Perplexity's
+          // answer stream alone is 150-430 KB a capture, Gemini's up to
+          // several MB): the export failed outright with "Message exceeded
+          // maximum allowed size". This returns an index; the panel fetches
+          // the records in batches (get-diagnostics-records) and each raw
+          // payload on its own (get-raw), so no one message grows with the
+          // campaign. Each capture's file still carries the WHOLE record,
+          // answer text included — see get-diagnostics-records.
+          const recordIds = records.map((r) => r.captureId);
+
+          // Payloads the adapters couldn't read (see storeCapture). They have
+          // no record — that's the problem — so they are found through their
+          // log entries. One sample per endpoint and shape: a run can log a
+          // hundred of the same unreadable stream, and one is enough to read
+          // the format. Capped: this is for seeing a format, not archiving.
+          const unreadable = [];
+          const unreadableKinds = new Set();
+          for (const e of captureEntries) {
+            if (unreadable.length >= 20) break;
+            const c = e.context || {};
+            if (!c.captureId || !String(e.where || "").startsWith("capture:unreadable:")) continue;
+            const kind = `${c.platform}|${c.endpoint}|${c.shape}`;
+            if (unreadableKinds.has(kind)) continue;
+            try {
+              const row = await db.get("raw", c.captureId);
+              if (!row) continue;
+              unreadableKinds.add(kind);
+              unreadable.push({ captureId: c.captureId, platform: row.platform, endpoint: c.endpoint || null });
+            } catch (_) { /* gone — the log entry still says what it was */ }
+          }
+
+          const manifest = chrome.runtime.getManifest();
+          sendResponse({
+            ok: true,
+            unreadable,
+            campaign: {
+              profileId: profile.id,
+              name: profile.name,
+              brand: profile.brand,
+              competitors: profile.competitors,
+              engines: profile.engines,
+              promptCount: prompts.length,
+              runCount: runs.length,
+            },
+            perRun,
+            errors: errorEntries,
+            turns: turnEntries,
+            captures: captureEntries,
+            recordIds,
+            env: { version: manifest.version, userAgent: navigator.userAgent },
             generatedAt: Date.now(),
           });
-          const slug = String(profile.name || "campaign").replace(/[^\w]+/g, "-").replace(/^-|-$/g, "").toLowerCase();
-          sendResponse({ ok: true, xml, filename: `citoskeleton-${slug || "campaign"}-${Date.now()}.xls` });
           break;
         }
 
@@ -1906,6 +2791,64 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const scoped = msg.profileId ? runs.filter((r) => r.profileId === msg.profileId) : runs;
           scoped.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
           sendResponse({ ok: true, runs: scoped });
+          break;
+        }
+        // A campaign's whole results board (0.50.0), in one round trip.
+        // Computed here, not in the panel, for the reason geo-metrics gives:
+        // positions need the answer text, which the panel's rows don't carry.
+        case "campaign-board": {
+          const profile = await db.get("profiles", msg.profileId);
+          if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
+          const records = await db.getAll("derived");
+          const all = selectTracked(records, { profileId: msg.profileId, engines: msg.engines, tags: msg.tags });
+          const runs = (await db.getAll("geoRuns")).filter((r) => r.profileId === msg.profileId)
+            .sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+          // The run shown: the one asked for; by default the latest run that
+          // has answers, so the board opens on "now" with the change since
+          // the run before; "all" combines every run.
+          const latest = runs.find((r) => all.some((x) => x.geo && x.geo.runId === r.id));
+          const runId = msg.runId === "all" ? null : (msg.runId && runs.some((r) => r.id === msg.runId) ? msg.runId : (latest ? latest.id : null));
+          const recs = runId ? all.filter((r) => r.geo && r.geo.runId === runId) : all;
+          const brands = effectiveTrackedBrands(profile, recs);
+          const prompts = (await db.getAll("trackedPrompts")).filter((p) => p.profileId === msg.profileId)
+            .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+          sendResponse({
+            ok: true,
+            board: campaignBoard(recs, { profile, brands, viewAs: msg.viewAs, prompts, runs, runId, all, engineFilter: msg.engines || [], tags: msg.tags || [] }),
+            runId: runId || "all",
+            runs: runs.map((r) => ({ id: r.id, startedAt: r.startedAt, status: r.status, captured: r.captured || 0, expected: r.expected || 0, hasAnswers: all.some((x) => x.geo && x.geo.runId === r.id) })),
+            brands: brands.map((b) => ({ name: b.name, isOwn: !!b.isOwn, auto: !!b.auto })),
+            excludedBrands: profile.excludedBrands || [],
+            tags: [...new Set(prompts.flatMap((p) => p.tags || []))],
+            answers: recs.length,
+          });
+          break;
+        }
+        // One brand against yours (0.50.0): the brand detail the board opens.
+        // Same scope as the board (run, engine, tags), so the two agree.
+        case "campaign-brand-detail": {
+          const profile = await db.get("profiles", msg.profileId);
+          if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
+          const records = await db.getAll("derived");
+          const all = selectTracked(records, { profileId: msg.profileId, engines: msg.engines, tags: msg.tags });
+          const runs = (await db.getAll("geoRuns")).filter((r) => r.profileId === msg.profileId)
+            .sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
+          const latest = [...runs].reverse().find((r) => all.some((x) => x.geo && x.geo.runId === r.id));
+          const runId = msg.runId === "all" ? null : (msg.runId && runs.some((r) => r.id === msg.runId) ? msg.runId : (latest ? latest.id : null));
+          const recs = runId ? all.filter((r) => r.geo && r.geo.runId === runId) : all;
+          const brands = effectiveTrackedBrands(profile, recs);
+          const own = brands.find((b) => b.isOwn);
+          const prompts = (await db.getAll("trackedPrompts")).filter((p) => p.profileId === msg.profileId)
+            .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+          const detail = own ? brandDetail(recs, { profile, brands, them: msg.brand, you: msg.you || own.name, prompts, tags: msg.tags || [] }) : null;
+          sendResponse({
+            ok: true, detail,
+            error: detail ? undefined : "That brand isn't tracked on this campaign.",
+            sourceDomains: detail ? brandSourceDomains(recs, brands, detail.them.name) : [],
+            brands: brands.map((b) => ({ name: b.name, isOwn: !!b.isOwn, auto: !!b.auto })),
+            answers: recs.length,
+            runLabel: runId ? `Run ${runs.findIndex((r) => r.id === runId) + 1}` : "All runs combined",
+          });
           break;
         }
         case "geo-run-start": {
@@ -2293,6 +3236,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                   try {
                     const tab = await chrome.tabs.create({ url: engineBaseUrl(plat), active: false });
                     leg.tabId = tab.id;
+                    chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
                   } catch (_) {
                     // Couldn't open a tab — leave the run paused rather than
                     // spinning; the user can retry Resume.
@@ -2332,8 +3276,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
          * 400 times in one run is one problem, and a flat list of identical
          * lines is what makes a log unreadable exactly when it matters. */
         case "error-log": {
+          // cat lets the unified Diagnostics view filter to one category
+          // (error/capture/turn) — omitted, it returns everything, newest
+          // first, same as before this became a merged log.
           const [entries, grouped] = await Promise.all([
-            errorLog.list(msg.limit || 200),
+            errorLog.list(msg.limit || 200, msg.cat),
             errorLog.summary(msg.groupLimit || 40),
           ]);
           sendResponse({ ok: true, entries, grouped, cap: errorLog.MAX_ENTRIES });
@@ -2364,17 +3311,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true });
           break;
 
-        case "debug":
-          pushDebug(msg.event);
+        // Network-capture breadcrumbs — used to live in an in-memory ring
+        // buffer the MV3 service worker wiped every ~30s idle (see
+        // lib/errorlog.js's header). Now durable, folded into the one
+        // diagnostics log as cat:"capture" entries instead of a second,
+        // disconnected mechanism. `data.url` is deliberately never
+        // forwarded — it can carry `?q=<the prompt>` — only the small
+        // scalar fields the content script already separates it into.
+        case "debug": {
+          const event = msg.event || {};
+          const data = event.data || {};
+          logEvent(`capture:${event.kind || "event"}`, "capture", event.host || event.kind || "capture", {
+            status: typeof data.status === "number" ? data.status : undefined,
+            matched: typeof data.matched === "boolean" ? data.matched : undefined,
+            len: typeof data.len === "number" ? data.len : undefined,
+            rt: typeof data.rt === "string" ? data.rt : undefined,
+            runId: loader.runId,
+          });
           sendResponse({ ok: true });
           break;
-        case "get-debug":
-          sendResponse({ ok: true, events: DEBUG.slice(-120) });
-          break;
-        case "clear-debug":
-          DEBUG.length = 0;
-          sendResponse({ ok: true });
-          break;
+        }
 
         case "get-records": {
           const records = await db.getAll("derived");
@@ -2388,6 +3344,39 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
 
+        // One answer's PDF report (0.53.0): the answer, the previous answer
+        // to the same prompt on the same engine (for "since you last
+        // asked"), and the campaigns (for "your brand"). ui/report.js lays
+        // it out with src/lib/answerReport.js.
+        case "answer-report-data": {
+          const rec = await db.get("derived", msg.captureId);
+          if (!rec) { sendResponse({ ok: false, error: "That answer is no longer stored." }); break; }
+          const previous = findPrevious(rec, await db.getAll("derived"));
+          sendResponse({ ok: true, record: rec, previous: previous || null, profiles: await db.getAll("profiles") });
+          break;
+        }
+
+        // The Dashboard's "Answers" search (0.49.0). The panel holds light
+        // rows without answer text, so the words are looked for here and only
+        // the matching ids come back, each with a snippet around the match.
+        case "search-answers": {
+          const records = await db.getAll("derived");
+          sendResponse({ ok: true, hits: searchAnswers(records, String(msg.query || "").slice(0, 200)) });
+          break;
+        }
+
+        // Whole derived records for the diagnostics export, a batch at a
+        // time — see get-campaign-diagnostics for why they aren't inline.
+        case "get-diagnostics-records": {
+          const ids = Array.isArray(msg.captureIds) ? msg.captureIds.slice(0, 100) : [];
+          const out = [];
+          for (const id of ids) {
+            const rec = await db.get("derived", id);
+            if (rec) out.push(rec);
+          }
+          sendResponse({ ok: true, records: out });
+          break;
+        }
         case "get-raw": {
           const row = await db.get("raw", msg.captureId);
           const raw = row ? await gunzipToString(row.gz) : null;
@@ -2423,8 +3412,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
         case "delete-record":
-          await db.delete("raw", msg.captureId);
-          await db.delete("derived", msg.captureId);
+          await dropCapture(msg.captureId);
           sendResponse({ ok: true });
           break;
         case "clear-all":
@@ -2449,6 +3437,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           });
           break;
         }
+        // The build THIS script was loaded with — not the manifest's version,
+        // which can be new while the running code is old. See lib/build.js.
+        case "build-info":
+          sendResponse({ ok: true, build: BUILD });
+          break;
+
         default:
           sendResponse({ ok: false, error: "unknown message type" });
       }

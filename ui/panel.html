@@ -12,9 +12,10 @@
          promise — "no network calls of our own", stated in the store listing,
          the About tab and the README. A privacy tool that phones home for a
          typeface is not a privacy tool.
-         panel.css now uses system font stacks only. 'JetBrains Mono' is still
-         NAMED first in the monospace stacks so anyone who has it installed
-         locally still gets it — it just is never fetched. -->
+         Since 0.47.0 the typeface (IBM Plex) ships inside the extension, in
+         /fonts, and fonts.css's @font-face rules load it from there. Still no
+         request leaves the browser for it; analyze-popup.test.mjs checks. -->
+    <link rel="stylesheet" href="fonts.css" />
     <link rel="stylesheet" href="panel.css" />
   </head>
   <body>
@@ -27,21 +28,15 @@
             </div>
             <div class="brand-text">
               <span class="brand-title">CitoSkeleton</span>
-              <span class="version-badge">v0.36.0</span>
+              <span class="version-badge">v0.58.0</span>
               <span class="brand-sub">ChatGPT, Gemini, Perplexity &amp; Grok</span>
             </div>
           </div>
-          <!-- Was a bare 14px icon with the .nav-tab class, which gave it a tab's
-               padding but none of a button's affordance, so it read as a stray
-               glyph floating in the header. Now it's a labelled pill: same
-               action, but it looks pressable and says what it does. Tab wiring
-               keys off [data-tab], which this deliberately does not have. -->
+          <!-- Pop-out to the full tab: a square icon in the popup's one-row bar
+               (0.55.0), hidden in the tab itself. Tab wiring keys off
+               [data-tab], which this deliberately does not have. -->
           <div class="header-actions" style="display: flex; align-items: center; gap: 6px;">
-            <button id="themeToggle" class="popout-btn" title="Toggle Light / Dark Theme" aria-label="Toggle theme">
-              <svg class="theme-icon-sun" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
-              <span class="popout-label theme-label">Theme</span>
-            </button>
-            <button id="openTab" class="popout-btn" title="Open CitoSkeleton in a full browser tab">
+            <button id="openTab" class="popout-btn" title="Open CitoSkeleton in a full browser tab" aria-label="Open in a full tab">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
               <span class="popout-label">Full tab</span>
             </button>
@@ -61,15 +56,14 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"></path><line x1="4" y1="22" x2="4" y2="3"></line></svg>
             <span>Campaigns</span>
           </button>
-          <button class="nav-tab tab" data-tab="compare">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>
-            <span>Compare</span>
-          </button>
           <button class="nav-tab tab" data-tab="about">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
             <span>About</span>
           </button>
         </nav>
+        <!-- What the page on screen adds to the bar (0.55.0): a campaign's
+             section links, the Dashboard's note. Filled by setHeaderPage(). -->
+        <div class="header-page" id="headerPage"></div>
       </header>
 
       <main class="app-content">
@@ -77,7 +71,13 @@
         <section id="dashboard" class="panel"></section>
         <section id="loader" class="panel"></section>
 
+        <!-- Compare left the top menu in 0.47.0: comparing answers to one prompt
+             starts from the answer itself (Analyze → "All N answers to this
+             prompt"), so this page is always reached from Analyze. -->
         <section id="compare" class="panel">
+          <button id="cmpBack" class="analyze-context-back cmp-back" type="button" title="Back to the answer">
+            <span aria-hidden="true">←</span><span>Back to the answer</span>
+          </button>
           <div class="card">
             <div class="card-header">
               <h3>Track a prompt over time</h3>
@@ -115,184 +115,194 @@
           <div id="cmpOut"></div>
         </section>
 
-        <section id="about" class="panel">
-          <!-- The About tab was four cards of prose with the settings form
-               buried as a run-on sentence split across three text nodes
-               ("Keep at most" / "captures - skip payloads over" / "MB"). It's
-               now: what this is -> how to use it -> settings as a real
-               labelled form -> the dev-only debugger behind a disclosure. -->
-          <!-- One header, not two: the identity block and the diagnostic action
-               used to be sibling flex items with no relationship between them —
-               different intrinsic widths, wildly different heights (a five-line
-               identity block next to a two-line action), so the row read as two
-               unrelated pieces of UI that happened to share a card ("bifurcated"
-               header). Now the identity block is the only thing that grows, the
-               diagnostic control is a fixed-width aside pinned to the header's
-               top-right with a divider, and everything shares one baseline. -->
-          <div class="card about-hero">
-            <div class="about-hero-icon"><img src="../icons/icon128.png" width="40" height="40" alt="" /></div>
-            <div class="about-hero-main">
-              <h2 class="about-title">CitoSkeleton <span class="version-badge">v0.36.0</span></h2>
-              <p class="about-tagline">
-                See what ChatGPT, Gemini, Perplexity and Grok actually read before
-                they answer — the searches they run, the pages they fetch, the
-                sources they cite, and which brands make it into the reply.
-              </p>
-              <p class="about-formerly muted small">Formerly listed as <em>LLM Citation &amp; Fan-Out Checker</em>.</p>
-              <p class="about-privacy">
-                <span class="about-lock">🔒</span>
-                Everything stays on this device. No account, no server, no network calls of our own.
-              </p>
-            </div>
-            <div class="about-hero-diag">
-              <button id="diagReport" class="btn sm ghost">🩺 Copy diagnostic report</button>
-              <span class="muted small">Storage counts and campaign run history/timing/failure reasons only — never prompt text, answers, URLs or brand names. Shown for review before anything is copied; nothing is ever sent anywhere automatically.</span>
-            </div>
-          </div>
+        <section id="about" class="panel" data-ab="overview">
+          <!-- About in five pages (0.51.0, release 5 of the canvas redesign):
+               Overview, Metric glossary, Settings, Data & tools, Diagnostics.
+               The full tab has a side menu; the popup opens on a home screen
+               with a "Get started" checklist and goes one page deep. One
+               section shows at a time (data-ab on this element). The pages
+               with prose are built by renderAbout() in panel.js; the forms
+               keep their ids, which the settings, sample, tour, log and
+               export code is wired to. -->
+          <div class="ab-layout">
+            <aside class="ab-side">
+              <nav class="ab-nav" id="abNav" aria-label="About sections"></nav>
+              <div class="ab-build" id="abBuild" role="status"></div>
+            </aside>
+            <div class="ab-main">
+              <div class="ab-subhead" id="abSubhead"></div>
 
-          <div class="card">
-            <div class="card-header"><h3>How it works</h3></div>
-            <ol class="about-steps">
-              <li>
-                <span class="about-step-n">1</span>
-                <div>
-                  <b>Run a prompt</b> in an open ChatGPT, Gemini, Perplexity or Grok tab.
-                  <div class="muted small">CitoSkeleton reads the responses your browser has already received — it never sends a request of its own.</div>
-                </div>
-              </li>
-              <li>
-                <span class="about-step-n">2</span>
-                <div>
-                  <b>Open Analyze</b> for the full breakdown of that one answer.
-                  <div class="muted small">Fan-out queries, cited vs. merely fetched sources, products, places and brand mentions.</div>
-                </div>
-              </li>
-              <li>
-                <span class="about-step-n">3</span>
-                <div>
-                  <b>Set up a Campaign</b> to track a brand across a fixed prompt set.
-                  <div class="muted small">Share of Voice, visibility, average rank and per-prompt results, measured the same way every run.</div>
-                </div>
-              </li>
-              <li>
-                <span class="about-step-n">4</span>
-                <div>
-                  <b>Use Compare</b> to watch one prompt move over time.
-                  <div class="muted small">Which brands and domains gained or lost ground between runs of the same question.</div>
-                </div>
-              </li>
-            </ol>
-            <p class="muted small about-foot">
-              Brand detection is fully automatic for every industry — there is nothing to configure.
-              Your brand, competitors, prompts and tracked engines live per campaign, in the Campaigns tab.
-            </p>
-          </div>
+              <div class="ab-sec" data-sec="home" id="abHome"></div>
+              <div class="ab-sec" data-sec="overview" id="abOverview"></div>
+              <div class="ab-sec" data-sec="news" id="abNews"></div>
 
-          <!-- Every metric in one place, generated from src/lib/glossary.js —
-               the same table the hover definitions come from, so the reference
-               and the tooltips can never disagree. -->
-          <div class="card">
-            <div class="card-header"><h3>What the numbers mean</h3></div>
-            <p class="muted small" style="margin-top:0">
-              Hover any metric label in the tool for a couple of seconds and this same
-              definition appears there. Every term is listed here for reference.
-            </p>
-            <div id="glossaryList"></div>
-          </div>
-
-          <div class="card">
-            <div class="card-header"><h3>Settings</h3></div>
-            <div class="settings-form">
-              <div class="setting-row">
-                <label class="setting-label" for="setRetention">
-                  Captures to keep
-                  <span class="muted small">Oldest captures are dropped once you go past this.</span>
-                </label>
-                <div class="setting-field">
-                  <input id="setRetention" type="number" min="50" step="50" />
-                  <span class="setting-unit">captures</span>
+              <div class="ab-sec" data-sec="glossary">
+                <div class="card ab-card">
+                  <div class="ab-head ab-tab-only">
+                    <div>
+                      <h2 class="ab-title">What the numbers mean</h2>
+                      <p class="ab-sub">Every metric in the tool, with its formula and how to act on it. Hover a metric's label anywhere in the tool to see the same definition.</p>
+                    </div>
+                    <span class="ab-count" id="abGlossCount"></span>
+                  </div>
+                  <label class="ab-search">
+                    <span class="ab-sr">Search the glossary</span>
+                    <input id="abGlossSearch" type="search" placeholder="Search terms, definitions and formulas" autocomplete="off" />
+                  </label>
+                  <div class="ab-chips" id="abGlossChips" role="group" aria-label="Groups"></div>
+                  <div class="ab-gloss" id="glossaryList"></div>
                 </div>
               </div>
-              <div class="setting-row">
-                <label class="setting-label" for="setMaxMB">
-                  Skip large payloads
-                  <span class="muted small">Responses bigger than this are not stored, to keep the local database small.</span>
-                </label>
-                <div class="setting-field">
-                  <input id="setMaxMB" type="number" min="1" step="1" />
-                  <span class="setting-unit">MB</span>
+              <div class="ab-sec" data-sec="term" id="abTerm"></div>
+
+              <div class="ab-sec" data-sec="settings">
+                <div class="card ab-card">
+                  <div class="ab-head ab-tab-only">
+                    <div>
+                      <h2 class="ab-title">Settings</h2>
+                      <p class="ab-sub">How CitoSkeleton looks, and how much it keeps on this device.</p>
+                    </div>
+                  </div>
+                  <div class="ab-meter" id="storageInfo"></div>
+                  <div class="ab-rows">
+                    <!-- Appearance (0.56.0): moved here from the top bar, which the
+                         canvas keeps to the logo, the pages and pop-out. It applies
+                         at once, so it sits outside Save / Undo. -->
+                    <div class="ab-row">
+                      <div class="ab-row-text" id="setThemeLabel">
+                        <b>Appearance</b>
+                        <span>Applies straight away, in the popup and the full tab.</span>
+                      </div>
+                      <div class="ab-seg" role="radiogroup" aria-labelledby="setThemeLabel" id="setTheme">
+                        <button type="button" role="radio" class="ab-seg-btn" data-theme-pick="light" aria-checked="false">Light</button>
+                        <button type="button" role="radio" class="ab-seg-btn" data-theme-pick="dark" aria-checked="false">Dark</button>
+                      </div>
+                    </div>
+                    <div class="ab-row">
+                      <label class="ab-row-text" for="setRetention">
+                        <b>Captures to keep</b>
+                        <span>Older captures are removed once you go past this.</span>
+                      </label>
+                      <div class="ab-stepper">
+                        <button type="button" class="ab-stepbtn" data-step="setRetention" data-dir="-1" aria-label="Fewer captures">−</button>
+                        <input id="setRetention" type="number" min="50" step="50" inputmode="numeric" />
+                        <button type="button" class="ab-stepbtn" data-step="setRetention" data-dir="1" aria-label="More captures">+</button>
+                        <span class="ab-unit">captures</span>
+                      </div>
+                    </div>
+                    <div class="ab-row">
+                      <label class="ab-row-text" for="setMaxMB">
+                        <b>Skip responses larger than</b>
+                        <span>Bigger responses aren't stored, to keep the local database small.</span>
+                      </label>
+                      <div class="ab-stepper">
+                        <button type="button" class="ab-stepbtn" data-step="setMaxMB" data-dir="-1" aria-label="Smaller limit">−</button>
+                        <input id="setMaxMB" type="number" min="1" step="1" inputmode="numeric" />
+                        <button type="button" class="ab-stepbtn" data-step="setMaxMB" data-dir="1" aria-label="Larger limit">+</button>
+                        <span class="ab-unit">MB</span>
+                      </div>
+                    </div>
+                    <div class="ab-row">
+                      <label class="ab-row-text" for="setDebug">
+                        <b>Capture debugger</b>
+                        <span>Logs every network event the extension sees. Leave it off unless you're asked to turn it on.</span>
+                      </label>
+                      <label class="ab-switch">
+                        <input type="checkbox" id="setDebug" role="switch" />
+                        <span class="ab-switch-track" aria-hidden="true"><span class="ab-switch-knob"></span></span>
+                        <span class="ab-switch-text" id="setDebugText">Off</span>
+                      </label>
+                    </div>
+                  </div>
+                  <div class="ab-savebar">
+                    <span id="setStatus" class="ab-status" role="status"></span>
+                    <button type="button" id="setUndo" class="btn sm ghost">Undo changes</button>
+                    <button type="button" id="setSave" class="btn sm primary">Save settings</button>
+                  </div>
                 </div>
               </div>
-              <div class="setting-row">
-                <label class="setting-label" for="setDebug">
-                  Capture debugger
-                  <span class="muted small">Verbose logging of every observed network event. Off by default.</span>
-                </label>
-                <div class="setting-field">
-                  <label class="chk"><input type="checkbox" id="setDebug" /> Enabled</label>
+
+              <div class="ab-sec" data-sec="data">
+                <div class="card ab-card">
+                  <div class="ab-head ab-tab-only">
+                    <div>
+                      <h2 class="ab-title">Data &amp; tools</h2>
+                      <p class="ab-sub">Housekeeping on what's already stored. None of these touch your campaigns.</p>
+                    </div>
+                  </div>
+                  <div class="ab-tool">
+                    <div class="ab-tool-text">
+                      <b>Reprocess all captures</b>
+                      <span>Re-reads everything already captured with the current version. Run it after an update so fixes to brand detection, citation links and the like apply to old data too.</span>
+                      <span id="reprocessStatus" class="ab-done" role="status"></span>
+                    </div>
+                    <button type="button" id="reprocess" class="btn sm ghost">Reprocess</button>
+                  </div>
+                  <div class="ab-tool">
+                    <div class="ab-tool-text">
+                      <b>Sample data <span id="demoStatus" class="ab-chip"></span></b>
+                      <span>One example capture, so every screen has something to show. It's labelled as a sample and never counted in your numbers. Removing it leaves your own captures alone.</span>
+                    </div>
+                    <button type="button" id="demoToggle" class="btn sm ghost">Load sample</button>
+                  </div>
+                  <div class="ab-tool">
+                    <div class="ab-tool-text">
+                      <b>Guided tour</b>
+                      <span>A short walk through each tab, the same one shown on first install.</span>
+                    </div>
+                    <button type="button" id="replayTour" class="btn sm ghost">Replay tour</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="ab-sec" data-sec="diagnostics">
+                <div class="ab-buildline" id="abBuildFull" role="status"></div>
+                <div class="card ab-card">
+                  <div class="ab-head">
+                    <div>
+                      <h2 class="ab-title">Report a problem</h2>
+                      <p class="ab-sub">Send both of these. Neither contains your prompts, answers, links or brand names.</p>
+                    </div>
+                  </div>
+                  <div class="ab-report">
+                    <div class="ab-report-item">
+                      <span class="ab-num" aria-hidden="true">1</span>
+                      <div class="ab-tool-text">
+                        <b>Diagnostic report</b>
+                        <span>Storage counts, plus each run's timing and failure reasons. You see the whole text before anything is copied.</span>
+                      </div>
+                      <button type="button" id="diagReport" class="btn sm ghost">Copy diagnostic report</button>
+                    </div>
+                    <div class="ab-report-item">
+                      <span class="ab-num" aria-hidden="true">2</span>
+                      <div class="ab-tool-text">
+                        <b>Campaign diagnostics</b>
+                        <span>One .zip with the log, every capture for the campaign and its run-by-run numbers.</span>
+                      </div>
+                      <div class="ab-export">
+                        <label class="ab-sr" for="diagExportProfile">Campaign</label>
+                        <select id="diagExportProfile" class="filter"></select>
+                        <button type="button" id="diagExportBtn" class="btn sm ghost">Export .zip</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="card ab-card">
+                  <div class="ab-head">
+                    <div>
+                      <h2 class="ab-title">Activity log</h2>
+                      <p class="ab-sub">Errors, captures and each prompt's outcome, newest first. Kept on this device only.</p>
+                    </div>
+                    <div class="ab-head-actions">
+                      <button type="button" id="diagCopy" class="btn sm ghost">Copy log</button>
+                      <button type="button" id="diagClear" class="btn sm ghost danger">Clear log</button>
+                    </div>
+                  </div>
+                  <div class="ab-chips" id="diagChips" role="group" aria-label="Show"></div>
+                  <div id="diagLog" class="ab-log"></div>
                 </div>
               </div>
             </div>
-            <div class="settings-actions">
-              <button id="setSave" class="btn sm primary">Save settings</button>
-              <span id="setStatus" class="muted small"></span>
-            </div>
-            <div id="storageInfo" class="muted small settings-storage"></div>
-          </div>
-
-          <div class="card">
-            <div class="card-header"><h3>Maintenance</h3></div>
-            <div class="maint-row">
-              <div>
-                <b>Reprocess all captures</b>
-                <div class="muted small">Re-runs the current extraction logic over everything already captured. Use this after an extension update to pick up adapter fixes — brand detection, citation links and so on — on old data.</div>
-              </div>
-              <button id="reprocess" class="btn sm ghost">↻ Reprocess</button>
-            </div>
-            <!-- Sample data + tour. Placed with Reprocess because both are
-                 "housekeeping on what's stored" rather than settings. The
-                 remove button is scoped to demo rows only, so a user with
-                 real captures can clear the samples without risk. -->
-            <div class="setting-row">
-              <div>
-                <b>Sample data &amp; tour</b>
-                <div class="muted small">Loads one example capture so every screen has something to show. It's clearly labelled and never mixed into your real numbers — removing it leaves your own captures untouched.</div>
-                <div id="demoStatus" class="muted small"></div>
-              </div>
-              <div style="display:flex; gap:6px; flex-shrink:0;">
-                <button id="replayTour" class="btn sm ghost">▶ Replay tour</button>
-                <button id="demoToggle" class="btn sm ghost">Load sample</button>
-              </div>
-            </div>
-            <!-- Error log, above the capture debugger deliberately: this is the
-                 one a user needs when something has gone wrong, and unlike the
-                 debugger it is always recording and survives a browser
-                 restart. Open by default when it has entries (set in JS). -->
-            <details class="about-details" id="errLogBox">
-              <summary>Error log <span id="errLogCount" class="muted small"></span></summary>
-              <p class="muted small">
-                Everything that has failed, newest first, grouped so one repeating problem
-                reads as one line. Recorded on this device only, and deliberately free of
-                prompt text, answers, URLs and brand names — so it is safe to copy and share
-                when reporting a problem.
-              </p>
-              <div class="ft-actions" style="margin-bottom: 10px;">
-                <button id="errLogRefresh" class="btn sm ghost">Refresh</button>
-                <button id="errLogCopy" class="btn sm ghost">Copy log</button>
-                <button id="errLogClear" class="btn sm ghost danger">Clear log</button>
-              </div>
-              <div id="errLog" class="dbglog"></div>
-            </details>
-
-            <details class="about-details">
-              <summary>Capture debugger log</summary>
-              <p class="muted small">Observed network events and payloads across the supported engines. Only useful when the debugger above is enabled.</p>
-              <div class="ft-actions" style="margin-bottom: 10px;">
-                <button id="dbgRefresh" class="btn sm ghost">Refresh log</button>
-                <button id="dbgClear" class="btn sm ghost danger">Clear log</button>
-              </div>
-              <div id="dbgLog" class="dbglog"></div>
-            </details>
           </div>
         </section>
 

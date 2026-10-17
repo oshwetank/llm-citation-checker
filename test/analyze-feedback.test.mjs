@@ -101,8 +101,11 @@ try {
       const cs = getComputedStyle(btn);
       return {
         insideBar: bar.contains(btn),
-        // "in the corner": last child, hard against the bar's right edge.
-        isLastChild: bar.lastElementChild === btn,
+        // "in the corner": the last control of the bar's top row, hard
+        // against its right edge. Since 0.48.0 the full tab's bar has rows
+        // (actions, prompt, chips, engine tabs); the 💬 ends the first.
+        isLastChild: (btn.parentElement === bar ? bar : btn.parentElement).lastElementChild === btn
+          && (btn.parentElement === bar || btn.parentElement === bar.firstElementChild),
         gapToRightEdge: Math.round(r.right - b.right),
         width: Math.round(b.width), height: Math.round(b.height),
         title: btn.getAttribute("title") || "",
@@ -114,7 +117,7 @@ try {
     check("the Analyze bar and the icon both exist", !info.missing, info.missing && `missing: ${info.missing}`);
     if (!info.missing) {
       check("the icon lives inside the Analyze bar", info.insideBar);
-      check("it is the last control in the bar (the corner)", info.isLastChild);
+      check("it is the last control in the bar's top row (the corner)", info.isLastChild);
       check("it sits against the bar's right edge", info.gapToRightEdge <= 20, `${info.gapToRightEdge}px from the edge`);
       check("it is small — an icon, not a button with a label",
         info.width <= 34 && info.height <= 34, `${info.width}x${info.height}`);

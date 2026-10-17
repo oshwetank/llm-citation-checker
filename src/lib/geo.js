@@ -126,6 +126,12 @@ export function makeProfile(base = {}) {
     // Soft-delete: set to a timestamp instead of removing the profile outright,
     // so a campaign can be restored for a window before it's purged for real.
     deletedAt: base.deletedAt || null,
+    // What the campaign's board leads with (0.55.0): its headline views, set
+    // in setup. Brand mentions are always measured. null means the campaign
+    // predates the choice, so every view stays offered.
+    measure: base.measure && typeof base.measure === "object"
+      ? { citations: !!base.measure.citations, products: !!base.measure.products, images: !!base.measure.images, local: !!base.measure.local }
+      : null,
   };
 }
 
@@ -177,9 +183,46 @@ export function partitionRecords(records) {
   return { tracked, adhoc };
 }
 
-/** Records for one profile, optionally narrowed by engine / tags / time. */
-export function selectTracked(records, { profileId, engines, tags, since, until, runId } = {}) {
+/* One capture per prompt, per engine, per run.
+ *
+ * An engine can deliver several captures for one prompt: Gemini's answer
+ * arrives as several StreamGenerate responses, Perplexity is captured both
+ * from its answer stream and from the page, and a send that was accepted
+ * more than once (see RETRY_GAP_MS in content-iso.js) produces several
+ * answers. Every metric divides by the number of records — a real run
+ * stored 30 Gemini records for 7 prompts and 27 Perplexity records for 10 —
+ * so each prompt counted as many responses as it had captures, and a
+ * brand's visibility shifted with how many copies happened to arrive. The
+ * copy kept is the most complete: most sources, then longest answer, then
+ * earliest. A record without a run or prompt (older captures) is kept as is.
+ */
+const moreComplete = (a, b) => {
+  const sa = (a.sources || []).length;
+  const sb = (b.sources || []).length;
+  if (sa !== sb) return sa > sb;
+  const la = a.answerChars || 0;
+  const lb = b.answerChars || 0;
+  if (la !== lb) return la > lb;
+  return (a.capturedAt || 0) < (b.capturedAt || 0);
+};
+const captureKey = (r) => (r.geo && r.geo.runId && r.geo.promptId ? `${r.geo.runId}|${r.platform}|${r.geo.promptId}` : null);
+export function oneCapturePerPrompt(records) {
+  const best = new Map();
+  for (const r of records || []) {
+    const k = captureKey(r);
+    if (k && (!best.has(k) || moreComplete(r, best.get(k)))) best.set(k, r);
+  }
   return (records || []).filter((r) => {
+    const k = captureKey(r);
+    return !k || best.get(k) === r;
+  });
+}
+
+/** Records for one profile, optionally narrowed by engine / tags / time.
+ * One capture per prompt per engine per run (see oneCapturePerPrompt);
+ * `allCaptures` keeps every copy, for the diagnostics export. */
+export function selectTracked(records, { profileId, engines, tags, since, until, runId, allCaptures = false } = {}) {
+  const picked = (records || []).filter((r) => {
     if (!isTracked(r)) return false;
     if (profileId && r.geo.profileId !== profileId) return false;
     if (runId && r.geo.runId !== runId) return false;
@@ -192,6 +235,7 @@ export function selectTracked(records, { profileId, engines, tags, since, until,
     }
     return true;
   });
+  return allCaptures ? picked : oneCapturePerPrompt(picked);
 }
 
 /* ---------------- per-record brand presence ---------------- */

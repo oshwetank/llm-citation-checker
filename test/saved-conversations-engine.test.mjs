@@ -13,6 +13,10 @@
  * row: no icon, no label, nothing. This test seeds a mix of ChatGPT-only and
  * Gemini-only captures (deliberately distinct prompts, so none of them
  * cluster) and asserts every row now carries a correct, visible engine badge.
+ *
+ * Since 0.49.0 the Saved Conversations list is the Dashboard's history: one
+ * row per prompt, with a mark for every engine that answered it. The same
+ * guarantee holds there, and each mark opens that engine's answer.
  */
 import { readFileSync, readdirSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -142,57 +146,48 @@ try {
   await page.click('[data-tab="dashboard"]').catch(() => {});
   await page.waitForTimeout(1200);
 
-  const rows = await page.evaluate(() => {
-    const items = [...document.querySelectorAll(".capture-item")];
-    return items.map((li) => {
-      const prompt = li.querySelector(".capture-prompt")?.textContent?.trim() || "";
-      const badge = li.querySelector(".capture-engine");
-      const tabsRow = li.querySelector(".capture-meta")?.nextElementSibling; // best-effort, not asserted on
-      return {
-        prompt,
-        hasBadge: !!badge,
-        badgeText: badge ? badge.textContent.trim() : "",
-        hasIcon: !!badge?.querySelector("svg, .llm-icon"),
-      };
-    });
-  });
+  // Since 0.49.0 the Dashboard has one row per prompt (.db-row) carrying a
+  // mark for every engine that answered it (.db-engine, which opens that
+  // engine's answer). The guarantee is the same: a prompt run on only one
+  // engine still says which engine.
+  const rowsNow = () => page.evaluate(() => [...document.querySelectorAll("#dashboard .db-row")].map((li) => ({
+    prompt: li.querySelector(".db-prompt")?.textContent?.trim() || "",
+    marks: [...li.querySelectorAll(".db-engine")].map((b) => ({
+      engine: b.dataset.engine, label: b.getAttribute("aria-label") || "", hasIcon: !!b.querySelector("svg"),
+    })),
+  })));
+  // The seeded prompts are all from today, and the default period would hide
+  // nothing; "All time" makes that explicit.
+  await page.evaluate(() => [...document.querySelectorAll(".db-seg-btn")].find((b) => b.textContent === "All time")?.click());
+  await page.waitForTimeout(300);
+  const rows = await rowsNow();
 
-  check("Saved Conversations rendered rows for every seeded capture", rows.length === FILES.length, `${rows.length} rows`);
-
-  const solo = rows; // every fixture here is deliberately a solo (non-clustered) cluster
+  check("the Dashboard lists a row for every seeded prompt", rows.length === FILES.length, `${rows.length} rows`);
   check(
-    "every row — including a prompt run on only ONE engine — carries an engine badge",
-    solo.length > 0 && solo.every((r) => r.hasBadge),
-    JSON.stringify(solo.map((r) => ({ prompt: r.prompt.slice(0, 30), hasBadge: r.hasBadge })))
+    "every row — including a prompt run on only ONE engine — names its engine",
+    rows.length > 0 && rows.every((r) => r.marks.length > 0 && r.marks.every((m) => /^Open (ChatGPT|Gemini|Perplexity|Grok)'s answer$/.test(m.label))),
+    JSON.stringify(rows.map((r) => ({ prompt: r.prompt.slice(0, 30), marks: r.marks.map((m) => m.label) })))
   );
-  check(
-    "every badge has a real icon, not just text",
-    solo.every((r) => r.hasIcon),
-    JSON.stringify(solo.map((r) => r.hasIcon))
-  );
+  check("every mark has a real icon, not just text", rows.every((r) => r.marks.every((m) => m.hasIcon)));
 
   // Correlate each row to the engine its own fixture actually used, via the
   // one string every prompt is unique on.
   const expectByPromptFragment = [
-    ["best tv to buy", "ChatGPT"],
-    ["new trending watch", "ChatGPT"],
-    ["modern jewellery", "Gemini"],
-    ["best camera phone", "Gemini"],
+    ["best tv to buy", "chatgpt"],
+    ["new trending watch", "chatgpt"],
+    ["modern jewellery", "gemini"],
+    ["best camera phone", "gemini"],
   ];
   for (const [fragment, engine] of expectByPromptFragment) {
     const row = rows.find((r) => r.prompt.toLowerCase().includes(fragment));
-    check(`row for "${fragment}" is labelled ${engine}`, !!row && row.badgeText.includes(engine),
-      row ? `badge says "${row.badgeText}"` : "row not found");
+    check(`row for "${fragment}" is marked ${engine}`, !!row && row.marks.length === 1 && row.marks[0].engine === engine,
+      row ? JSON.stringify(row.marks) : "row not found");
   }
 
-  console.log("\nthe badge also stays correct once a prompt HAS run on both engines");
+  console.log("\na prompt run on both engines shows both, and each opens its own answer");
   {
-    // The one case that already had a platform indicator (the pill selector,
-    // shown only when a cluster holds more than one run) still needs the
-    // badge to track whichever run is currently active — otherwise switching
-    // pills would leave a stale engine label on screen. Seeded directly into
-    // IndexedDB (bypassing reqBody/adapter parsing entirely) so this checks
-    // only the clustering + badge-sync behaviour, not extraction.
+    // Seeded directly into IndexedDB (bypassing reqBody/adapter parsing
+    // entirely) so this checks only the grouping and the marks, not extraction.
     const seeded = await page.evaluate(async () => {
       const open = () => new Promise((res, rej) => {
         // No version argument on purpose. Hardcoding one (this said 4) breaks with
@@ -223,46 +218,24 @@ try {
       await put({ ...base, captureId: "cluster-gemini", platform: "gemini", capturedAt: now + 1000, userPrompt: prompt });
       return true;
     });
-    check("synthetic clustered records were written", seeded === true);
+    check("synthetic records for one prompt on two engines were written", seeded === true);
 
     await page.reload();
     await page.waitForTimeout(1000);
     await page.click('[data-tab="dashboard"]').catch(() => {});
     await page.waitForTimeout(1200);
-
-    const clustered = await page.evaluate(() => {
-      const items = [...document.querySelectorAll(".capture-item")];
-      const li = items.find((el) => el.querySelector(".capture-prompt")?.textContent?.includes("which laptop for college"));
-      if (!li) return null;
-      const pills = [...li.querySelectorAll("button")].filter((b) => /^(chatgpt|gemini)\s*\(/i.test(b.textContent.trim()));
-      return {
-        hasPills: pills.length >= 2,
-        badgeBefore: li.querySelector(".capture-engine")?.textContent?.trim() || "",
-      };
-    });
-    check("the clustered row shows the platform pill selector", !!clustered && clustered.hasPills, JSON.stringify(clustered));
-    check("its badge matches whichever run is active by default",
-      !!clustered && /ChatGPT|Gemini/.test(clustered.badgeBefore), clustered && clustered.badgeBefore);
-
-    if (clustered && clustered.hasPills) {
-      const switched = await page.evaluate(() => {
-        const items = [...document.querySelectorAll(".capture-item")];
-        const li = items.find((el) => el.querySelector(".capture-prompt")?.textContent?.includes("which laptop for college"));
-        const before = li.querySelector(".capture-engine")?.textContent?.trim() || "";
-        const otherPill = [...li.querySelectorAll("button")]
-          .find((b) => /^(chatgpt|gemini)\s*\(/i.test(b.textContent.trim()) && !b.className.includes("primary"));
-        otherPill?.click();
-        return { before, clickedText: otherPill?.textContent || "" };
-      });
-      await page.waitForTimeout(300);
-      const after = await page.evaluate(() => {
-        const items = [...document.querySelectorAll(".capture-item")];
-        const li = items.find((el) => el.querySelector(".capture-prompt")?.textContent?.includes("which laptop for college"));
-        return li.querySelector(".capture-engine")?.textContent?.trim() || "";
-      });
-      check("switching the pill updates the badge to the newly active engine",
-        after && after !== switched.before,
-        `before="${switched.before}" clicked="${switched.clickedText}" after="${after}"`);
+    const both = (await rowsNow()).filter((r) => r.prompt.includes("which laptop for college"));
+    check("it is one row, not two", both.length === 1, JSON.stringify(both));
+    check("the row carries both engines' marks", both[0] && both[0].marks.map((m) => m.engine).join() === "chatgpt,gemini", both[0] && JSON.stringify(both[0].marks));
+    for (const [engine, label] of [["gemini", "Gemini"], ["chatgpt", "ChatGPT"]]) {
+      await page.evaluate((engine) => [...document.querySelectorAll("#dashboard .db-row")]
+        .find((li) => li.querySelector(".db-prompt")?.textContent?.includes("which laptop for college"))
+        ?.querySelector(`.db-engine[data-engine="${engine}"]`)?.click(), engine);
+      await page.waitForTimeout(1200);
+      const asked = await page.evaluate(() => document.querySelector("#analyze .at-asked")?.textContent || "");
+      check(`its ${label} mark opens ${label}'s answer`, asked === `Asked ${label}`, asked);
+      await page.click('[data-tab="dashboard"]').catch(() => {});
+      await page.waitForTimeout(800);
     }
   }
 
