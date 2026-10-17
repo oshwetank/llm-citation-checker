@@ -191,7 +191,8 @@ try {
     const c = await st();
     check("Undo changes puts it back", c.keep === "2000" && c.status === "All settings saved" && !c.save, JSON.stringify(c));
     await page.fill("#setMaxMB", "0");
-    await page.evaluate(() => document.querySelector(".ab-switch").click());
+    // By id: from 0.62.0 "Read the cited pages" is the first switch on the page.
+    await page.evaluate(() => document.getElementById("setDebug").closest(".ab-switch").click());
     await settle(200);
     check("the debugger switch says what it's set to", (await st()).debug === "On");
     await page.evaluate(() => document.getElementById("setSave").click());
