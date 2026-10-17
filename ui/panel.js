@@ -2416,7 +2416,10 @@ function atRenderAnswer(rec, { loading, tabs, currentId, brandNames, own }) {
     });
     body.append(top);
   }
-  if ((rec.products || []).length) {
+  // A card answer draws its own cards in the text, as ChatGPT did (0.60.2),
+  // so the carousel strip above it would show them twice.
+  const genUiCards = !!(rec.platformSpecific && Array.isArray(rec.platformSpecific.genUiBlocks) && rec.platformSpecific.genUiBlocks.some((b) => b.type === "card"));
+  if ((rec.products || []).length && !genUiCards) {
     const cards = el("div", { className: "at-ans-cards", "aria-label": "Product cards, in the order the carousel showed them" });
     rec.products.forEach((p, i) => cards.append(el("div", { className: `at-ans-card${own && new RegExp(`^${escapeRegExp(own.name)}\\b`, "i").test(String(p.name || "")) ? " mine" : ""}` },
       el("span", { className: "at-ans-wrap" }, withImage(el("span", { className: "at-ans-thumb" }, glyphEl("cart", 30)), p.image, p.name), el("span", { className: "ap-card-n" }, String(i + 1))),
@@ -2448,6 +2451,9 @@ function atRenderAnswer(rec, { loading, tabs, currentId, brandNames, own }) {
   // bodyHtml is built by exportDoc.js from escaped text plus a fixed set of
   // our own tags (see markdownToHtml there), the same HTML the export writes.
   text.innerHTML = model.bodyHtml;
+  // A card picture that won't load leaves its frame empty rather than a
+  // broken-image icon.
+  text.querySelectorAll(".gu-pic img").forEach((img) => { img.onerror = () => img.remove(); });
   const fnByN = new Map(model.footnotes.map((f) => [String(f.n), f.source]));
   text.querySelectorAll("sup.fn a").forEach((a) => {
     const n = (a.textContent.match(/\d+/) || [""])[0];

@@ -264,6 +264,69 @@ function renderChatGptAnswer(record) {
     return tok;
   };
 
+  // One piece of answer text to markdown-ready raw, with its citations
+  // numbered in the same footnote list as the rest of the answer.
+  const convert = (text) => {
+    let out = "";
+    for (const seg of tokenizeAnswerMarkup(text || "")) {
+      if (seg.type === "text") out += seg.value;
+      else if (seg.type === "entity" || seg.type === "product") out += place(`<strong>${esc(seg.name)}</strong>`);
+      else if (seg.type === "cite") out += citeHtml(seg.ids);
+    }
+    return out;
+  };
+  const citeHtml = (ids) => {
+    const nums = [];
+    for (const id of ids) {
+      const src = markerToSource.get(id);
+      if (!src) { unresolvedCitations = true; continue; }
+      let n = footnoteBySourceUrl.get(src.url);
+      if (!n) {
+        n = footnotes.length + 1;
+        footnoteBySourceUrl.set(src.url, n);
+        footnotes.push({ n, source: src });
+      }
+      if (!nums.includes(n)) nums.push(n);
+    }
+    return nums.length ? place(nums.map((n) => `<sup class="fn"><a href="#fn-${record.captureId}-${n}">[${n}]</a></sup>`).join("")) : "";
+  };
+
+  // A generative-UI answer (lib/genui.js, 0.60.2) is drawn as ChatGPT drew
+  // it: text, then cards with the picture on the left, a badge, the product
+  // name, its titles and notes, then the form with ChatGPT's own choices
+  // selected. Reported: the answer "as ChatGPT showed it" was a column of
+  // plain text, nothing like the page.
+  const blocks = record.platformSpecific && Array.isArray(record.platformSpecific.genUiBlocks) ? record.platformSpecific.genUiBlocks : null;
+  if (blocks && blocks.length) {
+    const line = (t) => markdownToHtml(convert(t), placeholders).replace(/^<p>([\s\S]*)<\/p>$/, "$1");
+    const html = blocks.map((b) => {
+      if (b.type === "md") return markdownToHtml(convert(b.text), placeholders);
+      if (b.type === "card") {
+        const pic = b.image && /^https:\/\//.test(b.image.url)
+          ? `<div class="gu-pic"><img src="${esc(b.image.url)}" alt="${escText(b.name || "")}" loading="lazy" referrerpolicy="no-referrer"></div>`
+          : `<div class="gu-pic gu-pic-none"></div>`;
+        const parts = (b.parts || []).map((p) => {
+          if (p.kind === "badge") return `<span class="gu-badge${p.tone ? ` tone-${esc(p.tone)}` : ""}">${line(p.text)}</span>`;
+          if (p.kind === "name") return `<div class="gu-name">${line(p.text)}</div>`;
+          if (p.kind === "title") return `<div class="gu-title gu-${esc(p.size || "md")}">${line(p.text)}</div>`;
+          if (p.kind === "text") return `<div class="gu-text${p.size === "sm" ? " gu-sm" : ""}${p.tone ? ` tone-${esc(p.tone)}` : ""}">${line(p.text)}</div>`;
+          return markdownToHtml(convert(p.text), placeholders);
+        }).join("");
+        return `<div class="gu-card">${pic}<div class="gu-body">${parts}</div></div>`;
+      }
+      if (b.type === "form") {
+        const groups = (b.groups || []).map((g) =>
+          (g.label ? `<div class="gu-q">${escText(g.label)}</div>` : "") +
+          g.options.map((o) => `<div class="gu-opt${o === g.selected ? " on" : ""}"><span class="gu-radio" aria-hidden="true"></span>${escText(o)}</div>`).join("")).join('<div class="gu-sep"></div>');
+        const checks = (b.checks || []).map((c) => `<div class="gu-opt gu-check${c.checked ? " on" : ""}"><span class="gu-box" aria-hidden="true"></span>${escText(c.label)}</div>`).join("");
+        const btn = b.button ? `<div class="gu-btn">${escText(b.button)}</div>` : "";
+        return `<div class="gu-form" role="group" aria-label="The follow-up form ChatGPT showed">${groups}${checks}${btn}</div>`;
+      }
+      return "";
+    }).join("\n");
+    return { bodyHtml: html, footnotes, unresolvedCitations };
+  }
+
   for (const seg of segs) {
     if (seg.type === "text") {
       raw += seg.value;
@@ -829,6 +892,28 @@ const DOC_STYLE = `
   .answer table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13.5px; }
   .answer th, .answer td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; vertical-align: top; }
   .answer th { background: #f5f5f5; }
+  .gu-card { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 14px; align-items: start; padding: 14px 0; break-inside: avoid; }
+  .gu-card + .gu-card { border-top: 1px solid var(--line-soft, rgba(127,127,127,.22)); }
+  .gu-pic { width: 96px; aspect-ratio: 3 / 4; border-radius: 12px; overflow: hidden; background: var(--bg-subtle, rgba(127,127,127,.12)); border: 1px solid var(--line-soft, rgba(127,127,127,.18)); }
+  .gu-pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .gu-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .gu-body p { margin: 0; }
+  .gu-badge { align-self: flex-start; padding: 1px 8px; border-radius: 6px; font-size: 0.82em; font-weight: 500; background: var(--bg-subtle, rgba(127,127,127,.14)); }
+  .gu-badge.tone-success { background: var(--green-bg, #e3f5e9); color: var(--green-fg, #17663a); }
+  .gu-name { font-weight: 500; text-decoration: underline; text-decoration-color: var(--line-soft, rgba(127,127,127,.5)); text-underline-offset: 3px; }
+  .gu-title.gu-lg { font-size: 1.15em; font-weight: 600; }
+  .gu-title.gu-md { font-weight: 600; }
+  .gu-text.gu-sm { font-size: 0.86em; }
+  .gu-text.tone-secondary { color: var(--fg-secondary, #6b7280); }
+  .gu-form { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 12px; padding: 12px 14px; border: 1px solid var(--line-soft, rgba(127,127,127,.25)); border-radius: 14px; break-inside: avoid; }
+  .gu-q { font-weight: 600; margin-top: 2px; }
+  .gu-sep { height: 1px; margin: 6px 0; background: var(--line-soft, rgba(127,127,127,.2)); }
+  .gu-opt { display: flex; align-items: center; gap: 10px; }
+  .gu-radio, .gu-box { flex: 0 0 auto; width: 16px; height: 16px; border: 1.5px solid var(--fg-secondary, #9ca3af); border-radius: 50%; }
+  .gu-box { border-radius: 4px; }
+  .gu-opt.on .gu-radio { border: 5px solid var(--fg, #111); }
+  .gu-opt.on .gu-box { background: var(--fg, #111); border-color: var(--fg, #111); }
+  .gu-btn { margin-top: 8px; padding: 8px 14px; border-radius: 999px; text-align: center; font-weight: 600; background: var(--fg, #111); color: var(--bg, #fff); }
   .answer ul, .answer ol { margin: 0 0 12px; padding-left: 22px; }
   tr { break-inside: avoid; } /* don't split a table row across a page boundary */
   .fn a { text-decoration: none; color: #0b5fff; font-size: 0.75em; }
