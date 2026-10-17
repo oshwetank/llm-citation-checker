@@ -11,7 +11,7 @@
  * news on screen. The fixture is made up (brands Zento, Kovo, Lumora) with
  * the same stream shapes.
  */
-import { adapt } from "../src/adapters/chatgpt.js";
+import { adapt, sameProduct } from "../src/adapters/chatgpt.js";
 import { isGenUi, readGenUi } from "../src/lib/genui.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -110,6 +110,25 @@ console.log("genui.js");
 check("plain markdown is not layout code", !isGenUi("**Best pick:** a phone. - one\n- two"));
 const tiny = readGenUi('<title size="lg">1. <Entity value="Acme One"/></title>\n<button onClick={() => GenUI.issueNewTurn("go")}>Go</button>');
 check("a button with an arrow function parses", !/onClick|=>|<\/?button/.test(tiny.markdown), JSON.stringify(tiny.markdown));
+
+console.log("\nvalues a card binds by name, and one product per card (0.62.1)");
+{
+  // From the owner's "best earbuds under 4000" capture (not committed): a
+  // card's price and store were "{turn168326product0.displayed_price}" and
+  // "{…merchant}", their values under opGenui.modelDataBindings; the cards
+  // came out without either, and each card's listing was a second product.
+  const code = [
+    '<row><Entity value="Zento Pods 4 Pro"/><title size="lg">{turn9product0.displayed_price}</title><text color="secondary" size="sm">Listed at {turn9product0.merchant}</text><text>Long battery.</text></row>',
+    '<row><Entity value="Kovo Buds Air 8"/><title size="lg">{turn9product1?.displayed_price}</title><text>{turn9product7.merchant}</text></row>',
+  ].join("\n");
+  const g = readGenUi(code, { bindings: { turn9product0: { displayed_price: "₹3,999", merchant: "Phonekart + others" }, turn9product1: { displayed_price: "₹3,799" } } });
+  check("bound values are filled in", /₹3,999/.test(g.markdown) && /Listed at Phonekart \+ others/.test(g.markdown) && /₹3,799/.test(g.markdown), g.markdown);
+  check("and a binding with no value leaves no code behind", !/\{turn/.test(g.markdown), g.markdown);
+  check("a card's price comes from its binding", g.cards[0].price === "₹3,999", JSON.stringify(g.cards.map((c) => c.price)));
+  check("a card and its listing are one product", sameProduct("Kovo Buds Air 8", "Kovo Buds Air8 With 55db Anc, 11+6mm Dual Drivers, Ip55 Bluetooth"));
+  check("but not when the listing is another model", !sameProduct("Zento Pods 4", "Zento Pods 4 Pro Earbuds") && sameProduct("Zento Pods 4", "Zento Pods 4 TWS Earbuds with 52dB ANC"));
+  check("nor a different number", !sameProduct("Zento Pods 3", "Zento Pods 4 Earbuds"));
+}
 
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);

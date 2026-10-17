@@ -246,6 +246,10 @@ export function tokenizeAnswerMarkup(text) {
 // reason now that this call is async.
 async function detectBrandsForCapture(answerText, products, tracked, sources, places, prompt) {
   if (!answerText) return { brands: [], entities: [] };
+  // A card's "Listed at <store> + others" line names where it's sold, not a
+  // brand the answer recommends (a resolved binding since 0.62.1). The
+  // stores are on the product; detection doesn't read that line.
+  answerText = answerText.replace(/^\s*Listed at [^\n]*$/gim, "");
   // Deliberately the synchronous, non-AI detector. The optional on-device AI
   // tier runs AFTER the capture is stored (see background.js's
   // enrichCaptureWithAI) — inside here it blocked the write, so nothing
@@ -670,6 +674,21 @@ function genUiImages(nodes) {
 // rating, image); the others become products the answer named with a price,
 // marked as having no listing. Listings the answer didn't put on a card keep
 // their place after them.
+// A card and a shopping listing name the same product when every word of the
+// card's name is in the listing's ("Air 8" = "Air8"), and the listing adds no
+// variant word the card lacks: "Nord Buds 4" is not "Nord Buds 4 Pro".
+const VARIANT = new Set(["pro", "max", "plus", "ultra", "lite", "mini", "neo", "se", "air", "fe", "prime", "r", "s"]);
+function productWords(name) {
+  return String(name || "").toLowerCase().replace(/([a-z])(\d)/g, "$1 $2").replace(/(\d)([a-z])/g, "$1 $2").split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+}
+export function sameProduct(cardName, listingName) {
+  const c = productWords(cardName), l = productWords(listingName);
+  if (c.length < 2 || !l.length) return false;
+  const ls = new Set(l), cs = new Set(c);
+  if (!c.every((w) => ls.has(w))) return false;
+  return !l.some((w) => VARIANT.has(w) && !cs.has(w));
+}
+
 function mergeGenUiCards(products, cards, imageLists) {
   if (!cards || !cards.length) return products;
   const norm = (s) => String(s || "").toLowerCase().replace(/\s+/g, " ").trim();
@@ -678,12 +697,16 @@ function mergeGenUiCards(products, cards, imageLists) {
   const used = new Set();
   for (const c of cards) {
     const pics = c.image ? (imageLists[img++] || []) : [];
-    const hit = products.find((p, i) => !used.has(i) && norm(p.name) === norm(c.name));
+    const hit = products.find((p, i) => !used.has(i) && norm(p.name) === norm(c.name))
+      || products.find((p, i) => !used.has(i) && sameProduct(c.name, p.name));
     if (hit) {
       used.add(products.indexOf(hit));
-      // The card's own picture is what was on screen; the listing's stays as
-      // the fallback.
-      out.push({ ...hit, image: (pics[0] && pics[0].url) || hit.image || null, subtitle: c.subtitle || null, badge: c.badge || null, headline: c.headline || null });
+      // One product, shown once: the card's name and place (what was on
+      // screen), the listing's id, price, stores and rating. The card's own
+      // picture leads; the listing's stays as the fallback. Before 0.62.1
+      // "realme Buds Air 8" and its listing "Realme Buds Air8 With 55db Anc,
+      // …" were two products.
+      out.push({ ...hit, name: c.name, listingName: hit.name !== c.name ? hit.name : undefined, price: hit.price || c.price || null, image: (pics[0] && pics[0].url) || hit.image || null, subtitle: c.subtitle || null, badge: c.badge || null, headline: c.headline || null });
     } else {
       out.push({
         id: `answer-${c.n}`, name: c.name, price: c.price || null, merchant: null, rating: null, reviews: null,
@@ -742,6 +765,24 @@ function extractAds(nodes) {
   return out;
 }
 
+/* The values a generative-UI card binds by name: "{turn168326product0.
+ * displayed_price}" in the layout, the value under appData.opGenui.
+ * modelDataBindings (sent whole, or one product at a time as patches). Left
+ * unread, a card lost its price and store (0.62.1, from the owner's
+ * "best earbuds under 4000" capture). */
+function genUiBindings(nodes) {
+  const out = {};
+  const put = (id, v) => { if (id && v && typeof v === "object" && !Array.isArray(v)) out[id] = { ...(out[id] || {}), ...v }; };
+  collectObjects({ nodes }, (o) => typeof o.p === "string" && /\/modelDataBindings(?:\/|$)/.test(o.p) && o.v && typeof o.v === "object").forEach((o) => {
+    const m = /\/modelDataBindings(?:\/([^/]+))?$/.exec(o.p);
+    if (!m) return;
+    if (m[1]) put(m[1], o.v);
+    else Object.entries(o.v).forEach(([id, v]) => put(id, v));
+  });
+  collectByKey({ nodes }, /^modelDataBindings$/, (v) => v && typeof v === "object" && !Array.isArray(v)).forEach((b) => Object.entries(b).forEach(([id, v]) => put(id, v)));
+  return out;
+}
+
 export async function adapt(rawCapture, opts = {}) {
   const diag = { adapterVersion: ADAPTER_VERSION, usedFallback: false, notes: [] };
   const nodes = parseSse(rawCapture.raw || "");
@@ -765,7 +806,7 @@ export async function adapt(rawCapture, opts = {}) {
   // ChatGPT's generative-UI answers (October 2026): layout code turned back
   // into the answer, its cards into products, its citations marked (see
   // lib/genui.js).
-  const genui = isGenUi(answerText) ? readGenUi(answerText) : null;
+  const genui = isGenUi(answerText) ? readGenUi(answerText, { bindings: genUiBindings(nodes) }) : null;
   if (genui) {
     answerText = genui.markdown;
     markGenUiCited(nodes, sources, genui.cites);

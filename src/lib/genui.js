@@ -233,8 +233,15 @@ function textMarkdown(text, cites) {
  * @param {string} code  the answer text as streamed (layout code)
  * @returns {{ markdown: string, blocks: object[], cards: object[], followUp: object|null, cites: string[] }}
  */
-export function readGenUi(code) {
-  let text = String(code || "").replace(/\r\n/g, "\n");
+export function readGenUi(code, { bindings = {} } = {}) {
+  // Values the layout binds by name ("{turn1product0.displayed_price}",
+  // also "{turn1product0?.merchant}"), filled in from the turn's bindings;
+  // one with no value is dropped rather than shown as code.
+  let text = String(code || "").replace(/\r\n/g, "\n").replace(/\{\s*([A-Za-z_]\w*)\??\.([A-Za-z_]\w*)\s*\}/g, (whole, id, field) => {
+    if (!/^turn\w*\d/.test(id)) return whole;
+    const v = bindings[id] && bindings[id][field];
+    return typeof v === "string" || typeof v === "number" ? String(v) : "";
+  });
   const cites = new Set();
   const defaults = readDefaults(text);
   const held = [];
