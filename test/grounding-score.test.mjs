@@ -98,6 +98,13 @@ console.log("\n--- Search Intent Graph ---");
   check("pricing intent categorized", graph.pricing.count === 1);
   check("technical intent categorized", graph.technical.count === 1);
   check("reviews intent categorized", graph.reviews.count === 1);
+
+  // Captures store each search as { query }, not a bare string. Until 0.60.0
+  // every one became "[object Object]" and all but the first were dropped as
+  // duplicates.
+  const stored = computeSearchIntentGraph([{ platform: "chatgpt", fanout: { search: [{ query: "Zento vs Kovo headphones" }, { query: "Zento Pulse price" }], shopping: [{ query: "Kovo Air review reddit" }] } }]);
+  check("searches stored as { query } are each read and bucketed", stored.comparison.count === 1 && stored.pricing.count === 1 && stored.reviews.count === 1, JSON.stringify(Object.fromEntries(Object.entries(stored).map(([k, v]) => [k, v.count]))));
+  check("with their own text", stored.comparison.queries[0].query === "Zento vs Kovo headphones");
 }
 
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");

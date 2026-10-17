@@ -154,6 +154,21 @@ try {
   check("#cmpOut renders content rather than staying blank", out.children > 0, `${out.children} children`);
   check("the comparison names the prompt it is comparing", /50000/.test(out.text), out.text.slice(0, 120));
   check("the run-by-run breakdown is present", /RUN BY RUN|Run by run/i.test(out.text), out.text.slice(0, 200));
+  // The Over time board (0.60.0): the movement drawn, not only counted.
+  const ot = await page.evaluate(() => ({
+    sections: [...document.querySelectorAll("#cmpOut .ot-sec")].map((x) => x.id),
+    lines: document.querySelectorAll("#ot-brands polyline, #ot-brands circle").length,
+    legend: [...document.querySelectorAll("#ot-brands .ot-leg b")].map((b) => b.textContent),
+    runs: document.querySelectorAll("#ot-runs .at-tr:not(.at-th)").length,
+    searches: document.getElementById("ot-search")?.innerText || "",
+    advice: /Heads up|Filter to one model|Not shown here: your brand/.test(document.getElementById("cmpOut")?.innerText || ""),
+  }));
+  check("what changed, where each brand came, sites run by run, searches and the runs",
+    ["ot-changed", "ot-brands", "ot-sites", "ot-search", "ot-runs"].every((id) => ot.sections.includes(id)), ot.sections.join(", "));
+  check("a line per brand across the runs, each with its movement", ot.lines > 0 && ot.legend.length > 0 && ot.legend.every((t) => /held|→|new|gone|in between/.test(t)), ot.legend.join(" | "));
+  check("a row per run", ot.runs === 2, ot.runs);
+  check("the searches are read as text, not '[object Object]'", ot.searches.length > 0 && !/object Object/.test(ot.searches), ot.searches.slice(0, 120));
+  check("no advice, and no 'rank not shown' note now that it is shown", !ot.advice);
   check(
     "no page error while rendering Compare (an undefined global here blanks the whole tab)",
     pageErrors.length === 0,

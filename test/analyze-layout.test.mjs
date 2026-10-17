@@ -132,11 +132,12 @@ try {
     console.log("  painted order: " + order.join(" -> "));
     const at = (id) => order.indexOf(id);
     check("the at-a-glance card comes first", at("at-glance") === 0, order.join(" -> "));
-    // 0.58.0, as requested: every site it used follows the glance card, and
-    // what backs each brand moves to the very bottom, after Details.
-    check("the sites it used come right after it", at("at-sites") === 1, order.join(" -> "));
-    check("what backs each brand is the last section", at("at-backing") === order.length - 1, order.join(" -> "));
-    check("Details comes just before it", at("at-details") === order.length - 2, order.join(" -> "));
+    // 0.60.0, the approved canvas order (it replaces 0.58.0's, which put the
+    // sites second and what backs each brand last): where it came from, then
+    // every site it read, the searches, since last time, and Details last.
+    if (at("at-backing") !== -1) check("where it came from comes before every site it read", at("at-backing") < at("at-sites"), order.join(" -> "));
+    check("every site it read comes before the searches", at("at-sites") < at("at-built"), order.join(" -> "));
+    check("Details is the last section", at("at-details") === order.length - 1, order.join(" -> "));
     const matrixFirst = await page.evaluate(() => {
       const m = document.getElementById("card-omitted-analysis");
       const b = document.getElementById("at-glance");

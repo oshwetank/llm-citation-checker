@@ -95,6 +95,10 @@ export function compareView(answers, { own } = {}) {
       kind: answerKind(r).label,
       had: [(r.products || []).length ? "product cards" : null, (r.places || []).length ? "a map" : null, (r.images || []).length >= 3 ? "images" : null].filter(Boolean),
       domains: domainsOf(sources),
+      // Ads shown with the answer (0.60.0). Only ChatGPT has an ad format;
+      // the others never show one, which is not the same as "no ad this time".
+      ads: [...new Set((r.ads || []).map((a) => String(a.advertiser || a.targetDomain || "").trim()).filter(Boolean))],
+      adFormat: r.platform === "chatgpt",
     };
   });
   // Where each brand came, in every answer.
@@ -149,6 +153,14 @@ export function compareView(answers, { own } = {}) {
     }
     const memory = engines.filter((e) => !e.searched && !e.read).map((e) => e.label);
     if (memory.length) diffs.push({ k: "From memory", v: `${list(memory)} answered without searching the web.` });
+    const withAds = engines.filter((e) => e.ads.length);
+    if (withAds.length) {
+      const none = engines.filter((e) => e.adFormat && !e.ads.length).map((e) => e.label);
+      const noFormat = engines.filter((e) => !e.adFormat).map((e) => e.label);
+      diffs.push({ k: "Ads", v: withAds.map((e) => `${e.label} showed an ad from ${list(e.ads)}`).join("; ") + "."
+        + (none.length ? ` ${list(none)} showed none.` : "")
+        + (noFormat.length ? ` ${list(noFormat)} ${noFormat.length === 1 ? "has" : "have"} no ad format.` : "") });
+    }
     if (own) {
       const row = brandGrid.find((b) => b.isYou);
       const firsts = row ? row.cells.filter((c) => c === 1).length : 0;
@@ -161,6 +173,8 @@ export function compareView(answers, { own } = {}) {
     first: e.first || "—", had: e.had, brands: e.brands, searches: e.searched ? (e.searches.length || "not published") : "none",
     read: e.read, cited: e.cited, kind: e.kind,
     stat: e.first ? `${e.first} first · ${e.cited} cited` : `${e.brands} brands · ${e.cited} cited`,
+    ads: e.ads, adFormat: e.adFormat,
+    model: (answers.find((r) => r.captureId === e.captureId) || {}).model || "",
   }));
   return { engines: table, brandGrid, siteGrid, searchRows, diffs };
 }

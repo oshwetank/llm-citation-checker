@@ -34,7 +34,7 @@
             </div>
             <div class="brand-text">
               <span class="brand-title">CitoSkeleton</span>
-              <span class="version-badge">v0.59.0</span>
+              <span class="version-badge">v0.60.0</span>
               <span class="brand-sub">ChatGPT, Gemini, Perplexity &amp; Grok</span>
             </div>
           </div>
@@ -202,6 +202,19 @@
                       <div class="ab-seg" role="radiogroup" aria-labelledby="setThemeLabel" id="setTheme">
                         <button type="button" role="radio" class="ab-seg-btn" data-theme-pick="light" aria-checked="false">Light</button>
                         <button type="button" role="radio" class="ab-seg-btn" data-theme-pick="dark" aria-checked="false">Dark</button>
+                      </div>
+                    </div>
+                    <!-- Level of detail (0.60.0): Expert adds the engine's raw ids,
+                         indexes and refs, and a Raw tab in Analyze's Details.
+                         Applies at once, outside Save / Undo, like the theme. -->
+                    <div class="ab-row">
+                      <div class="ab-row-text" id="setDetailLabel">
+                        <b>Level of detail</b>
+                        <span>Expert adds each page's index and ref ids, the listing feeds and a Raw tab.</span>
+                      </div>
+                      <div class="ab-seg" role="radiogroup" aria-labelledby="setDetailLabel" id="setDetail">
+                        <button type="button" role="radio" class="ab-seg-btn" data-detail-pick="simple" aria-checked="false">Simple</button>
+                        <button type="button" role="radio" class="ab-seg-btn" data-detail-pick="expert" aria-checked="false">Expert</button>
                       </div>
                     </div>
                     <div class="ab-row">

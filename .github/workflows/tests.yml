@@ -106,7 +106,7 @@ jobs:
         run: |
           fail=0
           for f in test/about-view.test.mjs test/adapter.test.mjs test/ai-brands.test.mjs test/analyze-view.test.mjs test/auth-check.test.mjs \
-                   test/brand-context.test.mjs test/build-id.test.mjs test/chatgpt-retrieval.test.mjs test/compare-view.test.mjs test/history-view.test.mjs \
+                   test/brand-context.test.mjs test/build-id.test.mjs test/chatgpt-retrieval.test.mjs test/compare-view.test.mjs test/over-time-view.test.mjs test/history-view.test.mjs \
                    test/auto-competitors.test.mjs \
                    test/behaviour.test.mjs test/brands.test.mjs test/campaign-board.test.mjs test/campaign-xlsx.test.mjs test/pdf-report.test.mjs \
                    test/concurrency.test.mjs test/diagnostics-summary.test.mjs \

@@ -21,6 +21,7 @@ import { analyzeFanout } from "./fanout.js";
 import { computeBrandMatrix, sameBrand } from "./funnel-omitted.js";
 import { normalizeMentions } from "./mention-list.js";
 import { siteKindOf, isBrandSite, normDomain, KIND_GROUPS } from "./siteKind.js";
+import { extractBrandAspects } from "./aspects.js";
 
 const ORD = (n) => {
   const s = ["th", "st", "nd", "rd"], v = n % 100;
@@ -138,6 +139,7 @@ export function brandsView(rec, { own, knownBrands, previous } = {}) {
   const matrixFor = (name) => (matrix.brands || []).find((m) => sameBrand(m.brand, name));
   const named = namedOrder(list);
   const change = previous ? brandChanges(rec, previous, knownBrands) : null;
+  const positions = resultPositions(rec);
 
   const rows = list.map((b) => {
     const m = matrixFor(b.brand);
@@ -150,6 +152,17 @@ export function brandsView(rec, { own, knownBrands, previous } = {}) {
       domain: normDomain(sources[i].domain || sources[i].url),
       own: isBrandSite(sources[i].domain || sources[i].url, b.brand, brandUrl),
     })));
+    // Each page in full, for "where it came from" (0.60.0): the page, where
+    // it came in the engine's results when the capture holds that, and the
+    // date the engine sent with it.
+    const page = (i) => {
+      const s = sources[i];
+      return {
+        domain: normDomain(s.domain || s.url), url: s.url || "", title: s.title || "",
+        own: isBrandSite(s.domain || s.url, b.brand, brandUrl),
+        pos: (s.url && positions.get(s.url)) || null, date: pubDateOf(s),
+      };
+    };
     const independent = backers.filter((x) => !x.own).length;
     const ownSite = backers.length - independent;
     let verdict, label, tone;
@@ -167,7 +180,13 @@ export function brandsView(rec, { own, knownBrands, previous } = {}) {
       isYou: isOwnBrand,
       relation: b.relation || null,
       stance: b.stance || null,
-      backing: { verdict, label, tone, independent, ownSite, readOnly: readOnly.length, backers },
+      backing: {
+        verdict, label, tone, independent, ownSite, readOnly: readOnly.length, backers,
+        pages: dedupeByUrl(cited.map(page)), readPages: dedupeByUrl(readOnly.map(page)),
+      },
+      // What the answer said about it, in a few words ("Battery", "Best for
+      // gaming"), from the sentences that name it.
+      took: b.count > 0 ? extractBrandAspects(b.passages || []) : [],
       change: change ? change.byBrand.get(b.brand.toLowerCase()) || null : null,
     };
   });
@@ -178,6 +197,139 @@ function dedupeByDomain(list) {
   const seen = new Map();
   for (const x of list) if (x.domain && !seen.has(x.domain)) seen.set(x.domain, x);
   return [...seen.values()];
+}
+
+function dedupeByUrl(list) {
+  const seen = new Map();
+  for (const x of list) {
+    const k = x.url || `${x.domain}|${x.title}`;
+    if (!seen.has(k)) seen.set(k, x);
+  }
+  return [...seen.values()];
+}
+
+// A page's publication date, as the engine sent it with the result.
+// ChatGPT's pub_date is Unix time in seconds; a value already in
+// milliseconds is kept as it is. Returns ms, or null.
+function pubDateOf(s) {
+  const v = s && s.platformSpecific && s.platformSpecific.pubDate;
+  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) return null;
+  return v < 1e12 ? Math.round(v * 1000) : v;
+}
+
+/* ---------- which sources name which brands ---------- */
+
+/**
+ * A grid of sites against the brands the answer named first, for "which
+ * sources feed which brands" (0.60.0). A cell is "cited" when a cited page on
+ * that site names the brand in its title or snippet, "read" when only pages
+ * the engine read without citing do, and "" when none does. Sites that name
+ * none of the brands are left out; the rest are ordered by cited cells.
+ */
+export function sourceBrandMatrix(rec, { own, knownBrands, maxBrands = 6, maxSites = 12 } = {}) {
+  const sources = rec.sources || [];
+  const named = namedOrder(cleanBrands(rec, knownBrands)).slice(0, maxBrands);
+  if (!named.length || !sources.length) return null;
+  const present = new Map((computeBrandMatrix(rec).sources || []).map((s) => [s.sourceIdx, s.presentBrands]));
+  const byDomain = new Map();
+  sources.forEach((s, i) => {
+    const domain = normDomain(s.domain || s.url);
+    if (!domain) return;
+    let row = byDomain.get(domain);
+    if (!row) { row = { domain, cited: false, cells: named.map(() => "") }; byDomain.set(domain, row); }
+    const cited = s.outcome === "cited";
+    if (cited) row.cited = true;
+    const names = present.get(i) || [];
+    named.forEach((b, j) => {
+      if (!names.some((n) => sameBrand(n, b))) return;
+      if (cited) row.cells[j] = "cited";
+      else if (!row.cells[j]) row.cells[j] = "read";
+    });
+  });
+  const score = (r) => r.cells.filter((c) => c === "cited").length * 10 + r.cells.filter(Boolean).length;
+  const rows = [...byDomain.values()].filter((r) => r.cells.some(Boolean))
+    .sort((a, b) => score(b) - score(a) || a.domain.localeCompare(b.domain));
+  return {
+    brands: named.map((name) => ({ name, isYou: !!own && sameBrand(own.name, name) })),
+    rows: rows.slice(0, maxSites),
+    more: Math.max(0, rows.length - maxSites),
+  };
+}
+
+/* ---------- product cards, their stores and the pages naming them ---------- */
+
+// "Reliance Digital + others" -> ["Reliance Digital"]; "amazon.in · flipkart" -> both.
+function merchantList(p) {
+  return String((p && p.merchant) || "").split(/\s*(?:\+|·|,|\band\b)\s*/i).map((x) => x.trim()).filter((x) => x && !/^others?$/i.test(x));
+}
+const slug = (s) => String(s || "").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+// A store is the brand's own when its name or address carries the brand
+// ("boat-lifestyle.com" for boAt, "oneplus.in" for OnePlus), or the tracked
+// brand's own domain. Two-letter brands only match as a whole word, so "LG"
+// doesn't claim every store with "lg" in its name.
+function storeIsBrand(store, brand, own) {
+  const s = String(store || "");
+  if (!s) return false;
+  if (own && own.url && sameBrand(own.name, brand)) {
+    const d = normDomain(own.url).split(".")[0];
+    if (d && slug(s).includes(slug(d))) return true;
+  }
+  const b = slug(brand);
+  if (b.length >= 3) return slug(s).includes(b);
+  return !!b && new RegExp(`(^|[^\\p{L}\\p{N}])${b}([^\\p{L}\\p{N}]|$)`, "iu").test(s);
+}
+
+/**
+ * The product cards as a table (0.60.0): each card's brand, its stores in the
+ * order the card lists them (the brand's own store marked), and the cited
+ * pages whose title or snippet names that product. The summary is where the
+ * cards send buyers first. A store's own price is not in the capture; the
+ * card's price is the only one there is.
+ */
+export function productsView(rec, { own, knownBrands } = {}) {
+  const products = rec.products || [];
+  if (!products.length) return null;
+  const brands = cleanBrands(rec, knownBrands).map((b) => b.brand);
+  const cited = (rec.sources || []).filter((s) => s.outcome === "cited");
+  const words = (t) => String(t || "").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  const rows = products.map((p, i) => {
+    const name = String(p.name || "").trim();
+    const startsWith = (b) => new RegExp(`^${String(b).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|[^\\p{L}\\p{N}])`, "iu").test(name);
+    const brand = p.brand || brands.filter(startsWith).sort((a, b) => b.length - a.length)[0] || name.split(/\s+/)[0] || "";
+    // A page names the product when it has the brand and the model's telling
+    // word, each as a whole word: "Airdopes 141" needs boAt and 141, "Pulse
+    // ANC" needs Zento and Pulse. The brand alone isn't enough (a page about
+    // OnePlus isn't about every OnePlus card), and neither is a substring
+    // ("One" is not inside "headphones").
+    const branded = !!brand && startsWith(brand);
+    const model = words(branded ? name.slice(brand.length) : name);
+    const key = model.find((w) => /\d/.test(w) && w.length >= 2) || model.find((w) => w.length >= 3) || "";
+    const need = [...new Set([branded ? words(brand)[0] : words(name)[0], key].filter(Boolean))];
+    const names = (s) => { const ws = new Set(words(`${s.title || ""} ${s.snippet || ""}`)); return need.every((w) => ws.has(w)); };
+    const pages = need.length ? [...new Set(cited.filter(names).map((s) => normDomain(s.domain || s.url)).filter(Boolean))] : [];
+    return {
+      n: i + 1, name, brand, isYou: !!own && !!brand && sameBrand(own.name, brand),
+      price: p.price || "", rating: p.rating ?? null, reviews: p.reviews ?? null, image: p.image || "",
+      stores: merchantList(p).map((s) => ({ name: s, own: storeIsBrand(s, brand, own) })),
+      otherStores: /\bothers?\b/i.test(p.merchant || ""),
+      pages,
+    };
+  });
+  const first = new Map();
+  rows.forEach((r) => {
+    const s = r.stores[0];
+    if (!s) return;
+    const f = first.get(s.name) || { name: s.name, n: 0, own: false };
+    f.n++;
+    f.own = f.own || s.own;
+    first.set(s.name, f);
+  });
+  return {
+    rows,
+    firstStores: [...first.values()].sort((a, b) => b.n - a.n || a.name.localeCompare(b.name)),
+    storeLinks: rows.reduce((t, r) => t + r.stores.length, 0),
+    withPages: rows.filter((r) => r.pages.length).length,
+  };
 }
 
 /* ---------- pages cited ---------- */
@@ -213,7 +365,8 @@ export function pagesView(rec, { own, knownBrands } = {}) {
   const citedDomains = new Set(rows.map((r) => r.domain));
   const readOnly = [...new Set(sources.filter((s) => s.outcome !== "cited")
     .map((s) => normDomain(s.domain || s.url)).filter((d) => d && !citedDomains.has(d)))];
-  // Cited, independent, and silent about you: the pages to get onto.
+  // Cited pages on independent sites (not yours, a rival brand's or a
+  // retailer) whose title and snippet never name your brand.
   const silent = own ? [...new Set(rows.filter((r) => r.kind !== "Your site" && r.kind !== "Rival brand sites" && r.kind !== "Retailers"
     && !r.brands.some((b) => b.isYou)).map((r) => r.domain))] : [];
   return { rows, kinds, readOnly, silent, sourceCount: sources.length };
@@ -410,6 +563,12 @@ export function changesView(rec, previous, { knownBrands } = {}) {
   const gained = [...a].filter((d) => !b.has(d)), lost = [...b].filter((d) => !a.has(d));
   if (gained.length) items.push({ kind: "site", text: `Newly cited: ${gained.slice(0, 4).join(", ")}${gained.length > 4 ? ` +${gained.length - 4}` : ""}` });
   if (lost.length) items.push({ kind: "site", text: `No longer cited: ${lost.slice(0, 4).join(", ")}${lost.length > 4 ? ` +${lost.length - 4}` : ""}` });
+  // An ad shown with the answer is part of what changed (0.60.0): ChatGPT
+  // shows one with some answers and not others.
+  const advertisers = (r) => new Set((r.ads || []).map((a) => String(a.advertiser || a.targetDomain || "").trim()).filter(Boolean));
+  const adNow = advertisers(rec), adThen = advertisers(previous);
+  [...adNow].filter((a) => !adThen.has(a)).forEach((a) => items.push({ kind: "ad", text: `An ad from ${a} was shown${adThen.size ? "" : " (no ad last time)"}` }));
+  [...adThen].filter((a) => !adNow.has(a)).forEach((a) => items.push({ kind: "ad", text: `No ad from ${a} this time (shown last time)` }));
   if (!items.length) items.push({ kind: "same", text: "Same brands in the same order, citing the same sites" });
   return { at: previous.capturedAt, items };
 }
@@ -420,15 +579,27 @@ export function changesView(rec, previous, { knownBrands } = {}) {
  * each to the answer: whether the answer itself names the advertiser, and
  * whether the engine read or cited the advertiser's site. Analyze and the
  * answer report both show it. */
-export function adsView(rec) {
+export function adsView(rec, { knownBrands } = {}) {
   const answer = String(rec.answerText || "").toLowerCase();
   const sources = rec.sources || [];
   const site = (d) => normDomain(d || "").split(".")[0];
+  // Where the advertiser came among the brands the answer named, and which
+  // product cards list it as a store (0.60.0): an ad for a store that the
+  // cards already send buyers to is a different thing from one for a store
+  // the answer never mentions.
+  const named = namedOrder(cleanBrands(rec, knownBrands));
   return (rec.ads || []).map((a) => {
     const domain = normDomain(a.targetDomain || a.advertiserUrl || "");
     const name = String(a.advertiser || "").toLowerCase();
     const onSite = sources.filter((s) => { const d = normDomain(s.domain || s.url); return d && domain && site(d) === site(domain); });
+    const label = site(domain);
+    const sells = (p) => String(p.merchant || "").toLowerCase().split(/\s*(?:\+|·|,|\band\b)\s*/).map((x) => x.trim()).filter(Boolean)
+      .some((m) => (name && (m === name || m.includes(name))) || (label && label.length > 2 && m.replace(/\s+/g, "").includes(label)));
+    const cards = (rec.products || []).map((p, i) => ({ n: i + 1, name: p.name || "" })).filter((c, i) => sells(rec.products[i]));
+    const place = name ? named.findIndex((b) => sameBrand(b, a.advertiser)) + 1 : 0;
     return {
+      place,
+      onCards: cards,
       advertiser: a.advertiser || domain || "Advertiser",
       label: a.label || "Sponsored",
       preamble: a.preamble || "",
@@ -443,4 +614,38 @@ export function adsView(rec) {
       siteCited: onSite.filter((s) => s.outcome === "cited").length,
     };
   });
+}
+
+/* ---------- where a page came in the engine's results ---------- */
+
+/**
+ * A page's position in the results the engine got for this answer, where the
+ * capture holds it (0.60.0, the "page found at #N" step of where a
+ * recommendation came from):
+ *   ChatGPT    the ref index in its citation id: `turn0search3` is the
+ *              fourth result of that turn's searches (0-based in the id).
+ *   Perplexity the result's index in its source list (`[n]` markers count
+ *              from 1; a 0-based index is shifted to match).
+ * Gemini publishes neither its searches nor their results, and Grok's
+ * source order isn't a ranking, so they get nothing rather than a guess.
+ * Returns Map(url -> position).
+ */
+export function resultPositions(rec) {
+  const out = new Map();
+  const sources = rec.sources || [];
+  if (rec.platform === "chatgpt") {
+    for (const s of sources) {
+      const ids = (s.platformSpecific && s.platformSpecific.markerIds) || [];
+      const nums = ids.map((x) => /^turn\d+search(\d+)$/.exec(String(x))).filter(Boolean).map((m) => Number(m[1]) + 1);
+      if (nums.length && s.url && !out.has(s.url)) out.set(s.url, Math.min(...nums));
+    }
+  } else if (rec.platform === "perplexity") {
+    const idx = sources.map((s) => (s.platformSpecific && Number.isInteger(s.platformSpecific.sourceIndex) ? s.platformSpecific.sourceIndex : null));
+    const zeroBased = idx.some((x) => x === 0);
+    sources.forEach((s, i) => {
+      if (!s.url || out.has(s.url)) return;
+      out.set(s.url, idx[i] != null ? idx[i] + (zeroBased ? 1 : 0) : i + 1);
+    });
+  }
+  return out;
 }

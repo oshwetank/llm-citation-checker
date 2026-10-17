@@ -151,7 +151,7 @@ try {
     });
     check("the popup Analyze layout is in use", !!s);
     if (s) {
-      check("the searches are the first section after the prompt block", s.order[0] === "ap-head" && s.order[1] === "ap-searches", s.order.join(" > "));
+      check("the searches are the first section after the prompt block", /^ap-head\b/.test(s.order[0]) && s.order[1] === "ap-searches", s.order.join(" > "));
       check("searches are listed", s.rows > 0, s.heading);
       check("no search is cut off or ellipsised", s.cut.length === 0, s.cut.join(" | "));
     }
@@ -260,6 +260,39 @@ try {
     }));
     check("paging to the older capture works", ids === 4 && r.kind === "Local", r.kind);
     check("its places are listed", r.places > 0, r.places);
+  }
+
+  console.log("\nTabs by kind of answer (0.60.0, the canvas's popup boards)");
+  {
+    const tabs = await page.evaluate(() => [...document.querySelectorAll(".ap-tabs [role=tab]")].map((b) => b.textContent));
+    check("a local answer: Overview, Places, Facts, Sources, Answer", tabs.join("|") === "Overview|Places|Facts|Sources|Answer", tabs.join("|"));
+    await page.evaluate(() => document.getElementById("ap-tab-facts").click());
+    await page.waitForTimeout(500);
+    const facts = await page.evaluate(() => document.getElementById("ap-view-facts")?.innerText || "");
+    check("Facts says what each card carries, and that the source of each field isn't captured", /Rating/.test(facts) && /not captured/.test(facts), facts.slice(0, 160));
+    await page.goto(`chrome-extension://${extId}/ui/panel.html?capture=${encodeURIComponent(shopNewest.id)}`);
+    await page.waitForTimeout(1500);
+    const shop = await page.evaluate(() => [...document.querySelectorAll(".ap-tabs [role=tab]")].map((b) => b.textContent));
+    check("a shopping answer: Overview, Products, Stores, Sources, Answer", shop.join("|") === "Overview|Products|Stores|Sources|Answer", shop.join("|"));
+    await page.evaluate(() => document.getElementById("ap-tab-products").click());
+    await page.waitForTimeout(500);
+    const prod = await page.evaluate(() => ({ cards: document.querySelectorAll("#ap-view-products .ap-pc").length, stores: document.querySelectorAll("#ap-view-products .at-store-chip").length, overview: !!document.getElementById("ap-searches") }));
+    check("Products: a card each, with its stores in order", prod.cards === 5 && prod.stores >= 5 && !prod.overview, JSON.stringify(prod));
+    await page.evaluate(() => document.getElementById("ap-tab-stores").click());
+    await page.waitForTimeout(500);
+    const stores = await page.evaluate(() => document.getElementById("ap-view-stores")?.innerText || "");
+    check("Stores: where the cards send buyers, the price per store not captured", /cards/.test(stores) && /not captured/.test(stores), stores.slice(0, 160));
+    await page.evaluate(() => document.getElementById("ap-tab-sources").click());
+    await page.waitForTimeout(500);
+    const src = await page.evaluate(() => ({ rows: document.querySelectorAll("#ap-view-sources .ap-page-row").length, pos: [...document.querySelectorAll("#ap-view-sources .ap-page-row .ap-muted")].some((x) => /#\d+/.test(x.textContent)) }));
+    check("Sources: every page, with its place in the results", src.rows >= 10 && src.pos, JSON.stringify(src));
+    await page.evaluate(() => document.getElementById("ap-tab-answer").click());
+    await page.waitForTimeout(500);
+    const ans = await page.evaluate(() => ({ words: (document.querySelector("#ap-view-answer")?.innerText || "").split(/\s+/).length, marks: document.querySelectorAll("#ap-view-answer mark.at-mark").length }));
+    check("Answer: the answer itself, brands marked", ans.words > 100 && ans.marks > 0, JSON.stringify(ans));
+    await page.evaluate(() => document.getElementById("ap-tab-overview").click());
+    await page.waitForTimeout(500);
+    check("Overview brings back the sections", await page.evaluate(() => !!document.getElementById("ap-searches")));
   }
 
   check("no page error anywhere above", pageErrors.length === 0, pageErrors.join(" | "));

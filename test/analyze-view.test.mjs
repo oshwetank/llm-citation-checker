@@ -17,7 +17,7 @@
  */
 import {
   answerKind, searchesView, brandsView, pagesView, domainsView, ownBrandFor, yourBrandView,
-  findPrevious, changesView, normPrompt,
+  findPrevious, changesView, normPrompt, adsView, resultPositions, sourceBrandMatrix, productsView,
 } from "../src/lib/analyzeView.js";
 import { siteKindOf, isBrandSite } from "../src/lib/siteKind.js";
 
@@ -205,6 +205,104 @@ console.log("\nSince last time: the previous answer to the same prompt, same eng
   check("a dropped brand keeps its old place", texts.includes("Brio dropped out (was 2nd)"));
   check("the leader holding first is said", texts.includes("Zento still named first"));
   check("newly cited and no-longer-cited sites", texts.some((x) => x.startsWith("Newly cited: kovo.com")) && texts.includes("No longer cited: brio.co.in"), texts.join(" | "));
+}
+
+console.log("\nads (0.60.0): where the advertiser came, the cards that sell through it, and ads that came or went");
+{
+  const ad = { advertiser: "Kovo", label: "Sponsored", targetDomain: "kovo.com", targetUrl: "https://kovo.com/deal", placement: "conversational_bottom" };
+  const store = { advertiser: "Amazon", label: "Sponsored", targetDomain: "amazon.in" };
+  const withAds = { ...current, answerText: "Zento is the pick. Kovo Air is close behind.", ads: [ad, store] };
+  const v = adsView(withAds);
+  check("an advertiser the answer names gets its place among the brands", v[0].place === 2 && v[0].namedInAnswer, JSON.stringify(v[0]));
+  check("an advertiser the answer doesn't name has no place", v[1].place === 0);
+  check("cards that list the advertiser as a store are found", v[1].onCards.length === 1 && v[1].onCards[0].name === "Kovo Air" && v[1].onCards[0].n === 2, JSON.stringify(v[1].onCards));
+  check("and a brand that is no card's store has none", v[0].onCards.length === 0, JSON.stringify(v[0].onCards));
+  check("its site read and cited are counted", v[0].siteRead === 1 && v[0].siteCited === 1, `${v[0].siteRead}/${v[0].siteCited}`);
+  const c1 = changesView(withAds, { ...previous, ads: [] }).items.filter((i) => i.kind === "ad").map((i) => i.text);
+  check("an ad that appeared since last time is a change", c1.includes("An ad from Kovo was shown (no ad last time)") && c1.includes("An ad from Amazon was shown (no ad last time)"), c1.join(" | "));
+  const c2 = changesView({ ...current, ads: [] }, { ...previous, ads: [ad] }).items.filter((i) => i.kind === "ad").map((i) => i.text);
+  check("and so is one that went", c2.join() === "No ad from Kovo this time (shown last time)", c2.join(" | "));
+}
+
+console.log("\nwhere each page came in the engine's results (0.60.0)");
+{
+  const gpt = { platform: "chatgpt", sources: [
+    { url: "https://a.example/1", outcome: "cited", platformSpecific: { markerIds: ["turn0search3", "turn0search7"] } },
+    { url: "https://b.example/2", outcome: "fetched", platformSpecific: { markerIds: ["turn0search0"] } },
+    { url: "https://c.example/3", outcome: "cited", platformSpecific: { markerIds: ["turn0news2"] } },
+    { url: "https://d.example/4", outcome: "cited", platformSpecific: {} },
+  ] };
+  const p = resultPositions(gpt);
+  check("ChatGPT: the search ref index, counted from 1, the best one kept", p.get("https://a.example/1") === 4 && p.get("https://b.example/2") === 1, JSON.stringify([...p]));
+  check("a news or unmarked page gets no position, not a guess", !p.has("https://c.example/3") && !p.has("https://d.example/4"));
+  const px = resultPositions({ platform: "perplexity", sources: [
+    { url: "https://e.example", platformSpecific: { sourceIndex: 0 } }, { url: "https://f.example", platformSpecific: { sourceIndex: 1 } }, { url: "https://g.example", platformSpecific: {} },
+  ] });
+  check("Perplexity: its source index, shifted to count from 1", px.get("https://e.example") === 1 && px.get("https://f.example") === 2 && px.get("https://g.example") === 3, JSON.stringify([...px]));
+  check("Gemini publishes no results: nothing", resultPositions({ platform: "gemini", sources: [{ url: "https://h.example", outcome: "cited" }] }).size === 0);
+}
+
+console.log("\nwhere each recommendation came from: the pages, their place and date (0.60.0)");
+{
+  const rec = {
+    ...current,
+    brandMentions: [{ brand: "Zento", count: 3, firstIndex: 10, passages: ["Zento Pulse is best for long flights, with a 40-hour battery."] }, mention("Kovo", 2, 80), mention("Lumi", 1, 160)],
+    sources: [
+      { ...src("smartprix.com", "Best headphones under 3000: Zento Pulse and Lumi One"), platformSpecific: { markerIds: ["turn0search2"], pubDate: 1790000000 } },
+      { ...src("zento.in", "Zento Pulse wireless headphones"), platformSpecific: { markerIds: ["turn0search0"] } },
+      { ...src("gadgets360.com", "Lumi One review", "fetched"), platformSpecific: { markerIds: ["turn0search5"] } },
+    ],
+  };
+  const z = brandsView(rec, { own }).rows.find((r) => r.name === "Zento");
+  const pg = z.backing.pages.find((p) => p.domain === "smartprix.com");
+  check("each cited page that names the brand, in full", z.backing.pages.length === 2 && !!pg && /Zento Pulse/.test(pg.title) && /^https:\/\/smartprix\.com\//.test(pg.url), JSON.stringify(z.backing.pages));
+  check("with where it came in the results", pg.pos === 3 && z.backing.pages.find((p) => p.own).pos === 1, JSON.stringify(z.backing.pages.map((p) => p.pos)));
+  check("and the date the engine sent, in milliseconds", pg.date === 1790000000 * 1000, pg.date);
+  check("a page with no date says so with null, not today", z.backing.pages.find((p) => p.own).date === null);
+  check("the brand's own site is marked", z.backing.pages.filter((p) => p.own).map((p) => p.domain).join() === "zento.in");
+  const l = brandsView(rec, { own }).rows.find((r) => r.name === "Lumi");
+  check("pages read but not cited are kept apart", l.backing.readPages.map((p) => p.domain).join() === "gadgets360.com" && l.backing.readPages[0].pos === 6, JSON.stringify(l.backing.readPages));
+  check("what the answer said about it, in a few words", z.took.includes("Long flights") && z.took.includes("Battery"), z.took.join(" | "));
+  check("a brand named without a reason has nothing there", brandsView(rec, { own }).rows.find((r) => r.name === "Kovo").took.length === 0);
+}
+
+console.log("\nwhich sources name which brands (0.60.0)");
+{
+  const m = sourceBrandMatrix(current, { own });
+  check("columns are the brands in the order the answer named them", m.brands.map((b) => b.name).join() === "Zento,Kovo,Lumi,Arvo", m.brands.map((b) => b.name).join());
+  check("your brand is marked", m.brands[0].isYou && !m.brands[1].isYou);
+  const row = (d) => m.rows.find((r) => r.domain === d);
+  check("a cited page naming two brands fills both", row("smartprix.com").cells.slice(0, 3).join() === "cited,,cited", row("smartprix.com").cells.join());
+  check("a page only read is 'read', not 'cited'", row("gadgets360.com").cells[2] === "read", row("gadgets360.com").cells.join());
+  check("a site naming none of them is left out", !row("amazon.in") && !row("91mobiles.com"), m.rows.map((r) => r.domain).join());
+  check("sites with the most cited cells come first", m.rows[0].domain === "smartprix.com" || m.rows[0].domain === "reddit.com", m.rows.map((r) => r.domain).join());
+  check("nothing to show: null", sourceBrandMatrix({ ...current, sources: [] }) === null);
+}
+
+console.log("\nproduct cards: stores in order, the brand's own store, pages naming each (0.60.0)");
+{
+  const rec = {
+    ...current,
+    sources: [...current.sources, src("91mobiles.com", "Kovo Air review: the best under 3000", "fetched")],
+    products: [
+      { name: "Zento Pulse ANC", price: "₹2,499", merchant: "Amazon + zento.in + others", rating: 4.2, reviews: 1200 },
+      { name: "Kovo Air", price: "₹2,799", merchant: "Flipkart · kovo.com", rating: 4.1 },
+      { name: "Lumi One", price: "₹1,999", merchant: "Amazon", rating: 3.9 },
+    ],
+  };
+  const v = productsView(rec, { own });
+  const [zp, ka, lo] = v.rows;
+  check("each card's brand, from the brands the answer named", zp.brand === "Zento" && ka.brand === "Kovo" && lo.brand === "Lumi", v.rows.map((r) => r.brand).join());
+  check("stores in the order the card lists them", zp.stores.map((s) => s.name).join() === "Amazon,zento.in" && zp.otherStores, JSON.stringify(zp.stores));
+  check("the brand's own store is marked", zp.stores[1].own && !zp.stores[0].own && ka.stores[1].own, JSON.stringify([zp.stores, ka.stores]));
+  check("your brand's card is marked", zp.isYou && !ka.isYou);
+  check("cited pages naming the model, not just the brand", ka.pages.join() === "kovo.com,reddit.com" || ka.pages.join() === "kovo.com", JSON.stringify(v.rows.map((r) => r.pages)));
+  check("a page only read doesn't count", !ka.pages.includes("91mobiles.com"), ka.pages.join());
+  check("Lumi One is named by a cited page", lo.pages.join() === "smartprix.com", lo.pages.join());
+  check("where the cards send buyers first", v.firstStores.map((s) => `${s.name} ${s.n}`).join() === "Amazon 2,Flipkart 1", JSON.stringify(v.firstStores));
+  check("store links and cards with a page are counted", v.storeLinks === 5 && v.withPages === 3, `${v.storeLinks} links, ${v.withPages} with a page`);
+  check("a two-letter brand only matches a whole word", productsView({ ...rec, products: [{ name: "LG Tone", merchant: "Algo Store · LG Shop" }] }, {}).rows[0].stores.map((s) => s.own).join() === "false,true");
+  check("no cards: null", productsView({ ...current, products: [] }) === null);
 }
 
 console.log("\nsiteKind: brand sites matched on whole names");

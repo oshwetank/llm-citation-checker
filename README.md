@@ -10,12 +10,41 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.59.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.60.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - Analyze in the full tab is rebuilt to the new design. The header is tinted by the kind
+>   of answer and says whether it came from a campaign or was asked by hand, and whose brand
+>   it tracks. Under the prompt sits a card for each engine that answered it, with that
+>   engine's model, who it named first and where your brand came, then **Side by side** and
+>   **Over time**. A rail on the left lists the page's sections and keeps the one you're
+>   reading lit; "Hide the answer" gives the analysis the whole width, and picking a brand
+>   brings the answer back with that brand lit.
+> - **Where it came from**: for each brand, every cited page that names it, with where that
+>   page came in ChatGPT's or Perplexity's results (#N) and the date the engine sent with it,
+>   what the answer said about the brand, and a grid of which sites name which brands.
+>   **Every site it read** adds the same position and date to each page, the brands each
+>   site's pages name, and filters for cited, read only and "cited, silent on your brand".
+> - **Products and where to buy**: each card's stores in the order it lists them, the
+>   brand's own store marked, the cited pages that name that product, and where the cards
+>   send buyers first. A store's own price isn't in the capture, and the page says so.
+>   Places get the listing feed each one came from.
+> - **ChatGPT ads** get their own place: a tile at the top, a section in the rail, and on
+>   each ad whether the answer also named the advertiser (and in what place), whether its
+>   site was read or cited, and whether any product card lists it as a store. Side by side
+>   and Over time show which runs and engines had an ad; the others say "no ad format".
+> - **Simple / Expert** in the top bar and in Settings. Expert adds each page's index and ref
+>   ids, the listing feeds, a grounding figure, and a Raw tab with the fields the capture read.
+> - **Over time** is redrawn: what changed from the first run to the latest, a line per brand
+>   across the runs, the sites cited in each run, the searches by what they were after, and
+>   the runs themselves with your brand's place in each. It used to count every search as
+>   "[object Object]", and the line telling you to filter to one engine is gone.
+> - The popup gets an engine strip and tabs by kind of answer: Overview, then Products,
+>   Stores, Sources and Answer for shopping; Places, Facts, Sources and Answer for local;
+>   Pictures, Parts and Sources for the others; Ads when ChatGPT showed one.
 > - A new look, and the old one kept. CitoSkeleton opens in **Studio**, the new design: the
 >   Geist typeface, a warm off-white page, solid white cards and one indigo accent. The look
 >   from 0.47 to 0.58 is still there as **Classic** (IBM Plex, glass cards, blue). Pick
