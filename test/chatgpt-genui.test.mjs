@@ -92,6 +92,7 @@ console.log("entity-line cards");
   check("a price in a note is found", r2.products[0].price === "₹89,999", r2.products[0].price);
   check("each question keeps its own heading", /\*\*Which matters more\?\*\*\n\n- ○ Pen feel\n- ● Both equally/.test(t2), JSON.stringify(t2.slice(-220)));
   check("ChatGPT's selected choices are marked", t2.includes("- ● ₹50,000–₹1,00,000") && t2.includes("- ○ Under ₹50,000"));
+  check("a cited news story is not a news carousel", r2.carousels && r2.carousels.news === false && r2.sources.some((s) => s.outcome === "cited" && /news/.test(s.url)), JSON.stringify(r2.carousels));
   check("no layout code left", !/<\/?(?:row|box|title|text|badge|Entity|Cite|AsyncImage|radio|button|divider)\b/.test(t2) && !/\{@body/.test(t2));
   const fu2 = r2.platformSpecific.followUp;
   check("the form's groups and button", fu2 && (fu2.groups || []).length === 2 && fu2.groups[1].selected === "Both equally" && fu2.button === "Find my tablet", JSON.stringify(fu2));

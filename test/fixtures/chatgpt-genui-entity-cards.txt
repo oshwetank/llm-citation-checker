@@ -173,109 +173,109 @@ data: {"p":"/message/content/parts/0","o":"append","v":"chip · 8GB RAM</title>\
 
 data: {"p":"/message/content/parts/0","o":"append","v":"chip · 8GB RAM</title>\n    Good pen suppo","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"rt for the price. <Cite refs={[\"turn7sear","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":"rt for the price. <Cite refs={[\"turn7news","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"rt for the price. <Cite refs={[\"turn7sear","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":"rt for the price. <Cite refs={[\"turn7news","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"ch1\"]}/>\n    <text color=\"secondary\" size","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":"4\"]}/>\n    <text color=\"secondary\" size=\"","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"ch1\"]}/>\n    <text color=\"secondary\" size","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":"4\"]}/>\n    <text color=\"secondary\" size=\"","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"=\"sm\">Import only; check warranty.</text>","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":"sm\">Import only; check warranty.</text>\n ","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"=\"sm\">Import only; check warranty.</text>","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":"sm\">Import only; check warranty.</text>\n ","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"\n  </box>\n</row>\n<divider color=\"subtle\"/","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":" </box>\n</row>\n<divider color=\"subtle\"/>\n","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"\n  </box>\n</row>\n<divider color=\"subtle\"/","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":" </box>\n</row>\n<divider color=\"subtle\"/>\n","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":">\n</box>\n\n## My pick\n\n- **For power:** Ze","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":"</box>\n\n## My pick\n\n- **For power:** Zent","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":">\n</box>\n\n## My pick\n\n- **For power:** Ze","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":"</box>\n\n## My pick\n\n- **For power:** Zent","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"nto Slate Pro.\n\n**What is your budget?**\n","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":"o Slate Pro.\n\n**What is your budget?**\n{@","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"nto Slate Pro.\n\n**What is your budget?**\n","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":"o Slate Pro.\n\n**What is your budget?**\n{@","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"{@body const [budget,setBudget] = DIL.use","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":"body const [budget,setBudget] = DIL.useSt","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"{@body const [budget,setBudget] = DIL.use","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":"body const [budget,setBudget] = DIL.useSt","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"State(\"₹50,000–₹1,00,000\")}\n{@body const ","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":"ate(\"₹50,000–₹1,00,000\")}\n{@body const [p","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"State(\"₹50,000–₹1,00,000\")}\n{@body const ","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":"ate(\"₹50,000–₹1,00,000\")}\n{@body const [p","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"[priority,setPriority] = DIL.useState(\"Bo","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":"riority,setPriority] = DIL.useState(\"Both","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"[priority,setPriority] = DIL.useState(\"Bo","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":"riority,setPriority] = DIL.useState(\"Both","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"th equally\")}\n<box border radius=\"xl\" pad","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":" equally\")}\n<box border radius=\"xl\" paddi","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"th equally\")}\n<box border radius=\"xl\" pad","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":" equally\")}\n<box border radius=\"xl\" paddi","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"ding={3} gap={3}>\n  <radio-group value={b","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":"ng={3} gap={3}>\n  <radio-group value={bud","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"ding={3} gap={3}>\n  <radio-group value={b","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":"ng={3} gap={3}>\n  <radio-group value={bud","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"udget} onChange={setBudget} direction=\"co","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":"get} onChange={setBudget} direction=\"col\"","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"udget} onChange={setBudget} direction=\"co","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":"get} onChange={setBudget} direction=\"col\"","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"l\">\n    <radio value=\"Under ₹50,000\">Unde","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":">\n    <radio value=\"Under ₹50,000\">Under ","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"l\">\n    <radio value=\"Under ₹50,000\">Unde","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":">\n    <radio value=\"Under ₹50,000\">Under ","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"r ₹50,000</radio>\n    <radio value=\"₹50,0","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":"₹50,000</radio>\n    <radio value=\"₹50,000","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"r ₹50,000</radio>\n    <radio value=\"₹50,0","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":"₹50,000</radio>\n    <radio value=\"₹50,000","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"00–₹1,00,000\">₹50,000–₹1,00,000</radio>\n ","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":"–₹1,00,000\">₹50,000–₹1,00,000</radio>\n  <","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"00–₹1,00,000\">₹50,000–₹1,00,000</radio>\n ","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":"–₹1,00,000\">₹50,000–₹1,00,000</radio>\n  <","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":" </radio-group>\n  <divider color=\"subtle\"","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":"/radio-group>\n  <divider color=\"subtle\"/>","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":" </radio-group>\n  <divider color=\"subtle\"","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":"/radio-group>\n  <divider color=\"subtle\"/>","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"/>\n  <text weight=\"medium\">Which matters ","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":"\n  <text weight=\"medium\">Which matters mo","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"/>\n  <text weight=\"medium\">Which matters ","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":"\n  <text weight=\"medium\">Which matters mo","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"more?</text>\n  <radio-group value={priori","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":"re?</text>\n  <radio-group value={priority","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"more?</text>\n  <radio-group value={priori","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":"re?</text>\n  <radio-group value={priority","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"ty} onChange={setPriority} direction=\"col","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":"} onChange={setPriority} direction=\"col\">","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"ty} onChange={setPriority} direction=\"col","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":"} onChange={setPriority} direction=\"col\">","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"\">\n    <radio value=\"Pen feel\">Pen feel</","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":"\n    <radio value=\"Pen feel\">Pen feel</ra","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"\">\n    <radio value=\"Pen feel\">Pen feel</","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":"\n    <radio value=\"Pen feel\">Pen feel</ra","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"radio>\n    <radio value=\"Both equally\">Bo","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":"dio>\n    <radio value=\"Both equally\">Both","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"radio>\n    <radio value=\"Both equally\">Bo","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":"dio>\n    <radio value=\"Both equally\">Both","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"th equally</radio>\n  </radio-group>\n  <bu","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":" equally</radio>\n  </radio-group>\n  <butt","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"th equally</radio>\n  </radio-group>\n  <bu","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":" equally</radio>\n  </radio-group>\n  <butt","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"tton block onClick={() => GenUI.issueNewT","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":"on block onClick={() => GenUI.issueNewTur","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"tton block onClick={() => GenUI.issueNewT","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":"on block onClick={() => GenUI.issueNewTur","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"urn(\"Recommend a drawing tablet. Budget: ","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":"n(\"Recommend a drawing tablet. Budget: \"+","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"urn(\"Recommend a drawing tablet. Budget: ","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":"n(\"Recommend a drawing tablet. Budget: \"+","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"\"+budget+\". Priority: \"+priority+\".\")}>Fi","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":"budget+\". Priority: \"+priority+\".\")}>Find","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"\"+budget+\". Priority: \"+priority+\".\")}>Fi","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":"budget+\". Priority: \"+priority+\".\")}>Find","c":3}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"nd my tablet</button>\n</box>\n","c":5}
+data: {"p":"/message/content/parts/0","o":"append","v":" my tablet</button>\n</box>\n","c":5}
 
-data: {"p":"/message/content/parts/0","o":"append","v":"nd my tablet</button>\n</box>\n","c":3}
+data: {"p":"/message/content/parts/0","o":"append","v":" my tablet</button>\n</box>\n","c":3}
 
 data: {"v":[{"p":"/message/metadata","o":"append","v":{"genui_components":[{"type":"cite","component_resolution_id":"cite-intro","entities":[{"entity_type":"search","ref":"turn7search0"},{"entity_type":"search","ref":"turn7search1"}]}]}},{"p":"/message/metadata/genui_components","o":"append","v":[{"type":"async_image","component_resolution_id":"0a1b2c3d-0000-5000-8000-00000000a001","genui_attributes":{"aspectRatio":"3:4"}},{"type":"async_image","component_resolution_id":"0a1b2c3d-0000-5000-8000-00000000a002","genui_attributes":{"aspectRatio":"3:4"}},{"type":"entity","component_resolution_id":"ent-kovo"},{"type":"async_image","component_resolution_id":"0a1b2c3d-0000-5000-8000-00000000a003","genui_attributes":{"aspectRatio":"3:4"}}]},{"p":"/message/metadata/model_dil_v2/appData/opGenui/componentResults","o":"append","v":{"ent-kovo":{"status":"resolved","componentName":"Entity","state":{"value":"Kovo Edge 5 Pro","action_payload":{"query":"Kovo Edge 5 Pro","category":"product","extraParams":{"product":{"id":"kovo-edge-5-pro","title":"Kovo Edge 5 Pro","url":"","price":"₹28,499","merchants":"Kovo Store + others","image_urls":["https://images.openai.com/thumbnails/url/kovo-listing.jpg"],"rating":4.4,"num_reviews":212,"cite":"turn7product3"}}}}}}}],"c":3}
 

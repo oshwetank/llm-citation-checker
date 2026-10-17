@@ -793,10 +793,11 @@ export async function adapt(rawCapture, opts = {}) {
   // map/place reference or maps content type shows up.
   const carousels = {
     products: products.length > 0,
-    // A news carousel only when the answer cited a news page: news pages read
-    // while searching put no carousel on screen (reported, 0.60.0: a "News"
-    // chip on an answer that showed none).
-    news: sources.some((s) => s.outcome === "cited" && ((s.platformSpecific && s.platformSpecific.markerIds) || []).some((id) => /news\d+$/.test(id))),
+    // A news carousel only when the stream has a block of its own for one.
+    // Neither news pages read while searching nor a news page cited in the
+    // text put a carousel on screen (reported twice: 0.60.0 for read pages,
+    // 0.60.1 for a card that cited a news story, both with no carousel).
+    news: collectObjects({ nodes }, (o) => typeof o.type === "string" && /news/i.test(o.type) && o.type !== "search_result").length > 0,
     images: collectObjects({ nodes }, (o) => typeof o.type === "string" && /image/i.test(o.type) && (o.url || o.image_urls)).length > 0,
     map: places.length > 0,
   };

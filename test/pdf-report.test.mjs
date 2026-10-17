@@ -153,6 +153,12 @@ console.log("answerReport");
   check("every page opened, cited first", eq(A.opened.map((p) => [p.domain, p.cited]), [["zento.in", true], ["smartprix.com", true], ["reddit.com", false]]), JSON.stringify(A.opened.map((p) => [p.domain, p.cited])));
   check("the answer's text is in the report", A.answer.hasText && A.answer.html.includes("Zento Pulse"));
   const first = answerReport(r2[5], { previous: null, profiles: [profile] });
+  // "…named first with nothing it cited behind it — easy to lose next time"
+  // was still on the answer report in 0.60.1: a forecast, not a reading.
+  const bare = answerReport({ ...r2[0], sources: [] }, { previous: null, profiles: [profile] });
+  check("a brand named with no cited page behind it is said plainly", /^Zento was named first with no cited page behind it\.$/.test(bare.brandNote), bare.brandNote);
+  const words = JSON.stringify([A.brandNote, first.brandNote, bare.brandNote, A.chips, first.chips]);
+  check("no advice or forecasts on the answer report", !/easy to lose|next time|you should|consider|make sure|worth (?:targeting|pursuing)/i.test(words), words.slice(0, 200));
   check("an answer from memory: no search, no pages, and nothing to compare with", first.chips[1].text === "From memory · no search" && first.changes === null && first.opened.length === 0, JSON.stringify(first.chips));
 }
 
