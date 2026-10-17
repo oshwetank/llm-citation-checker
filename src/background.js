@@ -29,7 +29,7 @@ import { summarizeRunDiagnostics } from "./lib/diagnosticsSummary.js";
 import { gzipString, gunzipToString } from "./lib/gzip.js";
 import { citedUrls, pageVerdict, pageSummary, wordCount, PAGE_TTL_MS } from "./lib/pageText.js";
 import { appendRing } from "./lib/netlog.js";
-import { offersFrom, attachOffers } from "./lib/offers.js";
+import { offersFrom, attachOffers, productUpdateFrom, productPanelFrom, formChoicesFrom, cardIndexFor } from "./lib/offers.js";
 import { searchAnswers } from "./lib/answerSearch.js";
 import { answerKey, sameAnswer, mergeAnswers, SAME_ANSWER_WINDOW_MS, SAME_REPLY_WINDOW_MS } from "./lib/sameAnswer.js";
 import { campaignBoard, brandDetail } from "./lib/campaignBoard.js";
@@ -449,25 +449,72 @@ async function attachInteractions(record) {
   if (!rows.length) return;
   rows.sort((a, b) => a.at - b.at);
   const products = (record.products || []).map((p) => ({ ...p }));
+  let formChoices = null;
   record.interactions = rows.map((r) => {
-    let json = null;
-    try { json = JSON.parse(r.body); } catch (_) { /* not JSON after all */ }
-    const found = json ? offersFrom(json) : [];
-    const added = attachOffers(products, found, { path: r.path });
-    return { id: r.id, at: r.at, path: r.path, status: r.status, offers: found.reduce((n, f) => n + f.offers.length, 0), cards: added };
+    const kind = /\/search\/product_update/.test(r.path) ? "stores" : /\/sidebar\/conversation/.test(r.path) ? "panel" : /\/dil\/view_state/.test(r.path) ? "form" : /\/bazaar\//.test(r.path) ? "ads" : "other";
+    const row = { id: r.id, at: r.at, path: r.path, status: r.status, kind, offers: 0, cards: 0 };
+    if (kind === "stores") {
+      // What the card's lookup returned, kept on the card it was opened
+      // from (matched by its listing id, then the name it was opened with).
+      const u = productUpdateFrom(r.body, r.reqBody);
+      const i = cardIndexFor(products, { ids: u.lookupIds, name: u.query });
+      if (i >= 0 && u.products.length) {
+        const got = u.products[0];
+        products[i] = { ...products[i], opened: { at: r.at, query: u.query, ...got } };
+        row.cards = attachOffers(products, [{ id: null, title: products[i].name, offers: got.offers.map((o) => ({ merchant: o.merchant, price: o.price, url: o.url, availability: o.available === false ? "Out of stock" : o.details, delivery: null, tag: o.tag })) }]);
+        row.offers = got.offers.length;
+      }
+    } else if (kind === "panel") {
+      const pnl = productPanelFrom(r.body, r.reqBody);
+      const i = cardIndexFor(products, { name: pnl.name });
+      if (i >= 0 && (pnl.rationale || pnl.reviews.length)) {
+        products[i] = { ...products[i], panel: { at: r.at, rationale: pnl.rationale, summary: pnl.summary, reviews: pnl.reviews, pages: pnl.pages } };
+        row.cards = 1;
+      }
+    } else if (kind === "form") {
+      formChoices = formChoicesFrom(r.reqBody) || formChoices;
+    } else {
+      let json = null;
+      try { json = JSON.parse(r.body); } catch (_) { /* not JSON after all */ }
+      const found = json ? offersFrom(json) : [];
+      row.cards = attachOffers(products, found, { path: r.path });
+      row.offers = found.reduce((n, f) => n + f.offers.length, 0);
+    }
+    return row;
   });
   record.products = products;
+  if (formChoices) record.followUpChoices = formChoices;
+}
+
+/* Which answer something loaded after it belongs to. A product panel names
+ * its message (and conversation) in the request; that is matched against
+ * the assistant messages each record keeps (platformSpecific.messageIds).
+ * Otherwise: the latest ChatGPT answer in the page's conversation from
+ * before it, within a week (cards get opened when someone comes back). */
+async function recordForInteraction(p) {
+  let req = {};
+  try { req = JSON.parse(p.reqBody || "{}"); } catch (_) { /* not JSON */ }
+  const fromPath = (/\/conversation\/([0-9a-f][0-9a-f-]{7,})\/message\/([0-9a-f][0-9a-f-]{7,})\//i.exec(p.path || "") || []);
+  const conv = (typeof req.conversation_id === "string" && req.conversation_id) || fromPath[1] || (/\/c\/([0-9a-f][0-9a-f-]{7,})/i.exec(p.pageUrl || "") || [])[1];
+  const msg = (typeof req.message_id === "string" && req.message_id) || fromPath[2] || null;
+  if (!conv) return { conv: null, rec: null };
+  const recs = (await db.getAllByIndex("derived", "conversationId", conv).catch(() => [])).filter((r) => r.platform === "chatgpt");
+  if (msg) {
+    const exact = recs.find((r) => ((r.platformSpecific && r.platformSpecific.messageIds) || []).includes(msg));
+    if (exact) return { conv, rec: exact };
+  }
+  const at = p.at || Date.now();
+  const rec = recs.filter((r) => at - r.capturedAt < 7 * 24 * 3600 * 1000 && at >= r.capturedAt - 5000).sort((a, b) => b.capturedAt - a.capturedAt)[0];
+  return { conv, rec: rec || null };
 }
 
 async function onPageInteraction(p) {
-  const conv = (/\/c\/([0-9a-f][0-9a-f-]{7,})/i.exec(p.pageUrl || "") || [])[1];
+  const { conv, rec } = await recordForInteraction(p);
   if (!conv) return { ok: false, reason: "no conversation" };
-  const recs = await db.getAllByIndex("derived", "conversationId", conv).catch(() => []);
+  if (!rec) return { ok: false, reason: "no capture of this conversation" };
   const at = p.at || Date.now();
-  const rec = recs.filter((r) => r.platform === "chatgpt" && at - r.capturedAt < 60 * 60000 && at >= r.capturedAt - 5000).sort((a, b) => b.capturedAt - a.capturedAt)[0];
-  if (!rec) return { ok: false, reason: "no recent capture in this conversation" };
   const id = `${rec.captureId}:${at}:${Math.random().toString(36).slice(2, 8)}`;
-  await db.put("interactions", { id, captureId: rec.captureId, conversationId: conv, at, path: p.path, method: p.method, status: p.status, body: String(p.body || "").slice(0, 2000000) });
+  await db.put("interactions", { id, captureId: rec.captureId, conversationId: conv, at, path: p.path, method: p.method, status: p.status, body: String(p.body || "").slice(0, 2000000), reqBody: String(p.reqBody || "").slice(0, 200000) });
   const current = await db.get("derived", rec.captureId);
   if (!current) return { ok: false };
   await attachInteractions(current);

@@ -143,6 +143,61 @@ try {
     await page.evaluate(() => { localStorage.setItem("cito-detail", "simple"); });
   }
 
+  console.log("\nA card opened on ChatGPT: its stores, why it's recommended, what reviews say (0.62.1)");
+  {
+    // The shapes from the owner's recording of opening every card (not
+    // committed): product_update and sidebar/conversation are event streams
+    // whose request names the product, and the panel's names the message.
+    const rec = await page.evaluate((id) => new Promise((r) => chrome.runtime.sendMessage({ type: "get-record", captureId: id }, (x) => r(x && x.record))), id);
+    const msgId = ((rec.platformSpecific || {}).messageIds || [])[0];
+    check("the answer keeps its assistant message ids", !!msgId, JSON.stringify((rec.platformSpecific || {}).messageIds));
+    const sse = (...evs) => evs.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n";
+    const post = (path, body, reqBody, pageUrl) => page.evaluate((p) => new Promise((r) => chrome.runtime.sendMessage({ type: "page-interaction", payload: p }, r)),
+      { path, method: "POST", status: 200, body, reqBody, at: Date.now(), pageUrl });
+    // Opened from a reloaded page with no conversation in its address: the
+    // panel still finds its answer by the message it names.
+    const panelBody = sse({ v: { type: "message", data: { id: "side-1", author: { role: "assistant" }, metadata: {
+      content_references: [
+        { type: "product_rationale", rationale: "The Zento Nova 8 suits buyers who shoot in low light.", grouped_citation: { title: "Nova 8 review", url: "https://phonereview.example/zento-nova-8", supporting_websites: [{ title: "Night test", url: "https://mobilelab.example/nova8-night" }] } },
+        { type: "product_reviews", summary: "Reviewers praise the night camera.", reviews: [{ source: "Phone Review", theme: "Night photos", summary: "Clean shots after dark.", sentiment: "positive", cite: "turn0search0" }, { source: "Forum", theme: "Heat", summary: "Warms up in games.", sentiment: "negative", cite: "turn0search1" }] },
+      ],
+      search_result_groups: [{ entries: [{ url: "https://phonereview.example/zento-nova-8", title: "Nova 8 review", ref_id: { turn_index: 0, ref_type: "search", ref_index: 0 } }, { url: "https://forum.example/nova8-heat", title: "Heat?", ref_id: { turn_index: 0, ref_type: "search", ref_index: 1 } }] }],
+    } } } });
+    const a = await post("/backend-api/sidebar/conversation", panelBody, JSON.stringify({ category: "generic_entity", conversation_id: rec.conversationId, message_id: msgId, generic_entity_params: { category: "product_rationale_and_reviews", name: "Zento Nova 8" } }), "https://chatgpt.com/");
+    check("the panel is tied to its answer by the message it names", a && a.ok && a.captureId === id, JSON.stringify(a));
+    const storesBody = sse({ type: "product_entity", product: { id: "991", title: "Zento Nova 8 Case, Matte Black", price: "₹799", rating: 4.1, num_reviews: 210, offers: [
+      { merchant_name: "Zento Official", price: "₹799", url: "https://zento.example/case?utm_source=chatgpt.com", details: "In stock online, Free delivery", tag: { text: "Best price" }, available: true, provider: "p2" },
+      { merchant_name: "Phonekart", price: "₹899", url: "https://phonekart.example/zcase", details: "In stock online", available: true, provider: "p2" },
+    ] } });
+    const b = await post("/backend-api/search/product_update", storesBody, JSON.stringify({ product_query: "Zento Nova 8" }), `https://chatgpt.com/c/${rec.conversationId}`);
+    check("the stores reply is tied to the same answer", b && b.ok && b.captureId === id, JSON.stringify(b));
+    const c = await post(`/backend-api/conversation/${rec.conversationId}/message/${msgId}/dil/view_state`, '{"status":"success"}', JSON.stringify({ updates: [{ scope: "root", state: { priority: "Camera", budget: "Under 30k" } }] }), `https://chatgpt.com/c/${rec.conversationId}`);
+    check("and the form's choices", c && c.ok, JSON.stringify(c));
+    const after = await page.evaluate((id) => new Promise((r) => chrome.runtime.sendMessage({ type: "get-record", captureId: id }, (x) => r(x && x.record))), id);
+    check("the record keeps the choices made in the form", JSON.stringify(after.followUpChoices) === JSON.stringify([{ key: "priority", value: "Camera" }, { key: "budget", value: "Under 30k" }]), JSON.stringify(after.followUpChoices));
+    await page.goto(`chrome-extension://${extId}/ui/panel.html?mode=tab&capture=${encodeURIComponent(id)}`);
+    await page.waitForTimeout(1800);
+    const ui = await page.evaluate(() => {
+      const rows = [...document.querySelectorAll("#at-products .at-prod-row:not(.at-th)")];
+      const row = rows.find((r) => /Zento Nova 8/.test(r.querySelector(".at-prod-name")?.textContent || ""));
+      const more = row && row.nextElementSibling && row.nextElementSibling.classList.contains("at-prod-more") ? row.nextElementSibling : null;
+      return {
+        offers: [...(row ? row.querySelectorAll(".at-offer") : [])].map((o) => o.textContent.trim()),
+        why: more?.querySelector(".at-prod-why")?.textContent || "",
+        reviews: [...(more ? more.querySelectorAll(".at-review") : [])].map((li) => `${li.className.replace("at-review", "").trim()}|${li.querySelector("b")?.textContent}|${li.querySelector("a")?.getAttribute("href") || ""}`),
+        pages: [...(more ? more.querySelectorAll(".at-prod-pages-behind a") : [])].map((x) => x.getAttribute("href")),
+        mismatch: more?.querySelector(".at-prod-mismatch")?.textContent || "",
+        fact: [...document.querySelectorAll("#at-products .at-fact")].map((f) => f.textContent).join(" "),
+      };
+    });
+    check("its stores with price and ChatGPT's tag", ui.offers.length === 2 && /Zento Official ₹799/.test(ui.offers[0]) && /Best price/.test(ui.offers[0]), JSON.stringify(ui.offers));
+    check("why ChatGPT recommends it", /shoot in low light/.test(ui.why), ui.why);
+    check("what reviews say, each with its sentiment and page", JSON.stringify(ui.reviews) === JSON.stringify(["positive|Night photos|https://phonereview.example/zento-nova-8", "negative|Heat|https://forum.example/nova8-heat"]), JSON.stringify(ui.reviews));
+    check("the pages behind the panel", ui.pages.includes("https://mobilelab.example/nova8-night") && ui.pages.includes("https://forum.example/nova8-heat"), JSON.stringify(ui.pages));
+    check("a lookup that returned something else than the card says so", /returned “Zento Nova 8 Case, Matte Black”/.test(ui.mismatch), ui.mismatch);
+    check("the section says how many cards were opened", /cards were opened on ChatGPT/.test(ui.fact), ui.fact);
+  }
+
   console.log("\nCards drawn as ChatGPT drew them");
   {
     const fx = readFileSync(path.join(HERE, "fixtures", "chatgpt-genui-entity-cards.txt"), "utf8").split(/\r?\n/);

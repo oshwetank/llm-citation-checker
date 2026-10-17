@@ -96,7 +96,15 @@ console.log("\nBrands named: every brand, what backs it, how it moved");
   check("Zento: an independent page plus its own site", by.Zento.backing.verdict === "independent" && by.Zento.backing.label === "2 independent + own", by.Zento.backing.label);
   check("Kovo: an independent forum thread plus its own site", by.Kovo.backing.label === "1 independent + own", by.Kovo.backing.label);
   check("Lumi: named on a cited review site", by.Lumi.backing.verdict === "independent", by.Lumi.backing.label);
-  check("Arvo: nothing the engine read mentions it", by.Arvo.backing.verdict === "none" && by.Arvo.backing.label === "Nothing", by.Arvo.backing.label);
+  // 0.62.1: "nothing" is said only as far as it was checked. The cited
+  // pages here weren't read, so Arvo is "not in what the engine sent".
+  check("Arvo: not in the titles and snippets the engine sent", by.Arvo.backing.verdict === "unchecked" && by.Arvo.backing.label === "Not in what the engine sent", by.Arvo.backing.label);
+  const read = JSON.parse(JSON.stringify(current));
+  read.sources.forEach((x) => { if (x.outcome === "cited") x.platformSpecific = { ...(x.platformSpecific || {}), page: { status: "ok", words: 900, brands: [] } }; });
+  const arvoRead = brandsView(read, { own }).rows.find((r) => r.name === "Arvo");
+  check("Arvo, once every cited page was read: no cited page names it", arvoRead && arvoRead.backing.verdict === "none" && arvoRead.backing.label === "No cited page names it", arvoRead && arvoRead.backing.label);
+  const bare = brandsView({ ...current, sources: [] }, { own }).rows.find((r) => r.name === "Arvo");
+  check("an answer that searched but cited nothing says so", bare && bare.backing.verdict === "nocited", bare && bare.backing.verdict);
   check("Zento kept first place", by.Zento.change && by.Zento.change.kind === "same", JSON.stringify(by.Zento.change));
   check("Kovo moved up from 3rd", by.Kovo.change.kind === "up" && by.Kovo.change.from === 3, JSON.stringify(by.Kovo.change));
   check("Lumi is new", by.Lumi.change.kind === "added");

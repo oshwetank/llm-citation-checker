@@ -137,16 +137,32 @@
   let answerSeen = false;
   const INTERACTION_DENY = /\/backend-api\/(?:me|accounts?|settings|user|models|conversations?(?:\/|\?|$)|conversation\/init|sentinel|memories|files|gizmos|subscriptions|payments|billing|auth|beacons|lat\/|aip\/)/i;
   const SHOPPING_KEYS = /"(?:merchants?|offers?|sellers?|retailers?|store_name|merchant_name|seller_name|price_display|buy_url|checkout_url)"\s*:/i;
-  function watchInteraction(url, method, resp) {
-    if (!IS_CHATGPT || !answerSeen || !resp) return;
+  // What opening a product card loads (0.62.1, from the owner's recording):
+  // its stores (search/product_update) and its "why" and reviews
+  // (sidebar/conversation), both event streams whose request body says which
+  // product and which answer; and the follow-up form's choices
+  // (…/dil/view_state). Known by path, so they're kept whether or not this
+  // page load saw the answer (a card opened on a reloaded conversation).
+  const PANEL_PATHS = /^\/backend-api\/(?:search\/product_update|sidebar\/conversation|conversation\/[^/]+\/message\/[^/]+\/dil\/view_state|bazaar\/conversation\/[^/]+\/ads)(?:\?|$)/;
+  async function requestText(input, init) {
+    try {
+      if (init && typeof init.body === "string") return init.body;
+      if (input instanceof Request) return await input.clone().text();
+    } catch (_) { /* unreadable: the reply still says what it can */ }
+    return "";
+  }
+  function watchInteraction(url, method, resp, input, init) {
+    if (!IS_CHATGPT || !resp) return;
     let path = "";
     try { const u = new URL(url, location.href); if (u.origin !== location.origin) return; path = u.pathname + u.search; } catch (_) { return; }
-    if (!/^\/backend-api\//.test(path) || INTERACTION_DENY.test(path)) return;
+    if (!/^\/backend-api\//.test(path)) return;
+    const panel = PANEL_PATHS.test(path);
+    if (!panel && (!answerSeen || INTERACTION_DENY.test(path))) return;
     const type = (resp.headers && resp.headers.get("content-type")) || "";
-    if (!/json/i.test(type)) return;
-    resp.clone().text().then((body) => {
-      if (!body || body.length > 2000000 || !SHOPPING_KEYS.test(body)) return;
-      window.postMessage({ __LCFC__: CHANNEL, type: "page-interaction", path: path.slice(0, 500), method, status: resp.status, body, at: Date.now() }, location.origin);
+    if (!/json|event-stream/i.test(type)) return;
+    Promise.all([resp.clone().text(), panel ? requestText(input, init) : ""]).then(([body, reqBody]) => {
+      if (!body || body.length > 2000000 || (!panel && !SHOPPING_KEYS.test(body))) return;
+      window.postMessage({ __LCFC__: CHANNEL, type: "page-interaction", path: path.slice(0, 500), method, status: resp.status, body, reqBody: String(reqBody || "").slice(0, 200000), at: Date.now() }, location.origin);
     }).catch(() => {});
   }
 
@@ -333,7 +349,7 @@
         /* ignore */
       }
     } else {
-      try { watchInteraction(url, method, resp); } catch (_) { /* never in the page's way */ }
+      try { watchInteraction(url, method, resp, input, init); } catch (_) { /* never in the page's way */ }
     }
     return resp;
   };

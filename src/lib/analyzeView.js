@@ -160,6 +160,18 @@ export function brandsView(rec, { own, knownBrands, previous } = {}) {
   const named = namedOrder(list);
   const change = previous ? brandChanges(rec, previous, knownBrands) : null;
   const positions = resultPositions(rec);
+  // Cited pages, once each, and how many of them were read (0.62.0's "Read
+  // the cited pages"): what "no cited page names it" can rest on.
+  const citedPages = (() => {
+    const seen = new Map();
+    for (const s of sources) {
+      if (s.outcome !== "cited" || !s.url) continue;
+      const k = s.url.replace(/#.*$/, "");
+      const ok = !!(s.platformSpecific && s.platformSpecific.page && s.platformSpecific.page.status === "ok");
+      seen.set(k, seen.get(k) || ok);
+    }
+    return { total: seen.size, read: [...seen.values()].filter(Boolean).length };
+  })();
 
   const rows = list.map((b) => {
     const m = matrixFor(b.brand);
@@ -190,7 +202,12 @@ export function brandsView(rec, { own, knownBrands, previous } = {}) {
     else if (independent) { verdict = "independent"; label = `${independent} independent${ownSite ? " + own" : ""}`; tone = "good"; }
     else if (ownSite) { verdict = "own"; label = "Own site only"; tone = "warn"; }
     else if (readOnly.length) { verdict = "read"; label = "Read, not cited"; tone = "warn"; }
-    else { verdict = "none"; label = "Nothing"; tone = "bad"; }
+    // Nothing found. Said only as far as it was checked (0.62.1, reported:
+    // "we can't for sure say that other brands … came from the llms
+    // memory"): a cited page whose text wasn't read may still name it.
+    else if (!citedPages.total) { verdict = "nocited"; label = "Nothing cited"; tone = "neutral"; }
+    else if (citedPages.read >= citedPages.total) { verdict = "none"; label = "No cited page names it"; tone = "bad"; }
+    else { verdict = "unchecked"; label = "Not in what the engine sent"; tone = "neutral"; }
     const pos = b.count > 0 ? named.indexOf(b.brand) + 1 : 0;
     return {
       name: b.brand,
@@ -202,6 +219,7 @@ export function brandsView(rec, { own, knownBrands, previous } = {}) {
       stance: b.stance || null,
       backing: {
         verdict, label, tone, independent, ownSite, readOnly: readOnly.length, backers,
+        citedTotal: citedPages.total, citedRead: citedPages.read,
         pages: dedupeByUrl(cited.map(page)), readPages: dedupeByUrl(readOnly.map(page)),
       },
       // What the answer said about it, in a few words ("Battery", "Best for

@@ -1806,7 +1806,7 @@ function renderApSheet(rec, wrap, tabs, ctx) {
     ctx.brands.rows.forEach((r) => {
       const chips = el("div", { className: "ap-chips" });
       r.backing.backers.forEach((b) => chips.append(el("span", { className: `ap-bchip${b.own ? " own" : ""}` }, `${b.domain} · ${b.own ? "own site" : "independent"}`)));
-      if (!r.backing.backers.length) chips.append(el("span", { className: "ap-muted" }, r.backing.verdict === "read" ? "only in pages it read without citing" : "no page the engine read mentions it"));
+      if (!r.backing.backers.length) chips.append(el("span", { className: "ap-muted" }, r.backing.verdict === "read" ? "only in pages it read without citing" : r.backing.verdict === "unchecked" ? "not in the titles and snippets the engine sent" : r.backing.verdict === "nocited" ? "the answer cited no page" : "no cited page names it"));
       col.append(el("div", { className: "ap-sheet-row" },
         el("div", { className: "ap-sheet-row-head" }, el("b", {}, `${r.position || "–"}. ${r.name}`), apPill(r.backing.label, r.backing.tone)),
         chips,
@@ -2550,7 +2550,12 @@ const AT_VERDICT = {
   independent: ["Backed by independent pages", "good"],
   own: ["Backed only by its own site", "warn"],
   read: ["Read, not cited", "warn"],
-  none: ["Nothing behind it", "bad"],
+  // Said only as far as it was checked (0.62.1): "none" means the cited
+  // pages were read and none names it; "unchecked" that the titles and
+  // snippets the engine sent don't, and the pages themselves weren't read.
+  none: ["No cited page names it", "bad"],
+  unchecked: ["Not in what the engine sent", "neutral"],
+  nocited: ["Nothing cited", "neutral"],
   memory: ["From memory", "warn"],
 };
 const atShortDomain = (d) => String(d || "").replace(/^www\./, "").replace(/\.(co\.in|co\.uk|com|in|org|net|io|ai|app)$/i, "");
@@ -2623,7 +2628,7 @@ function atRenderSingle(main, rec, ctx) {
   if ((rec.ads || []).length) add(atAdsSection(rec, { knownBrands }), rec.ads.length);
 
   /* 5. where it came from */
-  if (named.length && kind.id !== "memory") add(atBackingSection(rec, brands, { own, pages, kind, ctxKinds, knownBrands }), `${named.filter((r) => r.backing.backers.length).length}/${named.length}`);
+  if (named.length && kind.id !== "memory") add(atBackingSection(rec, brands, { own, pages, kind, ctxKinds, knownBrands, products }), `${named.filter((r) => r.backing.backers.length).length}/${named.length}`);
 
   /* 6. every site it read */
   const sites = domainsView(rec, { own, knownBrands });
@@ -2804,10 +2809,10 @@ function atAdsSection(rec, { knownBrands }) {
  * said about the brand, and how it is backed; then which sites name which
  * brands. "Backed" is read from the pages' titles and snippets, so the method
  * is stated above the rows. */
-function atBackingSection(rec, brands, { own, pages, kind, ctxKinds, knownBrands }) {
+function atBackingSection(rec, brands, { own, pages, kind, ctxKinds, knownBrands, products }) {
   const sec = atSection("at-backing", "Where it came from", "", el("span", { className: "ap-muted" }, "search → page found → page read → cited"));
   // How "backed" is counted, not what to make of it (0.59.0).
-  sec.append(el("p", { className: "at-backing-lead" }, `A ${kind.id === "local" ? "place" : "brand"} counts as backed by a page when the answer cited that page and its title or snippet names it. `,
+  sec.append(el("p", { className: "at-backing-lead" }, `A ${kind.id === "local" ? "place" : "brand"} counts as backed by a page when the answer cited that page and the page names it: its own text when it was read, otherwise the title and snippet the engine sent. `,
     el("b", {}, "Independent"), " means any site that isn’t the brand’s own. ",
     el("b", {}, "#N"), rec.platform === "chatgpt" || rec.platform === "perplexity" ? " is where the page came in the engine’s results." : ` is where a page came in the results; ${atEngineLabel(rec.platform)} doesn’t say, so it isn’t shown.`));
   const rows = brands.rows.filter((r) => r.position > 0).sort((a, b) => a.position - b.position);
@@ -2821,16 +2826,31 @@ function atBackingSection(rec, brands, { own, pages, kind, ctxKinds, knownBrands
         el("span", { className: "at-backer-dot", style: `background:var(${AP_KIND_VAR[k] || "--kind-other"})` }),
         p.domain, el("span", { className: "ap-muted" }, ` · ${p.own ? "own site" : atKindOne(k).toLowerCase()}${meta ? ` · ${meta}` : ""}`)));
     });
-    if (!r.backing.pages.length) chips.append(el("span", { className: "ap-muted" }, r.backing.verdict === "memory" ? "answered without searching" : "no cited page names it"));
+    if (!r.backing.pages.length) {
+      const v = r.backing.verdict;
+      chips.append(el("span", { className: "ap-muted" },
+        v === "memory" ? "answered without searching"
+        : v === "nocited" ? "the answer cited no page"
+        : v === "unchecked" ? `not in the titles and snippets ${atEngineLabel(rec.platform)} sent · ${plural(r.backing.citedTotal - r.backing.citedRead, "cited page")} not read`
+        : `none of the ${plural(r.backing.citedTotal, "cited page")} names it (pages read)`));
+      if (v === "unchecked") chips.append(atReadPagesButton(rec, "Read the cited pages"));
+    }
     if (r.backing.readPages.length) chips.append(el("span", { className: "at-glance-warn", title: r.backing.readPages.map((p) => p.domain).join(", ") }, `also named in ${plural(r.backing.readPages.length, "page")} read but not cited`));
     const name = el("button", { className: "at-backing-name", type: "button", "data-focus-brand": r.name, "aria-pressed": "false", title: `Show ${r.name} in the answer` }, r.name + (r.isYou ? " · you" : ""));
     name.onclick = () => atFocusBrandBtn(r.name);
-    sec.append(el("div", { className: `at-backing-row${r.isYou ? " mine" : ""}` },
+    // This brand's products, each with the cited pages that name it (0.62.1:
+    // what the Products table's "Pages naming it" column showed).
+    const mine = products ? products.rows.filter((p) => p.brand && sameBrandUi(p.brand, r.name)) : [];
+    const prodLine = mine.length ? el("div", { className: "at-backing-products" }, el("span", { className: "at-eyebrow" }, mine.length === 1 ? "Its product" : `Its products · ${mine.length}`),
+      ...mine.map((p) => el("span", { className: "at-backing-product" }, el("b", {}, p.name),
+        p.pages.length ? el("span", { className: "ap-muted" }, ` · named on ${p.pages.map(atShortDomain).join(", ")}`) : el("span", { className: "ap-muted" }, " · no cited page names this product")))) : null;
+    sec.append(el("div", { className: `at-backing-row${r.isYou ? " mine" : ""}`, "data-brand": r.name },
       el("span", { className: `at-rank${r.position === 1 ? " first" : ""}` }, String(r.position)),
       name,
       el("span", { className: "at-backing-verdict" }, apPill(label, tone)),
       el("span", { className: "at-backing-took" }, r.took.length ? r.took.join(" · ") : ""),
-      chips));
+      chips,
+      prodLine));
   });
   brands.dropped.forEach((d) => sec.append(el("div", { className: "at-backing-row dropped" }, el("span", { className: "at-rank" }, "–"), el("span", { className: "at-backing-name" }, d.name), el("span", { className: "at-backing-verdict" }, apPill("Not named this time", "neutral")), el("span", { className: "at-backing-took" }, ""), el("span", { className: "ap-muted at-backers" }, `was ${apOrd(d.was)} last time`))));
   // The "What to do" line that closed this section until 0.59.0 is gone: the
@@ -3316,6 +3336,25 @@ function atPageLine(pg) {
 }
 // The bar at the top of "Every site it read": how many cited pages were read,
 // and a button to read them now (asking for site access first if needed).
+// The same "Read the cited pages" action as the bar in "Every site it read".
+function atReadPagesButton(rec, text) {
+  const btn = el("button", { className: "at-btn sm at-read-inline", type: "button" }, text);
+  btn.onclick = async () => {
+    btn.disabled = true;
+    try {
+      if (chrome.permissions && !(await chrome.permissions.contains({ origins: ["<all_urls>"] }))) await chrome.permissions.request({ origins: ["<all_urls>"] }).catch(() => false);
+    } catch (_) { /* reading still tries; pages that refuse say so */ }
+    btn.textContent = "Reading…";
+    const r = await send({ type: "read-cited-pages", captureId: rec.captureId, force: false });
+    if (!r || !r.ok) { btn.textContent = "Couldn’t read them"; btn.disabled = false; return; }
+    FULL.delete(rec.captureId);
+    await hydrate(rec.captureId);
+    renderAnalyze();
+  };
+  return btn;
+}
+const sameBrandUi = (a, b) => atNorm(a) === atNorm(b) || atNorm(a).startsWith(atNorm(b) + " ") || atNorm(b).startsWith(atNorm(a) + " ");
+
 function atPagesBar(rec) {
   const pr = rec.pagesRead;
   const cited = new Set((rec.sources || []).filter((x) => x.outcome === "cited" && x.url).map((x) => x.url.replace(/#.*$/, ""))).size;
@@ -3426,7 +3465,7 @@ function atProductsSection(rec, pv, { engineLabel, own }) {
   sec.classList.add("at-products-sec");
   sec.dataset.rail = "Products and where to buy";
   const table = el("div", { className: "at-prod-table", role: "table", "aria-labelledby": "at-products-h" });
-  table.append(el("div", { className: "at-prod-row at-th", role: "row" }, ...["#", "Product", "Price", "Rating", "Pages naming it", "Where to buy"].map((h) => el("span", { role: "columnheader" }, h))));
+  table.append(el("div", { className: "at-prod-row at-th", role: "row" }, ...["#", "Product", "Price", "Rating", "Brand", "Where to buy"].map((h) => el("span", { role: "columnheader" }, h))));
   pv.rows.forEach((r, i) => {
     const p = rec.products[i] || {};
     const imgHost = atProxied(r.image) ? "the engine’s copy" : atHost(r.image);
@@ -3436,7 +3475,7 @@ function atProductsSection(rec, pv, { engineLabel, own }) {
     // its price and link, in ChatGPT's order. Without that, the stores the
     // answer stream names ("Motorola India + others").
     if ((p.offers || []).length) {
-      p.offers.forEach((o, j) => stores.append(el(o.url ? "a" : "span", { className: "at-store-chip at-offer", ...(o.url ? { href: o.url, target: "_blank", rel: "noopener noreferrer" } : {}), title: [o.availability, o.delivery].filter(Boolean).join(" · ") }, el("b", {}, String(j + 1)), ` ${o.merchant}`, o.price ? el("span", { className: "at-offer-price" }, ` ${o.price}`) : null)));
+      p.offers.forEach((o, j) => stores.append(el(o.url ? "a" : "span", { className: `at-store-chip at-offer${o.tag ? " tagged" : ""}`, ...(o.url ? { href: o.url, target: "_blank", rel: "noopener noreferrer" } : {}), title: [o.tag, o.availability, o.delivery].filter(Boolean).join(" · ") }, el("b", {}, String(j + 1)), ` ${o.merchant}`, o.price ? el("span", { className: "at-offer-price" }, ` ${o.price}`) : null, o.tag ? el("span", { className: "at-offer-tag" }, o.tag) : null)));
       stores.append(el("span", { className: "ap-muted at-offer-note" }, "as listed when the card was opened"));
     } else {
     r.stores.forEach((st, j) => stores.append(el("span", { className: `at-store-chip${st.own ? " own" : ""}`, title: st.own ? `${r.brand}’s own store` : "" }, el("b", {}, String(j + 1)), ` ${st.name}`)));
@@ -3446,9 +3485,16 @@ function atProductsSection(rec, pv, { engineLabel, own }) {
     if (!r.stores.length) stores.append(el("span", { className: "ap-muted" }, p.listing === false ? "a card in the answer · no shopping listing" : "no store named"));
     if (rec.platform === "chatgpt" && p.listing !== false) stores.append(el("span", { className: "ap-muted at-offer-note" }, "open this card on ChatGPT to record every store"));
     }
-    const pagesCell = el("span", { role: "cell", className: "at-prod-pages" });
-    r.pages.forEach((d) => pagesCell.append(el("span", { className: "at-page-chip" }, atShortDomain(d))));
-    if (!r.pages.length) pagesCell.append(el("span", { className: "at-page-chip none" }, "no cited page"));
+    // The pages naming a product are listed under its brand in "Where it
+    // came from" (0.62.1, asked: the two said the same thing); here the
+    // brand links there.
+    const brandCell = el("span", { role: "cell", className: "at-prod-brand" });
+    if (r.brand) {
+      const go = el("button", { className: "at-brand-link", type: "button", title: `What backs ${r.brand}, in "Where it came from"` }, r.brand, el("span", { "aria-hidden": "true" }, " ↓"));
+      go.onclick = () => atJumpToBrand(r.brand);
+      brandCell.append(go);
+    } else brandCell.append(el("span", { className: "ap-muted" }, "—"));
+    const op = p.opened || null;
     table.append(el("div", { className: `at-prod-row${r.isYou ? " mine" : ""}`, role: "row" },
       el("span", { role: "cell", className: "ap-muted" }, String(r.n)),
       el("span", { role: "cell", className: "at-prod-name" },
@@ -3457,10 +3503,12 @@ function atProductsSection(rec, pv, { engineLabel, own }) {
           el("b", {}, r.name || "—"),
           el("span", { className: r.isYou ? "at-mine-sub" : "ap-muted" }, [r.isYou ? `${r.brand} · your brand` : r.brand, imgHost ? `image from ${imgHost}` : ""].filter(Boolean).join(" · ")),
           sup ? el("span", { className: "ap-muted x-only", title: sup.note || "" }, `listing feed: ${sup.code}`) : null)),
-      el("span", { role: "cell" }, r.price || "—"),
-      el("span", { role: "cell" }, r.rating != null ? `★ ${r.rating}` : "—", r.reviews ? el("span", { className: "ap-muted" }, ` (${atCompact(r.reviews)})`) : null),
-      pagesCell,
+      el("span", { role: "cell" }, r.price || (op && op.price) || "—"),
+      el("span", { role: "cell" }, (r.rating ?? (op && op.rating)) != null ? `★ ${r.rating ?? op.rating}` : "—", (r.reviews || (op && op.reviews)) ? el("span", { className: "ap-muted" }, ` (${atCompact(r.reviews || op.reviews)})`) : null),
+      brandCell,
       stores));
+    const more = atOpenedCard(p, engineLabel);
+    if (more) table.append(more);
   });
   sec.append(el("div", { className: "at-scroll" }, table));
   const facts = el("div", { className: "at-prod-facts" });
@@ -3471,10 +3519,60 @@ function atProductsSection(rec, pv, { engineLabel, own }) {
     facts.append(el("div", { className: "at-fact" }, el("span", { className: "at-eyebrow" }, "First store on each card"), bar,
       el("span", { className: "ap-muted" }, pv.firstStores.map((x) => `${x.name} ${x.n}${x.own ? " (brand’s own)" : ""}`).join(" · ") + ` · ${total} of ${pv.rows.length} cards name a store`)));
   }
-  facts.append(el("div", { className: "at-fact" }, el("span", { className: "at-eyebrow" }, "Not captured"),
-    el("span", {}, "Each store’s own price. The capture keeps the card’s price and the stores it names, in its order.")));
+  const opened = (rec.products || []).filter((x) => x.opened || x.panel).length;
+  facts.append(el("div", { className: "at-fact" }, el("span", { className: "at-eyebrow" }, opened ? "Opened on ChatGPT" : "Not captured"),
+    el("span", {}, opened
+      ? `${opened} of ${pv.rows.length} cards were opened on ${engineLabel}: their stores, each store’s price, and why ${engineLabel} recommends them are recorded below each card.`
+      : rec.platform === "chatgpt"
+        ? "Each store’s own price and why ChatGPT recommends a card load only when the card is opened on ChatGPT. Open a card there and it appears here."
+        : "Each store’s own price. The capture keeps the card’s price and the stores it names, in its order.")));
   sec.append(facts);
   return sec;
+}
+// What opening a card on ChatGPT loaded (0.62.1): the product its lookup
+// returned (which can differ from the card), why ChatGPT recommends it, what
+// reviews say, and the pages behind that panel. One row under the card.
+function atOpenedCard(p, engineLabel) {
+  const op = p.opened, pn = p.panel;
+  if (!op && !pn) return null;
+  const box = el("div", { className: "at-prod-more", role: "row" });
+  const cell = el("div", { role: "cell", className: "at-prod-more-in" });
+  box.append(cell);
+  // The lookup can return something other than the card: in the owner's
+  // recording, opening "OnePlus Nord Buds 4 Pro" returned a silicone case
+  // for it. Said when the title doesn't start with the card's name, or names
+  // an accessory the card doesn't.
+  const ACCESSORY = /\b(case|cover|protector|charger|cable|strap|skin|tempered|guard|adapter|stand|mount|holder|pouch|sleeve|refill|replacement)\b/;
+  const lookedUp = op && op.title ? atNorm(op.title) : "", card = atNorm(p.name);
+  if (lookedUp && lookedUp !== card && (!lookedUp.startsWith(card) || (ACCESSORY.test(lookedUp) && !ACCESSORY.test(card)))) {
+    cell.append(el("p", { className: "at-prod-mismatch" }, `${engineLabel}’s lookup for this card returned “${op.title}”${op.price ? ` (${op.price})` : ""}.`));
+  }
+  if (pn && pn.rationale) cell.append(el("div", { className: "at-prod-why" }, el("span", { className: "at-eyebrow" }, `Why ${engineLabel} recommends it`), el("p", {}, pn.rationale)));
+  if (pn && pn.reviews && pn.reviews.length) {
+    const list = el("ul", { className: "at-reviews" });
+    pn.reviews.forEach((rv) => list.append(el("li", { className: `at-review ${rv.sentiment || ""}` },
+      el("span", { className: "at-review-dot", title: rv.sentiment || "" }),
+      el("b", {}, rv.theme || "Review"),
+      rv.source ? (rv.url ? el("a", { href: rv.url, target: "_blank", rel: "noopener noreferrer", className: "at-review-src" }, rv.source) : el("span", { className: "at-review-src" }, rv.source)) : null,
+      rv.summary ? el("span", { className: "at-review-sum" }, rv.summary) : null)));
+    cell.append(el("div", { className: "at-prod-reviews" }, el("span", { className: "at-eyebrow" }, "What reviews say"), pn.summary ? el("p", { className: "ap-muted" }, pn.summary) : null, list));
+  }
+  if (pn && pn.pages && pn.pages.length) {
+    const pages = el("div", { className: "ap-chips at-prod-pages-behind" });
+    pn.pages.forEach((pg) => pages.append(el("a", { className: "at-page-chip", href: pg.url, target: "_blank", rel: "noopener noreferrer", title: pg.title || pg.url }, atShortDomain(pg.domain || atHost(pg.url)))));
+    cell.append(el("div", {}, el("span", { className: "at-eyebrow" }, `Pages behind this panel · ${pn.pages.length}`), pages));
+  }
+  return box;
+}
+const atNorm = (x) => String(x || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+// From a product's brand to its row in "Where it came from".
+function atJumpToBrand(brand) {
+  const row = [...document.querySelectorAll("#at-backing [data-brand]")].find((r) => atNorm(r.dataset.brand) === atNorm(brand));
+  const target = row || document.getElementById("at-backing");
+  if (!target) return;
+  const behavior = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+  target.scrollIntoView({ block: "center", behavior });
+  if (row) { row.classList.add("flash"); setTimeout(() => row.classList.remove("flash"), 1600); }
 }
 function atMerchants(p) {
   return String((p && p.merchant) || "").split(/\s*(?:\+|·|,|\band\b)\s*/i).map((x) => x.trim()).filter((x) => x && !/^others?$/i.test(x));

@@ -102,7 +102,7 @@ export function answerReport(rec, { previous = null, profiles = [], generatedAt 
     pickedFor: extractBrandAspects(passagesOf(b.name)).slice(0, 2).join(", "),
     backing: { label: b.backing.label, tone: b.backing.tone, verdict: b.backing.verdict },
   })).sort((a, b) => (a.position || 99) - (b.position || 99));
-  const weak = brandRows.find((b) => b.position && b.position <= 3 && (b.backing.verdict === "own" || b.backing.verdict === "none"));
+  const weak = brandRows.find((b) => b.position && b.position <= 3 && (b.backing.verdict === "own" || b.backing.verdict === "none" || b.backing.verdict === "nocited"));
   const brandNote = weak ? `${weak.name} was named ${weak.position === 1 ? "first" : ORD(weak.position)} with ${weak.backing.verdict === "own" ? "only its own site" : "no cited page"} behind it.` : "";
 
   // Every page the engine opened, cited first.

@@ -835,6 +835,11 @@ export async function adapt(rawCapture, opts = {}) {
     followUp: genui ? genui.followUp : null,
     genUiBlocks: genui ? genui.blocks : null,
     wordCount,
+    // The assistant messages this answer is made of. What ChatGPT loads when
+    // someone opens a product card names the message it belongs to
+    // (sidebar/conversation's message_id), which ties it to this answer
+    // exactly rather than to whatever was asked last in the conversation.
+    messageIds: [...new Set(collectObjects({ nodes }, (o) => typeof o.id === "string" && o.author && o.author.role === "assistant").map((o) => o.id))].slice(0, 20),
   };
   // Engines from the leaked retrieval registry that this stream names, if any
   // (see lib/retrieval.js): which of OpenAI's own and external engines the

@@ -274,9 +274,16 @@ try {
       };
     });
     check("one row per card, each with a picture tile", r.rows === 5 && r.thumbs === 5, `${r.rows} rows, ${r.thumbs} tiles`);
-    check("the canvas's columns", r.heads.join("|") === "#|Product|Price|Rating|Pages naming it|Where to buy", r.heads.join("|"));
+    // 0.62.1: "Pages naming it" moved under each brand in "Where it came
+    // from" (asked: the two said the same thing); the brand links there.
+    check("the columns, with the brand linking to where it came from", r.heads.join("|") === "#|Product|Price|Rating|Brand|Where to buy", r.heads.join("|"));
     check("each card's stores, numbered in the card's order", r.stores.every((x) => x.length > 0 && /^1 /.test(x[0])), JSON.stringify(r.stores));
-    check("each card says which cited pages name it, or that none does", r.pages.every((x) => x.length > 0), JSON.stringify(r.pages));
+    const moved = await page.evaluate(() => ({
+      links: document.querySelectorAll("#at-products .at-brand-link").length,
+      nested: [...document.querySelectorAll("#at-backing .at-backing-products")].map((x) => x.textContent),
+    }));
+    check("each card's brand is a link", moved.links === 5, String(moved.links));
+    check("and each brand's row in Where it came from lists its products, with the pages naming each or that none does", moved.nested.length >= 3 && moved.nested.every((t) => /named on|no cited page names this product/.test(t)), JSON.stringify(moved.nested));
     check("where the cards send buyers first, and the price per store stated as not captured", /First store on each card/i.test(r.facts) && /Not captured/i.test(r.facts) && /store’s own price/.test(r.facts), r.facts);
   }
 
@@ -294,7 +301,7 @@ try {
       };
     });
     check("a row for each named brand, in order", r.rows === 5 && r.firstName === "OnePlus", `${r.rows} rows, first ${r.firstName}`);
-    check("each with a plain verdict", r.verdicts.every((v) => /^(Backed by independent pages|Backed only by its own site|Read, not cited|Nothing behind it|From memory)$/.test(v)), r.verdicts.join(" | "));
+    check("each with a plain verdict", r.verdicts.every((v) => /^(Backed by independent pages|Backed only by its own site|Read, not cited|No cited page names it|Not in what the engine sent|Nothing cited|From memory)$/.test(v)), r.verdicts.join(" | "));
     // 0.59.0: the owner asked for the data without the advice ("we are not
     // spoonfeeding here"). Until then the section closed with a "What to do"
     // line and the page opened with what "matters most".

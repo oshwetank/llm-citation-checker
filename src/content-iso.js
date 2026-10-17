@@ -141,7 +141,7 @@
     // What the page loaded after the answer (0.62.0; content-main.js).
     if (data.type === "page-interaction") {
       try {
-        chrome.runtime.sendMessage({ type: "page-interaction", payload: { path: String(data.path || ""), method: String(data.method || "GET"), status: Number(data.status) || 0, body: String(data.body || ""), at: data.at || Date.now(), pageUrl: location.href } }, () => void chrome.runtime.lastError);
+        chrome.runtime.sendMessage({ type: "page-interaction", payload: { path: String(data.path || ""), method: String(data.method || "GET"), status: Number(data.status) || 0, body: String(data.body || ""), reqBody: String(data.reqBody || ""), at: data.at || Date.now(), pageUrl: location.href } }, () => void chrome.runtime.lastError);
       } catch (_) { /* worker asleep: this one is lost, the answer isn't */ }
       return;
     }

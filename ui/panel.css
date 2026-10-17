@@ -6978,3 +6978,31 @@ html[data-theme="dark"] .db-date { color-scheme: dark; }
 }
 @media (prefers-reduced-motion: reduce) { .at-rail { transition: none !important; } }
 @media (max-width: 1100px) { .at-rail-pin { display: none; } }
+
+/* Products and where to buy (0.62.1): the brand links to its row in "Where
+ * it came from"; what opening the card on ChatGPT loaded sits under it. */
+.at-brand-link { padding: 0; border: none; background: none; color: var(--accent); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; }
+.at-brand-link:hover { text-decoration: underline; }
+.at-brand-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.at-offer-tag { margin-left: 4px; padding: 0 5px; border-radius: 6px; background: var(--green-bg, var(--bg-subtle)); color: var(--green-fg, var(--fg-secondary)); font-size: 10.5px; font-weight: 600; }
+.at-prod-more { display: block; padding: 2px 16px 12px 52px; border-top: none; }
+.at-prod-more-in { display: flex; flex-direction: column; gap: 10px; padding: 10px 12px; border-radius: 10px; background: var(--bg-subtle); font-size: 12.5px; }
+.at-prod-more-in p { margin: 2px 0 0; line-height: 1.5; }
+.at-prod-mismatch { color: var(--amber-fg, var(--fg-secondary)); }
+.at-reviews { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.at-review { display: grid; grid-template-columns: 10px auto 1fr; gap: 2px 8px; align-items: baseline; }
+.at-review-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg-muted); align-self: center; }
+.at-review.positive .at-review-dot { background: var(--green-fg, #2f8f5b); }
+.at-review.negative .at-review-dot { background: var(--red-fg, #c2412d); }
+.at-review.mixed .at-review-dot, .at-review.neutral .at-review-dot { background: var(--amber-fg, #b7791f); }
+.at-review-src { color: var(--fg-secondary); font-size: 12px; }
+a.at-review-src { color: var(--accent); text-decoration: none; }
+a.at-review-src:hover { text-decoration: underline; }
+.at-review-sum { grid-column: 2 / -1; color: var(--fg-secondary); line-height: 1.45; }
+.at-prod-pages-behind a.at-page-chip { text-decoration: none; color: inherit; }
+/* Where it came from: each brand's products, and the inline read button. */
+.at-backing-products { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; padding: 0 0 2px 32px; font-size: 12px; }
+.at-backing-product b { font-weight: 600; }
+.at-read-inline { margin-left: 8px; }
+.at-backing-row.flash { background: var(--at-tint, var(--accent-subtle)); transition: background 0.4s; }
+@media (prefers-reduced-motion: reduce) { .at-backing-row.flash { transition: none; } }
