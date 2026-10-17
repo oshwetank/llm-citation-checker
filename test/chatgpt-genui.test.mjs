@@ -60,6 +60,8 @@ check("every card has its picture", r.products.every((p) => p.image));
 const answerPics = (r.images || []).filter((i) => /static-rsc-4\/0a1b2c3d-/.test(i.url));
 check("one picture per card, not every picture ChatGPT loaded", answerPics.length === 3, JSON.stringify((r.images || []).map((i) => i.url)));
 
+check("each card picture keeps the page it came from", answerPics.length === 3 && answerPics.every((i) => /^https:\/\/shop1\.example\//.test(i.sourceUrl || "")), JSON.stringify(answerPics.map((i) => i.sourceUrl)));
+
 console.log("brands");
 const brandNames = (r.entities || r.brands || []).map((b) => b.text || b.name || b);
 for (const bad of ["Around", "Triple", "Single", "Edge"]) check(`"${bad}" is not a brand`, !brandNames.includes(bad), JSON.stringify(brandNames));

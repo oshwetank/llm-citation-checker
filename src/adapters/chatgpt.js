@@ -786,7 +786,13 @@ export async function adapt(rawCapture, opts = {}) {
   const entities = extractEntities(baseEntities, products, brandMentions, sources, places);
   const images = extractImages(nodes, products);
   // The picture each card showed (the first of its image component).
-  if (genui) genUiImages(nodes).map((l) => l[0]).filter(Boolean).forEach((im) => { if (!images.some((x) => x.url === im.url)) images.push(im); });
+  // A card's picture is often already in the list as its product's image,
+  // without the page it came from; the card's copy knows that page.
+  if (genui) genUiImages(nodes).map((l) => l[0]).filter(Boolean).forEach((im) => {
+    const have = images.find((x) => x.url === im.url);
+    if (!have) images.push(im);
+    else for (const k of ["sourceUrl", "attribution", "title"]) if (!have[k] && im[k]) have[k] = im[k];
+  });
 
   // Carousel presence: products carousel if any product; news if any dated/news
   // source; image carousel if an image-typed content reference exists; map if a

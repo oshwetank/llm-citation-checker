@@ -96,6 +96,25 @@ try {
   // The second card layout (0.60.2): product on a bold line, spec as the
   // large title, a badge, the price in a grey note, a two-question form.
   // Reported: "The answer, as ChatGPT showed it" didn't look like it at all.
+  // "Images shown" was reported as broken (0.60.1): 120px columns under
+  // 150px frames, white text on pale tints, three-line wraps.
+  const im = await page.evaluate(() => {
+    const cards = [...document.querySelectorAll("#at-images .at-img-card")];
+    const t = cards[0]?.querySelector(".at-img-thumb")?.getBoundingClientRect();
+    const kind = cards[0]?.querySelector(".at-img-kind");
+    return {
+      n: cards.length,
+      w: Math.round(cards[0]?.getBoundingClientRect().width || 0),
+      ratio: t ? +(t.width / t.height).toFixed(2) : 0,
+      kindColor: kind ? getComputedStyle(kind).color : "",
+      leads: cards.map((c) => c.querySelector(".at-img-lead")?.textContent.trim()),
+      names: [...document.querySelectorAll("#at-answer .gu-name")].map((n) => n.textContent.trim()),
+    };
+  });
+  check("image cards are wide, with 4:3 pictures and readable kind labels", im.n === 3 && im.w >= 160 && Math.abs(im.ratio - 4 / 3) < 0.05 && !/255, 255, 255/.test(im.kindColor), JSON.stringify(im));
+  check("each picture says which page it came from", im.leads.every((l) => /shop1\.example page/.test(l)), JSON.stringify(im.leads));
+  check("cards keep their own numbers", JSON.stringify(im.names) === JSON.stringify(["1. Zento Nova 8", "2. Kovo Edge 5 Pro", "3. Lumora Pix 3"]), JSON.stringify(im.names));
+
   console.log("\nCards drawn as ChatGPT drew them");
   {
     const fx = readFileSync(path.join(HERE, "fixtures", "chatgpt-genui-entity-cards.txt"), "utf8").split(/\r?\n/);

@@ -6885,3 +6885,17 @@ polyline.ot-line.c5 { stroke: #c9a227; } circle.ot-line.c5 { fill: #c9a227; }
 .gu-opt.on .gu-radio { border: 5px solid var(--fg-primary, #111); }
 .gu-opt.on .gu-box { background: var(--fg-primary, #111); border-color: var(--fg-primary, #111); }
 .gu-btn { margin-top: 8px; padding: 8px 14px; border-radius: 999px; text-align: center; font-weight: 600; background: var(--fg-primary, #111); color: var(--surface-solid, #fff); }
+
+/* Images shown, rebuilt (0.60.2). Reported as broken: 120px columns under
+   150px-tall frames, a white label on pale tints, and three-line wraps.
+   Wider cards, a 4:3 picture that fills its frame, the kind as a dot and a
+   word, and short lines that wrap at most twice. */
+.at-imgs { grid-template-columns: repeat(auto-fill, minmax(172px, 1fr)); gap: 12px; }
+.at-img-card { gap: 6px; padding: 8px; }
+.at-img-thumb { height: auto; aspect-ratio: 4 / 3; overflow: hidden; }
+.at-img-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.at-img-from { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; }
+.at-img-kind { display: inline-flex; align-items: center; gap: 6px; padding: 0; background: none; color: var(--fg-secondary); font-weight: 500; }
+.at-img-kind i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.at-img-lead, .at-img-brand { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; white-space: normal; overflow-wrap: break-word; font-size: 11.5px; line-height: 1.4; }
+.at-img-lead .glyph { vertical-align: -2px; margin-right: 3px; }

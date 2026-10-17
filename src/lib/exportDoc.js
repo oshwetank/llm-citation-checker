@@ -298,14 +298,24 @@ function renderChatGptAnswer(record) {
   // plain text, nothing like the page.
   const blocks = record.platformSpecific && Array.isArray(record.platformSpecific.genUiBlocks) ? record.platformSpecific.genUiBlocks : null;
   if (blocks && blocks.length) {
-    const line = (t) => markdownToHtml(convert(t), placeholders).replace(/^<p>([\s\S]*)<\/p>$/, "$1");
+    // One line of a card. A leading "2. " would be read as a list and
+    // renumbered "1.", so the space after the number is kept from the
+    // list pass with a zero-width joiner.
+    const line = (t) => markdownToHtml(convert(String(t).replace(/^(\d+\.)\s+/, "$1\u200d ")), placeholders).replace(/^<p>([\s\S]*)<\/p>$/, "$1").replace(/\u200d /g, " ");
     const html = blocks.map((b) => {
       if (b.type === "md") return markdownToHtml(convert(b.text), placeholders);
       if (b.type === "card") {
         const pic = b.image && /^https:\/\//.test(b.image.url)
           ? `<div class="gu-pic"><img src="${esc(b.image.url)}" alt="${escText(b.name || "")}" loading="lazy" referrerpolicy="no-referrer"></div>`
           : `<div class="gu-pic gu-pic-none"></div>`;
-        const parts = (b.parts || []).map((p) => {
+        // Bullets that follow each other are one list, as on the page.
+        const merged = [];
+        (b.parts || []).forEach((p) => {
+          const prev = merged[merged.length - 1];
+          if (p.kind === "md" && /^[-*]\s+/.test(p.text) && prev && prev.kind === "md" && /^[-*]\s+/.test(prev.text)) prev.text += "\n" + p.text;
+          else merged.push({ ...p });
+        });
+        const parts = merged.map((p) => {
           if (p.kind === "badge") return `<span class="gu-badge${p.tone ? ` tone-${esc(p.tone)}` : ""}">${line(p.text)}</span>`;
           if (p.kind === "name") return `<div class="gu-name">${line(p.text)}</div>`;
           if (p.kind === "title") return `<div class="gu-title gu-${esc(p.size || "md")}">${line(p.text)}</div>`;

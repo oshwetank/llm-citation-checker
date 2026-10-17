@@ -3449,8 +3449,8 @@ function atImagesSection(rec, own, ctxKinds) {
     const mine = own && brand && brand.toLowerCase() === own.name.toLowerCase();
     grid.append(el("div", { className: `at-img-card${mine ? " mine" : ""}` },
       withImage(el("span", { className: "at-img-thumb" }, glyphEl("image", 26)), im.url, im.title || brand || from),
-      el("span", { className: "at-img-from" }, from),
-      el("span", { className: "at-img-kind", style: `background:var(${AP_KIND_VAR[k] || "--kind-other"})` }, atKindOne(k)),
+      el("span", { className: "at-img-from", title: from }, from),
+      el("span", { className: "at-img-kind" }, el("i", { style: `background:var(${AP_KIND_VAR[k] || "--kind-other"})` }), atKindOne(k)),
       el("span", { className: "at-img-lead" }, glyphEl("link", 12), im.sourceUrl || im.link ? `${atHost(im.sourceUrl || im.link)} page` : "no click destination captured"),
       el("span", { className: "ap-muted at-img-brand" }, [brand || "no brand", im.price].filter(Boolean).join(" · "))));
   });
