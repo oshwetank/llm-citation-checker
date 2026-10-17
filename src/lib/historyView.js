@@ -30,7 +30,25 @@ export const PERIODS = [
   { id: "7d", label: "7 days", phrase: "in the last 7 days" },
   { id: "30d", label: "30 days", phrase: "in the last 30 days" },
   { id: "all", label: "All time", phrase: "in all your history" },
+  // Any span of days (0.60.2, asked for): f.from / f.to, "YYYY-MM-DD",
+  // both days included, local time.
+  { id: "custom", label: "Custom…", phrase: "between the dates you picked" },
 ];
+
+/** Local midnight of a "YYYY-MM-DD" day, or null. */
+export function dayStart(ymd) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd || ""));
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime() : null;
+}
+/** "12 Oct – 17 Oct" for a custom span, the year added when it isn't this one. */
+export function rangeLabel(from, to, now = Date.now()) {
+  const a = dayStart(from), b = dayStart(to);
+  if (a == null && b == null) return "Custom…";
+  const y = new Date(now).getFullYear();
+  const fmt = (t) => { const d = new Date(t); return `${d.getDate()} ${MON[d.getMonth()]}${d.getFullYear() !== y ? ` ${d.getFullYear()}` : ""}`; };
+  if (a != null && b != null) return a === b ? fmt(a) : `${fmt(Math.min(a, b))} – ${fmt(Math.max(a, b))}`;
+  return a != null ? `From ${fmt(a)}` : `Until ${fmt(b)}`;
+}
 
 // The kinds of answer, in the canvas's order. "task" is a prompt that asked
 // for work (an email, a summary) rather than information: nothing to track.
@@ -172,7 +190,13 @@ const MONTH = ["January", "February", "March", "April", "May", "June", "July", "
 const DOW = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 export const shortDate = (t) => { const d = new Date(t); return `${d.getDate()} ${MON[d.getMonth()]}`; };
 
-function inPeriod(period, now, t) {
+function inPeriod(period, now, t, range) {
+  if (period === "custom") {
+    let a = dayStart(range && range.from), b = dayStart(range && range.to);
+    if (a != null && b != null && a > b) [a, b] = [b, a];
+    const end = b != null ? new Date(b).setDate(new Date(b).getDate() + 1) : null; // the whole of the last day
+    return (a == null || t >= a) && (end == null || t < end);
+  }
   const dd = dayDiff(now, t);
   switch (period) {
     case "today": return dd === 0;
@@ -248,7 +272,7 @@ export function historyView(rows, f, { now = Date.now(), answerHits = new Map() 
   // 2. engines, period, toggles
   const engineCounts = Object.fromEntries(ENGINE_ORDER.map((e) => [e, matched.filter((r) => r.engines.includes(e)).length]));
   const pre = matched.filter((r) => r.engines.some(engineOn)
-    && inPeriod(f.period || "all", now, r.latestAt)
+    && inPeriod(f.period || "all", now, r.latestAt, { from: f.from, to: f.to })
     && (!f.repeat || r.asked > 1)
     && (!f.campaign || r.fromCampaign)
     && (!f.ads || (r.ads || []).length > 0));

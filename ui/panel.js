@@ -25,7 +25,7 @@ import { rawBreakdown, SECTIONS as RAW_SECTIONS } from "../src/lib/rawBreakdown.
 import { isNanoAvailable, labelRawFieldsWithNano } from "../src/lib/nano.js";
 import { answersToPrompt, compareView } from "../src/lib/compareView.js";
 import { overTimeView } from "../src/lib/overTimeView.js";
-import { historyRows, historyView, highlightRuns, dayDiff, shortDate, PERIODS, KINDS, ENGINE_ORDER } from "../src/lib/historyView.js";
+import { historyRows, historyView, highlightRuns, dayDiff, shortDate, PERIODS, KINDS, ENGINE_ORDER, rangeLabel } from "../src/lib/historyView.js";
 import { extractBrandAspects } from "../src/lib/aspects.js";
 import { siteKindOf } from "../src/lib/siteKind.js";
 import { aggregateSources } from "../src/lib/sources.js";
@@ -5000,6 +5000,7 @@ let dbQuery = "";
 let dbScope = { prompts: true, answers: true, fan: true };
 let dbEngines = { chatgpt: true, gemini: true, perplexity: true, grok: true };
 let dbPeriod = null;         // null until picked: the view's default, widened if that would show nothing
+let dbRange = null;          // { from, to } as "YYYY-MM-DD" when the period is "custom"
 let dbRepeat = false;
 let dbCampaignOnly = false;
 let dbKinds = {};
@@ -5262,9 +5263,9 @@ function renderDashboardImpl() {
     return;
   }
   const period = dbPeriod || dbDefaultPeriod(all, popup);
-  const v = historyView(all, { query: dbQuery, scope: dbScope, engines: dbEngines, period, kinds: dbKinds, week: dbWeek, repeat: dbRepeat, campaign: dbCampaignOnly, sort: dbSort }, { now: Date.now(), answerHits: dbAnswerHits });
+  const v = historyView(all, { query: dbQuery, scope: dbScope, engines: dbEngines, period, from: dbRange && dbRange.from, to: dbRange && dbRange.to, kinds: dbKinds, week: dbWeek, repeat: dbRepeat, campaign: dbCampaignOnly, sort: dbSort }, { now: Date.now(), answerHits: dbAnswerHits });
   currentFilteredRecs = v.list.flatMap((r) => r.captureIds).map((id) => ALL_RECORDS.find((x) => x.captureId === id)).filter(Boolean);
-  const periodPhrase = (PERIODS.find((p) => p.id === period) || PERIODS[5]).phrase;
+  const periodPhrase = period === "custom" ? (dbRange ? `in ${rangeLabel(dbRange.from, dbRange.to)}` : "between the dates you picked") : (PERIODS.find((p) => p.id === period) || PERIODS[5]).phrase;
 
   /* --- search --- */
   const search = el("div", { className: "db-search" });
@@ -5291,13 +5292,29 @@ function renderDashboardImpl() {
   top.append(search);
 
   /* --- filters --- */
-  const setPeriod = (p) => { dbPeriod = p; dbWeek = null; renderDashboard(); };
+  const ymd = (t) => { const d = new Date(t); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  const setPeriod = (p) => {
+    // Custom starts on the last seven days, which the two dates then change.
+    if (p === "custom" && !dbRange) dbRange = { from: ymd(Date.now() - 6 * 86400000), to: ymd(Date.now()) };
+    dbPeriod = p; dbWeek = null; renderDashboard();
+  };
+  // Two themed date fields for a custom period (0.60.2, asked for).
+  const rangeBox = () => {
+    const box = el("div", { className: "db-range", role: "group", "aria-label": "Custom dates" });
+    const field = (key, label) => {
+      const input = el("input", { type: "date", className: "db-date", value: (dbRange && dbRange[key]) || "", max: ymd(Date.now()), "aria-label": label });
+      input.onchange = () => { dbRange = { ...(dbRange || {}), [key]: input.value }; renderDashboard(); };
+      return el("label", { className: "db-date-field" }, el("span", { className: "db-label" }, label), input);
+    };
+    box.append(field("from", "From"), field("to", "To"));
+    return box;
+  };
   const engineToggle = (id) => () => { dbEngines = { ...dbEngines, [id]: dbEngines[id] === false }; renderDashboard(); };
   const recent = dbRecent();
   if (popup) {
     const row = el("div", { className: "db-filters" });
     const sel = el("select", { className: "db-select", "aria-label": "When" });
-    PERIODS.forEach((p) => { const o = el("option", { value: p.id }, p.label); if (p.id === period) o.selected = true; sel.append(o); });
+    PERIODS.forEach((p) => { const o = el("option", { value: p.id }, p.id === "custom" && period === "custom" && dbRange ? rangeLabel(dbRange.from, dbRange.to) : p.label); if (p.id === period) o.selected = true; sel.append(o); });
     sel.onchange = () => setPeriod(sel.value);
     row.append(sel);
     const eng = el("span", { className: "db-engine-toggles" });
@@ -5309,6 +5326,7 @@ function renderDashboardImpl() {
     });
     row.append(eng);
     top.append(row);
+    if (period === "custom") top.append(rangeBox());
     const kinds = el("div", { className: "db-kindchips", role: "group", "aria-label": "Kind of answer" });
     KINDS.forEach((k) => {
       const n = v.kindCounts[k.id] || 0;
@@ -5328,13 +5346,14 @@ function renderDashboardImpl() {
     const eng = el("div", { className: "db-group", role: "group", "aria-label": "Engines" });
     ENGINE_ORDER.forEach((id) => eng.append(dbChip([engineIconEl(id), dbEngineLabel(id), el("span", { className: "db-n" }, String(v.engineCounts[id] || 0))], dbEngines[id] !== false, engineToggle(id), { cls: "engine" })));
     const seg = el("div", { className: "db-seg", role: "group", "aria-label": "When" });
-    PERIODS.forEach((p) => { const b = el("button", { className: `db-seg-btn${p.id === period ? " on" : ""}`, type: "button", "aria-pressed": p.id === period ? "true" : "false" }, p.label); b.onclick = () => setPeriod(p.id); seg.append(b); });
+    PERIODS.forEach((p) => { const b = el("button", { className: `db-seg-btn${p.id === period ? " on" : ""}`, type: "button", "aria-pressed": p.id === period ? "true" : "false" }, p.id === "custom" && period === "custom" && dbRange ? rangeLabel(dbRange.from, dbRange.to) : p.label); b.onclick = () => setPeriod(p.id); seg.append(b); });
     const toggles = el("div", { className: "db-group" });
     toggles.append(
       dbChip(`${dbRepeat ? "✓ " : ""}Asked more than once`, dbRepeat, () => { dbRepeat = !dbRepeat; renderDashboard(); }, { cls: "toggle" }),
       dbChip(`${dbCampaignOnly ? "✓ " : ""}From a campaign`, dbCampaignOnly, () => { dbCampaignOnly = !dbCampaignOnly; renderDashboard(); }, { cls: "toggle" }));
     row.append(scope, eng, seg, toggles);
     top.append(row);
+    if (period === "custom") top.append(rangeBox());
   }
   if (recent.length && !dbQuery) {
     const rr = el("div", { className: "db-recent" }, el("span", { className: "db-label" }, popup ? "Recent" : "Your recent searches"));

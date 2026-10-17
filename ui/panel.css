@@ -6918,3 +6918,10 @@ polyline.ot-line.c5 { stroke: #c9a227; } circle.ot-line.c5 { fill: #c9a227; }
 .at-detail-switch.on .at-switch-track { background: var(--accent); box-shadow: none; }
 .at-detail-switch.on .at-switch-dot { transform: translateX(10px); background: #fff; }
 @media (prefers-reduced-motion: reduce) { .at-switch-track, .at-switch-dot { transition: none; } }
+
+/* Custom dates on the Dashboard (0.60.2) */
+.db-range { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 8px; }
+.db-date-field { display: inline-flex; align-items: center; gap: 8px; }
+.db-date { height: 30px; padding: 0 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-solid); color: var(--fg-primary); font: inherit; font-size: 13px; color-scheme: light; }
+.db-date:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-subtle); }
+html[data-theme="dark"] .db-date { color-scheme: dark; }

@@ -10,7 +10,7 @@
  * Every prompt, brand and page is made up; the domains are public sites.
  */
 import {
-  historyRows, historyView, isTaskPrompt, searchTokens, highlightRuns, groupRows, dayDiff, weekStart,
+  historyRows, historyView, rangeLabel, isTaskPrompt, searchTokens, highlightRuns, groupRows, dayDiff, weekStart,
 } from "../src/lib/historyView.js";
 import { normPrompt } from "../src/lib/analyzeView.js";
 import { answerSnippet, searchAnswers } from "../src/lib/answerSearch.js";
@@ -191,6 +191,21 @@ console.log("\nSites and ads across your history (0.61.0)");
   const only = historyView(rws, { period: "all", ads: true }, { now: NOW });
   check("'Has an ad' keeps only prompts that had one", only.list.length === 2 && only.list.every((r) => r.ads.length), only.list.map((r) => r.text).join(" | "));
   check("and the count of prompts with an ad", v.withAds === 2, v.withAds);
+}
+
+console.log("\nA custom span of days (0.60.2)");
+{
+  // Asked for: "on the time line filter I'd like to add a custom option so
+  // the user can select a duration as per their need".
+  const recs = [0, 3, 5, 9, 40].map((d) => cap("chatgpt", `prompt ${d} days ago`, at(d, 23)));
+  const rws = historyRows(recs, {});
+  const ymd = (daysAgo) => { const d = new Date(at(daysAgo)); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  const pick = (from, to) => historyView(rws, { period: "custom", from, to }, { now: NOW }).list.map((r) => r.text).sort();
+  check("both days are included, the last one until midnight", JSON.stringify(pick(ymd(5), ymd(3))) === JSON.stringify(["prompt 3 days ago", "prompt 5 days ago"]), JSON.stringify(pick(ymd(5), ymd(3))));
+  check("dates picked the wrong way round still work", JSON.stringify(pick(ymd(3), ymd(5))) === JSON.stringify(pick(ymd(5), ymd(3))));
+  check("only a start date: everything from then on", pick(ymd(9), "").length === 4);
+  check("only an end date: everything up to then", JSON.stringify(pick("", ymd(9))) === JSON.stringify(["prompt 40 days ago", "prompt 9 days ago"]), JSON.stringify(pick("", ymd(9))));
+  check("the span reads as dates", rangeLabel("2026-09-27", "2026-10-02", NOW) === "27 Sep – 2 Oct" && rangeLabel("2025-12-30", "2026-01-02", NOW) === "30 Dec 2025 – 2 Jan", rangeLabel("2025-12-30", "2026-01-02", NOW));
 }
 
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
