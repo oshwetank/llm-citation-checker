@@ -8938,6 +8938,13 @@ async function openFeedbackModal(rec) {
       try {
         const r = await send({ type: "get-raw", captureId: full.captureId });
         if (r && r.ok && r.raw != null) raw = formatRawCapture(full.captureId, r.meta, r.raw);
+        // Every copy this answer was merged from (lib/sameAnswer.js), not just
+        // the first: a Grok answer held five, and the one sent alone couldn't
+        // show where 65 sources became 55 (0.62.1).
+        for (const id of full.mergedFrom || []) {
+          const m = await send({ type: "get-raw", captureId: id });
+          if (m && m.ok && m.raw != null) raw += `\n\n${formatRawCapture(id, m.meta, m.raw)}`;
+        }
       } catch (_) { /* a capture whose raw was pruned still sends the rest */ }
       if (!raw) include.raw = false;
     }
