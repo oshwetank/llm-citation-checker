@@ -1,0 +1,292 @@
+# LCFC raw capture 00000000-0000-4000-8000-000000000061
+# url: https://chatgpt.com/backend-api/f/conversation
+# reqBody: {"action":"next","messages":[{"id":"u-1","author":{"role":"user"},"content":{"content_type":"text","parts":["best tablet for drawing"]}}],"model":"auto","supported_encodings":["v1"]}
+
+event: delta_encoding
+data: "v1"
+
+data: {"type":"resume_conversation_token","kind":"topic","token":"synthetic"}
+
+data: {"p":"","o":"add","v":{"message":{"id":"m-sys","author":{"role":"system","name":null,"metadata":{}},"create_time":null,"content":{"content_type":"text","parts":[""]},"status":"in_progress","metadata":{},"recipient":"all","channel":null}},"c":0}
+
+data: {"v":{"message":{"id":"m-user","author":{"role":"user","name":null,"metadata":{}},"create_time":null,"content":{"content_type":"text","parts":[""]},"status":"in_progress","metadata":{},"recipient":"all","channel":null}},"c":1}
+
+data: {"type":"search_model_queries","queries":["best tablet for drawing","Kovo Edge 5 Pro camera review"]}
+
+data: {"p":"","o":"add","v":{"message":{"id":"m-parent","author":{"role":"assistant","name":null,"metadata":{}},"create_time":null,"content":{"content_type":"text","parts":[""]},"status":"in_progress","metadata":{},"recipient":"all","channel":"final"}},"c":2}
+
+data: {"p":"","o":"add","v":{"message":{"id":"m-answer","author":{"role":"assistant","name":null,"metadata":{}},"create_time":null,"content":{"content_type":"text","parts":[""]},"status":"in_progress","metadata":{"streaming_parent_patch":{"parent_id":"m-parent"}},"recipient":"all","channel":"final"}},"c":3}
+
+data: {"type":"message_marker","message_id":"m-answer","marker":"first_visible_token"}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"If drawing is the priority, look for ","c":2}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"If drawing is the priority, look for ","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"pen latency and a fast chip first. <C","c":2}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"pen latency and a fast chip first. <C","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ite refs={[\"turn7search0\",\"turn7searc","c":2}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ite refs={[\"turn7search0\",\"turn7searc","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"h1\"]}/>\n\n","c":2}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"h1\"]}/>\n\n","c":3}
+
+data: {"p":"","o":"add","v":{"message":{"id":"m-think","author":{"role":"assistant","name":null,"metadata":{}},"create_time":null,"content":{"content_type":"thoughts","parts":[""]},"status":"in_progress","metadata":{},"recipient":"all","channel":null}},"c":4}
+
+data: {"v":[{"p":"/message/metadata/search_result_groups","o":"append","v":[{"type":"search_result_group","domain":"phonereview.example","entries":[{"type":"search_result","url":"https://phonereview.example/best-camera-phones-30000","title":"Best camera phones under 30000","snippet":"Zento Nova 8 leads our camera tests.","ref_id":{"turn_index":7,"ref_type":"search","ref_index":0},"pub_date":1792000000,"attribution":"phonereview.example"}]},{"type":"search_result_group","domain":"mobilelab.example","entries":[{"type":"search_result","url":"https://mobilelab.example/lumora-pix-3-review","title":"Lumora Pix 3 review","snippet":"A single camera that holds up at night.","ref_id":{"turn_index":7,"ref_type":"search","ref_index":1},"attribution":"mobilelab.example"},{"type":"search_result","url":"https://mobilelab.example/kovo-edge-5-pro-review","title":"Kovo Edge 5 Pro review","snippet":"Portraits with natural tones.","ref_id":{"turn_index":7,"ref_type":"search","ref_index":2},"attribution":"mobilelab.example"}]},{"type":"search_result_group","domain":"technews.example","entries":[{"type":"search_result","url":"https://technews.example/2026/10/phone-launches","title":"October phone launches","snippet":"New phones this month.","ref_id":{"turn_index":7,"ref_type":"news","ref_index":4},"pub_date":1792100000,"attribution":"technews.example"}]}]}],"c":4}
+
+data: {"p":"","o":"add","v":{"message":{"id":"m-web","author":{"role":"assistant","name":null,"metadata":{"real_author":"tool:web"}},"create_time":null,"content":{"content_type":"text","parts":[""]},"status":"in_progress","metadata":{"continuation_message_id":"m-answer"},"recipient":"all","channel":"final"}},"c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"## Best tablets for drawing\n\n<box gap={4}","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"## Best tablets for drawing\n\n<box gap={4}","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":">\n<row align=start gap={3}>\n  <AsyncImage","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":">\n<row align=start gap={3}>\n  <AsyncImage","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":" query=\"Zento Slate Pro tablet photo\" asp","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":" query=\"Zento Slate Pro tablet photo\" asp","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ectRatio=\"3:4\" width=\"124px\"/>\n  <box fle","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ectRatio=\"3:4\" width=\"124px\"/>\n  <box fle","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"x=\"1\" gap={1}>\n    <badge color=\"success\"","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"x=\"1\" gap={1}>\n    <badge color=\"success\"","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":">Best for raw power</badge>\n    **<Entity","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":">Best for raw power</badge>\n    **<Entity","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":" category=\"product\" value=\"Zento Slate Pr","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":" category=\"product\" value=\"Zento Slate Pr","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"o\"/>**\n    <title size=\"lg\">Octa X9 chip ","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"o\"/>**\n    <title size=\"lg\">Octa X9 chip ","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"· 12GB RAM</title>\n    The fastest chip h","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"· 12GB RAM</title>\n    The fastest chip h","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ere, with a 13-inch screen that keeps up ","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ere, with a 13-inch screen that keeps up ","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"with heavy brushes. <Cite refs={[\"turn7se","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"with heavy brushes. <Cite refs={[\"turn7se","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"arch0\"]}/>\n    <text color=\"secondary\" si","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"arch0\"]}/>\n    <text color=\"secondary\" si","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ze=\"sm\">Listed price: ₹89,999; check curr","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ze=\"sm\">Listed price: ₹89,999; check curr","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ent offers.</text>\n  </box>\n</row>\n<divid","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ent offers.</text>\n  </box>\n</row>\n<divid","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"er color=\"subtle\"/>\n<row align=start gap=","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"er color=\"subtle\"/>\n<row align=start gap=","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"{3}>\n  <AsyncImage query=\"Kovo Edge 5 Pro","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"{3}>\n  <AsyncImage query=\"Kovo Edge 5 Pro","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":" tablet photo\" aspectRatio=\"3:4\" width=\"1","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":" tablet photo\" aspectRatio=\"3:4\" width=\"1","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"24px\"/>\n  <box flex=\"1\" gap={1}>\n    **<E","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"24px\"/>\n  <box flex=\"1\" gap={1}>\n    **<E","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ntity ref=\"turn7product3\" value=\"Kovo Edg","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ntity ref=\"turn7product3\" value=\"Kovo Edg","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"e 5 Pro\"/>**\n    <title size=\"lg\">Octa X7","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"e 5 Pro\"/>**\n    <title size=\"lg\">Octa X7","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":" chip</title>\n    A lighter pick with a m","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":" chip</title>\n    A lighter pick with a m","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"atte screen that feels like paper. <Cite ","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"atte screen that feels like paper. <Cite ","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"refs={[\"turn7product3\"]}/>\n    <text colo","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"refs={[\"turn7product3\"]}/>\n    <text colo","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"r=\"secondary\" size=\"sm\">Listed launch pri","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"r=\"secondary\" size=\"sm\">Listed launch pri","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ce: ₹28,499.</text>\n  </box>\n</row>\n<divi","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ce: ₹28,499.</text>\n  </box>\n</row>\n<divi","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"der color=\"subtle\"/>\n<row align=start gap","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"der color=\"subtle\"/>\n<row align=start gap","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"={3}>\n  <AsyncImage query=\"Lumora Tab 3 t","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"={3}>\n  <AsyncImage query=\"Lumora Tab 3 t","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ablet photo\" aspectRatio=\"3:4\" width=\"124","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ablet photo\" aspectRatio=\"3:4\" width=\"124","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"px\"/>\n  <box flex=\"1\" gap={1}>\n    <badge","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"px\"/>\n  <box flex=\"1\" gap={1}>\n    <badge","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":" color=\"success\">Best value</badge>\n    *","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":" color=\"success\">Best value</badge>\n    *","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"*<Entity category=\"product\" value=\"Lumora","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"*<Entity category=\"product\" value=\"Lumora","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":" Tab 3\"/>**\n    <title size=\"lg\">Octa X5 ","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":" Tab 3\"/>**\n    <title size=\"lg\">Octa X5 ","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"chip · 8GB RAM</title>\n    Good pen suppo","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"chip · 8GB RAM</title>\n    Good pen suppo","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"rt for the price. <Cite refs={[\"turn7sear","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"rt for the price. <Cite refs={[\"turn7sear","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ch1\"]}/>\n    <text color=\"secondary\" size","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ch1\"]}/>\n    <text color=\"secondary\" size","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"=\"sm\">Import only; check warranty.</text>","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"=\"sm\">Import only; check warranty.</text>","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"\n  </box>\n</row>\n<divider color=\"subtle\"/","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"\n  </box>\n</row>\n<divider color=\"subtle\"/","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":">\n</box>\n\n## My pick\n\n- **For power:** Ze","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":">\n</box>\n\n## My pick\n\n- **For power:** Ze","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"nto Slate Pro.\n\n**What is your budget?**\n","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"nto Slate Pro.\n\n**What is your budget?**\n","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"{@body const [budget,setBudget] = DIL.use","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"{@body const [budget,setBudget] = DIL.use","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"State(\"₹50,000–₹1,00,000\")}\n{@body const ","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"State(\"₹50,000–₹1,00,000\")}\n{@body const ","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"[priority,setPriority] = DIL.useState(\"Bo","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"[priority,setPriority] = DIL.useState(\"Bo","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"th equally\")}\n<box border radius=\"xl\" pad","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"th equally\")}\n<box border radius=\"xl\" pad","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ding={3} gap={3}>\n  <radio-group value={b","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ding={3} gap={3}>\n  <radio-group value={b","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"udget} onChange={setBudget} direction=\"co","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"udget} onChange={setBudget} direction=\"co","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"l\">\n    <radio value=\"Under ₹50,000\">Unde","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"l\">\n    <radio value=\"Under ₹50,000\">Unde","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"r ₹50,000</radio>\n    <radio value=\"₹50,0","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"r ₹50,000</radio>\n    <radio value=\"₹50,0","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"00–₹1,00,000\">₹50,000–₹1,00,000</radio>\n ","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"00–₹1,00,000\">₹50,000–₹1,00,000</radio>\n ","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":" </radio-group>\n  <divider color=\"subtle\"","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":" </radio-group>\n  <divider color=\"subtle\"","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"/>\n  <text weight=\"medium\">Which matters ","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"/>\n  <text weight=\"medium\">Which matters ","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"more?</text>\n  <radio-group value={priori","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"more?</text>\n  <radio-group value={priori","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ty} onChange={setPriority} direction=\"col","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ty} onChange={setPriority} direction=\"col","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"\">\n    <radio value=\"Pen feel\">Pen feel</","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"\">\n    <radio value=\"Pen feel\">Pen feel</","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"radio>\n    <radio value=\"Both equally\">Bo","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"radio>\n    <radio value=\"Both equally\">Bo","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"th equally</radio>\n  </radio-group>\n  <bu","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"th equally</radio>\n  </radio-group>\n  <bu","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"tton block onClick={() => GenUI.issueNewT","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"tton block onClick={() => GenUI.issueNewT","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"urn(\"Recommend a drawing tablet. Budget: ","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"urn(\"Recommend a drawing tablet. Budget: ","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"\"+budget+\". Priority: \"+priority+\".\")}>Fi","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"\"+budget+\". Priority: \"+priority+\".\")}>Fi","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"nd my tablet</button>\n</box>\n","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"nd my tablet</button>\n</box>\n","c":3}
+
+data: {"v":[{"p":"/message/metadata","o":"append","v":{"genui_components":[{"type":"cite","component_resolution_id":"cite-intro","entities":[{"entity_type":"search","ref":"turn7search0"},{"entity_type":"search","ref":"turn7search1"}]}]}},{"p":"/message/metadata/genui_components","o":"append","v":[{"type":"async_image","component_resolution_id":"0a1b2c3d-0000-5000-8000-00000000a001","genui_attributes":{"aspectRatio":"3:4"}},{"type":"async_image","component_resolution_id":"0a1b2c3d-0000-5000-8000-00000000a002","genui_attributes":{"aspectRatio":"3:4"}},{"type":"entity","component_resolution_id":"ent-kovo"},{"type":"async_image","component_resolution_id":"0a1b2c3d-0000-5000-8000-00000000a003","genui_attributes":{"aspectRatio":"3:4"}}]},{"p":"/message/metadata/model_dil_v2/appData/opGenui/componentResults","o":"append","v":{"ent-kovo":{"status":"resolved","componentName":"Entity","state":{"value":"Kovo Edge 5 Pro","action_payload":{"query":"Kovo Edge 5 Pro","category":"product","extraParams":{"product":{"id":"kovo-edge-5-pro","title":"Kovo Edge 5 Pro","url":"","price":"₹28,499","merchants":"Kovo Store + others","image_urls":["https://images.openai.com/thumbnails/url/kovo-listing.jpg"],"rating":4.4,"num_reviews":212,"cite":"turn7product3"}}}}}}}],"c":3}
+
+data: {"p":"/message/metadata/model_dil_v2/appData/opGenui/componentResults/0a1b2c3d-0000-5000-8000-00000000a001/state/images","o":"append","v":[{"url":"https://shop1.example/0a1b2c3d-0000-5000-8000-00000000a001","content_url":"https://images.openai.com/static-rsc-4/0a1b2c3d-0000-5000-8000-00000000a001-1.jpg?purpose=fullsize","thumbnail_url":"https://images.openai.com/thumbnails/0a1b2c3d-0000-5000-8000-00000000a001-1.jpg","title":"Zento Slate Pro photo 1"},{"url":"https://shop2.example/0a1b2c3d-0000-5000-8000-00000000a001","content_url":"https://images.openai.com/static-rsc-4/0a1b2c3d-0000-5000-8000-00000000a001-2.jpg?purpose=fullsize","thumbnail_url":"https://images.openai.com/thumbnails/0a1b2c3d-0000-5000-8000-00000000a001-2.jpg","title":"Zento Slate Pro photo 2"}],"c":3}
+
+data: {"p":"/message/metadata/model_dil_v2/appData/opGenui/componentResults/0a1b2c3d-0000-5000-8000-00000000a002/state/images","o":"append","v":[{"url":"https://shop1.example/0a1b2c3d-0000-5000-8000-00000000a002","content_url":"https://images.openai.com/static-rsc-4/0a1b2c3d-0000-5000-8000-00000000a002-1.jpg?purpose=fullsize","thumbnail_url":"https://images.openai.com/thumbnails/0a1b2c3d-0000-5000-8000-00000000a002-1.jpg","title":"Kovo Edge 5 Pro photo 1"},{"url":"https://shop2.example/0a1b2c3d-0000-5000-8000-00000000a002","content_url":"https://images.openai.com/static-rsc-4/0a1b2c3d-0000-5000-8000-00000000a002-2.jpg?purpose=fullsize","thumbnail_url":"https://images.openai.com/thumbnails/0a1b2c3d-0000-5000-8000-00000000a002-2.jpg","title":"Kovo Edge 5 Pro photo 2"}],"c":3}
+
+data: {"p":"/message/metadata/model_dil_v2/appData/opGenui/componentResults/0a1b2c3d-0000-5000-8000-00000000a003/state/images","o":"append","v":[{"url":"https://shop1.example/0a1b2c3d-0000-5000-8000-00000000a003","content_url":"https://images.openai.com/static-rsc-4/0a1b2c3d-0000-5000-8000-00000000a003-1.jpg?purpose=fullsize","thumbnail_url":"https://images.openai.com/thumbnails/0a1b2c3d-0000-5000-8000-00000000a003-1.jpg","title":"Lumora Tab 3 photo 1"},{"url":"https://shop2.example/0a1b2c3d-0000-5000-8000-00000000a003","content_url":"https://images.openai.com/static-rsc-4/0a1b2c3d-0000-5000-8000-00000000a003-2.jpg?purpose=fullsize","thumbnail_url":"https://images.openai.com/thumbnails/0a1b2c3d-0000-5000-8000-00000000a003-2.jpg","title":"Lumora Tab 3 photo 2"}],"c":3}
+
+data: {"p":"/message/status","o":"replace","v":"finished_successfully","c":3}
+
+data: {"type":"message_stream_complete","conversation_id":"00000000-0000-4000-8000-000000000061"}
+
+data: [DONE]

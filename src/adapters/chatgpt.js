@@ -683,12 +683,12 @@ function mergeGenUiCards(products, cards, imageLists) {
       used.add(products.indexOf(hit));
       // The card's own picture is what was on screen; the listing's stays as
       // the fallback.
-      out.push({ ...hit, image: (pics[0] && pics[0].url) || hit.image || null, subtitle: c.subtitle || null });
+      out.push({ ...hit, image: (pics[0] && pics[0].url) || hit.image || null, subtitle: c.subtitle || null, badge: c.badge || null, headline: c.headline || null });
     } else {
       out.push({
         id: `answer-${c.n}`, name: c.name, price: c.price || null, merchant: null, rating: null, reviews: null,
         image: (pics[0] && pics[0].url) || null, cite: null, renderAs: "answer-card", supplier: null,
-        listing: false, subtitle: c.subtitle || null,
+        listing: false, subtitle: c.subtitle || null, badge: c.badge || null, headline: c.headline || null,
       });
     }
   }
@@ -769,7 +769,16 @@ export async function adapt(rawCapture, opts = {}) {
   if (genui) {
     answerText = genui.markdown;
     markGenUiCited(nodes, sources, genui.cites);
-    products = mergeGenUiCards(products, genui.cards, genUiImages(nodes));
+    const pics = genUiImages(nodes);
+    products = mergeGenUiCards(products, genui.cards, pics);
+    // Each card block gets its picture, in the order the AsyncImages came,
+    // so the answer view can draw the card as ChatGPT did (0.60.2).
+    let k = 0;
+    genui.blocks.forEach((bl) => {
+      if (bl.type !== "card") return;
+      const pic = bl.image ? (pics[k++] || [])[0] : null;
+      bl.image = pic ? { url: pic.url, sourceUrl: pic.sourceUrl || null, title: pic.title || null } : null;
+    });
   }
   const referenceTypes = extractReferenceTypes(nodes, answerText);
   const userPrompt = extractPrompt(rawCapture.reqBody);
@@ -817,6 +826,7 @@ export async function adapt(rawCapture, opts = {}) {
     // with: the choices it offered, its checkboxes and its button.
     genUi: !!genui,
     followUp: genui ? genui.followUp : null,
+    genUiBlocks: genui ? genui.blocks : null,
     wordCount,
   };
   // Engines from the leaked retrieval registry that this stream names, if any
