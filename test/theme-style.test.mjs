@@ -8,7 +8,7 @@
  *   - a fresh install opens in Studio, and the theme is on <html> before the
  *     body exists (theme-boot.js in the head), so nobody sees a flash of the
  *     wrong theme while panel.js loads;
- *   - Studio's typeface is Geist and Classic's is IBM Plex, each loaded from
+ *   - both themes use Geist (one typeface since 0.60.2), loaded from
  *     the extension and nothing from the web;
  *   - About → Settings → Theme switches at once, outside Save / Undo, and the
  *     other open view (popup or tab) follows;
@@ -123,6 +123,7 @@ try {
         style: document.documentElement.getAttribute("data-style"),
         font: getComputedStyle(document.body).fontFamily,
         geist: document.fonts.check('500 13px "Geist"'),
+        size: getComputedStyle(document.body).fontSize,
         bg: getComputedStyle(document.body).backgroundColor,
         image: getComputedStyle(document.body).backgroundImage,
       };
@@ -153,13 +154,15 @@ try {
         style: document.documentElement.getAttribute("data-style"),
         stored: localStorage.getItem("cito-style"),
         font: getComputedStyle(document.body).fontFamily,
-        plex: document.fonts.check('500 13px "IBM Plex Sans"'),
+        size: getComputedStyle(document.body).fontSize,
         image: getComputedStyle(document.body).backgroundImage,
         unsaved: document.getElementById("setStatus").textContent,
       };
     });
     check("Classic applies at once and is kept", r.style === "classic" && r.stored === "classic", JSON.stringify(r));
-    check("with IBM Plex, as 0.58.0 had it", /^"?IBM Plex Sans"?,/.test(r.font) && r.plex, r.font);
+    // One typeface and one size in both themes since 0.60.2 (asked for);
+    // the themes differ in colour and shape.
+    check("with the same typeface and size as Studio", /^"?Geist"?,/.test(r.font) && r.size === "13px", `${r.font} · ${r.size}`);
     check("and its glass page back", /radial-gradient/.test(r.image), r.image.slice(0, 60));
     check("without touching Save", !/Unsaved/.test(r.unsaved), r.unsaved);
     await popup.waitForTimeout(400);
@@ -184,7 +187,7 @@ try {
   console.log("\nNothing fetched from the web for any of it");
   {
     const fontReqs = requests.filter((u) => /\.woff2?(\?|$)/.test(u));
-    check("Geist and IBM Plex came from the extension's fonts folder", fontReqs.some((u) => /Geist-var/.test(u)) && fontReqs.some((u) => /IBMPlexSans/.test(u)) && fontReqs.every((u) => u.startsWith(`chrome-extension://${extId}/fonts/`)), fontReqs.join(" | "));
+    check("Geist came from the extension's fonts folder", fontReqs.some((u) => /Geist-var/.test(u)) && fontReqs.every((u) => u.startsWith(`chrome-extension://${extId}/fonts/`)), fontReqs.join(" | "));
     const outside = requests.filter((u) => !u.startsWith("chrome-extension://") && !u.startsWith("data:") && !u.startsWith("blob:"));
     check("no request left the browser", outside.length === 0, outside.slice(0, 5).join(" | "));
   }

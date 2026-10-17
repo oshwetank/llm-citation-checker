@@ -8,9 +8,13 @@
                    radial-gradient(at 0% 100%, rgba(178, 168, 255, 0.5) 0px, transparent 45%),
                    radial-gradient(at 50% 45%, rgba(255, 255, 255, 0.55) 0px, transparent 60%),
                    #eaf0f8;
-  --font-sans: "IBM Plex Sans", "IBM Plex Sans Devanagari", system-ui, -apple-system,
+  /* One typeface and one set of sizes in both themes (0.60.2; asked for:
+     "keep the fonts and its size across both theme same"). Studio and
+     Classic now differ in colour and shape only; the typeface is a Display
+     setting of its own. IBM Plex Devanagari stays as the fallback for Hindi. */
+  --font-sans: "Geist", "IBM Plex Sans Devanagari", system-ui, -apple-system,
                "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
   /* Kinds of cited site (popup Analyze, PDF report, workbook): the validated
      categorical order, light theme. "Other" is a deliberate neutral, set dark
      enough to stay apart from the pink under deuteranopia (ΔE 9.6). */
@@ -350,9 +354,6 @@
    blur and the colour blobs behind it are Classic's. */
 :root[data-style="studio"] {
   --page-backdrop: #f4f3ee;
-  --font-sans: "Geist", "IBM Plex Sans Devanagari", system-ui, -apple-system,
-               "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
   --bg: #f4f3ee;
   --bg-subtle: #faf9f5;
   --card-bg: #ffffff;
@@ -498,7 +499,7 @@
    fonts.css): I with serifs, l with a tail, tabular digits. */
 :root[data-style="studio"],
 :root[data-style="studio"] body { background: var(--page-backdrop); background-attachment: scroll; }
-:root[data-style="studio"] body { font-feature-settings: "ss03" 1, "ss05" 1, "tnum" 1; }
+body { font-feature-settings: "ss03" 1, "ss05" 1, "tnum" 1; }
 :root[data-style="studio"] body::before { display: none; }
 :root[data-style="studio"] body.popup .app-wrapper {
   border: 1px solid var(--border) !important;
@@ -5620,7 +5621,7 @@ button.at-backing-name:hover { text-decoration: underline; }
 /* Solid tint, not glass: answers scroll under it and must not show through. */
 .at-hero.analyze-context-bar[class*="kind-"] { background: var(--hero-tint); border: 1px solid var(--hero-line); border-radius: var(--r-hero, 16px); padding: 14px 18px; gap: 10px; }
 .at-hero .at-prompt.analyze-context-prompt { color: var(--hero-ink, var(--fg-primary)); }
-:root[data-style="studio"] .at-hero .at-prompt.analyze-context-prompt { font-size: 24px; font-weight: 400; letter-spacing: -0.015em; line-height: 1.25; }
+.at-hero .at-prompt.analyze-context-prompt { font-size: 24px; font-weight: 400; letter-spacing: -0.015em; line-height: 1.25; }
 .at-hero .ap-kind { background: var(--surface-solid); color: var(--hero-ink, var(--fg-primary)); }
 .at-chip { display: inline-flex; align-items: center; height: 22px; padding: 0 9px; border-radius: 999px; background: var(--surface-solid); color: var(--fg-secondary); font-size: 12px; font-weight: 500; white-space: nowrap; }
 .at-chip-campaign { background: var(--accent); color: var(--accent-fg); }
@@ -5693,7 +5694,7 @@ button.at-backing-name:hover { text-decoration: underline; }
 .i-vio { background: var(--tint-lens); color: var(--tint-lens-ink); }
 .i-slate { background: var(--tone-neutral-bg); color: var(--tone-neutral-fg); }
 :root[data-style="studio"] .at-sec { border-radius: var(--r-card, 18px); padding: 18px 20px; gap: 12px; }
-:root[data-style="studio"] .at-h { font-weight: 500; font-size: 16px; }
+.at-h { font-weight: 500; font-size: 16px; }
 
 /* at a glance: the lead, the numbers, then the three columns */
 .at-glance-sec .at-lead { margin: 0; }
@@ -5701,7 +5702,7 @@ button.at-backing-name:hover { text-decoration: underline; }
 .at-kpi { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 11px 13px; border-radius: var(--r-tile, 12px); background: var(--tile-bg, var(--bg-subtle)); }
 .at-kpi-k { font-size: 11.5px; color: var(--fg-muted); }
 .at-kpi-v { font-size: 19px; font-weight: 500; line-height: 1.2; color: var(--fg-primary); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
-:root[data-style="studio"] .at-kpi-v { font-weight: 300; font-size: 21px; letter-spacing: -0.01em; }
+.at-kpi-v { font-weight: 300; font-size: 21px; letter-spacing: -0.01em; }
 .at-kpi-s { font-size: 12px; color: var(--fg-secondary); overflow-wrap: anywhere; }
 .at-kpi-s.tone-good { color: var(--green-fg); }
 .at-kpi-s.tone-warn { color: var(--amber-fg); }
@@ -6479,7 +6480,7 @@ a.ab-engine:hover { border-color: var(--accent); color: var(--accent); }
 .ab-style-swatch.classic i:nth-child(2) { background: rgba(255, 255, 255, 0.7); }
 .ab-style-swatch.classic i:nth-child(3) { background: #007aff; }
 .ab-style-name { font-size: 14px; font-weight: 600; }
-.ab-style-card[data-style-pick="classic"] .ab-style-name { font-family: "IBM Plex Sans", system-ui, sans-serif; }
+
 .ab-style-card[data-style-pick="studio"] .ab-style-name { font-family: "Geist", system-ui, sans-serif; }
 .ab-style-sub { font-size: 12px; color: var(--fg-muted); }
 body.popup .ab-style-card { width: 100%; }
