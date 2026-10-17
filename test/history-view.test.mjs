@@ -169,5 +169,29 @@ console.log("\nSearching inside answers (done in the background)");
   check("only answers holding every word come back", hits.length === 1 && hits[0].captureId === "a", JSON.stringify(hits));
 }
 
+console.log("\nSites and ads across your history (0.61.0)");
+{
+  const ad = (advertiser, targetDomain) => ({ advertiser, targetDomain, label: "Sponsored" });
+  const recs = [
+    cap("chatgpt", "best phones under 30000", at(0), { sources: [src("smartprix.com"), src("phonekart.example", "fetched")], brandMentions: [m("Kovo")], ads: [ad("Phonekart", "phonekart.example")] }),
+    cap("chatgpt", "best phones under 30000", at(2), { sources: [src("smartprix.com")], brandMentions: [m("Phonekart")], ads: [ad("Phonekart", "phonekart.example")] }),
+    cap("chatgpt", "best laptop for students", at(1), { sources: [src("smartprix.com", "fetched"), src("phonekart.example")], ads: [ad("Phonekart", "phonekart.example"), ad("Lapzone", "lapzone.example")] }),
+    cap("gemini", "how does anc work", at(1), { sources: [src("rtings.com")] }),
+  ];
+  const rws = historyRows(recs, {});
+  const v = historyView(rws, { period: "all" }, { now: NOW });
+  const smart = v.sites.find((x) => x.domain === "smartprix.com");
+  check("a site counts the prompts it showed up for, and those that cited it", smart.prompts === 2 && smart.cited === 1 && smart.citedShare === 50, JSON.stringify(smart));
+  check("sites most used first", v.sites[0].domain === "smartprix.com" || v.sites[0].prompts >= v.sites[1].prompts, v.sites.map((x) => x.domain).join());
+  const pk = v.ads.find((x) => x.advertiser === "Phonekart");
+  check("an advertiser counts every time it was shown, across prompts", pk.times === 3 && pk.prompts.length === 2 && pk.domains.join() === "phonekart.example", JSON.stringify(pk));
+  check("first and last seen", pk.first === at(2) && pk.last === at(0), `${pk.first} ${pk.last}`);
+  check("how often the same answer named it, or cited its site", pk.named === 1 && pk.cited === 1, `${pk.named}/${pk.cited}`);
+  check("advertisers most shown first", v.ads.map((x) => x.advertiser).join() === "Phonekart,Lapzone", v.ads.map((x) => x.advertiser).join());
+  const only = historyView(rws, { period: "all", ads: true }, { now: NOW });
+  check("'Has an ad' keeps only prompts that had one", only.list.length === 2 && only.list.every((r) => r.ads.length), only.list.map((r) => r.text).join(" | "));
+  check("and the count of prompts with an ad", v.withAds === 2, v.withAds);
+}
+
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
 process.exit(failures ? 1 : 0);

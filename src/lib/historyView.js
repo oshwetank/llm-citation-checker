@@ -19,6 +19,7 @@ import { normalizeMentions } from "./mention-list.js";
 import { sameBrand } from "./funnel-omitted.js";
 import { normPrompt, knownVendors, answerKind } from "./analyzeView.js";
 import { searchTokens, matchesTokens } from "./answerSearch.js";
+import { normDomain, siteKindOf } from "./siteKind.js";
 
 export const ENGINE_ORDER = ["chatgpt", "gemini", "perplexity", "grok"];
 
@@ -104,6 +105,28 @@ export function historyRows(records, { profiles = [] } = {}) {
     const fan = [];
     caps.forEach((c) => queriesOf(c).forEach((q) => { if (!fan.some((x) => x.text.toLowerCase() === q.text.toLowerCase())) fan.push(q); }));
     const text = String(latest.userPrompt || "").trim();
+    // The sites every capture of this prompt read, cited if any cited them,
+    // and the ads shown with them (0.61.0: the Sites and Ads views).
+    const siteMap = new Map();
+    caps.forEach((c) => (c.sources || []).forEach((src) => {
+      const d = normDomain(src.domain || src.url);
+      if (!d) return;
+      const x = siteMap.get(d) || { domain: d, cited: false };
+      if (src.outcome === "cited") x.cited = true;
+      siteMap.set(d, x);
+    }));
+    const adHits = [];
+    caps.forEach((c) => (c.ads || []).forEach((a) => {
+      const advertiser = String(a.advertiser || a.targetDomain || "").trim();
+      if (!advertiser) return;
+      const domain = normDomain(a.targetDomain || a.advertiserUrl || "");
+      const label = domain.split(".")[0];
+      adHits.push({
+        advertiser, domain, at: c.capturedAt || 0, captureId: c.captureId, platform: c.platform,
+        named: namedBrands(c).some((b) => sameBrand(b, advertiser)),
+        cited: !!label && (c.sources || []).some((src) => src.outcome === "cited" && normDomain(src.domain || src.url).split(".")[0] === label),
+      });
+    }));
     rows.push({
       key, text, words: text.split(/\s+/).filter(Boolean).length,
       latestId: latest.captureId, latestAt: latest.capturedAt || 0, firstAt: caps[caps.length - 1].capturedAt || 0,
@@ -122,6 +145,9 @@ export function historyRows(records, { profiles = [] } = {}) {
       // Sample answers loaded on a fresh install say so wherever they show.
       sample: caps.every((c) => c.isDemo || String(c.captureId).startsWith("demo-")),
       fan,
+      sites: [...siteMap.values()].map((x) => ({ domain: x.domain, cited: x.cited })),
+      ads: [...new Set(adHits.map((h) => h.advertiser))],
+      adHits,
     });
   }
   return rows.sort((a, b) => b.latestAt - a.latestAt);
@@ -224,7 +250,8 @@ export function historyView(rows, f, { now = Date.now(), answerHits = new Map() 
   const pre = matched.filter((r) => r.engines.some(engineOn)
     && inPeriod(f.period || "all", now, r.latestAt)
     && (!f.repeat || r.asked > 1)
-    && (!f.campaign || r.fromCampaign));
+    && (!f.campaign || r.fromCampaign)
+    && (!f.ads || (r.ads || []).length > 0));
 
   // 3. kind of answer
   const anyKind = !!f.kinds && Object.values(f.kinds).some(Boolean);
@@ -258,6 +285,37 @@ export function historyView(rows, f, { now = Date.now(), answerHits = new Map() 
   }
   const fan = [...fanMap.values()].sort((a, b) => b.n - a.n || a.text.localeCompare(b.text));
 
+  // 6. sites across these prompts (0.61.0): how many prompts each site
+  // showed up for, and in how many of those it was cited rather than read.
+  const siteAgg = new Map();
+  for (const r of list) for (const x of r.sites || []) {
+    const e = siteAgg.get(x.domain) || { domain: x.domain, prompts: 0, cited: 0 };
+    e.prompts++;
+    if (x.cited) e.cited++;
+    siteAgg.set(x.domain, e);
+  }
+  const sites = [...siteAgg.values()].map((e) => ({ ...e, kind: siteKindOf(e.domain, {}), citedShare: Math.round((e.cited / e.prompts) * 100) }))
+    .sort((a, b) => b.prompts - a.prompts || b.cited - a.cited || a.domain.localeCompare(b.domain));
+
+  // 7. ads across these prompts (0.61.0): who advertised, how often, for
+  // which prompts, first and last seen, and how often the same answer also
+  // named or cited the advertiser.
+  const adAgg = new Map();
+  for (const r of list) for (const h of r.adHits || []) {
+    const k = h.advertiser.toLowerCase();
+    const e = adAgg.get(k) || { advertiser: h.advertiser, times: 0, prompts: new Set(), domains: new Set(), first: h.at, last: h.at, named: 0, cited: 0, latestId: h.captureId };
+    e.times++;
+    e.prompts.add(r.text);
+    if (h.domain) e.domains.add(h.domain);
+    if (h.at < e.first) e.first = h.at;
+    if (h.at >= e.last) { e.last = h.at; e.latestId = h.captureId; }
+    if (h.named) e.named++;
+    if (h.cited) e.cited++;
+    adAgg.set(k, e);
+  }
+  const ads = [...adAgg.values()].map((e) => ({ ...e, prompts: [...e.prompts], domains: [...e.domains] }))
+    .sort((a, b) => b.times - a.times || b.last - a.last);
+
   const enginesUsed = ENGINE_ORDER.filter((e) => base.some((r) => r.engines.includes(e)));
   const times = base.map((r) => r.latestAt).sort((a, b) => a - b);
   const totals = {
@@ -270,7 +328,8 @@ export function historyView(rows, f, { now = Date.now(), answerHits = new Map() 
   };
 
   return {
-    tokens: toks, matched, pre, base, list, engineCounts, kindCounts, anyKind, weeks, fan, totals,
+    tokens: toks, matched, pre, base, list, engineCounts, kindCounts, anyKind, weeks, fan, totals, sites, ads,
+    withAds: matched.filter((r) => (r.ads || []).length).length,
     groups: f.sort && f.sort !== "newest" ? [{ id: "all", label: f.sort === "asked" ? "Asked most often" : "Most engines", sub: "", rows: list }] : groupRows(list, now),
   };
 }
