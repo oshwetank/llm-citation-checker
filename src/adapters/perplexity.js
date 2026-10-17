@@ -601,6 +601,9 @@ export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, op
       previewUpdatedAt: answerInfo.updatedAt || null,
       transport: stream ? "blocks" : "legacy",
       streamFinal: stream ? stream.final : undefined,
+      // Read off the page's text (content-iso.js): a fallback that any
+      // network copy of the same answer beats (lib/sameAnswer.js).
+      pageCopy: (!stream && parsed.length === 1 && parsed[0] && parsed[0].harvestSource === "dom") || undefined,
     },
   });
 }

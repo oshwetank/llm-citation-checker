@@ -31,7 +31,7 @@ import { citedUrls, pageVerdict, pageSummary, wordCount, PAGE_TTL_MS } from "./l
 import { appendRing } from "./lib/netlog.js";
 import { offersFrom, attachOffers } from "./lib/offers.js";
 import { searchAnswers } from "./lib/answerSearch.js";
-import { answerKey, sameAnswer, mergeAnswers, SAME_ANSWER_WINDOW_MS } from "./lib/sameAnswer.js";
+import { answerKey, sameAnswer, mergeAnswers, SAME_ANSWER_WINDOW_MS, SAME_REPLY_WINDOW_MS } from "./lib/sameAnswer.js";
 import { campaignBoard, brandDetail } from "./lib/campaignBoard.js";
 import { adapt as adaptChatGpt, cleanPassage } from "./adapters/chatgpt.js";
 import { enrichBrandsWithAI, enrichBrandStance } from "./lib/ai-brands.js";
@@ -131,7 +131,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
 // re-create them," and calling ensureHeartbeatAlarm() is itself idempotent
 // (checks before creating), so there's no cost to being explicit here
 // rather than relying on load-order coincidence.
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener((details) => {
+  if (details && details.reason === "update") repairOnce().catch((e) => logErr("repair", e));
   chrome.tabs.query({ url: AI_TAB_MATCHES }, (tabs) => {
     for (const t of tabs || []) {
       try {
@@ -598,8 +599,11 @@ async function readCitedPages(captureId, { force = false, manual = false } = {})
  * "derived". Every raw copy stays, so a reprocess rebuilds the same merge,
  * and deleting or pruning the record removes them with it (dropCapture). */
 async function settleSameAnswer(record) {
-  if (!answerKey(record) || !record.capturedAt) return record;
-  const near = await db.getByTimeRange("derived", record.capturedAt - SAME_ANSWER_WINDOW_MS, record.capturedAt + SAME_ANSWER_WINDOW_MS);
+  const key = answerKey(record);
+  if (!key || !record.capturedAt) return record;
+  // A reply id joins copies however far apart (lib/sameAnswer.js).
+  const span = /\|(?:reply|turn):/.test(key) ? SAME_REPLY_WINDOW_MS : SAME_ANSWER_WINDOW_MS;
+  const near = await db.getByTimeRange("derived", record.capturedAt - span, record.capturedAt + span);
   const same = near.filter((r) => r.captureId !== record.captureId && sameAnswer(r, record));
   if (!same.length) return record;
   const merged = mergeAnswers([...same, record]);
@@ -634,6 +638,18 @@ async function enforceRetention(settings) {
 
 // Re-derive every stored capture. Uses a cursor + chunking so a large store
 // doesn't pull every gzipped blob into memory at once (SW OOM risk).
+/* Once, on updating to 0.62.1: re-derive every stored capture, so page-text
+ * copies already stored as answers of their own (Grok's "Youbest good
+ * quality…") fold into the network capture of the same reply, and the
+ * Dashboard counts each question once. Raw copies are all kept. */
+const REPAIR_KEY = "lcfcRepaired0621";
+async function repairOnce() {
+  const got = await chrome.storage.local.get(REPAIR_KEY);
+  if (got && got[REPAIR_KEY]) return;
+  await reprocessAll();
+  await chrome.storage.local.set({ [REPAIR_KEY]: Date.now() });
+}
+
 async function reprocessAll() {
   const settings = await getSettings();
   // Oldest first, so copies of one answer merge in the order they arrived

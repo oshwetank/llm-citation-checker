@@ -15,6 +15,7 @@
  * Made-up records in that shape. Fails at import on 0.56.0 (no module).
  */
 import { answerKey, sameAnswer, mergeAnswers, SAME_ANSWER_WINDOW_MS } from "../src/lib/sameAnswer.js";
+import { adapt as grokAdapt, cleanPageCopy } from "../src/adapters/grok.js";
 
 let failures = 0;
 const check = (label, cond, detail) => {
@@ -44,8 +45,13 @@ console.log("\nWhich answer a record belongs to");
   check("a reply id in the address names the reply", answerKey(copies[0]) === "grok|reply:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", answerKey(copies[0]));
   check("all six copies name the same answer", new Set(copies.map(answerKey)).size === 1);
   check("and fall within the window", copies.every((c) => sameAnswer(copies[0], c)));
+  // A reply id names one reply however late a copy of it turns up (0.62.1:
+  // reopening a chat 44 minutes on stored it again as a new answer). Only a
+  // copy a week apart is left alone.
   const later = { ...copies[4], capturedAt: copies[0].capturedAt + SAME_ANSWER_WINDOW_MS + 1000 };
-  check("the same reply much later is not joined", !sameAnswer(copies[0], later));
+  check("the same reply later still is joined", sameAnswer(copies[0], later));
+  const weekLater = { ...copies[4], capturedAt: copies[0].capturedAt + 8 * 24 * 3600 * 1000 };
+  check("but not a week later", !sameAnswer(copies[0], weekLater));
   const chat = (prompt, url = "https://chatgpt.com/c/abc-123") => ({ platform: "chatgpt", pageUrl: url, userPrompt: prompt, capturedAt: T0 });
   check("without a reply id, the conversation and the question decide", answerKey(chat("Hotels in Lakeport")) === answerKey(chat("hotels  in lakeport")));
   check("two questions in one conversation stay apart", answerKey(chat("Hotels in Lakeport")) !== answerKey(chat("Cafes in Lakeport")));
@@ -83,6 +89,25 @@ console.log("\nCards and what a copy alone saw");
   check("so is an ad", m.ads && m.ads.length === 1);
   check("and the campaign it belongs to", m.geo && m.geo.promptId === "q1" && m.runId === "r1");
   check("one record alone is returned as it is", mergeAnswers([a]) === a);
+}
+
+console.log("\na page-text copy made when the conversation was reopened (0.62.1)");
+{
+  // Reported: a prompt "Youbest good quality…" that was never asked. The
+  // owner reopened the Grok conversation 44 minutes after asking; the page
+  // reader sent the answer again, its prompt with Grok's hidden "You" label
+  // glued on, its text with "## Grok / Worked for 19s" on top.
+  const gateway = copy("gw", 0, { answerText: answer, answerChars: answer.length, sources: pages(12), brandMentions: [{ brand: "Hotel Pine Inn", count: 2 }] });
+  const raw = JSON.stringify({ query: `You${PROMPT}`, text: `## Grok\n\nWorked for 19s\n${answer} More words here.`, web_results: [], status: "COMPLETED", harvestSource: "dom" });
+  const late = await grokAdapt({ captureId: "page", raw, reqBody: JSON.stringify({ query: `You${PROMPT}` }), capturedAt: T0 + 44 * 60 * 1000, pageUrl: PAGE });
+  check("the old copy's prompt loses the glued label, its text the page's labels", late.userPrompt === PROMPT && !/Worked for|^## Grok/.test(late.answerText), JSON.stringify([late.userPrompt, late.answerText.slice(0, 40)]));
+  check("it is marked as read off the page", late.platformSpecific.pageCopy === true && late.platformSpecific.transport === "page");
+  check("44 minutes later it is still the same reply", sameAnswer(gateway, late), `${answerKey(gateway)} / ${answerKey(late)}`);
+  const m = mergeAnswers([gateway, late]);
+  check("folded in, the network copy's prompt, text and pages win, though the page text is longer", m.captureId === "gw" && m.userPrompt === PROMPT && m.answerText === answer && m.sources.length === 12 && m.mergedFrom.includes("page"), JSON.stringify({ id: m.captureId, p: m.userPrompt, n: m.sources.length }));
+  check("a prompt read since 0.62.1 (already clean) keeps a leading You", cleanPageCopy({ prompt: "Youtube or Vimeo for a course", answer: "x", promptClean: true }).prompt === "Youtube or Vimeo for a course");
+  const other = copy("other", 0, { pageUrl: "https://grok.com/c/11111111-2222-3333-4444-555555555555?rid=ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee", answerText: answer, answerChars: answer.length });
+  check("another reply in the same conversation stays its own answer", !sameAnswer(other, late));
 }
 
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");

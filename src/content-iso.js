@@ -1412,6 +1412,18 @@
     }
   };
 
+  // The prompt in a Grok user message, without the labels around it: the
+  // message carries a "You" label (hidden on screen, present in its text),
+  // which textContent glued onto the prompt.
+  function grokPromptText(el) {
+    if (!el || typeof el.cloneNode !== "function") return String((el && el.textContent) || "").trim();
+    const bubble = el.querySelector(".message-bubble") || el;
+    const clone = bubble.cloneNode(true);
+    clone.querySelectorAll('.sr-only, [aria-hidden="true"], button, svg, [data-testid="message-author"]').forEach((n) => n.remove());
+    clone.querySelectorAll("*").forEach((n) => { if (!n.children.length && /^You$/i.test((n.textContent || "").trim())) n.remove(); });
+    return String(clone.textContent || "").replace(/\s+/g, " ").trim();
+  }
+
   (function initDomHarvester() {
     let lastHarvestedSig = "";
     let harvestTimer = null;
@@ -1457,6 +1469,13 @@
       // Re-checking per harvest is correct for client-side routing and costs
       // one string comparison.
       if (/(^|\.)x\.com$/i.test(location.hostname) && !/^\/i\/grok/i.test(location.pathname)) return;
+
+      // Only after this page sent a prompt (content-main.js's engine-submit).
+      // The reader used to run whenever a conversation was on screen, so
+      // reopening an old Grok chat 44 minutes later stored it again as a new
+      // answer, its prompt read as "Youbest good quality…" (reported: "the
+      // promt which i never run"). Reading a conversation is not asking.
+      if (!engineSubmit.at) return;
 
       let promptText = "";
       let answerText = "";
@@ -1795,7 +1814,7 @@
         // sides — an answer is a bubble outside any user message. The older
         // class names stay as a fallback.
         const userEls = document.querySelectorAll('[data-testid="user-message"], .user-message, [data-message-author="user"]');
-        if (userEls.length) promptText = (userEls[userEls.length - 1].textContent || "").trim();
+        if (userEls.length) promptText = grokPromptText(userEls[userEls.length - 1]);
 
         let msgEls = Array.from(document.querySelectorAll(".message-bubble")).filter((el) =>
           !(el.closest && el.closest('[data-testid="user-message"]')) && !(el.querySelector && el.querySelector('[data-testid="user-message"]')));
@@ -1808,6 +1827,11 @@
           // signals brand detection depends on (bold, headings, table columns)
           // are present in the DOM and destroyed by innerText.
           answerText = chosen.map((p) => domToMarkdown(p)).filter(Boolean).join("\n\n").trim();
+          // Grok's own labels above the answer ("Grok", "Worked for 19s").
+          const ui = /^(?:#{1,3}\s*)?(?:Grok|(?:Worked|Thought|Thinking) for \d+(?:\.\d+)?\s*s(?:econds?)?)\s*$/i;
+          const lines = answerText.split("\n");
+          while (lines.length && (!lines[0].trim() || ui.test(lines[0].trim()))) lines.shift();
+          answerText = lines.join("\n").trim();
         }
       }
 
@@ -1843,7 +1867,8 @@
           // never claims a fan-out it didn't observe.
           query_plan: queryPlan.length ? queryPlan : undefined,
           status: "COMPLETED",
-          harvestSource: "dom"
+          harvestSource: "dom",
+          promptClean: true
         });
 
         try {
