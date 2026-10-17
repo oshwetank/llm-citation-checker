@@ -118,15 +118,17 @@ try {
     check("the menu is Analyze, Dashboard, Campaigns, About", tabs.join() === "analyze,dashboard,loader,about", tabs.join());
   }
 
-  console.log("\nTypeface: IBM Plex, from inside the extension");
+  // Since 0.59.0 the default Studio theme sets Geist; Classic keeps IBM Plex.
+  // Both ship inside the extension (theme-style.test.mjs checks Classic).
+  console.log("\nTypeface: Geist (Studio, the default), from inside the extension");
   {
     const f = await page.evaluate(async () => {
       await document.fonts.ready;
       const body = getComputedStyle(document.body).fontFamily;
-      const loaded = [...document.fonts].filter((x) => /IBM Plex Sans/.test(x.family) && x.status === "loaded").map((x) => x.family + " " + x.weight);
-      return { body, loaded, check: document.fonts.check('500 12px "IBM Plex Sans"') };
+      const loaded = [...document.fonts].filter((x) => /^"?Geist"?$/.test(x.family) && x.status === "loaded").map((x) => x.family + " " + x.weight);
+      return { body, loaded, check: document.fonts.check('500 12px "Geist"') };
     });
-    check("the body's first font is IBM Plex Sans", /^"?IBM Plex Sans"?,/.test(f.body), f.body);
+    check("the body's first font is Geist", /^"?Geist"?,/.test(f.body), f.body);
     check("the face has actually loaded (not a silent fallback)", f.loaded.length > 0 && f.check, JSON.stringify(f.loaded));
     const fontReqs = requests.filter((u) => /\.woff2?(\?|$)|fonts\.(googleapis|gstatic)\.com/.test(u));
     check("font files came from the extension itself", fontReqs.length > 0 && fontReqs.every((u) => u.startsWith(`chrome-extension://${extId}/fonts/`)), fontReqs.join(" | "));

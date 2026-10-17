@@ -40,7 +40,7 @@ export const GLOSSARY_GROUPS = ["Brand metrics", "Source metrics", "Grounding & 
  * definition, and a word that appears nowhere empties the list rather than
  * being ignored.
  *
- * @param {Array<{key,group,term,what,formula,howToUse,note}>} entries glossaryEntries()
+ * @param {Array<{key,group,term,what,formula,note}>} entries glossaryEntries()
  * @param {{query?: string, group?: string}} opts group "all" or a group name
  * @returns {{ total, matches, chips: [{id,label,count,on}], groups: [{name, rows}] }}
  */

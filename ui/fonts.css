@@ -98,3 +98,31 @@
   src: url("../fonts/IBMPlexMono-600-latin.woff2") format("woff2");
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
+
+/* ── Typeface for the Studio look (0.59.0): Geist and Geist Mono ──
+   The Studio theme (the default since 0.59.0; Classic keeps IBM Plex) uses
+   Geist, from Vercel's own package (npm `geist` 1.8.1), SIL Open Font
+   License (fonts/Geist-OFL.txt), bundled whole as the two variable files
+   (weights 100-900). Like Plex it loads from the extension, never the web.
+   Plex was chosen in 0.47.0 for three reasons; Geist keeps all three, two of
+   them through its stylistic sets, which panel.css turns on for Studio:
+     - ss05 gives capital I its serifs and ss03 gives l a tail, so I / l / 1
+       stay apart in domain names and model numbers ("Airdopes 141");
+     - tnum makes digits tabular, so counts and ranks line up in columns;
+     - it has the rupee sign (U+20B9), checked in the font's cmap.
+   It has no Devanagari, so Studio's stack keeps IBM Plex Sans Devanagari
+   (above) right after it for Hindi prompts. */
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("../fonts/Geist-var.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Geist Mono";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("../fonts/GeistMono-var.woff2") format("woff2");
+}

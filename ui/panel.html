@@ -17,6 +17,12 @@
          request leaves the browser for it; analyze-popup.test.mjs checks. -->
     <link rel="stylesheet" href="fonts.css" />
     <link rel="stylesheet" href="panel.css" />
+    <!-- Sets the theme (Studio or Classic, light or dark) on <html> before the
+         first paint. panel.js is a module and runs after the body, so leaving
+         it to panel.js flashed the light Studio page on every open for anyone
+         who picked dark or Classic. A plain script, not inline: an extension
+         page's CSP refuses inline script. -->
+    <script src="theme-boot.js"></script>
   </head>
   <body>
     <div class="app-wrapper">
@@ -28,7 +34,7 @@
             </div>
             <div class="brand-text">
               <span class="brand-title">CitoSkeleton</span>
-              <span class="version-badge">v0.58.0</span>
+              <span class="version-badge">v0.59.0</span>
               <span class="brand-sub">ChatGPT, Gemini, Perplexity &amp; Grok</span>
             </div>
           </div>
@@ -85,8 +91,7 @@
             <p class="muted">
               Pick one prompt you have captured more than once. You get each run's own
               profile (fan-out, cited vs. fetched, answer length), a per-engine split,
-              and matrices showing every brand, domain, page and sub-query across runs —
-              so you can see not just <i>that</i> something moved, but what moved it.
+              and matrices showing every brand, domain, page and sub-query across runs.
             </p>
             <div class="proj-row cmp-pickers">
               <!-- Typing here filters the dropdown below. A bare <select> is
@@ -168,10 +173,31 @@
                     <!-- Appearance (0.56.0): moved here from the top bar, which the
                          canvas keeps to the logo, the pages and pop-out. It applies
                          at once, so it sits outside Save / Undo. -->
+                    <!-- Theme (0.59.0): Studio, the new design and the default, or
+                         Classic, the look from 0.47.0 to 0.58.0. Like Light / Dark it
+                         applies at once, outside Save / Undo, in both views. -->
+                    <div class="ab-row ab-row-theme">
+                      <div class="ab-row-text" id="setStyleLabel">
+                        <b>Theme</b>
+                        <span>Studio is the current design. Classic is the earlier look, kept for anyone who prefers it.</span>
+                      </div>
+                      <div class="ab-style" role="radiogroup" aria-labelledby="setStyleLabel" id="setStyle">
+                        <button type="button" role="radio" class="ab-style-card" data-style-pick="studio" aria-checked="false">
+                          <span class="ab-style-swatch studio" aria-hidden="true"><i></i><i></i><i></i></span>
+                          <span class="ab-style-name">Studio</span>
+                          <span class="ab-style-sub">Geist · warm page · white cards</span>
+                        </button>
+                        <button type="button" role="radio" class="ab-style-card" data-style-pick="classic" aria-checked="false">
+                          <span class="ab-style-swatch classic" aria-hidden="true"><i></i><i></i><i></i></span>
+                          <span class="ab-style-name">Classic</span>
+                          <span class="ab-style-sub">IBM Plex · glass cards · blue</span>
+                        </button>
+                      </div>
+                    </div>
                     <div class="ab-row">
                       <div class="ab-row-text" id="setThemeLabel">
                         <b>Appearance</b>
-                        <span>Applies straight away, in the popup and the full tab.</span>
+                        <span>Light or dark. Applies straight away, in the popup and the full tab.</span>
                       </div>
                       <div class="ab-seg" role="radiogroup" aria-labelledby="setThemeLabel" id="setTheme">
                         <button type="button" role="radio" class="ab-seg-btn" data-theme-pick="light" aria-checked="false">Light</button>

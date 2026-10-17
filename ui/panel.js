@@ -527,13 +527,12 @@ function showTooltip(target) {
   const tip = ensureTipEl();
   tip.textContent = "";
   if (g) {
-    // Always the same structured slots: term, what it measures, formula, howToUse guidance, and caveat note.
+    // Always the same structured slots: term, what it measures, how it is
+    // counted, and what it can't see. The "How to use" advice slot went in
+    // 0.59.0: definitions, not instructions.
     tip.append(el("div", { className: "tip-term" }, g.term));
     tip.append(el("div", { className: "tip-what" }, g.what));
     if (g.formula) tip.append(el("div", { className: "tip-formula" }, g.formula));
-    if (g.howToUse) {
-      tip.append(el("div", { className: "tip-how-to-use" }, el("span", { className: "tip-how-to-use-badge" }, "💡 How to Use: "), g.howToUse));
-    }
     if (g.note) tip.append(el("div", { className: "tip-note" }, g.note));
   } else {
     tip.append(el("div", { className: "tip-what" }, text));
@@ -1547,7 +1546,7 @@ function renderAnalyzePopup(rec, root) {
       sec.append(bar, legend);
     }
     sec.append(sitesListEl(sites));
-    if (own && pages.silent.length) sec.append(el("p", { className: "ap-foot accent" }, `Cited but silent about ${own.name}: ${pages.silent.join(", ")} — the pages to get onto.`));
+    if (own && pages.silent.length) sec.append(el("p", { className: "ap-foot accent" }, `Cited without naming ${own.name}: ${pages.silent.join(", ")}`));
     wrap.append(sec);
   }
 
@@ -1647,7 +1646,7 @@ function renderApSheet(rec, wrap, tabs, ctx) {
   sheet.append(top, body);
 
   if (apSheet === "backing") {
-    col.append(el("p", { className: "ap-note" }, "Each brand and the cited pages that mention it. Brands backed by independent pages tend to keep their place; brands with only their own site — or nothing — behind them can drop out next time."));
+    col.append(el("p", { className: "ap-note" }, "Each brand and the cited pages that name it, in the page’s title or snippet."));
     ctx.brands.rows.forEach((r) => {
       const chips = el("div", { className: "ap-chips" });
       r.backing.backers.forEach((b) => chips.append(el("span", { className: `ap-bchip${b.own ? " own" : ""}` }, `${b.domain} · ${b.own ? "own site" : "independent"}`)));
@@ -2290,12 +2289,15 @@ const atFocusBrandBtn = (name) => { atFocusBrand = atFocusBrand === name ? null 
 
 function atRenderSingle(main, rec, ctx) {
   const { searches, brands, pages, you, changes, previous, kind, own, mentions, answerPanel, engineLabel, legacyCard } = ctx;
+  // What the answer led with, as a fact. Until 0.59.0 each line went on to
+  // say what "matters most"; the owner asked for the data without the
+  // interpretation ("we are not spoonfeeding here").
   main.append(el("p", { className: "at-lead" }, {
-    shopping: "Products came first, so the product cards and where they lead matter most.",
-    local: "The map came first, so pin order and what each listing shows matter most.",
-    images: "Images came first, so which sites supplied them and where a click leads matter most.",
-    info: "Text came first, so which page backs each part of the answer matters most.",
-    memory: "No web search, so there are no sources — this is what the model already believes.",
+    shopping: "Product cards came first, then the text.",
+    local: "A map came first, then the text.",
+    images: "Pictures came first, then the text.",
+    info: "Text only, no cards, map or pictures.",
+    memory: "No web search: nothing was read or cited.",
   }[kind.id] || ""));
   const fnByUrl = new Map(answerPanel.footnotes.map((f) => [f.source.url, String(f.n)]));
   const searched = !!(rec.searched || rec.sources.length);
@@ -2334,7 +2336,7 @@ function atRenderSingle(main, rec, ctx) {
     main.append(sec);
   }
   if (kind.id === "info" && answerPanel.blocks.length) {
-    const sec = atSection("at-parts", "Which page backs each part of the answer", "", el("span", { className: "ap-muted" }, "for explainers, the pages behind the text are the prize"));
+    const sec = atSection("at-parts", "Which page backs each part of the answer", "", el("span", { className: "ap-muted" }, "the pages each paragraph cites"));
     atPartsRows(answerPanel.blocks.slice(0, 12)).forEach((r) => sec.append(r));
     main.append(sec);
   }
@@ -2409,8 +2411,7 @@ function atMemorySection(rec, { brands, mentions, engineLabel }) {
   const sec = el("section", { className: "at-memory", "aria-labelledby": "at-memory-h" });
   sec.append(el("div", { className: "at-memory-note" },
     el("div", { className: "at-memory-head" }, glyphEl("noglobe", 20), el("h2", { id: "at-memory-h" }, "Answered from memory")),
-    el("p", {}, `${engineLabel} didn’t search the web, so nothing was read or cited. Every brand below comes from what the model learned in training.`),
-    el("p", {}, "Memory answers change when the model is updated, not when pages change — track them over time.")));
+    el("p", {}, `${engineLabel} didn’t search the web, so nothing was read or cited. Every brand below comes from what the model learned in training.`)));
   const list = el("div", { className: "at-memory-brands" }, el("h2", {}, "How the model describes each brand"));
   brands.rows.filter((r) => r.position > 0).sort((a, b) => a.position - b.position).slice(0, 8).forEach((r) => {
     const m = mentions.find((x) => x.brand === r.name);
@@ -2423,8 +2424,9 @@ function atMemorySection(rec, { brands, mentions, engineLabel }) {
 
 function atBackingSection(brands, { own, pages, kind, ctxKinds }) {
   const sec = atSection("at-backing", kind.id === "local" ? "What backs each place" : "What backs each brand", "", el("span", { className: "ap-muted" }, "the cited pages that mention it"));
-  sec.append(el("p", { className: "at-backing-lead" }, "When an engine names a brand, a page it cited usually talks about that brand. Brands backed by ", el("b", {}, "independent pages"),
-    " — reviews, listings, forums — tend to keep their place. Brands with only their own site, or nothing, behind them can drop out on the next run."));
+  // How "backed" is counted, not what to make of it (0.59.0).
+  sec.append(el("p", { className: "at-backing-lead" }, "A brand counts as backed by a page when the answer cited that page and its title or snippet names the brand. ",
+    el("b", {}, "Independent"), " means any site that isn’t the brand’s own."));
   const rows = brands.rows.filter((r) => r.position > 0).sort((a, b) => a.position - b.position);
   rows.forEach((r) => {
     const [label, tone] = AT_VERDICT[r.backing.verdict] || [r.backing.label, r.backing.tone];
@@ -2440,23 +2442,13 @@ function atBackingSection(brands, { own, pages, kind, ctxKinds }) {
     sec.append(el("div", { className: `at-backing-row${r.isYou ? " mine" : ""}` }, el("span", { className: "at-rank" }, String(r.position)), name, el("span", {}, apPill(label, tone)), chips));
   });
   brands.dropped.forEach((d) => sec.append(el("div", { className: "at-backing-row dropped" }, el("span", { className: "at-rank" }, "–"), el("span", { className: "at-backing-name" }, d.name), el("span", {}, apPill("Not named this time", "neutral")), el("span", { className: "ap-muted" }, `was ${apOrd(d.was)} last time`))));
-  sec.append(el("div", { className: "at-todo" }, el("span", { className: "at-todo-k" }, "What to do"), el("span", {}, atBackingAdvice(rows, { own, pages }))));
+  // The "What to do" line that closed this section until 0.59.0 is gone: the
+  // owner wants the tool to show what the engine did, and leave the reading
+  // of it to the person using it. The pages cited without naming your brand
+  // are still listed, as a fact.
+  const silent = (pages.silent || []);
+  if (own && silent.length) sec.append(el("p", { className: "at-backing-silent" }, `Cited without naming ${own.name}: ${silent.join(", ")}`));
   return sec;
-}
-
-function atBackingAdvice(rows, { own, pages }) {
-  const focus = (own && rows.find((r) => r.isYou)) || null;
-  const silent = pages.silent || [];
-  const list = (xs) => xs.slice(0, 3).join(", ");
-  if (own && !focus) return pages.rows.length ? `${own.name} wasn’t named. The pages cited here — ${list(pages.rows.map((p) => p.domain))} — are where to get mentioned.` : `${own.name} wasn’t named, and the answer cited no page. Answers like this come from the model’s memory.`;
-  const r = focus || rows[0];
-  if (!r) return "No brand was named.";
-  const v = r.backing.verdict;
-  if (v === "independent") return silent.length ? `${r.name} is backed by independent pages, but ${list(silent)} ${silent.length === 1 ? "is" : "are"} cited here without naming it — the pages to get onto.` : `${r.name}: backed by independent pages. Every independent page cited here already mentions ${r.name}.`;
-  if (v === "own") return `${r.name} has only its own site behind it here. Reviews and listings that name it would hold its place.`;
-  if (v === "memory") return `${r.name} comes from the model’s memory. It holds until the model is updated; pages won’t move it.`;
-  const indep = pages.rows.filter((p) => p.kind !== "Your site" && p.kind !== "Rival brand sites").map((p) => p.domain);
-  return indep.length ? `No page this answer cited mentions ${r.name}. Get onto the pages it cites: ${list(indep)}.` : `No page this answer cited mentions ${r.name}. It can drop out next time.`;
 }
 
 function atKindsSection(rec, ctxKinds) {
@@ -2562,7 +2554,7 @@ function atDetailsSection(rec, { searches, pages, kind, engineLabel, answerPanel
     rows.forEach(([k, v]) => dl.append(el("div", {}, el("dt", {}, k), el("dd", { title: v }, v))));
     panel.append(dl);
   } else if (atDetails === "ground") {
-    panel.append(el("p", { className: "at-det-lead" }, `${vg.groundedClaims} of ${vg.totalClaims} sentences share most of their words with a page it read (${vg.score}%). ${vg.verdict}. A sentence with no match isn’t wrong — it just isn’t quoted from a page the capture holds.`));
+    panel.append(el("p", { className: "at-det-lead" }, `${vg.groundedClaims} of ${vg.totalClaims} sentences share most of their words with a page it read (${vg.score}%). A sentence with no match isn’t wrong — it just isn’t quoted from a page the capture holds.`));
     vg.claimMatches.slice(0, 10).forEach((c) => panel.append(el("div", { className: "at-claim" }, el("span", {}, `“${c.sentence}”`),
       el("span", { className: c.isGrounded ? "at-claim-ok" : "at-claim-no" }, c.isGrounded ? `Matches ${c.sourceDomain} (${c.confidence}% of its words)` : `No page matches${c.sourceDomain ? ` · closest ${c.sourceDomain} (${c.confidence}%)` : ""}`))));
   } else if (atDetails === "parts") {
@@ -5476,6 +5468,19 @@ function renderCampaignResults(profile) {
   return box;
 }
 
+/* Which kinds of site an answer kind cited (0.59.0, replacing the advice
+   column): one thin stacked bar in the site-kind colours and the shares as
+   text, so colour is never the only carrier. */
+function cbSourceMix(k) {
+  const cell = el("span", { role: "cell", className: "cb-mix small" });
+  if (!k.answers) { cell.append(el("span", { className: "muted" }, k.id === "local" ? "No local answers in this campaign" : "")); return cell; }
+  if (k.id === "memory" || !k.citedPages) { cell.append(el("span", { className: "muted" }, k.id === "memory" ? "No search, so nothing cited" : "Nothing cited")); return cell; }
+  const bar = el("span", { className: "cb-mix-bar", "aria-hidden": "true" });
+  k.sources.forEach((x) => bar.append(el("i", { style: `width:${x.pct.toFixed(1)}%;background:var(${AP_KIND_VAR[x.label] || "--kind-other"})` })));
+  cell.append(bar, el("span", { className: "cb-mix-text" }, `${k.citedPages} cited · ` + k.sources.map((x) => `${x.label.toLowerCase()} ${Math.round(x.pct)}%`).join(", ")));
+  return cell;
+}
+
 async function renderCampaignBoard(box, profile) {
   const r = await send({ type: "campaign-board", profileId: profile.id, runId: cbRun || undefined, viewAs: cbViewAs || undefined, engines: geoEngineFilter, tags: cbTags });
   box.textContent = "";
@@ -5571,7 +5576,7 @@ async function renderCampaignBoard(box, profile) {
   const offered = CB_FOCUS.filter(([id]) => id === "mentions" || !profile.measure || profile.measure[id]);
   if (!b.available[cbFocus] || !offered.some(([id]) => id === cbFocus)) cbFocus = "mentions";
   const kp = el("section", { className: "card cb-kpis", id: "cb-kpis", "aria-labelledby": "cb-kpis-h" });
-  const focusTabs = el("div", { className: "cb-focus", role: "tablist", "aria-label": "What matters for this campaign" });
+  const focusTabs = el("div", { className: "cb-focus", role: "tablist", "aria-label": "What to look at" });
   offered.forEach(([id, label, glyph]) => {
     const on = cbFocus === id;
     const t = el("button", { className: `cb-focus-tab${on ? " on" : ""}${b.available[id] ? "" : " empty"}`, type: "button", role: "tab", "aria-selected": on ? "true" : "false", title: b.available[id] ? "" : "No answer in this view had any" }, glyphEl(glyph, 14), label);
@@ -5579,7 +5584,7 @@ async function renderCampaignBoard(box, profile) {
     focusTabs.append(t);
   });
   const hint = (CB_FOCUS.find((f) => f[0] === cbFocus) || CB_FOCUS[0])[3];
-  kp.append(el("div", { className: "cb-sec-head" }, el("h3", { className: "cb-h", id: "cb-kpis-h" }, `What matters for ${view.name}`), focusTabs),
+  kp.append(el("div", { className: "cb-sec-head" }, el("h3", { className: "cb-h", id: "cb-kpis-h" }, `${view.name} in this campaign`), focusTabs),
     el("div", { className: "muted small cb-hint" }, `${view.name}${view.isOwn ? " (you)" : ""} · ${hint}`));
   const tiles = el("div", { className: "cb-tiles" });
   // The tiles are written for your own brand ("Your cards", "cite you"); viewed
@@ -5593,7 +5598,7 @@ async function renderCampaignBoard(box, profile) {
       k.sub ? el("div", { className: "k-sub muted" }, whose(k.sub)) : null,
       k.delta ? el("div", { className: `k-delta tone-${k.delta.tone > 0 ? "up" : k.delta.tone < 0 ? "down" : "flat"}` }, k.delta.text) : null));
   });
-  if (cbFocus === "local" && !b.available.local) tiles.append(el("p", { className: "muted small cb-note" }, "No answer in this campaign showed a map. Local campaigns track pin share, pin position and whether the listing links to your site; add prompts like “service centre near me” to track it."));
+  if (cbFocus === "local" && !b.available.local) tiles.append(el("p", { className: "muted small cb-note" }, "No answer in this campaign showed a map, so there are no pins to count: pin share, pin position and whether a listing links to the brand’s site."));
   kp.append(tiles);
   box.append(kp);
 
@@ -5652,7 +5657,7 @@ async function renderCampaignBoard(box, profile) {
 
   /* --- by kind of answer --- */
   const kinds = el("div", { className: "cb-table cb-kind-table", role: "table", "aria-label": "By kind of answer" });
-  kinds.append(el("div", { className: "cb-tr cb-th", role: "row" }, ...["Kind of answer", "Answers", "Named in text", "Site cited", "Product card", "Images", "Map pin", "The lever that matters here"].map((h) => el("span", { role: "columnheader" }, h))));
+  kinds.append(el("div", { className: "cb-tr cb-th", role: "row" }, ...["Kind of answer", "Answers", "Named in text", "Site cited", "Product card", "Images", "Map pin", "Cited pages, by kind of site"].map((h) => el("span", { role: "columnheader" }, h))));
   const KG = { shopping: "cart", info: "book", images: "image", memory: "noglobe", local: "pin", all: "globe" };
   const AK = { shopping: "shopping", info: "info", images: "images", memory: "memory", local: "local" };
   b.byKind.forEach((k) => {
@@ -5665,9 +5670,9 @@ async function renderCampaignBoard(box, profile) {
       el("span", { role: "cell", className: "num" }, k.card ? `${cbPct(k.card.pct)}${k.card.avg ? ` · avg card ${k.card.avg.toFixed(1)}` : ""}` : "—"),
       el("span", { role: "cell", className: "num" }, k.images ? `${k.images.mine} of ${k.images.of}` : "—"),
       el("span", { role: "cell", className: "num" }, cbPct(k.pin)),
-      el("span", { role: "cell", className: "muted small" }, k.answers || k.id === "all" ? k.lever : (k.id === "local" ? "No local prompts. Add one like “service centre near me” to track maps." : ""))));
+      cbSourceMix(k)));
   });
-  box.append(cbSection("cb-kinds", `How ${view.name} shows up, by kind of answer`, "Different questions get different answers — a carousel, an explainer, a map. Each has its own way in.", el("div", { className: "cb-scroll" }, kinds)));
+  box.append(cbSection("cb-kinds", `How ${view.name} shows up, by kind of answer`, "a carousel, an explainer, a map or pictures, and the kinds of site each one cited", el("div", { className: "cb-scroll" }, kinds)));
 
   /* --- product cards --- */
   if (b.products.total) {
@@ -5827,7 +5832,7 @@ async function renderCampaignBoard(box, profile) {
       el("span", { role: "cell", className: "num" }, String(x.cited)),
       el("span", { role: "cell", className: "ap-chips" }, ...x.rivals.map((n) => el("span", { className: "ap-bchip" }, n))),
       el("span", { role: "cell", className: "t-bad small" }, "not mentioned"))));
-    pair4.append(cbSection("cb-gaps", `Sites that cite rivals but not ${view.name}`, "where to get listed or reviewed",
+    pair4.append(cbSection("cb-gaps", `Sites that cite rivals but not ${view.name}`, "cited pages that name a rival and never this brand",
       b.gapSites.length ? t : el("p", { className: "ap-note" }, `Every cited page that mentions a rival also mentions ${view.name}.`)));
   }
   box.append(pair4);
@@ -6178,7 +6183,7 @@ const EX_PDF_PAGES = [
   ["sources", "Sources", "Kinds of site, most-cited sites and pages, gaps"],
   ["products", "Kinds of answer and products", "Card share, where cards send buyers, images"],
   ["searches", "Engine searches", "Searches per engine and the most repeated ones"],
-  ["actions", "Actions and method", "Next steps, definitions, runs and the full prompt list"],
+  ["method", "Method", "Definitions, runs and the full prompt list"],
 ];
 const EX_RAW = [["Answers", "answers", "tAnswers"], ["Mentions", "mentions", "tMentions"], ["Sources data", "pages", "tSources"], ["Engine searches", "searches", "tSearches"],
   ["Product cards", "products", "tProducts"], ["Store offers", "stores", "tOffers"], ["Images", "images", "tImages"], ["Head to head", "h2h", "tH2H"]];
@@ -7723,9 +7728,32 @@ document.querySelectorAll("#setTheme [data-theme-pick]").forEach((b) => b.addEve
   applyTheme(next);
   try { localStorage.setItem("cito-theme", next); } catch (_) {}
 }));
+// Studio or Classic (0.59.0), the same way: kept in this browser, applied at
+// once, outside Save / Undo. theme-boot.js already set it before the first
+// paint; this keeps the Settings radios and the other view in step.
+const STYLES = ["studio", "classic"];
+function applyStyle(style) {
+  const next = STYLES.includes(style) ? style : "studio";
+  document.documentElement.setAttribute("data-style", next);
+  document.querySelectorAll("#setStyle [data-style-pick]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.stylePick === next)));
+}
+function initStyle() {
+  let current = "studio";
+  try { current = localStorage.getItem("cito-style") || "studio"; } catch (_) {}
+  applyStyle(current);
+}
+document.querySelectorAll("#setStyle [data-style-pick]").forEach((b) => b.addEventListener("click", () => {
+  const next = b.dataset.stylePick;
+  applyStyle(next);
+  try { localStorage.setItem("cito-style", next); } catch (_) {}
+}));
 // The other view (popup or tab) follows a change made here.
-window.addEventListener("storage", (e) => { if (e.key === "cito-theme" && e.newValue) applyTheme(e.newValue); });
+window.addEventListener("storage", (e) => {
+  if (e.key === "cito-theme" && e.newValue) applyTheme(e.newValue);
+  if (e.key === "cito-style" && e.newValue) applyStyle(e.newValue);
+});
 initTheme();
+initStyle();
 
 $("#exportJson")?.addEventListener("click", () =>
   download(`citoskeleton-export-${Date.now()}.json`, JSON.stringify(currentFilteredRecs, null, 2), "application/json")
@@ -8879,7 +8907,6 @@ function renderAboutOverview() {
 function abTermBody(t) {
   const body = el("div", { className: "ab-term-body" }, el("p", { className: "ab-lead" }, t.what));
   if (t.formula) body.append(el("div", { className: "ab-formula" }, el("span", { className: "ab-label" }, "Formula"), el("code", {}, t.formula)));
-  if (t.howToUse) body.append(el("div", { className: "ab-term-part" }, el("span", { className: "ab-label" }, "How to use it"), el("p", {}, t.howToUse)));
   if (t.note) body.append(el("div", { className: "ab-term-part" }, el("span", { className: "ab-label" }, "Keep in mind"), el("p", {}, t.note)));
   return body;
 }
@@ -9161,7 +9188,7 @@ function renderCompare() {
   head.append(el("div", { className: "card-header" }, el("h3", {}, timeline.label)));
   if (caps.length === 1) {
     head.append(el("div", { className: "muted" },
-      "Only one capture so far — run this prompt again later and this page will show what moved."));
+      "Only one capture so far. A later answer to this prompt will be compared with it here."));
   }
   const tl = el("div", { className: "chips", style: "margin-top:6px" });
   caps.forEach((r, i) => {

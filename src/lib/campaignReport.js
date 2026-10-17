@@ -27,7 +27,7 @@ export const REPORT_PAGES = [
   ["sources", "Sources", "Kinds of site, most-cited sites and pages, gaps"],
   ["products", "Kinds of answer and products", "Card share, where cards send buyers, images"],
   ["searches", "Engine searches", "Searches per engine and the most repeated ones"],
-  ["actions", "Actions and method", "Next steps, definitions, runs and the full prompt list"],
+  ["method", "Method", "Definitions, runs and the full prompt list"],
 ];
 
 /** How each number is measured, as the last page prints it. */
@@ -113,7 +113,9 @@ export function campaignReport(bundle = {}) {
   const runLabel = `Run ${runNo}`;
   const runWord = `run ${runNo}`;
   const prevLabel = prev ? `run ${runNo - 1}` : null;
-  const want = new Set(bundle.sections || REPORT_PAGES.map(([k]) => k));
+  // "actions" is the page's key before 0.59.0, when it led with next steps;
+  // a saved or old link asking for it gets the method page.
+  const want = new Set((bundle.sections || REPORT_PAGES.map(([k]) => k)).map((k) => (k === "actions" ? "method" : k)));
   want.add("summary");
   const ansById = new Map(A.map((a) => [a["Answer ID"], a]));
   const siteCtx = { ownBrand: OWN, ownUrl: own.url || "", brands: brands.map((b) => b.name) };
@@ -391,34 +393,13 @@ export function campaignReport(bundle = {}) {
     });
   }
 
-  /* ---------- page 7: actions and method ---------- */
-  if (want.has("actions")) {
-    const actions = [];
-    const missingCells = board.prompts.rows.flatMap((r) => r.cells.map((c, i) => (c && c.pos === 0 ? { id: pidOf.get(r.id) || `P${String(r.n).padStart(2, "0")}`, engine: engines[i].label } : null)).filter(Boolean));
-    if (missingCells.length) {
-      const ids = [...new Set(missingCells.map((c) => c.id))];
-      const byEng = new Map();
-      missingCells.forEach((c) => byEng.set(c.engine, (byEng.get(c.engine) || 0) + 1));
-      const worst = [...byEng.entries()].sort((a, b) => b[1] - a[1])[0];
-      actions.push({ head: `Win back ${plural(missingCells.length, "missing answer")}.`, text: `${OWN} was not named in ${listOf(ids.slice(0, 8))}${ids.length > 8 ? ` and ${ids.length - 8} more` : ""}${byEng.size > 1 && worst[1] > missingCells.length / 2 ? ` — mostly ${worst[0]}` : ""}.` });
-    }
-    if (board.gapSites.length) actions.push({ head: `Get onto ${listOf(board.gapSites.slice(0, 3).map((g) => g.site))}.`, text: `Cited in ${runWord}, naming rivals but never ${OWN}.` });
-    {
-      const m = /^(\d+) of (\d+)$/.exec((tile(fp, "Own store offered") || {}).value || "");
-      const total = m ? Number(m[2]) : 0;
-      const elsewhere = m ? total - Number(m[1]) : 0;
-      const who = total === 1 ? `The one ${OWN} card` : elsewhere === total ? `All ${total} ${OWN} cards` : `${elsewhere} of ${total} ${OWN} cards`;
-      if (elsewhere > 0) actions.push({ head: `List the ${OWN} store on product feeds.`, text: `${who} in ${runWord} ${elsewhere === 1 ? "sends" : "send"} every buyer to someone else's store.` });
-    }
-    {
-      const eng = board.byEngine.filter((e) => e.answers);
-      if (eng.length >= 2) {
-        const lo = [...eng].sort((a, b) => a.visibility - b.visibility)[0];
-        const col = board.heat.engines.findIndex((e) => e.label === lo.label);
-        const leader = board.heat.rows.map((r) => ({ name: r.name, v: r.cells[col] || 0 })).sort((a, b) => b.v - a.v)[0];
-        actions.push({ head: `Watch ${lo.label}.`, text: `${OWN} is weakest there (${round(lo.visibility)}% visibility)${leader && leader.v > 0 && !sameName(leader.name, OWN) ? ` and ${leader.name} leads` : ""}.` });
-      }
-    }
+  /* ---------- page 7: method ----------
+     Until 0.59.0 this page opened with "Where to act next": four lines of
+     advice worked out from the numbers ("Get onto …", "List the store on
+     product feeds", "Watch Gemini"). The owner asked for the data without
+     the advice, so the page keeps only how the numbers are measured, the
+     runs and the prompt list. */
+  if (want.has("method")) {
     const runRows = runsWith.map((r, i) => {
       const list = records.filter((x) => x.geo && x.geo.runId === r.id);
       return { label: `Run ${i + 1}`, date: dayLabel(r.startedAt || 0), answers: list.length, searched: pct(list.filter((x) => x.searched || (x.sources || []).length).length, list.length), ...brandNumbers(list, profile, brands, OWN), current: r.id === run.id };
@@ -426,7 +407,7 @@ export function campaignReport(bundle = {}) {
     const kindOf = new Map();
     A.forEach((a) => { const m = kindOf.get(a["Prompt ID"]) || new Map(); m.set(a["Kind of answer"], (m.get(a["Kind of answer"]) || 0) + 1); kindOf.set(a["Prompt ID"], m); });
     pages.push({
-      key: "actions", title: "Actions and method", actions, definitions: REPORT_DEFINITIONS, runs: runRows,
+      key: "method", title: "Method", definitions: REPORT_DEFINITIONS, runs: runRows,
       prompts: F.prompts.map((p) => ({ id: p.id, text: p.text, tags: p.tags, kind: kindOf.has(p.id) ? [...kindOf.get(p.id).entries()].sort((a, b) => b[1] - a[1])[0][0] : "" })),
     });
   }

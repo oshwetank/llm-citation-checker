@@ -221,12 +221,15 @@ function flatKpi(k, group, field) {
 
 /* ---------- the board ---------- */
 
+// Until 0.59.0 each kind carried a "lever": a line of advice on what to fix
+// for it. The owner asked for the data without the advice, so each kind now
+// reports which kinds of site its answers cited instead (`sources` below).
 const KIND_ORDER = [
-  ["shopping", "Shopping", "Product feed, retailer listings and review sites decide the carousel."],
-  ["info", "Informational", "Get onto the explainer and review pages engines cite."],
-  ["images", "Image-led", "Supply clean product images to retailers and your own pages."],
-  ["memory", "From memory", "Nothing on-page to fix; this is the brand's footprint in the model."],
-  ["local", "Local", "Keep the map listing complete: website, hours, photos, reviews."],
+  ["shopping", "Shopping"],
+  ["info", "Informational"],
+  ["images", "Image-led"],
+  ["memory", "From memory"],
+  ["local", "Local"],
 ];
 
 /**
@@ -289,11 +292,27 @@ export function campaignBoard(recs, { profile, brands, viewAs, prompts = [], run
 
   // By kind of answer.
   const kindOf = (r) => answerKind(r).id;
-  const kindRow = (id, label, lever, list) => {
+  const kindCtx = { ownBrand: view.name, ownUrl: view.url || "", brands: brands.map((b) => b.name) };
+  const kindRow = (id, label, list) => {
     const n = list.length;
     let named = 0, cited = 0, withCards = 0, myCardAns = 0, imgs = 0, myImgs = 0, withMap = 0, myPin = 0;
     const cardPos = [];
+    // Cited pages in these answers, by kind of site ("Sources each kind of
+    // answer used" on the canvas): a page cited twice in one answer counts
+    // once, across answers every time.
+    const mix = new Map(KIND_GROUPS.map((g) => [g, 0]));
+    let citedPages = 0;
     for (const r of list) {
+      const seenHere = new Set();
+      for (const src of r.sources || []) {
+        if (src.outcome !== "cited") continue;
+        const d = normDomain(src.domain || src.url);
+        if (!d || seenHere.has(src.url || d)) continue;
+        seenHere.add(src.url || d);
+        const kind = siteKindOf(d, kindCtx);
+        mix.set(kind, (mix.get(kind) || 0) + 1);
+        citedPages++;
+      }
       const p = brandPresence(r, brands).find((x) => x.key === normName(view.name));
       if (p && p.mentions > 0) named++;
       if (p && p.citedSource) cited++;
@@ -308,15 +327,17 @@ export function campaignBoard(recs, { profile, brands, viewAs, prompts = [], run
       if ((r.places || []).length) { withMap++; if ((r.places || []).some((pl) => wordRe(view.name).test(String(pl.name || "")))) myPin++; }
     }
     return {
-      id, label, lever, answers: n,
+      id, label, answers: n,
+      citedPages,
+      sources: KIND_GROUPS.map((g) => ({ label: g, n: mix.get(g) || 0, pct: citedPages ? pct(mix.get(g) || 0, citedPages) : 0 })).filter((x) => x.n > 0),
       named: n ? pct(named, n) : null, cited: n && id !== "memory" ? pct(cited, n) : null,
       card: withCards ? { pct: pct(myCardAns, withCards), avg: avg(cardPos) } : null,
       images: imgs ? { mine: myImgs, of: imgs } : null,
       pin: withMap ? pct(myPin, withMap) : null,
     };
   };
-  const byKind = KIND_ORDER.map(([id, label, lever]) => kindRow(id, label, lever, recs.filter((r) => kindOf(r) === id)));
-  byKind.push(kindRow("all", "All answers", "", recs));
+  const byKind = KIND_ORDER.map(([id, label]) => kindRow(id, label, recs.filter((r) => kindOf(r) === id)));
+  byKind.push(kindRow("all", "All answers", recs));
 
   // Product cards across the campaign.
   const prodMap = new Map();
@@ -657,11 +678,11 @@ export function brandDetail(recs, { profile, brands, them, you, prompts = [], ta
   }
   const kindRows = KIND_GROUPS.map((label) => ({ label, ...kinds.get(label) })).filter((k) => k.them || k.you);
   const strongest = [...kindRows].sort((a, b) => (b.them - b.you) - (a.them - a.you))[0];
-  const kindsLine = strongest && strongest.them > strongest.you ? `${T.name}'s lead is on ${strongest.label.toLowerCase()}: ${strongest.them} cited pages mention ${T.name}, ${strongest.you} mention ${Y.name}.` : "";
+  const kindsLine = strongest && strongest.them > strongest.you ? `Widest gap, ${strongest.label.toLowerCase()}: ${strongest.them} cited pages mention ${T.name}, ${strongest.you} mention ${Y.name}.` : "";
   const siteRows = [...sites.values()].map((s) => ({ ...s, verdict: s.them && !s.you ? `only ${T.name}` : s.you && !s.them ? `only ${Y.name}` : s.them > s.you ? `${T.name} more` : s.you > s.them ? `${Y.name} more` : "both" }))
     .sort((a, b) => (b.them - b.you) - (a.them - a.you) || b.them - a.them).slice(0, 14);
   const onlyThem = siteRows.filter((s) => s.them && !s.you).length;
-  const gapLine = onlyThem ? `${plural(onlyThem, "site")} cite pages about ${T.name} and never one about ${Y.name}: the places to get reviewed or listed.` : `No site writes only about ${T.name}.`;
+  const gapLine = onlyThem ? `${plural(onlyThem, "site")} cite pages about ${T.name} and never one about ${Y.name}.` : `No site writes only about ${T.name}.`;
 
   // Prompt by prompt: who came first on each engine.
   const rows = prompts.filter((p) => p.active !== false).map((p, i) => {

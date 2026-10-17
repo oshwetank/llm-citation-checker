@@ -18,7 +18,7 @@
  * "the new layout has not completily and properly been implemented at all": an "at a
  * glance" card (brands named, pages cited, searches it ran) heads it; product
  * cards are a table with where to buy beside it; every named brand gets a row
- * in "what backs each brand" with a verdict and "what to do"; Details is a
+ * in "what backs each brand" with what backs it (no advice since 0.59.0); Details is a
  * switch between technical tiles, the grounding check, the page behind each
  * part and every page it read. The page keeps the canvas's narrow gutters.
  * On 0.53.0 the "at a glance", products, backing and Details checks fail:
@@ -285,7 +285,7 @@ try {
     check("clicking a card shows where to buy that one", after.h === r.second && after.on === 1, `${after.h} (${after.on} selected)`);
   }
 
-  console.log("\nWhat backs each brand: a verdict per brand, then what to do");
+  console.log("\nWhat backs each brand: what backs each one, and no advice");
   {
     const r = await page.evaluate(() => {
       const sec = document.getElementById("at-backing");
@@ -295,11 +295,15 @@ try {
         verdicts: rows.map((x) => x.querySelector(".ap-pill")?.textContent || ""),
         firstName: rows[0]?.querySelector(".at-backing-name")?.textContent || "",
         todo: sec?.querySelector(".at-todo")?.textContent || "",
+        advice: /what to do|get onto|drop out|keep their place|matter most/i.test(document.getElementById("analyze").innerText),
       };
     });
     check("a row for each named brand, in order", r.rows === 5 && r.firstName === "OnePlus", `${r.rows} rows, first ${r.firstName}`);
     check("each with a plain verdict", r.verdicts.every((v) => /^(Backed by independent pages|Backed only by its own site|Read, not cited|Nothing behind it|From memory)$/.test(v)), r.verdicts.join(" | "));
-    check("and a 'what to do' line", /^What to do/.test(r.todo) && r.todo.length > 30, r.todo);
+    // 0.59.0: the owner asked for the data without the advice ("we are not
+    // spoonfeeding here"). Until then the section closed with a "What to do"
+    // line and the page opened with what "matters most".
+    check("no 'what to do' line, and no advice anywhere in Analyze", !r.todo && !r.advice, r.todo || "advice text found");
   }
 
   console.log("\nThe answer, as the engine showed it, with brands and citations marked");

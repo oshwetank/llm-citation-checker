@@ -83,12 +83,16 @@
   --fg-secondary: #334155;
   --fg-muted: #64748b;
 
-  /* ── Apple San Francisco Blue Accent ── */
-  --accent: #007aff;
-  --accent-hover: #0062cc;
+  /* ── Blue accent ──
+     #007aff until 0.59.0, one step darker since: white on #007aff, and
+     #007aff on a white card, are 4.0:1, under the 4.5:1 small text needs
+     (theme-style.test.mjs checks every look). #0062cc was already the hover
+     shade, so links and buttons keep their hue and only gain contrast. */
+  --accent: #0062cc;
+  --accent-hover: #0050a8;
   --accent-fg: #ffffff;
   --accent-subtle: rgba(0, 122, 255, 0.09);
-  --accent-gradient: linear-gradient(135deg, #007aff 0%, #0051a8 100%);
+  --accent-gradient: linear-gradient(135deg, #0062cc 0%, #0050a8 100%);
 
   /* ── Semantic: Cited (mint green) ── */
   --green-bg: rgba(236, 253, 245, 0.95);
@@ -107,7 +111,7 @@
 
   /* ── Semantic: News (sky blue) ── */
   --blue-bg: rgba(239, 246, 255, 0.95);
-  --blue-fg: #007aff;
+  --blue-fg: #0062cc;
   --blue-border: #93c5fd;
 
   /* ── Semantic: OpenAI's own index, Labrador (teal) ── */
@@ -242,6 +246,267 @@
   background: var(--page-backdrop);
   background-attachment: fixed;
 }
+
+/* ══ Themes (0.59.0): Studio and Classic, each light or dark ══════════════
+   Two independent attributes on <html>, set before the first paint by
+   theme-boot.js and kept in step by panel.js:
+     data-style  "studio" (the default) | "classic" (the 0.47–0.58 look)
+     data-theme  "light" | "dark"
+   Classic IS the token blocks above, untouched, so picking it brings back
+   exactly what 0.58.0 drew. Studio overrides the same tokens (the blocks
+   below), so every screen built on tokens follows it without per-component
+   rules.
+
+   Design tokens added in 0.59.0 for the rebuilt screens. Colour has one
+   meaning each, decided on the design canvas after a contrast review:
+     --you        the interface accent and "your brand" (indigo in Studio);
+     --cited-*    a page the answer cited (dark grey in Studio, green in
+                  Classic, where green already meant cited);
+     --first-*    named first (gold), --rank-* any other place (grey);
+     --eng-*      one fixed colour per engine, never reused for a store,
+                  a brand or a kind of site;
+     --tint-*     the header tint for each kind of answer, with the ink
+                  colour that passes 4.5:1 on it;
+     --heat-N     a 5-step neutral scale for counts, with dark text on the
+                  middle steps (white on a mid-tone failed contrast).
+   The --*-on value is the text colour to use on that fill. */
+:root {
+  --r-card: 14px;
+  --r-tile: 10px;
+  --r-ctl: 8px;
+  --r-hero: 16px;
+  --tile-bg: var(--bg-subtle);
+  --line-soft: rgba(148, 163, 184, 0.22);
+  --tone-neutral-bg: rgba(241, 245, 249, 0.9);
+  --tone-neutral-fg: #334155;
+  --you: var(--kind-you);
+  --you-soft: rgba(42, 120, 214, 0.08);
+  --cited-fill: #047857;
+  --cited-on: #ffffff;
+  --read-fill: #fde68a;
+  --read-on: #78350f;
+  --none-fill: #f1f5f9;
+  --first-fill: #f2c14e;
+  --first-on: #3a2405;
+  --rank-fill: #e2e8f0;
+  --rank-on: #334155;
+  --heat-0: #f8fafc;  --heat-0-on: #94a3b8;
+  --heat-1: #eff6ff;  --heat-1-on: #334155;
+  --heat-2: #dbeafe;  --heat-2-on: #1e3a8a;
+  --heat-3: #93c5fd;  --heat-3-on: #0f172a;
+  --heat-4: #1e3a8a;  --heat-4-on: #ffffff;
+  --eng-chatgpt: #047857;
+  --eng-gemini: #0062cc;
+  --eng-perplexity: #6d28d9;
+  --eng-grok: #334155;
+  --ad-bg: var(--amber-bg);
+  --ad-line: var(--amber-border);
+  --ad-ink: var(--amber-fg);
+  --tint-shopping: #ecfdf5;  --tint-shopping-ink: #065f46;  --tint-shopping-line: #a7f3d0;
+  --tint-local: #fff7ed;     --tint-local-ink: #9a3412;     --tint-local-line: #fed7aa;
+  --tint-images: #fdf2f8;    --tint-images-ink: #9d174d;    --tint-images-line: #fbcfe8;
+  --tint-info: #eef2ff;      --tint-info-ink: #3730a3;      --tint-info-line: #c7d2fe;
+  --tint-memory: #fffbeb;    --tint-memory-ink: #92400e;    --tint-memory-line: #fde68a;
+  --tint-lens: #f5f3ff;      --tint-lens-ink: #5b21b6;      --tint-lens-line: #ddd6fe;
+  --tint-dashboard: #eff6ff; --tint-dashboard-ink: #1e40af; --tint-dashboard-line: #bfdbfe;
+  --tint-campaign: #eef2ff;  --tint-campaign-ink: #3730a3;  --tint-campaign-line: #c7d2fe;
+}
+[data-theme="dark"] {
+  --line-soft: rgba(148, 163, 184, 0.12);
+  --tone-neutral-bg: rgba(148, 163, 184, 0.14);
+  --tone-neutral-fg: #cbd5e1;
+  --you-soft: rgba(57, 135, 229, 0.14);
+  --cited-fill: #34d399;
+  --cited-on: #052e1f;
+  --read-fill: rgba(251, 191, 36, 0.3);
+  --read-on: #fde68a;
+  --none-fill: rgba(148, 163, 184, 0.12);
+  --first-fill: #e0b44a;
+  --first-on: #2a1b02;
+  --rank-fill: rgba(148, 163, 184, 0.22);
+  --rank-on: #e2e8f0;
+  --heat-0: rgba(148, 163, 184, 0.08);  --heat-0-on: #64748b;
+  --heat-1: rgba(96, 165, 250, 0.14);   --heat-1-on: #cbd5e1;
+  --heat-2: rgba(96, 165, 250, 0.3);    --heat-2-on: #e2e8f0;
+  --heat-3: #3b82f6;                    --heat-3-on: #ffffff;
+  --heat-4: #bfdbfe;                    --heat-4-on: #0f172a;
+  --eng-chatgpt: #34d399;
+  --eng-gemini: #60a5fa;
+  --eng-perplexity: #a78bfa;
+  --eng-grok: #cbd5e1;
+  --tint-shopping: rgba(6, 78, 59, 0.35);    --tint-shopping-ink: #6ee7b7;  --tint-shopping-line: rgba(52, 211, 153, 0.3);
+  --tint-local: rgba(124, 45, 18, 0.35);     --tint-local-ink: #fdba74;     --tint-local-line: rgba(251, 146, 60, 0.3);
+  --tint-images: rgba(131, 24, 67, 0.35);    --tint-images-ink: #f9a8d4;    --tint-images-line: rgba(244, 114, 182, 0.3);
+  --tint-info: rgba(49, 46, 129, 0.4);       --tint-info-ink: #a5b4fc;      --tint-info-line: rgba(129, 140, 248, 0.3);
+  --tint-memory: rgba(120, 53, 15, 0.35);    --tint-memory-ink: #fcd34d;    --tint-memory-line: rgba(251, 191, 36, 0.3);
+  --tint-lens: rgba(76, 29, 149, 0.35);      --tint-lens-ink: #c4b5fd;      --tint-lens-line: rgba(167, 139, 250, 0.3);
+  --tint-dashboard: rgba(30, 58, 138, 0.4);  --tint-dashboard-ink: #93c5fd; --tint-dashboard-line: rgba(96, 165, 250, 0.3);
+  --tint-campaign: rgba(49, 46, 129, 0.4);   --tint-campaign-ink: #a5b4fc;  --tint-campaign-line: rgba(129, 140, 248, 0.3);
+}
+
+/* ── Studio, light: the design canvas's palette ──
+   A warm off-white page, solid white cards with a hairline and a soft
+   shadow, indigo as the one interface colour, and Geist. No glass: the
+   blur and the colour blobs behind it are Classic's. */
+:root[data-style="studio"] {
+  --page-backdrop: #f4f3ee;
+  --font-sans: "Geist", "IBM Plex Sans Devanagari", system-ui, -apple-system,
+               "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+  --bg: #f4f3ee;
+  --bg-subtle: #faf9f5;
+  --card-bg: #ffffff;
+  --card-hover: #ffffff;
+  --header-bg: #ffffff;
+  --surface-raised: #faf9f5;
+  --surface-raised-hover: #f4f3ee;
+  --surface-solid: #ffffff;
+  --surface-sunken: #faf9f5;
+  --border: #e7e5de;
+  --border-hover: #c9cef5;
+  --glass-blur: none;
+  --glass-highlight: 0 0 0 0 transparent;
+  --glass-shadow: 0 1px 2px rgba(28, 25, 23, 0.04), 0 10px 28px -20px rgba(28, 25, 23, 0.22);
+  --glass-shadow-hover: 0 2px 4px rgba(28, 25, 23, 0.06), 0 14px 32px -18px rgba(28, 25, 23, 0.3);
+  --fg-primary: #1f2328;
+  --fg-secondary: #3d4249;
+  --fg-muted: #5f646b;
+  --accent: #4f5bd5;
+  --accent-hover: #3b47b0;
+  --accent-fg: #ffffff;
+  --accent-subtle: #e9ebfb;
+  --accent-gradient: linear-gradient(135deg, #4f5bd5 0%, #3b47b0 100%);
+  --green-bg: #dcf1e8;   --green-fg: #17684e;   --green-border: #a8dcc5;
+  --amber-bg: #fbedd3;   --amber-fg: #875409;   --amber-border: #f0d29a;
+  --indigo-bg: #e9ebfb;  --indigo-fg: #3b47b0;  --indigo-border: #c9cef5;
+  --blue-bg: #e2edf9;    --blue-fg: #255f9e;    --blue-border: #bfd6f0;
+  --teal-bg: #dcf1ed;    --teal-fg: #0e665c;    --teal-border: #a6dcd3;
+  --red-bg: #fbe3dd;     --red-fg: #a13827;     --red-border: #f1b9ab;
+
+  --r-card: 18px;
+  --r-tile: 14px;
+  --r-ctl: 10px;
+  --r-hero: 22px;
+  --tile-bg: #faf9f5;
+  --line-soft: #f0eee8;
+  --tone-neutral-bg: #efeee8;
+  --tone-neutral-fg: #3d4249;
+  --you: #4f5bd5;
+  --you-soft: #f1f2fc;
+  --cited-fill: #3d4249;
+  --cited-on: #ffffff;
+  --read-fill: #f6d28e;
+  --read-on: #6e4508;
+  --none-fill: #efeee8;
+  --rank-fill: #e6e8ea;
+  --rank-on: #2a2f35;
+  --heat-0: #f7f6f1;  --heat-0-on: #8a8e94;
+  --heat-1: #f1f2f3;  --heat-1-on: #3d4249;
+  --heat-2: #dadcdf;  --heat-2-on: #1f2328;
+  --heat-3: #a9aeb6;  --heat-3-on: #1f2328;
+  --heat-4: #3d4249;  --heat-4-on: #ffffff;
+  --eng-chatgpt: #12796d;
+  --eng-gemini: #2b72bc;
+  --eng-perplexity: #7a52c7;
+  --eng-grok: #3d4249;
+  --ad-bg: #fff7e8;
+  --ad-line: #f3dfb2;
+  --ad-ink: #5b3a07;
+  --tint-shopping: #e3f1ec;  --tint-shopping-ink: #0e665c;  --tint-shopping-line: #cfe6de;
+  --tint-local: #fbe9e2;     --tint-local-ink: #a3402b;     --tint-local-line: #f3d3c6;
+  --tint-images: #f7e6ee;    --tint-images-ink: #9c2f5f;    --tint-images-line: #edcfdd;
+  --tint-info: #ece8f8;      --tint-info-ink: #6440ae;      --tint-info-line: #dad3f1;
+  --tint-memory: #fbefd9;    --tint-memory-ink: #875409;    --tint-memory-line: #f2dfb9;
+  --tint-lens: #f2effb;      --tint-lens-ink: #4d3f80;      --tint-lens-line: #e3dcf6;
+  --tint-dashboard: #e2edf9; --tint-dashboard-ink: #2b5e99; --tint-dashboard-line: #cfdff2;
+  --tint-campaign: #e9ebfb;  --tint-campaign-ink: #2e3aa8;  --tint-campaign-line: #d6dafa;
+}
+
+/* ── Studio, dark ── The same structure on a near-black warm grey: solid
+   cards one step lighter than the page, the indigo lifted to read on it,
+   and every tint stepped down so its ink passes 4.5:1. */
+:root[data-style="studio"][data-theme="dark"] {
+  --page-backdrop: #17181b;
+  --bg: #17181b;
+  --bg-subtle: #1c1d21;
+  --card-bg: #1f2125;
+  --card-hover: #23252a;
+  --header-bg: #1f2125;
+  --surface-raised: #24262b;
+  --surface-raised-hover: #2a2c31;
+  --surface-solid: #1f2125;
+  --surface-sunken: #1a1b1f;
+  --border: #2e3036;
+  --border-hover: #4a5099;
+  --glass-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 10px 28px -18px rgba(0, 0, 0, 0.6);
+  --glass-shadow-hover: 0 2px 4px rgba(0, 0, 0, 0.35), 0 14px 32px -16px rgba(0, 0, 0, 0.7);
+  --fg-primary: #edebe6;
+  --fg-secondary: #c9c7c1;
+  --fg-muted: #9a9da3;
+  --accent: #8a93f0;
+  --accent-hover: #a4abf4;
+  --accent-fg: #12142b;
+  --accent-subtle: #262a52;
+  --accent-gradient: linear-gradient(135deg, #8a93f0 0%, #6f7ae8 100%);
+  --green-bg: #1c3a30;   --green-fg: #8fddbf;   --green-border: #2d5a4a;
+  --amber-bg: #3d2f12;   --amber-fg: #f2c77a;   --amber-border: #5c4719;
+  --indigo-bg: #262b55;  --indigo-fg: #b9bff7;  --indigo-border: #3a4180;
+  --blue-bg: #1d3047;    --blue-fg: #9cc4f0;    --blue-border: #2c4a6b;
+  --teal-bg: #163a35;    --teal-fg: #86d9cb;    --teal-border: #245a52;
+  --red-bg: #43211b;     --red-fg: #f2a797;     --red-border: #6b342a;
+
+  --tile-bg: #24262b;
+  --line-soft: #2a2c31;
+  --tone-neutral-bg: #2a2c31;
+  --tone-neutral-fg: #c9c7c1;
+  --you: #8a93f0;
+  --you-soft: #23264a;
+  --cited-fill: #d5d7db;
+  --cited-on: #17181b;
+  --read-fill: #5a4417;
+  --read-on: #f6d28e;
+  --none-fill: #2a2c31;
+  --first-fill: #e0b44a;
+  --first-on: #2a1b02;
+  --rank-fill: #34373d;
+  --rank-on: #e2e0da;
+  --heat-0: #232529;  --heat-0-on: #6b6e74;
+  --heat-1: #2e3136;  --heat-1-on: #c9c7c1;
+  --heat-2: #4a4e55;  --heat-2-on: #f1efea;
+  --heat-3: #8e939b;  --heat-3-on: #17181b;
+  --heat-4: #e2e0da;  --heat-4-on: #17181b;
+  --eng-chatgpt: #4fbfae;
+  --eng-gemini: #6fa6e8;
+  --eng-perplexity: #a98bea;
+  --eng-grok: #b8bcc4;
+  --ad-bg: #33280f;
+  --ad-line: #5c4719;
+  --ad-ink: #f2c77a;
+  --tint-shopping: #183029;  --tint-shopping-ink: #9fe0cb;  --tint-shopping-line: #24433a;
+  --tint-local: #3a2119;     --tint-local-ink: #f2b4a0;     --tint-local-line: #55302a;
+  --tint-images: #36202b;    --tint-images-ink: #f0b3ce;    --tint-images-line: #4d2d3d;
+  --tint-info: #262238;      --tint-info-ink: #c7b9f2;      --tint-info-line: #383152;
+  --tint-memory: #362a14;    --tint-memory-ink: #f2c77a;    --tint-memory-line: #4d3b1c;
+  --tint-lens: #29253a;      --tint-lens-ink: #c9bef2;      --tint-lens-line: #3a3452;
+  --tint-dashboard: #1d2a3b; --tint-dashboard-ink: #a9c8ee; --tint-dashboard-line: #2b3d55;
+  --tint-campaign: #23264a;  --tint-campaign-ink: #b9bff7;  --tint-campaign-line: #343a6b;
+}
+
+/* Studio's page is one flat colour: no fixed backdrop to keep still, no
+   logo watermark (it only ever showed through glass), and Geist's three
+   stylistic choices that keep Plex's reasons for being picked (see
+   fonts.css): I with serifs, l with a tail, tabular digits. */
+:root[data-style="studio"],
+:root[data-style="studio"] body { background: var(--page-backdrop); background-attachment: scroll; }
+:root[data-style="studio"] body { font-feature-settings: "ss03" 1, "ss05" 1, "tnum" 1; }
+:root[data-style="studio"] body::before { display: none; }
+:root[data-style="studio"] body.popup .app-wrapper {
+  border: 1px solid var(--border) !important;
+  background: var(--bg) !important;
+  box-shadow: 0 10px 30px -18px rgba(28, 25, 23, 0.35) !important;
+}
+:root[data-style="studio"] ::-webkit-scrollbar-thumb { background: #d6d3ca; }
+:root[data-style="studio"][data-theme="dark"] ::-webkit-scrollbar-thumb { background: #3a3c42; }
 
 /* Claim / Citation Interactive Highlighting */
 .claim-span {
@@ -3049,9 +3314,9 @@ body.popup .tag-sidebar-list { flex-basis: 100%; width: 100%; }
   border: 1px solid var(--border);
   color: var(--fg-secondary);
 }
-.fanout-verdict.band-narrow { border-color: #f59e0b; color: #b45309; background: rgba(245, 158, 11, 0.08); }
-.fanout-verdict.band-typical { border-color: #10b981; color: #047857; background: rgba(16, 185, 129, 0.08); }
-.fanout-verdict.band-broad { border-color: #3b82f6; color: #1d4ed8; background: rgba(59, 130, 246, 0.08); }
+.fanout-verdict.band-narrow { border-color: var(--amber-border); color: var(--amber-fg); background: var(--amber-bg); }
+.fanout-verdict.band-typical { border-color: var(--green-border); color: var(--green-fg); background: var(--green-bg); }
+.fanout-verdict.band-broad { border-color: var(--blue-border); color: var(--blue-fg); background: var(--blue-bg); }
 
 .fanout-sub {
   margin-top: 10px;
@@ -3066,17 +3331,16 @@ body.popup .tag-sidebar-list { flex-basis: 100%; width: 100%; }
 /* A site:-scoped domain that earned a citation vs one that didn't — the
    distinction is the actionable part, so it's carried by colour AND a
    ✓/○ glyph rather than colour alone. */
-.chip.site-cited { border-color: #10b981; color: #047857; background: rgba(16, 185, 129, 0.10); }
-.chip.site-uncited { border-color: #f59e0b; color: #b45309; background: rgba(245, 158, 11, 0.10); }
-.chip.site-excluded { border-color: #ef4444; color: #b91c1c; background: rgba(239, 68, 68, 0.08); }
+.chip.site-cited { border-color: var(--green-border); color: var(--green-fg); background: var(--green-bg); }
+.chip.site-uncited { border-color: var(--amber-border); color: var(--amber-fg); background: var(--amber-bg); }
+.chip.site-excluded { border-color: var(--red-border); color: var(--red-fg); background: var(--red-bg); }
 
-@media (prefers-color-scheme: dark) {
-  .fanout-verdict.band-narrow { color: #fbbf24; }
-  .fanout-verdict.band-typical { color: #34d399; }
-  .fanout-verdict.band-broad { color: #93c5fd; }
-  .chip.site-cited { color: #34d399; }
-  .chip.site-uncited { color: #fbbf24; }
-  .chip.site-excluded { color: #fca5a5; }
+/* Was `@media (prefers-color-scheme: dark)`: it followed the computer's
+   setting, not the theme picked in Settings, so a light panel on a dark
+   desktop got these pale dark-mode colours on a light card (and the
+   reverse). Keyed to the picked theme since 0.59.0; the verdict and site
+   chips above moved onto the semantic tokens, which change with it. */
+:root[data-theme="dark"] {
   .src-outcome.is-cited { background: rgba(16, 185, 129, 0.18); color: #6ee7b7; }
   .src-outcome.is-fetched { background: rgba(148, 163, 184, 0.18); color: #cbd5e1; }
   .auto-tag { background: rgba(59, 130, 246, 0.24); color: #93c5fd; }
@@ -5649,6 +5913,10 @@ mark.db-hit { padding: 0 1px; border-radius: 3px; background: var(--db-hit-bg); 
 .cb-tr.none { opacity: 0.65; }
 .cb-tr.mine, .cb-grid-row.mine > :not(.cb-heat-cell) { background: var(--accent-subtle); }
 .cb-kind-table .cb-tr { grid-template-columns: minmax(150px, 1.1fr) 64px 92px 84px 140px 84px 70px minmax(200px, 1.6fr); min-width: 920px; }
+.cb-mix { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.cb-mix-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--none-fill); }
+.cb-mix-bar i { display: block; height: 100%; }
+.cb-mix-text { color: var(--fg-secondary); line-height: 1.35; }
 .cb-kindname { display: inline-flex; align-items: center; gap: 7px; font-weight: 500; }
 .t-good { color: var(--green-fg); font-weight: 600; }
 .t-bad { color: var(--red-fg); }
@@ -5948,6 +6216,30 @@ a.ab-engine:hover { border-color: var(--accent); color: var(--accent); }
 .ab-seg-btn { height: 28px; padding: 0 14px; border: none; border-radius: 7px; background: transparent; color: var(--fg-secondary); font: inherit; font-size: 13px; cursor: pointer; }
 .ab-seg-btn[aria-checked="true"] { background: var(--surface-solid); color: var(--fg-primary); font-weight: 600; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12); }
 .ab-seg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Theme picker (0.59.0): two cards, each with a small swatch of its look. The
+   swatches are fixed colours on purpose: they show the OTHER theme too. */
+.ab-row-theme { align-items: flex-start; }
+.ab-style { display: flex; flex-wrap: wrap; gap: 10px; }
+.ab-style-card { display: grid; grid-template-columns: 54px minmax(0, 1fr); grid-template-rows: auto auto; column-gap: 10px; align-items: center; width: 232px; padding: 10px; border: 1.5px solid var(--border); border-radius: var(--r-tile); background: var(--surface-solid); color: var(--fg-primary); font: inherit; text-align: left; cursor: pointer; }
+.ab-style-card:hover { border-color: var(--border-hover); }
+.ab-style-card[aria-checked="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-subtle); }
+.ab-style-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ab-style-swatch { grid-row: 1 / span 2; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 10px 1fr; gap: 3px; height: 40px; padding: 4px; border-radius: 8px; }
+.ab-style-swatch i { display: block; border-radius: 4px; }
+.ab-style-swatch i:first-child { grid-column: 1 / span 2; }
+.ab-style-swatch.studio { background: #f4f3ee; border: 1px solid #e7e5de; }
+.ab-style-swatch.studio i:first-child { background: #e3f1ec; }
+.ab-style-swatch.studio i:nth-child(2) { background: #ffffff; border: 1px solid #e7e5de; }
+.ab-style-swatch.studio i:nth-child(3) { background: #e9ebfb; }
+.ab-style-swatch.classic { background: linear-gradient(135deg, #dbe7fb, #eaf0f8 55%, #fdf0d8); border: 1px solid #d5dde8; }
+.ab-style-swatch.classic i:first-child { background: rgba(255, 255, 255, 0.85); }
+.ab-style-swatch.classic i:nth-child(2) { background: rgba(255, 255, 255, 0.7); }
+.ab-style-swatch.classic i:nth-child(3) { background: #007aff; }
+.ab-style-name { font-size: 14px; font-weight: 600; }
+.ab-style-card[data-style-pick="classic"] .ab-style-name { font-family: "IBM Plex Sans", system-ui, sans-serif; }
+.ab-style-card[data-style-pick="studio"] .ab-style-name { font-family: "Geist", system-ui, sans-serif; }
+.ab-style-sub { font-size: 12px; color: var(--fg-muted); }
+body.popup .ab-style-card { width: 100%; }
 .ab-switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
 .ab-switch-track { position: relative; width: 46px; height: 28px; border-radius: 999px; background: var(--border); border: 1px solid var(--border); box-sizing: border-box; transition: background 0.15s ease; }
 .ab-switch-knob { position: absolute; top: 2px; left: 2px; width: 22px; height: 22px; border-radius: 999px; background: #fff; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.3); transition: left 0.15s ease; }

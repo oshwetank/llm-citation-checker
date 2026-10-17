@@ -10,12 +10,34 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.58.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.59.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - A new look, and the old one kept. CitoSkeleton opens in **Studio**, the new design: the
+>   Geist typeface, a warm off-white page, solid white cards and one indigo accent. The look
+>   from 0.47 to 0.58 is still there as **Classic** (IBM Plex, glass cards, blue). Pick
+>   either in About → Settings → Theme, with Light or Dark for each; the choice applies at
+>   once in the popup and the full tab, and is set before the page draws, so it never flashes
+>   the other look. Both typefaces ship inside the extension; nothing is fetched. Classic's
+>   blue is one shade darker than before, so links and buttons pass the 4.5:1 contrast that
+>   small text needs.
+> - The tool shows what the engines did and leaves the judgement to you. Everything that
+>   told you what to do is gone: the "What to do" line under "What backs each brand", the
+>   "what matters most" line that opened Analyze, "the pages to get onto", "The lever that
+>   matters here" in a campaign's kinds of answer, "the places to get reviewed or listed",
+>   the glossary's "How to use it" advice on all 36 terms, and the PDF report's "Where to act
+>   next" (its last page is now "Method": the definitions, the runs and the prompt list). Where
+>   advice used to sit, the facts it was drawn from stay, e.g. "Cited without naming X: …".
+> - A campaign's "By kind of answer" now shows which kinds of site each kind of answer cited
+>   (review sites, retailers, forums, brand sites…), as a bar and as percentages, in place of
+>   the advice column.
+> - Settings that followed the computer's dark mode instead of yours: a few labels (search
+>   breadth, site: chips, cited/read tags, head-to-head cells) used the operating system's
+>   setting, so a light panel on a dark desktop showed pale dark-mode colours. They follow the
+>   theme you picked now.
 > - Analyze shows every site the answer used. A new "Sites it used" section, right after the
 >   "at a glance" card (and in the popup after the brands), lists every domain, cited ones
 >   first, with a bar for cited and read-only pages; open a site for every page the engine

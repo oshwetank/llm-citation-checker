@@ -151,7 +151,8 @@ try {
       return box && { title: box.querySelector(".ab-detail-title")?.textContent, group: box.querySelector(".ab-eyebrow")?.textContent, labels: [...box.querySelectorAll(".ab-label")].map((x) => x.textContent), on: document.querySelector(".ab-term-row.on")?.dataset.key };
     });
     check("picking a term shows it beside the list", d && d.title === "Cited %" && d.group === "Source metrics" && d.on === "citedRate", JSON.stringify(d));
-    check("with its formula, how to use it and what to keep in mind", d && d.labels.join("|") === "Formula|How to use it|Keep in mind", d && d.labels.join(" | "));
+    // 0.59.0: no "How to use it" advice; a term is defined, not prescribed.
+    check("with its formula and what to keep in mind, and no advice", d && d.labels.join("|") === "Formula|Keep in mind", d && d.labels.join(" | "));
 
     await page.fill("#abGlossSearch", "");
     await page.evaluate(() => [...document.querySelectorAll("#abGlossChips .ab-chip-btn")].find((c) => c.textContent.startsWith("Source metrics"))?.click());

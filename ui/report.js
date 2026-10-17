@@ -258,12 +258,11 @@ function searchesPage(m, p) {
   };
 }
 
-function actionsPage(m, p) {
+function methodPage(m, p) {
   const own = m.own.name;
   return {
-    titles: html`<div class="titles"><span class="eyebrow">Actions and method</span><h2>Where to act next</h2></div>`,
+    titles: html`<div class="titles"><span class="eyebrow">Method</span><h2>How this report is measured</h2></div>`,
     blocks: [
-      blk(html`<div class="card tint">${p.actions.length ? html`<ul class="find">${p.actions.map((a, i) => html`<li><b class="k">${String(i + 1)}</b><span><b>${a.head}</b> ${a.text}</span></li>`)}</ul>` : note("Nothing stands out to fix in this run.")}</div>`),
       blk(card("How these numbers are measured", html`<div class="defs">${p.definitions.map(([t, d]) => html`<div><b>${t}</b>${d}</div>`)}</div>`)),
       blk(card("Runs in this campaign", table(["Run", "Date", ["Answers", "n"], ["Searched web", "n"], [`${own} visibility`, "n"], ["Share of voice", "n"], ["Avg position", "n"], ["Source visibility", "n"]], p.runs.map((r) => html`<tr${raw(r.current ? ' class="you"' : "")}><td><b>${r.label}</b></td><td>${r.date}</td><td class="n">${N(r.answers)}</td><td class="n">${P(r.searched)}</td><td class="n">${P(r.visibility)}</td><td class="n">${P(r.shareOfVoice)}</td><td class="n">${D1(r.avgPosition)}</td><td class="n">${P(r.sourceVisibility)}</td></tr>`), { split: true })), { split: true }),
       blk(html`<div class="card"><h3>The prompts <span class="note" style="font-weight:400">· every row behind this report is in the Excel workbook</span></h3>${table(["ID", "Prompt, as sent", "Tags", "Main kind"], p.prompts.map((x) => html`<tr><td><b>${x.id}</b></td><td class="wrap">${x.text}</td><td class="small muted">${x.tags}</td><td class="small nw">${x.kind}</td></tr>`), { split: true })}</div>`, { split: true }),
@@ -367,7 +366,7 @@ function decorateAnswer(root, m) {
   });
 }
 
-const BUILDERS = { summary: summaryPage, brands: brandsPage, prompts: promptsPage, sources: sourcesPage, products: productsPage, searches: searchesPage, actions: actionsPage };
+const BUILDERS = { summary: summaryPage, brands: brandsPage, prompts: promptsPage, sources: sourcesPage, products: productsPage, searches: searchesPage, method: methodPage };
 
 /* ---------- pages ---------- */
 function pageShell(header, foot, titles) {
