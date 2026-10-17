@@ -22,8 +22,9 @@ import { makeRecord, makeSource } from "../schema.js";
 import { isKnownRetrievalName, enginesNamedIn } from "../lib/retrieval.js";
 import { walk, collectByKey, collectObjects, firstPath, isHttpUrl, domainOf } from "../lib/deep.js";
 import { detectBrands } from "../lib/brands.js";
+import { isGenUi, readGenUi } from "../lib/genui.js";
 
-export const ADAPTER_VERSION = "chatgpt@0.4.0";
+export const ADAPTER_VERSION = "chatgpt@0.5.0";
 
 function parseSse(raw) {
   const nodes = [];
@@ -49,10 +50,20 @@ function reconstructAnswer(nodes) {
   const textById = new Map();
   const finalIds = new Set();
   let currentId = null;
+  // Message ids in the order their headers arrive. A delta carrying "c" (the
+  // v1 delta encoding) is addressed to message number c in this list, not to
+  // the latest header. Since ChatGPT's generative-UI answers (October 2026)
+  // the same text is sent twice: once to the physical message and once, with
+  // its "c", to the logical answer that joins the intro and the cards. Applied
+  // to "the current message" both copies landed in one message, so every
+  // chunk appeared twice and the intro was lost (reported, 0.60.0).
+  const order = [];
+  let target = null;
 
   const bump = (delta) => {
-    if (currentId == null || typeof delta !== "string") return;
-    textById.set(currentId, (textById.get(currentId) || "") + delta);
+    const id = target || currentId;
+    if (id == null || typeof delta !== "string") return;
+    textById.set(id, (textById.get(id) || "") + delta);
   };
 
   for (const node of nodes) {
@@ -62,6 +73,7 @@ function reconstructAnswer(nodes) {
     const msg = node.v && node.v.message;
     if (msg && msg.id) {
       currentId = msg.id;
+      if (!order.includes(msg.id)) order.push(msg.id);
       if (!textById.has(currentId)) {
         const seed = msg.content && Array.isArray(msg.content.parts) ? msg.content.parts[0] : "";
         textById.set(currentId, typeof seed === "string" ? seed : "");
@@ -76,6 +88,7 @@ function reconstructAnswer(nodes) {
     // (e.g. {"v":[{"p":"/message/content/parts/0","o":"append","v":"…"}]}) — those
     // must still be applied, or chunks of the answer (and their brands) are lost.
     const ops = Array.isArray(node.v) ? node.v : [node];
+    target = Number.isInteger(node.c) && order[node.c] ? order[node.c] : null;
     for (const op of ops) {
       if (!op || typeof op !== "object") continue;
       if (op.p === "/message/content/parts/0" && (op.o === "append" || op.o === undefined) && typeof op.v === "string") {
@@ -90,6 +103,9 @@ function reconstructAnswer(nodes) {
   let best = "";
   for (const id of finalIds) if ((textById.get(id) || "").length > best.length) best = textById.get(id);
   if (!best) for (const t of textById.values()) if (t.length > best.length) best = t;
+  // A logical answer holds the final message's text and more (the intro that
+  // came before the search, in its own message): it is the whole answer.
+  if (best) for (const t of textById.values()) if (t.length > best.length && t.includes(best)) best = t;
   return best;
 }
 
@@ -595,6 +611,91 @@ function extractImages(nodes, products) {
   return out;
 }
 
+// Generative-UI answers: which refs the answer cites, its cards as products,
+// and the pictures each card showed.
+//
+// Cited refs come from the <Cite refs> in the text and from the "cite"
+// components ChatGPT lists beside it (genui_components / content_references,
+// each with entities[].ref). A source whose ref is among them was cited:
+// these answers carry no attribution-bearing citation items, so until 0.60.1
+// every page read showed as "read only" (reported: "0 of 20 cited" on an
+// answer whose own chips cited Smartprix and 91mobiles).
+function markGenUiCited(nodes, sources, textRefs) {
+  const refs = new Set(textRefs || []);
+  collectObjects({ nodes }, (o) => o.type === "cite" && Array.isArray(o.entities)).forEach((o) =>
+    o.entities.forEach((e) => { if (e && typeof e.ref === "string") refs.add(e.ref); }));
+  if (!refs.size) return;
+  for (const s of sources) {
+    const ids = (s.platformSpecific && s.platformSpecific.markerIds) || s.markerIds || [];
+    if (ids.some((id) => refs.has(id))) s.outcome = "cited";
+  }
+}
+
+// The pictures of each <AsyncImage>, in the order the images appear in the
+// answer: appData.opGenui.componentResults[<component id>].state.images.
+// Returns one list per image component.
+function genUiImages(nodes) {
+  const byId = new Map();
+  const put = (id, list) => {
+    if (!Array.isArray(list)) return;
+    const cur = byId.get(id) || [];
+    list.forEach((im) => {
+      if (!im || typeof im !== "object") return;
+      const url = im.content_url || im.thumbnail_url || im.original_content_url;
+      if (!isHttpUrl(url) || cur.some((x) => x.url === url)) return;
+      const page = isHttpUrl(im.url) ? im.url : null;
+      cur.push({ url, title: typeof im.title === "string" ? im.title : null, sourceUrl: page, attribution: page ? domainOf(page) : null });
+    });
+    byId.set(id, cur);
+  };
+  walk({ nodes }, (value, key) => {
+    if (key === "p" || !value || typeof value !== "object") return;
+    if (typeof value.p === "string") {
+      const m = /componentResults\/([^/]+)\/state\/images$/.exec(value.p);
+      if (m) put(m[1], value.v);
+    }
+    if (value.componentResults && typeof value.componentResults === "object") {
+      for (const [id, r] of Object.entries(value.componentResults)) put(id, r && r.state && r.state.images);
+    }
+  });
+  const order = [];
+  collectObjects({ nodes }, (o) => o.type === "async_image" && typeof o.component_resolution_id === "string").forEach((o) => {
+    if (!order.includes(o.component_resolution_id)) order.push(o.component_resolution_id);
+  });
+  return order.map((id) => byId.get(id) || []);
+}
+
+// The answer's cards, in the answer's order, as products. A card tied to a
+// shopping listing (Entity ref …productN) keeps that listing's data (stores,
+// rating, image); the others become products the answer named with a price,
+// marked as having no listing. Listings the answer didn't put on a card keep
+// their place after them.
+function mergeGenUiCards(products, cards, imageLists) {
+  if (!cards || !cards.length) return products;
+  const norm = (s) => String(s || "").toLowerCase().replace(/\s+/g, " ").trim();
+  let img = 0;
+  const out = [];
+  const used = new Set();
+  for (const c of cards) {
+    const pics = c.image ? (imageLists[img++] || []) : [];
+    const hit = products.find((p, i) => !used.has(i) && norm(p.name) === norm(c.name));
+    if (hit) {
+      used.add(products.indexOf(hit));
+      // The card's own picture is what was on screen; the listing's stays as
+      // the fallback.
+      out.push({ ...hit, image: (pics[0] && pics[0].url) || hit.image || null, subtitle: c.subtitle || null });
+    } else {
+      out.push({
+        id: `answer-${c.n}`, name: c.name, price: c.price || null, merchant: null, rating: null, reviews: null,
+        image: (pics[0] && pics[0].url) || null, cite: null, renderAs: "answer-card", supplier: null,
+        listing: false, subtitle: c.subtitle || null,
+      });
+    }
+  }
+  products.forEach((p, i) => { if (!used.has(i)) out.push(p); });
+  return out;
+}
+
 // Ads: ChatGPT can follow an answer with a sponsored card, sent as its own
 // SSE event { type: "ads", content: { type: "single_advertiser_ad_unit",
 // preamble, advertiser_brand: { name, url }, ad_cards: [{ title, body,
@@ -647,7 +748,7 @@ export async function adapt(rawCapture, opts = {}) {
 
   const fanout = extractFanout(nodes, diag);
   const sources = extractSources(nodes, diag);
-  const products = extractProducts(nodes);
+  let products = extractProducts(nodes);
   const places = extractPlaces(nodes);
   const ads = extractAds(nodes);
   const searched =
@@ -660,19 +761,33 @@ export async function adapt(rawCapture, opts = {}) {
   const generatedTitle = collectObjects({ nodes }, (o) => o.type === "title_generation" && o.title).map((o) => o.title).pop() || null;
   const turnUseCase = collectByKey({ nodes }, /^turn_use_case$/, (v) => typeof v === "string")[0] || null;
 
-  const answerText = reconstructAnswer(nodes);
+  let answerText = reconstructAnswer(nodes);
+  // ChatGPT's generative-UI answers (October 2026): layout code turned back
+  // into the answer, its cards into products, its citations marked (see
+  // lib/genui.js).
+  const genui = isGenUi(answerText) ? readGenUi(answerText) : null;
+  if (genui) {
+    answerText = genui.markdown;
+    markGenUiCited(nodes, sources, genui.cites);
+    products = mergeGenUiCards(products, genui.cards, genUiImages(nodes));
+  }
   const referenceTypes = extractReferenceTypes(nodes, answerText);
   const userPrompt = extractPrompt(rawCapture.reqBody);
   const { brands: brandMentions, entities: baseEntities } = await detectBrandsForCapture(answerText, products, opts.tracked, sources, places, userPrompt);
   const entities = extractEntities(baseEntities, products, brandMentions, sources, places);
   const images = extractImages(nodes, products);
+  // The picture each card showed (the first of its image component).
+  if (genui) genUiImages(nodes).map((l) => l[0]).filter(Boolean).forEach((im) => { if (!images.some((x) => x.url === im.url)) images.push(im); });
 
   // Carousel presence: products carousel if any product; news if any dated/news
   // source; image carousel if an image-typed content reference exists; map if a
   // map/place reference or maps content type shows up.
   const carousels = {
     products: products.length > 0,
-    news: sources.some((s) => s.type === "news"),
+    // A news carousel only when the answer cited a news page: news pages read
+    // while searching put no carousel on screen (reported, 0.60.0: a "News"
+    // chip on an answer that showed none).
+    news: sources.some((s) => s.outcome === "cited" && ((s.platformSpecific && s.platformSpecific.markerIds) || []).some((id) => /news\d+$/.test(id))),
     images: collectObjects({ nodes }, (o) => typeof o.type === "string" && /image/i.test(o.type) && (o.url || o.image_urls)).length > 0,
     map: places.length > 0,
   };
@@ -698,6 +813,10 @@ export async function adapt(rawCapture, opts = {}) {
     useragent: useragentObj,
     limitsProgress,
     abExperiment,
+    // A generative-UI answer (lib/genui.js), and the follow-up form it ended
+    // with: the choices it offered, its checkboxes and its button.
+    genUi: !!genui,
+    followUp: genui ? genui.followUp : null,
     wordCount,
   };
   // Engines from the leaked retrieval registry that this stream names, if any

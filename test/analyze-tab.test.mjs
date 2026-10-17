@@ -387,6 +387,25 @@ try {
     await page.evaluate(() => [...document.querySelectorAll("#at-answer .at-hl-btn")].find((b) => b.textContent === "Brands")?.click());
   }
 
+  console.log("\nScrolling a little doesn't make the page shake (0.60.1)");
+  {
+    // Reported on 0.60.0: two or three inches of scroll and "the entire
+    // layout starts glitching". Shrinking the header moved the scroll
+    // position back above the point that shrinks it, every frame.
+    const flips = [];
+    for (const y of [150, 230, 300, 120, 30, 10]) {
+      await page.evaluate((y) => window.scrollTo(0, y), y);
+      flips.push(await page.evaluate(() => new Promise((done) => {
+        const seen = []; let n = 0;
+        const tick = () => { seen.push(document.querySelector("#analyze .at-hero").classList.contains("compact")); if (++n < 30) requestAnimationFrame(tick); else done(seen.filter((c, i) => i && c !== seen[i - 1]).length); };
+        tick();
+      })));
+    }
+    check("the header changes size at most once per scroll, never back and forth", flips.every((f) => f <= 1), flips.join(","));
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.waitForTimeout(300);
+  }
+
   console.log("\nScrolling: the answer stays in view, the header shrinks to one line");
   {
     await page.evaluate(() => window.scrollTo(0, 0));
@@ -581,6 +600,47 @@ try {
     check("Expert is applied and kept", expert.attr === "expert" && expert.kept === "expert", JSON.stringify(expert));
     check("Details gets a Raw tab with the fields the capture read", !!expert.raw && expert.raw.platform === "chatgpt" && Array.isArray(expert.raw.sources) && expert.raw.sources.length > 0, JSON.stringify(expert.raw || {}).slice(0, 120));
     check("each page shows its ref ids", expert.refs > 0, expert.refs);
+
+    // The raw payload breakdown (0.60.1): under the prompt, Expert only,
+    // closed until opened, and nothing fetched before that.
+    check("Simple hides the raw payload breakdown", simple.xs === 0);
+    // The header used to print "null" after "Ad-hoc" (0.60.0): a null handed
+    // to the DOM's own append() is written out as text.
+    const stray = await page.evaluate(() => {
+      const w = document.createTreeWalker(document.getElementById("analyze"), NodeFilter.SHOW_TEXT);
+      const bad = [];
+      while (w.nextNode()) if (/^\s*(null|undefined)\s*$/.test(w.currentNode.nodeValue)) bad.push(w.currentNode.parentElement.className);
+      return bad;
+    });
+    check("no stray null or undefined text on the page", stray.length === 0, JSON.stringify(stray));
+    const rx0 = await page.evaluate(() => {
+      const d = document.getElementById("at-rawx");
+      const main = document.querySelector("#analyze .at-main");
+      return { there: !!d && !!d.offsetParent, open: d && d.open, first: main && main.firstElementChild === d, rows: d ? d.querySelectorAll(".at-rawx-sec").length : -1 };
+    });
+    check("Expert shows it first, under the prompt, closed, with nothing read yet", rx0.there && rx0.open === false && rx0.first && rx0.rows === 0, JSON.stringify(rx0));
+    await page.evaluate(() => document.querySelector("#at-rawx > summary").click());
+    await page.waitForFunction(() => document.querySelectorAll("#at-rawx .at-rawx-sec").length > 0, null, { timeout: 8000 }).catch(() => {});
+    const rx1 = await page.evaluate(() => ({
+      meta: document.querySelector("#at-rawx .at-rawx-meta")?.textContent || "",
+      secs: [...document.querySelectorAll("#at-rawx .at-rawx-sec")].map((s) => s.dataset.section),
+      drawn: document.querySelectorAll("#at-rawx .at-rawx-field").length,
+      types: document.querySelectorAll("#at-rawx .at-rawx-types .at-page-chip").length,
+    }));
+    check("opening it reads the stored response into sections", /^sse · .* fields in \d+ sections$/.test(rx1.meta) && ["answer", "sources", "searches", "request"].every((s) => rx1.secs.includes(s)), JSON.stringify(rx1));
+    check("sections stay closed and undrawn until opened", rx1.drawn === 0 && rx1.types > 0, JSON.stringify(rx1));
+    await page.evaluate(() => document.querySelector('#at-rawx .at-rawx-sec[data-section="sources"] > summary').click());
+    await page.waitForTimeout(300);
+    const rx2 = await page.evaluate(() => {
+      const rows = [...document.querySelectorAll('#at-rawx .at-rawx-sec[data-section="sources"] .at-rawx-field')];
+      return { n: rows.length, url: rows.some((r) => /https:\/\//.test(r.textContent)), wide: document.documentElement.scrollWidth <= window.innerWidth };
+    });
+    check("a section lists its fields with samples, without widening the page", rx2.n > 3 && rx2.url && rx2.wide, JSON.stringify(rx2));
+    await page.evaluate(() => [...document.querySelectorAll("#headerPage .at-detail-btn")].find((b) => b.textContent === "Simple").click());
+    await page.waitForTimeout(300);
+    check("back in Simple it is hidden again", await page.evaluate(() => !document.getElementById("at-rawx")?.offsetParent));
+    await page.evaluate(() => [...document.querySelectorAll("#headerPage .at-detail-btn")].find((b) => b.textContent === "Expert").click());
+    await page.waitForTimeout(300);
     await page.evaluate(() => [...document.querySelectorAll("#headerPage .at-detail-btn")].find((b) => b.textContent === "Simple").click());
     await page.waitForTimeout(500);
   }

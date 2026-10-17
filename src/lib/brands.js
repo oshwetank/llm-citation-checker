@@ -570,6 +570,12 @@ const GENERIC_SPEC_NOUNS = new Set([
   // "**Setup**: 200MP main...", the same spec-sheet-row-label shape as
   // Battery/Charging above) reached a real answer's brand list.
   "setup", "hardware",
+  // Reported on a ChatGPT card answer (0.60.1): "Around" (its bold price
+  // line, "**Around ₹34,999**") and "Triple" ("Triple rear cameras: …", a
+  // bullet's first word) reached the brand list. Price qualifiers and camera
+  // counts head a line the way a one-word brand does.
+  "around", "about", "approx", "approximately", "under", "from", "starting", "only", "just", "upto",
+  "single", "dual", "triple", "quad", "penta",
 ]);
 export function looksLikeProperName(phrase) {
   const words = String(phrase || "").trim().split(/\s+/);

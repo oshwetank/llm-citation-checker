@@ -21,6 +21,8 @@ import {
   resultPositions, sourceBrandMatrix, productsView,
 } from "../src/lib/analyzeView.js";
 import { originalImageUrl } from "../src/lib/image-url.js";
+import { rawBreakdown, SECTIONS as RAW_SECTIONS } from "../src/lib/rawBreakdown.js";
+import { isNanoAvailable, labelRawFieldsWithNano } from "../src/lib/nano.js";
 import { answersToPrompt, compareView } from "../src/lib/compareView.js";
 import { overTimeView } from "../src/lib/overTimeView.js";
 import { historyRows, historyView, highlightRuns, dayDiff, shortDate, PERIODS, KINDS, ENGINE_ORDER } from "../src/lib/historyView.js";
@@ -2024,7 +2026,7 @@ function renderAnalyzeTab(rec, root) {
   row.append(backBtn, el("span", { className: `ap-kind kind-${kind.id}` }, kind.label),
     rec.geo ? el("span", { className: "at-chip at-chip-campaign", title: "Captured by a campaign run" }, `Campaign · ${profile ? profile.name : "removed campaign"}`)
       : el("span", { className: "at-chip", title: "Asked by hand, not by a campaign" }, "Ad-hoc"),
-    own ? el("span", { className: "at-chip", title: own.source === "settings" ? "Your brand, from Settings" : `The brand of the campaign ${own.campaign || ""}`.trim() }, `Tracking ${own.name}`) : null,
+    own ? el("span", { className: "at-chip", title: own.source === "settings" ? "Your brand, from Settings" : `The brand of the campaign ${own.campaign || ""}`.trim() }, `Tracking ${own.name}`) : "", // "" not null: the DOM's own append() writes null out as text
     eng,
     el("span", { className: "at-asked" }, `Asked ${engineLabel}`),
     el("span", { className: "ap-when", title: new Date(rec.capturedAt).toLocaleString() }, `· ${rec.model ? `${rec.model} · ` : ""}${apDate(rec.capturedAt)}, ${apTime(rec.capturedAt)}`));
@@ -2313,7 +2315,18 @@ function atHeaderTools(rec) {
 function atCompactOnScroll() {
   const apply = () => {
     const hero = document.querySelector("#analyze .at-hero");
-    if (hero) hero.classList.toggle("compact", window.scrollY > 140);
+    // Shrinking the header frees ~100px, and the browser keeps the content
+    // in place by moving the scroll position up by as much. With one
+    // threshold (140px until 0.60.0) that moved the page back above it, the
+    // header grew again, and the two flipped every frame — the page shook
+    // (reported in 0.60.0, whose header is taller). So it shrinks only well
+    // down the page and grows back only near the top: the jump in between
+    // can't cross both.
+    if (hero) {
+      const compact = hero.classList.contains("compact");
+      if (!compact && window.scrollY > 220) hero.classList.add("compact");
+      else if (compact && window.scrollY < 24) hero.classList.remove("compact");
+    }
     // Near the end of the page the grid stops above the footer, and a
     // pinned panel taller than what's left gets pushed up under the header.
     // Shorten it by that much instead, so its top stays put.
@@ -2598,6 +2611,9 @@ function atRenderSingle(main, rec, ctx) {
     main.append(sec);
   };
   const named = brands.rows.filter((r) => r.position > 0).sort((a, b) => a.position - b.position);
+
+  /* 0. the raw payload, Expert only, closed until asked for */
+  main.append(atRawPanel(rec, engineLabel));
 
   /* 1. at a glance */
   add(atGlance(rec, { brands, pages, searches, fnByUrl, kind, engineLabel, answerPanel, searchedWeb, knownBrands }));
@@ -3006,6 +3022,135 @@ function atDetailsSection(rec, { searches, pages, kind, engineLabel, answerPanel
   return sec;
 }
 const isExpert = () => document.documentElement.getAttribute("data-detail") === "expert";
+
+/*
+ * The raw payload, broken down (0.60.1). Researchers asked for the engine's
+ * response itself under the prompt, readable, not as a multi-megabyte
+ * download. Expert only and closed by default: nothing is fetched or parsed
+ * until it is opened, and each section's rows are only drawn when that
+ * section is opened (a Gemini map answer has over a thousand fields).
+ * src/lib/rawBreakdown.js does the reading and says why it can't assume a
+ * schema. The page edits this block in place rather than re-rendering, so
+ * opening it never moves the page.
+ */
+const RAW_CACHE = new Map(); // captureId → breakdown (the last few)
+let atRawOpen = false;
+function atRawPanel(rec, engineLabel) {
+  const box = el("details", { className: "at-rawx x-only", id: "at-rawx" });
+  if (atRawOpen) box.open = true;
+  const meta = el("span", { className: "ap-muted at-rawx-meta" }, "the engine’s response, field by field");
+  box.append(el("summary", { className: "at-rawx-sum" }, el("b", {}, "Raw payload breakdown"), el("span", { className: "at-chip" }, "Expert"), meta));
+  const body = el("div", { className: "at-rawx-body" });
+  box.append(body);
+  let started = false;
+  const start = async () => {
+    if (started) return;
+    started = true;
+    let b = RAW_CACHE.get(rec.captureId);
+    if (!b) {
+      body.append(el("p", { className: "ap-muted" }, "Reading the raw response…"));
+      const r = await send({ type: "get-raw", captureId: rec.captureId });
+      if (!r || !r.ok || r.raw == null) {
+        body.replaceChildren(el("p", { className: "ap-muted" }, "No raw response is stored for this capture (sample data, or a capture too large to keep)."));
+        return;
+      }
+      await new Promise((res) => setTimeout(res, 0));
+      b = rawBreakdown(r.raw, { reqBody: r.meta && r.meta.reqBody });
+      RAW_CACHE.set(rec.captureId, b);
+      if (RAW_CACHE.size > 4) RAW_CACHE.delete(RAW_CACHE.keys().next().value);
+    }
+    meta.textContent = `${b.format} · ${atBytes(b.bytes)} · ${b.frames} frames · ${b.fieldCount} fields in ${b.sections.length} sections`;
+    body.replaceChildren(...atRawBody(b, rec, engineLabel));
+  };
+  box.addEventListener("toggle", () => { atRawOpen = box.open; if (box.open) start(); });
+  if (atRawOpen) start();
+  return box;
+}
+function atBytes(n) { return n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`; }
+function atRawBody(b, rec, engineLabel) {
+  const out = [];
+  const facts = el("div", { className: "at-rawx-facts" });
+  facts.append(el("span", {}, el("b", {}, "Framing "), b.format));
+  if (b.events.length) facts.append(el("span", {}, el("b", {}, "Events "), b.events.map((e) => `${e.event} ×${e.count}`).join(" · ")));
+  if (b.truncated) facts.append(el("span", { className: "at-rawx-warn" }, `Only the first ${b.fieldCount} distinct fields are listed; the download has everything.`));
+  out.push(facts);
+  if (b.objectTypes.length) {
+    const types = el("div", { className: "at-rawx-types", "aria-label": "Kinds of object in the response" });
+    b.objectTypes.slice(0, 40).forEach((t) => types.append(el("span", { className: "at-page-chip", title: `first seen at ${t.at}` }, `${t.type} ×${t.count}`)));
+    out.push(el("div", { className: "at-rawx-row" }, el("span", { className: "at-eyebrow" }, "Objects by type"), types));
+  }
+  b.sections.forEach((sec) => out.push(atRawSection(sec, b, rec, engineLabel)));
+  const json = () => JSON.stringify(b, null, 2);
+  const copy = el("button", { className: "at-btn sm", type: "button" }, "Copy the breakdown");
+  copy.onclick = async () => { try { await navigator.clipboard.writeText(json()); showToast("Copied"); } catch (_) { showToast("Couldn't copy", "error"); } };
+  const dlB = el("button", { className: "at-btn sm", type: "button" }, "Download the breakdown");
+  dlB.onclick = () => download(`citoskeleton-raw-breakdown-${rec.captureId}.json`, json(), "application/json");
+  const dlR = el("button", { className: "at-btn sm", type: "button" }, "Download the raw stream");
+  dlR.onclick = () => downloadRaw(rec.captureId, "analyze");
+  out.push(el("div", { className: "at-raw-actions" }, copy, dlB, dlR));
+  return out;
+}
+function atRawSection(sec, b, rec, engineLabel) {
+  const d = el("details", { className: `at-rawx-sec sec-${sec.id}`, "data-section": sec.id });
+  d.append(el("summary", {}, el("b", {}, sec.label), el("span", { className: "n" }, String(sec.fields.length)), el("span", { className: "ap-muted" }, sec.note)));
+  let drawn = false;
+  d.addEventListener("toggle", () => {
+    if (!d.open || drawn) return;
+    drawn = true;
+    // Rows grouped under the object they sit in, so a hundred user-agent
+    // flags read as one group, not a hundred lines.
+    const groups = new Map();
+    sec.fields.forEach((f) => {
+      const at = f.path.lastIndexOf(".");
+      const parent = at > 0 ? f.path.slice(0, at) : "";
+      if (!groups.has(parent)) groups.set(parent, []);
+      groups.get(parent).push(f);
+    });
+    const list = el("div", { className: "at-rawx-list", role: "table", "aria-label": sec.label });
+    for (const [parent, fields] of groups) {
+      if (parent) list.append(el("div", { className: "at-rawx-group", role: "row" }, el("span", { role: "cell", title: parent }, parent), el("span", { role: "cell", className: "ap-muted" }, plural(fields.length, "field"))));
+      fields.forEach((f) => {
+        const leaf = parent ? f.path.slice(parent.length + 1) : f.path;
+        const sample = f.samples.map((x) => (typeof x === "string" ? JSON.stringify(x) : String(x))).join("  ·  ");
+        const row = el("div", { className: "at-rawx-field", role: "row", "data-path": f.path },
+          el("code", { role: "cell", title: f.path }, leaf),
+          el("span", { role: "cell", className: "ap-muted" }, `×${f.count}`, f.ops.length ? ` · ${f.ops.join("/")}` : "", ` · ${f.kinds.join("/")}`),
+          el("span", { role: "cell", className: "at-rawx-sample", title: f.longest || sample }, sample || "—"));
+        list.append(row);
+      });
+    }
+    d.append(list);
+    if (sec.emptyFields) d.append(el("p", { className: "ap-muted" }, `${plural(sec.emptyFields, "more field")} never held a value in this response.`));
+    if (sec.id === "other" && sec.fields.length) d.append(atRawLabeller(sec, list, rec, engineLabel));
+    const copy = el("button", { className: "at-btn sm", type: "button" }, "Copy this section");
+    copy.onclick = async () => { try { await navigator.clipboard.writeText(JSON.stringify(sec, null, 2)); showToast("Copied"); } catch (_) { showToast("Couldn't copy", "error"); } };
+    d.append(el("div", { className: "at-raw-actions" }, copy));
+  });
+  return d;
+}
+// Names for what no rule knows, from the on-device model when Chrome has it.
+// Only asked for on a click, and every label is marked as a guess.
+function atRawLabeller(sec, list, rec, engineLabel) {
+  const wrap = el("div", { className: "at-rawx-ai" });
+  const btn = el("button", { className: "at-btn sm", type: "button" }, "Suggest labels with on-device AI");
+  const note = el("span", { className: "ap-muted" }, "Runs in Chrome on this computer; nothing is sent anywhere. Labels are guesses.");
+  btn.onclick = async () => {
+    btn.disabled = true;
+    if (!(await isNanoAvailable())) { note.textContent = "Chrome’s on-device model isn’t available in this browser, so there are no suggestions. The samples beside each field are what it holds."; return; }
+    note.textContent = "Asking the on-device model…";
+    const ask = sec.fields.slice(0, 40).map((f) => ({ path: f.path, sample: f.longest || f.samples[0] }));
+    const labels = await labelRawFieldsWithNano(ask, engineLabel);
+    if (!labels || !labels.length) { note.textContent = "The on-device model gave no usable labels."; btn.disabled = false; return; }
+    const secLabel = new Map(RAW_SECTIONS.map((s) => [s.id, s.label]));
+    labels.forEach((l) => {
+      const row = [...list.querySelectorAll(".at-rawx-field")].find((r) => r.dataset.path === l.path);
+      if (row) row.append(el("span", { className: "at-rawx-guess", title: "Suggested by Chrome’s on-device model — a guess" }, `AI guess: ${l.label}${l.section !== "other" ? ` · ${secLabel.get(l.section)}` : ""}`));
+    });
+    note.textContent = `${plural(labels.length, "label")} suggested for the first ${ask.length} fields. Guesses, not readings.`;
+  };
+  wrap.append(btn, note);
+  return wrap;
+}
 // The fields a capture holds, for the Expert "Raw" tab: ids, the engine's own
 // labels and refs as it sent them. Not the answer text or the stream itself.
 function rawSummary(rec) {
@@ -3209,7 +3354,9 @@ function atProductsSection(rec, pv, { engineLabel, own }) {
     const stores = el("span", { role: "cell", className: "at-prod-stores" });
     r.stores.forEach((st, j) => stores.append(el("span", { className: `at-store-chip${st.own ? " own" : ""}`, title: st.own ? `${r.brand}’s own store` : "" }, el("b", {}, String(j + 1)), ` ${st.name}`)));
     if (r.otherStores) stores.append(el("span", { className: "ap-muted" }, "+ others"));
-    if (!r.stores.length) stores.append(el("span", { className: "ap-muted" }, "no store named"));
+    // A card ChatGPT drew in the answer without a shopping listing behind it
+    // (generative-UI answers) names no store by design.
+    if (!r.stores.length) stores.append(el("span", { className: "ap-muted" }, p.listing === false ? "a card in the answer · no shopping listing" : "no store named"));
     const pagesCell = el("span", { role: "cell", className: "at-prod-pages" });
     r.pages.forEach((d) => pagesCell.append(el("span", { className: "at-page-chip" }, atShortDomain(d))));
     if (!r.pages.length) pagesCell.append(el("span", { className: "at-page-chip none" }, "no cited page"));

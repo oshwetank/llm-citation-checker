@@ -232,3 +232,75 @@ export async function classifyBrandStanceWithNano(text, brands, query) {
     try { session?.destroy?.(); } catch (_) {}
   }
 }
+
+/*
+ * Field labels for the raw payload breakdown (rawBreakdown.js, 0.60.1).
+ *
+ * The breakdown sorts every field by its name and values; what no rule
+ * knows lands in "Not recognised" — Gemini's numbered slots, a field an
+ * engine added last week. On request, the on-device model reads those paths
+ * with a sample value and suggests what each one is. The reply is held to a
+ * schema and checked again here: a path that wasn't asked about, or a
+ * section that doesn't exist, is dropped, so a confused model can only leave
+ * a field unlabelled, never move or invent one. The screen marks every label
+ * as a guess.
+ */
+const RAW_SECTIONS = ["answer", "model", "stream", "searches", "sources", "shopping", "ads", "layout", "other"];
+const RAW_LABEL_SCHEMA = {
+  type: "object",
+  properties: {
+    labels: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          section: { type: "string", enum: RAW_SECTIONS },
+          label: { type: "string" },
+        },
+        required: ["path", "section", "label"],
+      },
+    },
+  },
+  required: ["labels"],
+};
+const RAW_SYSTEM_PROMPT =
+  "You label fields in a raw response captured from an AI chat engine's web page. Each field is a path " +
+  "(dots between keys; [] is any list item, [3] is slot 3 of a fixed-size array, ⟨json⟩ is JSON decoded " +
+  "from inside a string) with a sample value. For each path, give a label of at most six words saying what " +
+  "the value is (for example \"answer text so far\", \"cited page address\", \"search query\", \"product " +
+  "price\", \"response id\"), and pick the section it belongs to: answer (answer text), model (model or " +
+  "settings), stream (message or stream bookkeeping, ids), searches (search queries), sources (pages, " +
+  "links, citations), shopping (products, stores, prices, places, images), ads (sponsored content), layout " +
+  "(how the page draws the answer), or other. If you can't tell, use section other and label \"unclear\". " +
+  "Only label the paths you were given, copied exactly.";
+
+/**
+ * @param {{path: string, sample: string}[]} fields  at most ~40, the caller picks
+ * @param {string} [engine]
+ * @returns {Promise<{path: string, section: string, label: string}[] | null>}
+ */
+export async function labelRawFieldsWithNano(fields, engine) {
+  if (!Array.isArray(fields) || !fields.length) return null;
+  const lm = resolveLanguageModel();
+  if (!lm) return null;
+  const asked = new Set(fields.map((f) => f.path));
+  let session;
+  try {
+    session = await withTimeout(lm.create({ initialPrompts: [{ role: "system", content: RAW_SYSTEM_PROMPT }] }), NANO_TIMEOUT_MS);
+    const list = fields.slice(0, 40).map((f) => `${f.path} = ${JSON.stringify(String(f.sample ?? "").slice(0, 120))}`).join("\n");
+    const raw = await withTimeout(
+      session.prompt(`Engine: ${engine || "unknown"}\nFields:\n${list}`, { responseConstraint: RAW_LABEL_SCHEMA }),
+      NANO_TIMEOUT_MS
+    );
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.labels)) return null;
+    const seen = new Set();
+    return parsed.labels.filter((l) => l && asked.has(l.path) && RAW_SECTIONS.includes(l.section) && typeof l.label === "string" && l.label.trim() && !seen.has(l.path) && seen.add(l.path))
+      .map((l) => ({ path: l.path, section: l.section, label: l.label.trim().slice(0, 60) }));
+  } catch (_) {
+    return null;
+  } finally {
+    try { session?.destroy?.(); } catch (_) {}
+  }
+}

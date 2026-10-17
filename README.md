@@ -10,12 +10,27 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**; nothing leaves your device.
 
-> **v0.60.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.60.1** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **ChatGPT's card answers read properly** (0.60.1). Some ChatGPT answers now arrive as
+>   layout code for cards. They used to show every sentence twice, lose the intro, print the
+>   tags, count no page as cited, keep one product of three and one image of three, take
+>   words like "Around" and "Triple" for brands, and show a News chip with no news. Now the
+>   answer reads as ChatGPT showed it, with every card as a product in its order, one picture
+>   per card, the cited pages counted, and the follow-up choices it offered listed.
+> - **Raw payload breakdown** (Expert only). Under the prompt, closed until you open it: the
+>   engine's response laid out field by field in sections (what was sent, answer text, model
+>   and settings, messages, searches, sources, products/places/images, ads, layout). Every
+>   field shows how often it came and sample values. Fields no rule knows are listed under
+>   "Not recognised" rather than dropped, and Chrome's on-device AI can suggest labels for
+>   them on request; those labels are marked as guesses. It works on any engine's format,
+>   because it doesn't assume one.
+> - Scrolling a little no longer makes the Analyze page shake: the header used to shrink and
+>   grow every frame near the point where it compacts.
 > - Analyze in the full tab is rebuilt to the new design. The header is tinted by the kind
 >   of answer and says whether it came from a campaign or was asked by hand, and whose brand
 >   it tracks. Under the prompt sits a card for each engine that answered it, with that
