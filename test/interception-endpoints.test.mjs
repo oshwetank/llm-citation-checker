@@ -73,6 +73,12 @@ if (noise) {
   check("NOISE_RE catches www.perplexity.ai/api/sse/autocomplete (contains /autocomplete)", NOISE_RE.test("https://www.perplexity.ai/api/sse/autocomplete"));
   check("NOISE_RE catches suggest.perplexity.ai/anything (hostname alone is enough)", NOISE_RE.test("https://suggest.perplexity.ai/anything"));
   check("NOISE_RE does NOT catch a real thread endpoint", !NOISE_RE.test("https://www.perplexity.ai/rest/sse/perplexity_ask"));
+  // 0.62.1, from the owner's network report: these were stored as captures.
+  check("NOISE_RE catches Perplexity's notification stream", NOISE_RE.test("https://www.perplexity.ai/rest/sse/notifications"));
+  check("NOISE_RE catches Perplexity's typeahead socket", NOISE_RE.test("wss://suggest.perplexity.ai/suggest/ws"));
+  check("NOISE_RE does NOT catch a thread's own reconnect stream", !NOISE_RE.test("https://www.perplexity.ai/rest/sse/0a1b2c3d-1111-2222-3333-444455556666"));
+  const pageSrc = readFileSync(new URL("../src/content-main.js", import.meta.url), "utf8");
+  check("the socket patch checks NOISE_RE before taking a socket", /const isTargetWs = !NOISE_RE\.test\(wsUrl\)/.test(pageSrc));
 }
 
 // background.js keeps an independent second copy of this same pattern (it

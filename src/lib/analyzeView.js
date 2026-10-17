@@ -17,7 +17,7 @@
  * say (Gemini doesn't publish its searches; a product card names stores but
  * not their prices) the view says so instead of filling the gap.
  */
-import { analyzeFanout } from "./fanout.js";
+import { analyzeFanout, parseQueryOperators } from "./fanout.js";
 import { computeBrandMatrix, sameBrand } from "./funnel-omitted.js";
 import { normalizeMentions } from "./mention-list.js";
 import { siteKindOf, isBrandSite, normDomain, KIND_GROUPS } from "./siteKind.js";
@@ -75,6 +75,19 @@ const LANES = [
   ["image", "image", "Image search"],
 ];
 
+function scopedSearches(rows) {
+  const include = new Map(), exclude = new Map();
+  let n = 0;
+  for (const r of rows) {
+    const ops = parseQueryOperators(r.text);
+    if (ops.siteIncludes.length || ops.siteExcludes.length) n++;
+    ops.siteIncludes.forEach((d) => include.set(d, (include.get(d) || 0) + 1));
+    ops.siteExcludes.forEach((d) => exclude.set(d, (exclude.get(d) || 0) + 1));
+  }
+  const list = (m) => [...m].sort((a, b) => b[1] - a[1]).map(([domain, count]) => ({ domain, count }));
+  return { count: n, sites: list(include), excluded: list(exclude) };
+}
+
 export function searchesView(rec, brandNames = []) {
   const rows = [];
   for (const [key, lane, laneLabel] of LANES) {
@@ -109,6 +122,13 @@ export function searchesView(rec, brandNames = []) {
     // Gemini searches without publishing what it searched for: say so rather
     // than show an empty list that reads as "no searches".
     unpublished: !rows.length && !!rec.searched,
+    // Searches limited to (or excluding) a site with site:, counted even when
+    // there are none, so "none" is a stated fact (asked, 0.62.1: "why are we
+    // not showing site: searches data").
+    scoped: scopedSearches(rows),
+    // Addresses the engine opened directly rather than found by a search
+    // (Perplexity's fetch_url step).
+    opened: ((rec.fanout && rec.fanout.opened) || []).map((o) => (typeof o === "string" ? o : o && o.url)).filter(Boolean),
   };
 }
 

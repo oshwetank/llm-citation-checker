@@ -1953,6 +1953,10 @@ let atScrollFocus = false; // after re-rendering to show the answer, scroll to w
 // the engine showed it, pinned beside the analysis, or hidden so the analysis
 // gets the whole width. A per-viewer convenience, so browser storage.
 let atSplit = (() => { try { return localStorage.getItem("cito-at-split") !== "0"; } catch (_) { return true; } })();
+// The rail of sections is a slim strip of icons that opens over the page on
+// hover (0.62.1, asked: it took width from the answer and At a glance); the
+// pin keeps it open beside the page, and is remembered per viewer.
+let atRailPinned = (() => { try { return localStorage.getItem("cito-rail-pinned") === "1"; } catch (_) { return false; } })();
 
 function atResetState() {
   atFocusBrand = null; atFocusCite = null; atCompare = false; atCompareRead = null;
@@ -2100,7 +2104,7 @@ function renderAnalyzeTab(rec, root) {
 
   // Three columns, as on the canvas: the rail of sections, the analysis, and
   // the answer as the engine showed it (unless "Hide the answer" is on).
-  const grid = el("div", { className: `at-grid${atSplit ? "" : " no-answer"}` });
+  const grid = el("div", { className: `at-grid${atSplit ? "" : " no-answer"}${atRailPinned ? " rail-pinned" : ""}` });
   const rail = el("nav", { className: "at-rail", id: "at-rail", "aria-label": atCompare ? "Parts of the comparison" : "Parts of this answer" });
   const main = el("div", { className: "at-main" });
   grid.append(rail, main);
@@ -2193,14 +2197,22 @@ function atAnswerStrip(rec, { answers, cv, own, profile }) {
  * what it has none of as disabled rows that say why. Clicking scrolls to the
  * section; the row of the section being read stays lit as the page scrolls. */
 function atBuildRail(rail, main, { label, kind }) {
-  const split = el("button", { className: `at-split-btn${atSplit ? " on" : ""}`, type: "button", "aria-pressed": atSplit ? "true" : "false" },
-    glyphEl("answer", 15), atSplit ? "Hide the answer" : "Read the answer beside");
+  const pin = el("button", { className: "at-rail-pin", type: "button", "aria-pressed": atRailPinned ? "true" : "false",
+    title: atRailPinned ? "Let the list fold away" : "Keep the list open", "aria-label": atRailPinned ? "Let the list of sections fold away" : "Keep the list of sections open" },
+    el("span", { className: "at-rail-pin-ico", "aria-hidden": "true" }, atRailPinned ? "«" : "»"), el("span", { className: "lbl" }, atRailPinned ? "Fold away" : "Keep open"));
+  pin.onclick = () => {
+    atRailPinned = !atRailPinned;
+    try { localStorage.setItem("cito-rail-pinned", atRailPinned ? "1" : "0"); } catch (_) { /* storage off: this view only */ }
+    renderAnalyze();
+  };
+  const split = el("button", { className: `at-split-btn${atSplit ? " on" : ""}`, type: "button", "aria-pressed": atSplit ? "true" : "false", title: atSplit ? "Hide the answer" : "Read the answer beside" },
+    glyphEl("answer", 15), el("span", { className: "lbl" }, atSplit ? "Hide the answer" : "Read the answer beside"));
   split.onclick = () => { atSetSplit(!atSplit); renderAnalyze(); };
-  rail.append(split, el("span", { className: "at-rail-label" }, label));
+  rail.append(pin, split, el("span", { className: "at-rail-label" }, label));
   main.querySelectorAll(":scope > section[id], :scope > .at-pair > section[id]").forEach((sec) => {
     const h = sec.querySelector(".at-h, h2");
     const title = sec.dataset.rail || (h ? h.firstChild && h.firstChild.nodeType === 3 ? h.firstChild.nodeValue : h.textContent : sec.id);
-    const b = el("button", { className: "at-rail-item", type: "button", "data-target": sec.id },
+    const b = el("button", { className: "at-rail-item", type: "button", "data-target": sec.id, title: String(title).trim() },
       atIconTile(sec.id, 14), el("span", { className: "t" }, String(title).trim()), el("span", { className: "n" }, sec.dataset.count || ""));
     b.onclick = () => {
       const behavior = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
@@ -2603,13 +2615,9 @@ function atRenderSingle(main, rec, ctx) {
   // pictures are its product shots — never showed them in the full tab; only
   // the popup did (reported, 0.58.0).
   if ((rec.images || []).length) add(atImagesSection(rec, own, ctxKinds), rec.images.length);
-  if (kind.id === "info" && answerPanel.blocks.length) {
-    const sec = atSection("at-parts", "Which page backs each part of the answer", "", el("span", { className: "ap-muted" }, "the pages each paragraph cites"));
-    sec.dataset.rail = "Page behind each part";
-    const parts = answerPanel.blocks.slice(0, 12);
-    atPartsRows(parts).forEach((r) => sec.append(r));
-    add(sec, `${parts.filter((b) => b.cites.length).length}/${parts.length}`);
-  }
+  // "Which page backs each part" lives in Details only, for every engine
+  // (0.62.1, asked): here it sat right under the brand card on Grok,
+  // Perplexity and Gemini answers.
 
   /* 4. the ad shown with the answer */
   if ((rec.ads || []).length) add(atAdsSection(rec, { knownBrands }), rec.ads.length);
@@ -2890,9 +2898,20 @@ function atBuiltSection(rec, { searches, pages, mentions, kind, engineLabel }) {
     const yr = searches.rows.filter((q) => /\b20\d\d\b/.test(q.text)).length;
     const rd = searches.rows.filter((q) => /reddit/i.test(q.text)).length;
     sec.append(el("p", { className: "ap-muted at-foot" }, `Average ${searches.avgWords} words per search · ${perPage} pages read per search · ${yr} with a year · ${rd} asking Reddit · ${searches.namingBrand} naming a brand`));
+    // site: searches, stated even when there are none.
+    const sc = searches.scoped;
+    sec.append(el("p", { className: "at-scoped" }, sc.count
+      ? `${plural(sc.count, "search", "searches")} limited to a site with site:: ${sc.sites.map((x) => `${x.domain}${x.count > 1 ? ` ×${x.count}` : ""}`).join(", ") || "—"}${sc.excluded.length ? ` · excluded with -site:: ${sc.excluded.map((x) => x.domain).join(", ")}` : ""}`
+      : "No search was limited to a site (site:) in this answer."));
     sec.append(el("p", { className: "ap-muted at-foot" }, "Not captured: which search found which page, and how many results each search returned."));
   } else if (searches.unpublished) {
     sec.append(el("p", { className: "ap-note" }, `${engineLabel} confirms it searched the web but doesn't publish what it searched for, so there is no list to show. That's the engine, not a failed capture.`));
+  }
+  if (searches.opened.length) {
+    const box = el("div", { className: "at-opened" }, el("h3", { className: "at-lane-h" }, glyphEl("link", 13), `Opened directly · ${searches.opened.length}`));
+    searches.opened.forEach((u) => box.append(el("a", { className: "at-lane-q", href: u, target: "_blank", rel: "noopener noreferrer" }, u)));
+    box.append(el("p", { className: "ap-muted at-foot" }, `${engineLabel} went to these addresses itself; they weren't search results.`));
+    sec.append(box);
   }
   return sec;
 }

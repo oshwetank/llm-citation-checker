@@ -205,7 +205,7 @@ async function storeCapture(payload, meta) {
   // so this is a second, independent copy rather than a shared constant.
   // test/interception-endpoints.test.mjs asserts the two copies are
   // byte-for-byte identical; a change to one without the other fails CI.
-  if (/suggest\.perplexity\.ai|\/navigate\b|\/autocomplete\b|\/api\/auth/i.test(payload.url || "")) {
+  if (/suggest\.perplexity\.ai|\/navigate\b|\/autocomplete\b|\/api\/auth|\/rest\/sse\/notifications\b/i.test(payload.url || "")) {
     return null;
   }
 

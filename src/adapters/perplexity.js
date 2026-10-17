@@ -208,7 +208,23 @@ function readBlockStream(nodes) {
       collectQueries(rest, queries);
     }
   }
-  if (workflow) collectQueries(workflow, queries);
+  // A workflow step names its tool. "fetch_url" is Perplexity opening one
+  // address directly; its "queries" item holds that address, which used to
+  // be listed as a search ("https://www.bajajfinserv.in/…" among the
+  // searches, 0.62.0 feedback). Those go to opened; every other step's
+  // queries are searches as before.
+  const opened = [];
+  if (workflow) {
+    for (const step of Array.isArray(workflow.steps) ? workflow.steps : []) {
+      if (step && step.tool_name === "fetch_url") {
+        const got = [];
+        collectQueries(step, got);
+        got.filter((u) => isHttpUrl(u) && !opened.includes(u)).forEach((u) => opened.push(u));
+      } else collectQueries(step, queries);
+    }
+    const { steps: _s, ...restOfWorkflow } = workflow;
+    collectQueries(restOfWorkflow, queries);
+  }
 
   let text = longer(md.join(""), mdAnswer);
   if (!text && workflow) text = workflowText(workflow);
@@ -226,6 +242,7 @@ function readBlockStream(nodes) {
       answer: text,
       web_results: results.map((r) => ({ ...r, outcome: cited.has(r.url) ? "cited" : "fetched" })),
       queries,
+      opened,
       query_str: prompt,
       display_model: model,
     },
@@ -538,7 +555,9 @@ function extractFanout(nodes) {
       });
     }
   }
-  return { search, shopping: [], image: [] };
+  // Addresses it opened directly (readBlockStream), not searches.
+  const opened = [...new Set(nodes.flatMap((n) => (n && Array.isArray(n.opened) ? n.opened : [])))].map((url) => ({ url }));
+  return { search, shopping: [], image: [], ...(opened.length ? { opened } : {}) };
 }
 
 function extractGeneratedTitle(nodes, userPrompt) {

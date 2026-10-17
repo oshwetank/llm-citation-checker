@@ -51,9 +51,21 @@ const NOISE = new Set([
   "honorable", "notable", "runner", "runners", "bonus", "also", "similar", "related",
   "comparison", "compare", "quickly", "specs", "features", "price", "pricing", "cost",
   "how", "what", "when", "where", "who", "which", "should", "consider", "considerations",
+  // Verbs and fillers that open a bullet or a bold lead ("**Buy the OnePlus
+  // …**", "**Choose the realme …**", "**ANC:** Up to 55dB"); reported as
+  // brands in a ChatGPT answer (0.62.1).
+  "buy", "choose", "save", "get", "go", "skip", "avoid", "opt", "prefer", "stretch",
+  "spend", "pay", "look", "check", "try", "use", "want", "need", "up", "to", "with",
+  "without", "under", "around", "about", "only", "both", "either", "here", "there",
+  "then", "yes", "no", "not", "it", "its", "they", "you", "we",
 ]);
 
-const isNoise = (w) => !w || NOISE.has(w.toLowerCase());
+// Spec terms that read like names in a table cell or after a bullet label:
+// ratings (IP55, IPX4), feature acronyms (AI, ANC, ENC), "Dual-driver"-style
+// counts. Shapes, not industry nouns, so they hold for any vertical.
+const SPEC_TOKEN = /^(?:ip[x\d]\d|ipx|ai|anc|enc|enx|tws|usb|bt|nfc|hdr|oled|amoled|lcd|led|[2-6]g|wi-?fi|(?:single|dual|triple|quad|multi|hybrid)-[a-z]+)$/i;
+
+const isNoise = (w) => !w || NOISE.has(w.toLowerCase()) || SPEC_TOKEN.test(w);
 
 // entity[] markers come in (at least) two shapes:
 //   ["company","Zerodha","Indian stock broker"]        — category + name + description

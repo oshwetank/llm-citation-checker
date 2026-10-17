@@ -543,6 +543,56 @@ try {
     check("and lights that row", after.on === "at-sites", after.on);
   }
 
+  console.log("\nThe rail folds to icons and opens on hover; a pin keeps it open (0.62.1)");
+  await page.evaluate(() => localStorage.removeItem("cito-rail-pinned"));
+  await open(ids.shop);
+  {
+    const measure = () => page.evaluate(() => {
+      const rail = document.getElementById("at-rail");
+      const main = document.querySelector("#analyze .at-main");
+      const t = rail.querySelector(".at-rail-item .t");
+      return { rail: Math.round(rail.getBoundingClientRect().width), mainLeft: Math.round(main.getBoundingClientRect().left), mainW: Math.round(main.getBoundingClientRect().width), label: getComputedStyle(t).display };
+    });
+    const folded = await measure();
+    check("folded, the rail is a strip of icons", folded.rail <= 60 && folded.label === "none", JSON.stringify(folded));
+    await page.hover("#at-rail");
+    await page.waitForTimeout(400);
+    const open1 = await measure();
+    check("hovering opens it with the section names", open1.rail >= 200 && open1.label !== "none", JSON.stringify(open1));
+    check("over the page, without moving the analysis", open1.mainLeft === folded.mainLeft, `${folded.mainLeft} → ${open1.mainLeft}`);
+    await page.mouse.move(1300, 850);
+    await page.evaluate(() => document.querySelector("#at-rail .at-rail-pin").click());
+    await page.waitForTimeout(500);
+    await page.mouse.move(1300, 850);
+    const pinned = await measure();
+    check("pinned, it stays open beside the page", pinned.rail >= 150 && pinned.label !== "none" && pinned.mainLeft > folded.mainLeft, JSON.stringify(pinned));
+    await open(ids.shop);
+    const again = await measure();
+    check("and stays pinned on the next capture", again.rail >= 150, JSON.stringify(again));
+    await page.evaluate(() => document.querySelector("#at-rail .at-rail-pin").click());
+    await page.waitForTimeout(400);
+    await page.mouse.move(1300, 850);
+    check("unpinning folds it again", (await measure()).rail <= 60);
+  }
+
+  console.log("\nWhich page backs each part: in Details only; site: searches stated (0.62.1)");
+  await open(ids.gem);
+  {
+    const r = await page.evaluate(() => ({
+      inMain: !!document.querySelector("#analyze .at-main > #at-parts"),
+      rail: [...document.querySelectorAll("#at-rail .at-rail-item .t")].map((t) => t.textContent),
+      tabs: [...document.querySelectorAll("#at-details .at-seg [role=tab]")].map((t) => t.textContent),
+    }));
+    check("not a section of the page, nor a rail row", !r.inMain && !r.rail.some((t) => /each part/i.test(t)), r.rail.join(" | "));
+    check("still a tab of Details", r.tabs.includes("Page behind each part"), r.tabs.join(" | "));
+  }
+  // The sections below read the shopping answer.
+  await open(ids.shop);
+  {
+    const scoped = await page.evaluate(() => document.querySelector("#at-built .at-scoped")?.textContent || "");
+    check("Searches it ran says whether any search was limited to a site", /site:/.test(scoped), scoped || "no line");
+  }
+
   console.log("\nWhere it came from (0.60.0): each page with its place in the results and its date");
   {
     const r = await page.evaluate(() => {

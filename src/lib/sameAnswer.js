@@ -93,7 +93,7 @@ const urlKey = (s) => {
   const u = String((s && (s.url || s.domain)) || "").replace(/[?&]utm_[^&#]*/g, "").replace(/[?#]$/, "");
   return u.toLowerCase();
 };
-const queryText = (q) => (typeof q === "string" ? q : q && q.query) || "";
+const queryText = (q) => (typeof q === "string" ? q : q && (q.query || q.url)) || "";
 const itemKey = (x) => norm((x && (x.name || x.title || x.url)) || "");
 
 /* Fold copies of one answer into the fullest. The fullest copy's text,

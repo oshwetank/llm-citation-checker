@@ -87,7 +87,7 @@
   // test/interception-endpoints.test.mjs pull the literal source text of
   // both copies and assert byte-for-byte parity. If you change this line,
   // change background.js's copy to match, or that test fails on purpose.
-  const NOISE_RE = /suggest\.perplexity\.ai|\/navigate\b|\/autocomplete\b|\/api\/auth/i;
+  const NOISE_RE = /suggest\.perplexity\.ai|\/navigate\b|\/autocomplete\b|\/api\/auth|\/rest\/sse\/notifications\b/i;
 
   const CONV_RE = {
     test: (url) => {
@@ -397,8 +397,11 @@
     function PatchedWebSocket(url, protocols) {
       const ws = Reflect.construct(OrigWebSocket, arguments, PatchedWebSocket);
       const wsUrl = String(url || "");
-      const isTargetWs = (IS_PERPLEXITY && (/socket\.io|perplexity\.ai/i.test(wsUrl) || !isThirdParty(wsUrl))) ||
-                         (IS_GROK && /rpc|grok/i.test(wsUrl));
+      // NOISE_RE first: Perplexity's typeahead socket (suggest.perplexity.ai)
+      // matched "perplexity.ai" and every keystroke's suggestions were stored
+      // as a capture (0.62.0's network report: 44 raw captures, 5 answers).
+      const isTargetWs = !NOISE_RE.test(wsUrl) && ((IS_PERPLEXITY && (/socket\.io|perplexity\.ai/i.test(wsUrl) || !isThirdParty(wsUrl))) ||
+                         (IS_GROK && /rpc|grok/i.test(wsUrl)));
       if (IS_TARGET) {
         // One line when it opens; one when it closes (or after 50 frames),
         // with the frame count and the keys of the first sizeable frame.
