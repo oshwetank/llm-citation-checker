@@ -8,15 +8,30 @@ those they *cite* versus merely *fetch*, and which brands they name — then mea
 brand's visibility against competitors over time.
 
 Everything is stored **locally in your browser**. The extension makes **no network requests
-of its own**, except, if you turn on **Read the cited pages**, to the pages an answer cited;
-nothing leaves your device.
+of its own**, except, if you turn on **Read the cited pages**, to the pages an answer cited,
+and, if you download the **built-in AI**, a one-time download of the model's files from
+Hugging Face. Nothing you capture ever leaves your device: the AI runs on your computer.
 
-> **v0.69.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.70.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **A built-in AI model, on your computer** (0.70.0). About → Settings → **Built-in AI**
+>   downloads an open-source model once (Qwen3.5 from Alibaba, Apache-2.0, 201 languages:
+>   Light 0.5 GB, Standard 1.4 GB, Strong 2.8 GB; the extension checks the computer and
+>   suggests one) and runs it in the browser, on the graphics chip when there is one, else on
+>   the processor. No account, no cost, nothing sent anywhere. It reads each answer's
+>   **language, market** (country, currency), **what it asks**, the stage and who it is for,
+>   and labels each brand the rules found — brand, product, store, publisher, institution —
+>   with its **owner** and **how the answer treats it**, quoting the answer; it also lists
+>   names the rules missed. Every claim is checked against the answer before it is kept, and
+>   what isn't backed is left out and counted. Analyze has a new **AI check** section; the
+>   Dashboard filters by language and market. Your counts never change unless you turn on
+>   "Use AI-checked brands in counts". Checks are kept, so Reprocess doesn't run the model
+>   again. Brand names in any script (Japanese, Hindi, Arabic, Thai…) are now matched, and
+>   Gemini Nano's extra names no longer change the counts silently.
 > - **For any brand, anywhere** (0.69.0). Prices are read in any currency, before or after the
 >   number ($, €, £, ¥, ₹, R$, kr, zł, CHF, AED, ₩ and more), and shown in their own currency in
 >   the reports and the workbook (a new Currency column); averages never mix currencies. Topics
@@ -754,6 +769,9 @@ Everything stays in your browser's IndexedDB. The extension makes no network req
 own, except, if you turn on Read the cited pages, to the pages an answer cited (without your
 cookies; that setting asks for access to all sites, and nothing is sent anywhere else). It
 asks for host access to the supported engines only (ChatGPT, Gemini, Perplexity and Grok).
+The built-in AI (Settings → Built-in AI, off until you click Download) fetches the model's
+files once from huggingface.co into the browser's cache and runs them on this computer; the
+answers it reads are never sent anywhere, and after the download it works offline.
 If you pick a Google Font in Settings → Display, the page asks fonts.googleapis.com (and
 fonts.gstatic.com) for that one font; the bundled typefaces load from the extension.
 Site icons on the campaign board come from Chrome's own favicon cache (the "favicon"

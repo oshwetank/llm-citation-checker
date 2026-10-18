@@ -249,6 +249,23 @@ try {
     check("no model file left in the browser's cache", left === 0, String(left));
   }
 
+  console.log("\nLoad from a folder: no download at all");
+  {
+    const files = ["config.json", "generation_config.json", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "onnx/model.onnx"]
+      .map((f) => ({ path: `llm-tiny/${f}`, b64: readFileSync(path.join(MODEL_DIR, f)).toString("base64") }));
+    const before = hits.length;
+    const n = await page.evaluate(async ({ files, host }) => {
+      const { importFiles } = await import("/src/lib/llmEngine.js");
+      const blobs = files.map((f) => ({ path: f.path, blob: new Blob([Uint8Array.from(atob(f.b64), (c) => c.charCodeAt(0))]) }));
+      return (await importFiles({ repo: "tiny", host, files: blobs })).imported;
+    }, { files, host: HOST });
+    check("six files put in the browser's cache", n === 6, String(n));
+    await msg({ type: "ai-download", device: "wasm" });
+    const s = await waitFor(async () => { const x = await msg({ type: "ai-status" }); return x.ready || x.error ? x : null; }, 90000);
+    check("the model loads from them", s && s.ready, JSON.stringify(s && s.error));
+    check("without fetching any model file", !hits.slice(before).some((h) => /onnx|tokenizer|config/.test(h)), hits.slice(before).join(" "));
+  }
+
   check("no page errors", pageErrors.length === 0, pageErrors.join(" | "));
 } finally {
   await context.close();

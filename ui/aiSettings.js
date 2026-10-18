@@ -7,6 +7,7 @@
  * The model and its queue live in the background (src/aiService.js).
  */
 import { TIERS, TIER_ORDER, sizeLabel } from "../src/lib/llmTiers.js";
+import { importFiles } from "../src/lib/llmEngine.js";
 
 function h(tag, props = {}, ...kids) {
   const n = document.createElement(tag);
@@ -72,9 +73,28 @@ export function initAiSettings(slot) {
     dl.onclick = async () => { await send({ type: "ai-download", tier, device: pick ? pick.device : undefined }); refresh(); };
     const rm = h("button", { type: "button", className: "btn sm ghost", id: "aiRemove", disabled: !s.ready || !!s.downloading }, "Remove model");
     rm.onclick = async () => { if (!confirm("Remove the built-in AI model from this computer? The checks already made are kept.")) return; await send({ type: "ai-remove" }); chosen = null; refresh(); };
+    // Load from a folder: for computers that can't reach huggingface.co. The
+    // folder is the model's files as Hugging Face lists them (config.json,
+    // tokenizer files, onnx/…), downloaded on another computer.
+    const pickDir = h("input", { type: "file", id: "aiFolder", hidden: true, multiple: true });
+    pickDir.setAttribute("webkitdirectory", "");
+    pickDir.onchange = async () => {
+      const files = [...(pickDir.files || [])].map((f) => ({ path: f.webkitRelativePath || f.name, blob: f }));
+      if (!files.length) return;
+      folderNote.textContent = `Adding ${files.length} files…`;
+      try {
+        const r = await importFiles({ repo: TIERS[tier].repo, files });
+        folderNote.textContent = `Added ${r.imported} files. Loading the model…`;
+        await send({ type: "ai-download", tier, device: pick ? pick.device : undefined });
+        refresh();
+      } catch (e) { folderNote.textContent = `Couldn't add them: ${e && e.message || e}`; }
+    };
+    const folder = h("button", { type: "button", className: "btn sm ghost", id: "aiFolderBtn", disabled: !!s.downloading, title: `A folder with ${TIERS[tier].repo}'s files, downloaded elsewhere` }, "Load from a folder");
+    folder.onclick = () => pickDir.click();
+    const folderNote = h("span", { className: "ai-hw", id: "aiFolderNote", role: "status" }, "");
     slot.append(h("div", { className: "ab-row ai-actions" },
       h("div", { className: "ab-row-text" }, h("b", {}, "Model size"), h("span", {}, `${TIERS[tier].label}: Qwen3.5 ${TIERS[tier].params}, about ${sizeLabel(tier)} once. ${TIERS[tier].for}.`)),
-      seg, h("div", { className: "ai-btns" }, dl, rm)));
+      seg, h("div", { className: "ai-btns" }, dl, folder, rm, pickDir), folderNote));
 
     if (s.downloading) {
       const pct = s.progress && s.progress.pct != null ? Math.max(0, Math.min(100, s.progress.pct)) : null;
