@@ -22,7 +22,7 @@ import { isPlausibleProseName } from "./lib/brands.js";
 const STATE_KEY = "lcfcAi";
 const MAX_TRIES = 2;
 
-export function createAiService({ db, getSettings, ensureOffscreen, logErr = () => {}, broadcast = () => {} }) {
+export function createAiService({ db, getSettings, ensureOffscreen, resetOffscreen = async () => {}, logErr = () => {}, broadcast = () => {} }) {
   async function getState() {
     try { return (await chrome.storage.local.get(STATE_KEY))[STATE_KEY] || {}; } catch (_) { return {}; }
   }
@@ -97,7 +97,17 @@ export function createAiService({ db, getSettings, ensureOffscreen, logErr = () 
     progress = { status: "initiate", pct: 0 };
     downloading = (async () => {
       try {
-        const info = await llm("load", { repo: spec.repo, dtype: spec.dtype, device: dev, host: spec.host || undefined }, 6 * 60 * 60 * 1000);
+        let info;
+        try {
+          info = await llm("load", { repo: spec.repo, dtype: spec.dtype, device: dev, host: spec.host || undefined }, 6 * 60 * 60 * 1000);
+        } catch (e) {
+          // The graphics chip couldn't run it. That page's runtime won't try
+          // anything else now, so it is reopened and the model loaded on the
+          // processor; the files already fetched come from the cache.
+          if (dev !== "webgpu" || !/webgpu|gpu|adapter|backend/i.test(String(e && e.message))) throw e;
+          await resetOffscreen();
+          info = await llm("load", { repo: spec.repo, dtype: spec.dtype, device: "wasm", host: spec.host || undefined }, 6 * 60 * 60 * 1000);
+        }
         await setState({ downloadedAt: Date.now(), device: info.device, error: null });
         progress = { status: "done", pct: 100 };
         broadcast({ type: "ai-state" });
@@ -232,5 +242,16 @@ export function createAiService({ db, getSettings, ensureOffscreen, logErr = () 
     return ai;
   }
 
-  return { getState, setState, status, hardware, download, remove, enqueue, kick, attach, saveNano, onProgress, specOf, llm };
+  /** Check a record without storing anything (the eval script, and Ask). */
+  async function checkNow(rec) {
+    const state = await getState();
+    const spec = specOf(state);
+    if (!state.downloadedAt || !spec) throw new Error("The built-in AI isn't downloaded.");
+    await llm("load", { repo: spec.repo, dtype: spec.dtype, device: state.device || "webgpu", host: spec.host || undefined }, 30 * 60 * 1000);
+    const t0 = Date.now();
+    const ai = await aiCheckRecord(rec, (o) => llm("generate", o, 5 * 60 * 1000), { model: `${MODEL_FAMILY} ${spec.params || spec.label}`.trim(), isPlausible: isPlausibleProseName });
+    return { ...ai, wallMs: Date.now() - t0 };
+  }
+
+  return { checkNow, getState, setState, status, hardware, download, remove, enqueue, kick, attach, saveNano, onProgress, specOf, llm };
 }

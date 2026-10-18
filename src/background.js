@@ -656,6 +656,13 @@ async function ensureOffscreen() {
   try { await offscreenReady; } catch (e) { offscreenReady = null; throw e; }
   return offscreenReady;
 }
+// Close and reopen the offscreen document (0.70.0): the AI runtime there
+// can't change from the graphics chip to the processor once it has tried.
+async function resetOffscreen() {
+  try { if (chrome.offscreen && chrome.offscreen.closeDocument) await chrome.offscreen.closeDocument(); } catch (_) { /* none open */ }
+  offscreenReady = null;
+  await ensureOffscreen();
+}
 async function extractPage(html, url) {
   await ensureOffscreen();
   const r = await chrome.runtime.sendMessage({ target: "offscreen", type: "extract-page", html, url });
@@ -898,7 +905,7 @@ const logErr = (where, err, ctx, trace) => { try { errorLog.record(where, err, c
 // The built-in AI (0.70.0, src/aiService.js): the model runs in the
 // offscreen document; this keeps its queue, results and state.
 const broadcast = (m) => { try { chrome.runtime.sendMessage(m, () => void chrome.runtime.lastError); } catch (_) { /* no page open */ } };
-const aiSvc = createAiService({ db, getSettings, ensureOffscreen, logErr: (w, e, c) => logErr(w, e, c), broadcast });
+const aiSvc = createAiService({ db, getSettings, ensureOffscreen, resetOffscreen, logErr: (w, e, c) => logErr(w, e, c), broadcast });
 // The "capture" (network-trace breadcrumbs, replacing the old in-memory
 // DEBUG ring buffer) and "turn" (per-prompt outcome history, previously
 // only visible in the live progress view) categories of the same durable
@@ -3918,6 +3925,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse(r);
           break;
         }
+        case "ai-check-now":
+          try { sendResponse({ ok: true, ai: await aiSvc.checkNow(msg.record || {}) }); } catch (e) { sendResponse({ ok: false, error: String(e && e.message || e) }); }
+          break;
         // Tests only: a stand-in model served from this computer.
         case "ai-test-model": {
           const host = String((msg.model || {}).host || "");

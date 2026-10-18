@@ -80,6 +80,13 @@ export async function load(o) {
     const opts = { progress_callback: progress };
     const tok = await t.AutoTokenizer.from_pretrained(o.repo, opts);
     let device = o.device || "webgpu", model;
+    // No adapter, no WebGPU: once ONNX Runtime has failed to start WebGPU it
+    // keeps asking for it on this page, so the processor is chosen up front.
+    if (device === "webgpu") {
+      let adapter = null;
+      try { adapter = navigator.gpu ? await navigator.gpu.requestAdapter() : null; } catch (_) { adapter = null; }
+      if (!adapter) device = "wasm";
+    }
     try {
       model = await t.AutoModelForCausalLM.from_pretrained(o.repo, { ...opts, device, dtype: o.dtype[device] || o.dtype });
     } catch (e) {

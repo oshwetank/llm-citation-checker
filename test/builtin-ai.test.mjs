@@ -136,10 +136,13 @@ try {
     check("a stand-in can only come from this computer", t && t.ok);
     const bad = await msg({ type: "ai-test-model", model: { repo: "tiny", host: "https://example.com/", dtype: "fp32" } });
     check("anywhere else is refused", bad && !bad.ok);
-    const d = await msg({ type: "ai-download", device: "wasm" });
+    // Asked for the graphics chip on a computer without one (this headless
+    // browser): it must fall back to the processor, not fail.
+    const d = await msg({ type: "ai-download", device: "webgpu" });
     check("download starts", d && d.ok && d.started, JSON.stringify(d));
     const s = await waitFor(async () => { const x = await msg({ type: "ai-status" }); return x.ready || x.error ? x : null; }, 90000);
     check("and finishes: ready", s && s.ready && !s.error, JSON.stringify(s));
+    check("on the processor, since there is no graphics chip here", s && s.device === "wasm", s && s.device);
     check("the model's files were fetched", hits.some((h) => /onnx\/model\.onnx/.test(h)) && hits.some((h) => /tokenizer\.json/.test(h)), hits.join(" "));
   }
 
