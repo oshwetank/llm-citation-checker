@@ -118,7 +118,7 @@ function mixBar(parts) {
   return [b, legend];
 }
 const RAMP = ["var(--cv-c1)", "var(--cv-c2)", "var(--cv-c3)", "var(--cv-c4)", "var(--cv-c5)", "var(--cv-c6)", "var(--cv-c7)"];
-const KIND_COLOR = { "Your site": "var(--you)", "Review sites": "var(--kind-review)", "Retailers": "var(--kind-retail)", "Rival brand sites": "var(--kind-rival)", "Forums & social": "var(--kind-forum)", "Other": "var(--kind-other)" };
+const KIND_COLOR = { "Your site": "var(--you)", "Review sites": "var(--kind-review)", "Retailers": "var(--kind-retail)", "Rival brand sites": "var(--kind-rival)", "Forums & social": "var(--kind-forum)", "Public & reference": "var(--kind-public)", "Other": "var(--kind-other)" };
 const empty = (text, icon) => h("div", { className: "cv-empty" }, icon || "", h("span", {}, text));
 const tile = (label, value, sub, extra) => h("div", { className: "cv-tile" }, h("span", { className: "cv-tile-l" }, label), h("span", { className: "cv-tile-v" }, value), sub ? h("span", { className: "cv-tile-s" }, sub) : "", extra || "");
 function replace(id, fn) { const old = document.getElementById(id); if (old) old.replaceWith(fn()); }

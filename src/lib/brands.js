@@ -372,6 +372,19 @@ export const MARKETPLACE_DOMAINS = new Set([
   "jiomart.com", "olx.in", "olx.com", "quikr.com",
   "indiamart.com", "tradeindia.com", "exportersindia.com", "justdial.com",
   "dhgate.com", "made-in-china.com", "wish.com", "rakuten.com",
+  // Marketplaces in other markets (0.69.0): the tool is used everywhere.
+  "amazon.fr", "amazon.it", "amazon.es", "amazon.nl", "amazon.se", "amazon.pl", "amazon.com.be", "amazon.co.jp",
+  "amazon.com.au", "amazon.com.br", "amazon.com.mx", "amazon.sg", "amazon.sa", "amazon.eg", "amazon.com.tr",
+  "ebay.co.uk", "ebay.de", "ebay.fr", "ebay.it", "ebay.es", "ebay.com.au", "ebay.ca",
+  "mercadolibre.com", "mercadolibre.com.mx", "mercadolibre.com.ar", "mercadolibre.com.co", "mercadolibre.cl",
+  "mercadolivre.com.br", "rakuten.co.jp", "rakuten.fr", "rakuten.de", "allegro.pl", "bol.com", "zalando.com",
+  "zalando.de", "zalando.fr", "otto.de", "cdiscount.com", "kaufland.de", "coupang.com", "shopee.com",
+  "shopee.co.id", "shopee.com.my", "shopee.ph", "shopee.sg", "shopee.co.th", "shopee.vn", "shopee.com.br",
+  "lazada.com", "lazada.co.id", "lazada.com.my", "lazada.com.ph", "lazada.sg", "lazada.co.th", "lazada.vn",
+  "tokopedia.com", "bukalapak.com", "noon.com", "jumia.com", "jumia.com.ng", "jumia.co.ke", "takealot.com",
+  "temu.com", "shein.com", "trendyol.com", "hepsiburada.com", "ozon.ru", "wildberries.ru", "avito.ru",
+  "marktplaats.nl", "leboncoin.fr", "wallapop.com", "gumtree.com", "craigslist.org", "kijiji.ca",
+  "trademe.co.nz", "catch.com.au", "qoo10.com", "mercari.com", "yahoo.co.jp", "daraz.pk", "daraz.com.bd",
 ]);
 
 // Publishers, news outlets, tech portals, aggregators, price comparison sites, and social platforms that
@@ -390,6 +403,19 @@ export const EDITORIAL_DOMAINS = new Set([
   // for the deeper structural fix — that bug alone was enough to make ANY
   // cited domain self-match, so this list is defense-in-depth, not the fix).
   "mobileburn.com", "bhalophone.com", "goalmoneytrack.com",
+  // International news, reviews and buying guides (0.69.0).
+  "nytimes.com", "wsj.com", "washingtonpost.com", "bbc.com", "bbc.co.uk", "theguardian.com", "reuters.com",
+  "apnews.com", "bloomberg.com", "ft.com", "economist.com", "forbes.com", "businessinsider.com", "cnbc.com",
+  "techcrunch.com", "wired.com", "engadget.com", "arstechnica.com", "zdnet.com", "pcmag.com", "pcworld.com",
+  "macworld.com", "9to5mac.com", "9to5google.com", "macrumors.com", "digitaltrends.com", "trustedreviews.com",
+  "expertreviews.co.uk", "which.co.uk", "consumerreports.org", "rtings.com", "wirecutter.com", "nerdwallet.com",
+  "bankrate.com", "investopedia.com", "healthline.com", "webmd.com", "mayoclinic.org", "goodhousekeeping.com",
+  "g2.com", "capterra.com", "trustradius.com", "getapp.com", "softwareadvice.com", "clutch.co", "producthunt.com",
+  "trustpilot.com", "yelp.com", "tripadvisor.com", "lemonde.fr", "lefigaro.fr", "spiegel.de", "chip.de",
+  "computerbild.de", "heise.de", "elpais.com", "xataka.com", "tecmundo.com.br", "tudocelular.com", "globo.com",
+  "uol.com.br", "infobae.com", "nikkei.com", "itmedia.co.jp", "kakaku.com", "impress.co.jp", "sina.com.cn",
+  "sohu.com", "163.com", "chosun.com", "aljazeera.com", "alarabiya.net", "scmp.com", "straitstimes.com",
+  "smh.com.au", "abc.net.au", "cbc.ca", "news.com.au", "ndtv.com", "thehindu.com", "economictimes.indiatimes.com",
 ]);
 
 function isMarketplaceDomain(domain) {
@@ -449,7 +475,7 @@ function alwaysAttributed(text, hits) {
 // string ("Amazon.in", "PNG Jewellers", "Mia by Tanishq"), not a URL. Only
 // the leading word is checked, since that's what identifies the seller.
 const MARKETPLACE_NAME_RE =
-  /^(amazon|flipkart|myntra|meesho|snapdeal|shopclues|ebay|walmart|aliexpress|alibaba|etsy|jiomart|olx|quikr|indiamart|tradeindia|exportersindia|justdial|dhgate|wish|rakuten)\b/i;
+  /^(amazon|flipkart|myntra|meesho|snapdeal|shopclues|ebay|walmart|aliexpress|alibaba|etsy|jiomart|olx|quikr|indiamart|tradeindia|exportersindia|justdial|dhgate|wish|rakuten|mercado ?libre|mercado ?livre|allegro|bol\.com|zalando|otto|cdiscount|coupang|shopee|lazada|tokopedia|noon|jumia|takealot|temu|shein|trendyol|ozon|wildberries|kaufland|daraz|qoo10)\b/i;
 function isMarketplaceName(name) {
   return MARKETPLACE_NAME_RE.test(String(name || "").trim());
 }
@@ -654,7 +680,24 @@ const PROMPT_STOPWORDS = new Set([
   "recommend", "recommendations", "compare", "buy", "buying", "get", "need",
   "want", "looking", "help", "please", "right", "now", "currently", "available",
   "india", "indian", "usa", "us", "uk", "global", "market", "money", "rs", "inr",
+  // Currencies and markets anywhere (0.69.0): "Best laptops in Brazil" must
+  // not make "Brazil" a brand. Country names come from Intl below.
+  "dollar", "dollars", "euro", "euros", "pound", "pounds", "yen", "yuan", "rupee", "rupees", "real", "reais",
+  "peso", "pesos", "won", "dirham", "dirhams", "riyal", "riyals", "franc", "francs", "krona", "kronor",
+  "krone", "lira", "rand", "naira", "ringgit", "rupiah", "baht", "dong", "zloty", "usd", "eur", "gbp",
+  "europe", "european", "asia", "asian", "africa", "african", "america", "american", "latam", "emea", "apac",
+  "worldwide", "international", "nationwide", "local", "online", "near",
 ]);
+// Every country's English name ("Brazil", "United Kingdom", "Côte d’Ivoire"),
+// one word or the whole name, from the browser's own list.
+try {
+  const dn = new Intl.DisplayNames(["en"], { type: "region", fallback: "none" });
+  const A = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  for (const a of A) for (const b of A) {
+    const n = dn.of(a + b);
+    if (n) PROMPT_STOPWORDS.add(n.toLowerCase());
+  }
+} catch (_) { /* no Intl region names: the fixed words above still apply */ }
 
 /**
  * The subject words a prompt was phrased in, minus question scaffolding and

@@ -55,28 +55,42 @@ export function pageTypeOf(url) {
   try { p = new URL(url).pathname.toLowerCase(); } catch (_) { return "Article"; }
   if (p === "/" || p === "") return "Homepage";
   if (/-vs-|\/vs\/|compare|comparison/.test(p)) return "Comparison";
-  if (/\/dp\/|\/p\/|\/product|-price-in-india|\/buy\//.test(p)) return "Product page";
-  if (/\/news\/|articleshow|\/story\//.test(p)) return "News";
+  // Shop pages in any market: /dp/, /p/, /item/, /products/, /shop/, "-price".
+  if (/\/dp\/|\/p\/|\/products?\b|\/item\/|\/itm\/|\/shop\/|\/buy\/|\/sku\/|-price(?:-in-[a-z-]+)?(?:[/.]|$)/.test(p)) return "Product page";
+  if (/\/news\/|articleshow|\/story\/|\/press(?:-releases?)?\/|\/noticias\/|\/actualites\//.test(p)) return "News";
   if (/review/.test(p) && !/best|top-|list/.test(p)) return "Review";
   if (/best|top-|list-of|under-|guide/.test(p)) return "List of picks";
   if (/forum|thread|\/r\/|\/comments\//.test(p)) return "Discussion";
   return "Article";
 }
 
-// When the prompts carry no tags, group them by what they ask about. The
-// words cover the common shopping angles; anything else lands in "Other".
-const THEMES = [
-  ["Camera & video", /camera|photo|video|selfie|portrait|\bois\b|low[- ]light|night|zoom/i],
-  ["Battery & charging", /battery|charging|charge|mah\b|backup/i],
-  ["Gaming & performance", /gaming|performance|processor|chip|speed|fast phone/i],
-  ["Display", /display|screen|amoled|oled|curved|refresh/i],
-  ["Design & build", /design|premium|build|look|slim|light ?weight/i],
-  ["Price & value", /cheap|budget|value|price|deal|affordable/i],
-  ["Everyday use", /daily|everyday|balanced|all[- ]rounder|long[- ]term|general|basic/i],
+// When the prompts carry no tags, group them by what they ask for. These
+// are intents, not product features, so they fit any brand: a phone, a
+// payroll tool, a bank, a city council (0.69.0; the phone-only themes
+// before it put most B2B and public-sector prompts under "Other"). The ids
+// are the ones the built-in AI uses, so the two never disagree. The first
+// match wins; the order puts the narrow asks before the broad "best".
+export const THEMES = [
+  ["comparison", "Comparisons & alternatives", /\bvs\.?\b|\bversus\b|\bcompar|\balternatives?\b|\binstead of\b|\bcompetitors?\b|\bdifference between\b|\bor\s+[\p{L}\d]+\s*\?|\bfrente a\b|\bcomparação\b|\bcomparatif\b|\bvergleich|तुलना|比較|对比|مقارنة/iu],
+  ["local", "Local & near me", /\bnear me\b|\bnearby\b|\bclosest\b|\bopen now\b|\bnear\s+[\p{Lu}]|\bcerca de mí|\bperto de mim\b|\bprès de chez moi\b|\bin der nähe\b|मेरे पास|近く|附近|بالقرب/iu],
+  ["price_value", "Price, cost & value", /\bcheap|\bbudget\b|\baffordable\b|\bvalue for money\b|\bprice|\bpricing\b|\bcost|\bfees?\b|\bdeals?\b|\bunder\s*\S?\d|\bbelow\s*\S?\d|\bfree\b|\bprecio|\bbarato|\bpreço|\bprix\b|\bpas cher\b|\bpreis|\bgünstig|कीमत|सस्ता|価格|安い|价格|便宜|سعر|رخيص/iu],
+  ["trust", "Trust, safety & compliance", /\bsafe\b|\bsafety\b|\bsecur|\btrust|\blegit|\bscam|\breliab|\bcomplian|\bcertif|\bgdpr\b|\bhipaa\b|\biso\s?\d|\bregulat|\bprivacy\b|\bwarranty\b|\blicen[cs]ed\b|\bseguro\b|\bconfiable\b|\bconfiável\b|\bfiable\b|\bsicher|सुरक्षित|安全|安心|آمن/iu],
+  ["careers", "Jobs & careers", /\bjobs?\b|\bcareers?\b|\bhiring\b|\bsalar(y|ies)\b|\bwork at\b|\binternships?\b|\bemployers?\b|\bempleo\b|\bemprego\b|\bemploi\b|\bstellen|नौकरी|求人|招聘|وظائف/iu],
+  ["howto", "How-to & information", /\bhow (?:to|do|does|can|much|many)\b|\bwhat (?:is|are)\b|\bwhy\b|\bguide\b|\btutorial\b|\bexplain|\bsteps?\b|\bmeaning\b|\bcómo\b|\bqué es\b|\bcomo\b|\bo que é|\bcomment\b|\bqu'est-ce\b|\bwie\b|\bwas ist\b|कैसे|क्या है|方法|とは|如何|什么是|كيف|ما هو/iu],
+  ["for_use", "For a person or use", /\bfor\s+(?:a\s+|an\s+|my\s+|the\s+)?(?!\d)[\p{L}]{3,}|\bpara\s+[\p{L}]{3,}|\bpour\s+[\p{L}]{3,}|\bfür\s+[\p{L}]{3,}|के लिए|向け|适合|لل/iu],
+  ["best_top", "Best, top & reviews", /\bbest\b|\btop\b|\breviews?\b|\bratings?\b|\brecommend|\bleading\b|\bpopular\b|\bmejor|\bmelhor|\bmeilleur|\bbeste|सबसे अच्छा|बेस्ट|おすすめ|最好|推荐|أفضل/iu],
 ];
+export const THEME_OTHER = ["other", "Other"];
+export function themeIdOf(text) {
+  const hit = THEMES.find(([, , re]) => re.test(String(text || "")));
+  return hit ? hit[0] : THEME_OTHER[0];
+}
+export function themeLabel(id) {
+  const hit = THEMES.find(([k]) => k === id);
+  return hit ? hit[1] : THEME_OTHER[1];
+}
 export function themeOf(text) {
-  const hit = THEMES.find(([, re]) => re.test(text));
-  return hit ? hit[0] : "Other";
+  return themeLabel(themeIdOf(text));
 }
 
 const AGE_BANDS = [["Under a month", 31], ["1–3 months", 92], ["3–6 months", 183], ["6–12 months", 366], ["Over a year", Infinity]];
@@ -138,7 +152,7 @@ export function campaignView(recs, { profile, brands, prompts = [], engineFilter
     const named = done.filter((c) => c.pos);
     const topCard = done.flatMap((c) => c.rec.products || []).find((c) => cardIsBrand(c, own.name));
     return {
-      id: p.id, text: p.text, tags: p.tags, topic: topicOf(p),
+      id: p.id, text: p.text, tags: p.tags, topic: topicOf(p), topicId: useTags ? null : themeIdOf(p.text),
       cells: cells.map((c) => (c ? { answered: c.answered, limit: !!c.limit, pos: c.pos || null, first: c.first || null, captureId: c.captureId } : null)),
       visibility: done.length ? pctOf(named.length, done.length) : null,
       avgPos: named.length ? r1(named.reduce((s, c) => s + c.pos, 0) / named.length) : null,

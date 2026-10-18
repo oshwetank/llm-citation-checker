@@ -200,7 +200,7 @@ export function compareView(answers, { own } = {}) {
     model: (answers.find((r) => r.captureId === e.captureId) || {}).model || "",
   }));
   // Kinds of site each engine cited.
-  const KINDS = ["Your site", "Review sites", "Retailers", "Rival brand sites", "Forums & social", "Other"];
+  const KINDS = ["Your site", "Review sites", "Retailers", "Rival brand sites", "Forums & social", "Public & reference", "Other"];
   const kindMix = engines.map((e) => ({ id: e.id, label: e.label, total: e.citations.length,
     parts: KINDS.map((k) => ({ label: k, n: e.citations.filter((c) => (KINDS.includes(c.kind) ? c.kind : "Other") === k).length })).filter((x) => x.n) }));
   // Product cards, matched across engines by name.

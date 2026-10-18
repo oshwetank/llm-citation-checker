@@ -17,7 +17,11 @@
  */
 import { MARKETPLACE_DOMAINS, EDITORIAL_DOMAINS } from "./brands.js";
 
-export const KIND_GROUPS = ["Your site", "Rival brand sites", "Review sites", "Retailers", "Forums & social", "Other"];
+// "Public & reference" (0.69.0): government and public bodies, universities
+// and research, encyclopedias, statistics and analyst firms. For a B2B,
+// public-sector or institutional brand these are the citations that count,
+// and before they were all "Other".
+export const KIND_GROUPS = ["Your site", "Rival brand sites", "Review sites", "Retailers", "Forums & social", "Public & reference", "Other"];
 
 // Discussion and social platforms. Kept apart from EDITORIAL_DOMAINS's review
 // and news sites (that list mixes both, because for brand detection they are
@@ -26,12 +30,21 @@ export const KIND_GROUPS = ["Your site", "Rival brand sites", "Review sites", "R
 const FORUM_DOMAINS = new Set([
   "reddit.com", "quora.com", "stackexchange.com", "stackoverflow.com", "x.com", "twitter.com",
   "facebook.com", "instagram.com", "linkedin.com", "pinterest.com", "tiktok.com", "youtube.com",
-  "threads.net", "medium.com", "team-bhp.com", "xda-developers.com", "tripadvisor.com", "tripadvisor.in",
+  "threads.net", "medium.com", "stackexchange.com", "discord.com", "telegram.org", "vk.com", "weibo.com",
+  "zhihu.com", "naver.com", "note.com", "2ch.net", "5ch.net", "hatena.ne.jp", "bilibili.com", "douyin.com",
+  "xiaohongshu.com", "line.me", "mumsnet.com", "trustpilot.com", "glassdoor.com", "indeed.com", "team-bhp.com", "xda-developers.com", "tripadvisor.com", "tripadvisor.in",
 ]);
 
 // Retail markers beyond the shared marketplace list: Indian and global
 // electronics and fashion chains the captures cite as places to buy.
 const RETAIL_DOMAINS = new Set([
+  "walmart.com", "walmart.ca", "walmart.com.mx", "ikea.com", "homedepot.com", "lowes.com", "wayfair.com",
+  "johnlewis.com", "tesco.com", "sainsburys.co.uk", "boots.com", "mediamarkt.de", "saturn.de", "fnac.com",
+  "darty.com", "elcorteingles.es", "pccomponentes.com", "magazineluiza.com.br", "americanas.com.br",
+  "casasbahia.com.br", "falabella.com", "liverpool.com.mx", "jbhifi.com.au", "harveynorman.com.au",
+  "officeworks.com.au", "bic-camera.com", "biccamera.com", "yodobashi.com", "jd.com", "tmall.com",
+  "taobao.com", "suning.com", "gmarket.co.kr", "11st.co.kr", "carrefour.fr", "carrefour.com",
+  "decathlon.com", "decathlon.in", "sephora.com", "ulta.com", "uniqlo.com", "hm.com", "zara.com",
   "croma.com", "reliancedigital.in", "vijaysales.com", "tatacliq.com", "ajio.com", "nykaa.com",
   "bestbuy.com", "target.com", "costco.com", "argos.co.uk", "currys.co.uk", "newegg.com",
   "bigbasket.com", "blinkit.com", "zeptonow.com", "swiggy.com", "zomato.com",
@@ -48,6 +61,24 @@ const BOOKING_SLUGS = new Set([
   "hostelworld", "travelguru", "orbitz", "travelocity", "hotwire", "vrbo",
 ]);
 
+// Public bodies, by suffix in any country: .gov, .gov.uk, .gouv.fr, .gob.mx,
+// .go.jp, .govt.nz, .gc.ca, .mil, .int, europa.eu, un.org and the like.
+const PUBLIC_RE = /(^|\.)(gov|gouv|gob|go|govt|gv|gc|mil|int)(\.[a-z]{2,3})?$|(^|\.)(gov|gouv|gob|govt)\.[a-z]{2}$|(^|\.)(europa\.eu|un\.org|who\.int|worldbank\.org|imf\.org|oecd\.org|nic\.in|bund\.de|admin\.ch)$/;
+// Universities and research, by suffix: .edu, .ac.uk, .edu.au, .ac.in, .ac.jp.
+const ACADEMIC_RE = /(^|\.)(edu|ac)(\.[a-z]{2})?$|(^|\.)(edu)\.[a-z]{2}$/;
+const REFERENCE_DOMAINS = new Set([
+  "wikipedia.org", "wikimedia.org", "wikidata.org", "britannica.com", "investopedia.com", "statista.com",
+  "gartner.com", "forrester.com", "idc.com", "mckinsey.com", "deloitte.com", "pwc.com", "kpmg.com", "ey.com",
+  "bcg.com", "bain.com", "accenture.com", "nielsen.com", "ipsos.com", "pewresearch.org", "ourworldindata.org",
+  "arxiv.org", "nature.com", "sciencedirect.com", "springer.com", "researchgate.net", "ncbi.nlm.nih.gov",
+  "pubmed.ncbi.nlm.nih.gov", "jstor.org", "ieee.org", "acm.org", "ssrn.com", "scholar.google.com",
+  "iso.org", "w3.org", "ietf.org", "data.gov",
+]);
+export function isPublicOrReference(domain) {
+  const d = normDomain(domain);
+  return PUBLIC_RE.test(d) || ACADEMIC_RE.test(d) || inSet(REFERENCE_DOMAINS, d);
+}
+
 export function normDomain(d) {
   return String(d || "")
     .toLowerCase()
@@ -61,7 +92,7 @@ export function normDomain(d) {
 function siteSlug(domain) {
   const parts = normDomain(domain).split(".").filter(Boolean);
   if (parts.length <= 1) return (parts[0] || "").replace(/[^a-z0-9]/g, "");
-  const twoPartSuffix = /^(co|com|net|org|gov|ac|edu)$/.test(parts[parts.length - 2]) && parts.length >= 3;
+  const twoPartSuffix = /^(co|com|net|org|gov|ac|edu|ne|or|go|gob|gouv|govt)$/.test(parts[parts.length - 2]) && parts.length >= 3;
   const label = twoPartSuffix ? parts[parts.length - 3] : parts[parts.length - 2];
   return label.replace(/[^a-z0-9]/g, "");
 }
@@ -102,6 +133,7 @@ export function siteKindOf(domain, ctx = {}) {
   if (ctx.ownBrand && isBrandSite(d, ctx.ownBrand, ctx.ownUrl)) return "Your site";
   if (inSet(FORUM_DOMAINS, d)) return "Forums & social";
   if (inSet(MARKETPLACE_DOMAINS, d) || inSet(RETAIL_DOMAINS, d) || BOOKING_SLUGS.has(siteSlug(d))) return "Retailers";
+  if (isPublicOrReference(d)) return "Public & reference";
   if (inSet(EDITORIAL_DOMAINS, d)) return "Review sites";
   if ((ctx.brands || []).some((b) => b && b !== ctx.ownBrand && isBrandSite(d, b))) return "Rival brand sites";
   if (/(^|[.-])(forum|forums|community|discuss)\./.test(d)) return "Forums & social";

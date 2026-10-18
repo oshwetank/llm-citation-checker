@@ -23,6 +23,7 @@
   --kind-review: #1baf7a;
   --kind-retail: #eda100;
   --kind-forum: #e87ba4;
+  --kind-public: #0e7490;
   --kind-other: #64748b;
   /* Kinds of answer (Dashboard, 0.49.0), in the stacked bar's order: the
      reference categorical hues ordered so neighbours pass every adjacent
@@ -137,6 +138,7 @@
   --kind-review: #1baf7a;
   --kind-retail: #b98000;
   --kind-forum: #d0628f;
+  --kind-public: #22b8cf;
   --kind-other: #a8b3c4;
   /* The reference dark steps, checked against the dark card (#131c2e). */
   --ak-shopping: #3987e5;

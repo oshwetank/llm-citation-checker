@@ -8,7 +8,7 @@
  * prompt twice; one answer carries an ad and a site: search. Domains are
  * public sites; brands, prompts and pages are invented.
  */
-import { campaignView, pageTypeOf, promptText, themeOf } from "../src/lib/campaignView.js";
+import { campaignView, pageTypeOf, promptText, themeOf, themeIdOf } from "../src/lib/campaignView.js";
 import { brandSlug, siteSlug, letterBadge, markSvg } from "../src/lib/logos.js";
 
 let failures = 0;
@@ -99,7 +99,7 @@ console.log("\nPrompts");
   eq("q1's top Zento product card", p1.topProduct, "Zento Pulse");
   const p2 = v.prompts.find((p) => p.id === "q2");
   eq("q2: absent on ChatGPT, first on Perplexity", [p2.cells[0].pos, p2.cells[1].pos, p2.visibility], [null, 1, 50]);
-  eq("topics from the prompts' words when there are no tags", v.prompts.map((p) => [p.id, p.topic]).sort(), [["q1", "Other"], ["q2", "Battery & charging"], ["q3", "Other"]]);
+  eq("topics from the prompts' words when there are no tags", v.prompts.map((p) => [p.id, p.topic]).sort(), [["q1", "Price, cost & value"], ["q2", "Best, top & reviews"], ["q3", "For a person or use"]]);
 }
 
 console.log("\nCitations: every cited page, in detail");
@@ -153,14 +153,34 @@ console.log("\nSignals and data quality");
   eq("engines agree on who comes first", [v.signals.agreement.same, v.signals.agreement.of], [0, 2]);
   eq("gaps: answers without you that name two or more rivals", v.signals.gaps.map((g) => g.id), ["q2"]);
   eq("quality: doubled prompts and the usage limit", v.signals.quality.map((x) => [x.engine, x.missing, x.limited, x.doubled]), [["chatgpt", 0, 0, 1], ["perplexity", 0, 0, 0], ["grok", 1, 1, 0]]);
-  eq("topics: own share against the strongest rival", v.topics.map((x) => [x.topic, x.own.sov, x.rival.name, x.rival.sov]), [["Other", 50, "Kovo", 37.5], ["Battery & charging", 25, "Kovo", 50]]);
+  eq("topics: own share against the strongest rival", v.topics.map((x) => [x.topic, x.own.sov, x.rival.name, x.rival.sov]), [["Price, cost & value", 57.1, "Kovo", 42.9], ["Best, top & reviews", 25, "Kovo", 50], ["For a person or use", 0, "Lumi", 100]]);
 }
 
 console.log("\nHelpers");
 {
   eq("page types from the address", ["https://a.com/", "https://a.com/x-vs-y", "https://a.com/dp/B01", "https://a.com/news/x", "https://a.com/reviews/zento", "https://a.com/best-phones"].map(pageTypeOf), ["Homepage", "Comparison", "Product page", "News", "Review", "List of picks"]);
   eq("promptText leaves a normal prompt alone", promptText("abab"), "ab");
-  eq("theme words", [themeOf("best camera phone"), themeOf("gaming laptop"), themeOf("weather")], ["Camera & video", "Gaming & performance", "Other"]);
+  // Intents that fit any brand, B2B and public sector included, in several languages (0.69.0).
+  const T = [
+    ["Zento vs Kovo payroll software", "Comparisons & alternatives"],
+    ["alternatives to Lumi CRM", "Comparisons & alternatives"],
+    ["dentist near me open now", "Local & near me"],
+    ["how much does SOC 2 audit cost", "Price, cost & value"],
+    ["is Kovo Bank safe and regulated", "Trust, safety & compliance"],
+    ["Zento careers and salary", "Jobs & careers"],
+    ["how to renew a passport", "How-to & information"],
+    ["accounting software for small business", "For a person or use"],
+    ["best cloud hosting providers", "Best, top & reviews"],
+    ["mejor banco digital en México", "Best, top & reviews"],
+    ["melhor plano de saúde para família", "For a person or use"],
+    ["Lumi ou Kovo : comparatif", "Comparisons & alternatives"],
+    ["सबसे अच्छा लैपटॉप", "Best, top & reviews"],
+    ["おすすめのノートパソコン", "Best, top & reviews"],
+    ["weather", "Other"],
+  ];
+  eq("intent topics for any kind of brand and language", T.map(([q]) => themeOf(q)), T.map(([, t]) => t));
+  eq("topic ids", [themeIdOf("Zento vs Kovo"), themeIdOf("weather")], ["comparison", "other"]);
+  eq("page types for shops in any market", ["https://shop.example/products/kettle", "https://m.example/item/123", "https://a.example/lumi-kettle-price", "https://b.example/press-releases/x"].map(pageTypeOf), ["Product page", "Product page", "Product page", "News"]);
 }
 
 console.log("\nLogos");

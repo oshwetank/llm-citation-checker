@@ -34,7 +34,7 @@ import { glossaryEntries } from "./glossary.js";
 const ENGINE_ORDER = ["chatgpt", "gemini", "perplexity", "grok"];
 const ENGINE_LABEL = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok" };
 const KINDS = ["Shopping", "Informational", "Images", "From memory", "Local"];
-const SITE_KINDS = ["Your site", "Rival brand sites", "Review sites", "Retailers", "Forums & social", "Other"];
+const SITE_KINDS = ["Your site", "Rival brand sites", "Review sites", "Retailers", "Forums & social", "Public & reference", "Other"];
 // Engines' image proxies: the picture came through the engine, not a site.
 const PROXY_HOSTS = /(^|\.)(images\.openai\.com|gstatic\.com|googleusercontent\.com|bing\.net|perplexity\.ai|x\.ai|grok\.com)$/i;
 const YEAR = /\b(19|20)\d{2}\b/;

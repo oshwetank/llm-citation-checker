@@ -44,7 +44,7 @@ const money = (x, cur) => formatMoney(x == null ? null : Math.round(x), cur || n
  * The panel's categorical hues, in its fixed order: your brand is always
  * the blue, each rival keeps its colour on every chart in the report. */
 const RIVAL_COLORS = ["#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#64748b", "#c2410c"];
-const KIND_COLORS = { "Your site": "#2a78d6", "Rival brand sites": "#eb6834", "Review sites": "#1baf7a", "Retailers": "#eda100", "Forums & social": "#e87ba4", "Other": "#94a3b8" };
+const KIND_COLORS = { "Your site": "#2a78d6", "Rival brand sites": "#eb6834", "Review sites": "#1baf7a", "Retailers": "#eda100", "Forums & social": "#e87ba4", "Public & reference": "#0e7490", "Other": "#94a3b8" };
 let colorOf = () => "#64748b";
 function setBrandColors(model) {
   const map = new Map([[model.own.name.toLowerCase(), "#2a78d6"]]);

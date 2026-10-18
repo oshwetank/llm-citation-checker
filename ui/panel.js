@@ -1290,7 +1290,7 @@ let apTab = "overview";    // the popup's tab (0.60.0)
 const AP_FAN_MAX = 5;
 const AP_KIND_VAR = {
   "Your site": "--kind-you", "Rival brand sites": "--kind-rival", "Review sites": "--kind-review",
-  "Retailers": "--kind-retail", "Forums & social": "--kind-forum", "Other": "--kind-other",
+  "Retailers": "--kind-retail", "Forums & social": "--kind-forum", "Public & reference": "--kind-public", "Other": "--kind-other",
 };
 const apOrd = (n) => { const s = ["th", "st", "nd", "rd"], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); };
 const apDate = (t) => new Date(t).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
@@ -2556,7 +2556,7 @@ function atApplyHighlights(scroll) {
   }
 }
 
-const KIND_GROUPS_UI = ["Your site", "Rival brand sites", "Review sites", "Retailers", "Forums & social", "Other"];
+const KIND_GROUPS_UI = ["Your site", "Rival brand sites", "Review sites", "Retailers", "Forums & social", "Public & reference", "Other"];
 
 /* The single answer, laid out as the canvas's Answer board (0.60.0).
  *
@@ -3604,7 +3604,7 @@ function atMerchants(p) {
   return String((p && p.merchant) || "").split(/\s*(?:\+|·|,|\band\b)\s*/i).map((x) => x.trim()).filter((x) => x && !/^others?$/i.test(x));
 }
 // One site's kind, for a chip: "Retailers" → "Retailer".
-function atKindOne(k) { return k === "Forums & social" ? "Forum or social" : k === "Rival brand sites" ? "Rival brand site" : k === "Served by the engine" ? k : String(k).replace(/s$/, ""); }
+function atKindOne(k) { return k === "Forums & social" ? "Forum or social" : k === "Rival brand sites" ? "Rival brand site" : k === "Public & reference" ? "Public or reference site" : k === "Served by the engine" ? k : String(k).replace(/s$/, ""); }
 // Images the engine serves from its own servers say nothing about the site.
 function atProxied(u) { return /(^|\.)(images\.openai\.com|gstatic\.com|googleusercontent\.com|bing\.net|perplexity\.ai|x\.ai|grok\.com)$/i.test(atHost(u)); }
 function atHost(u) { try { return new URL(u).hostname.replace(/^www\./, ""); } catch (_) { return ""; } }
@@ -3841,7 +3841,7 @@ function atCmpBrands(main, cv, { head, gridRow, n }) {
   main.append(bsec);
 }
 
-const AT_KIND_COLOR = { "Your site": "var(--you)", "Review sites": "var(--kind-review)", "Retailers": "var(--kind-retail)", "Rival brand sites": "var(--kind-rival)", "Forums & social": "var(--kind-forum)", "Other": "var(--kind-other)" };
+const AT_KIND_COLOR = { "Your site": "var(--you)", "Review sites": "var(--kind-review)", "Retailers": "var(--kind-retail)", "Rival brand sites": "var(--kind-rival)", "Forums & social": "var(--kind-forum)", "Public & reference": "var(--kind-public)", "Other": "var(--kind-other)" };
 function atCmpSources(main, cv, { head, gridRow, n }) {
   const k = atSection("at-cmp-kinds", "Kinds of site each engine cited", "");
   k.dataset.rail = "Kinds of site";
