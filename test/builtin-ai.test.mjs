@@ -95,6 +95,29 @@ try {
     check("and Chrome's detector gave its language", rec && rec.answerLang === "en", rec && rec.answerLang);
   }
 
+  const openSettings = async () => {
+    await page.evaluate(() => document.querySelector('[data-tab="about"]').click());
+    await page.waitForTimeout(400);
+    await page.evaluate(() => [...document.querySelectorAll(".ab-nav-btn, .ab-more-row")].find((b) => b.textContent.includes("Settings"))?.click());
+    await page.waitForTimeout(800);
+  };
+  const card = () => page.evaluate(() => {
+    const c = document.getElementById("setAi");
+    return { text: c ? c.innerText : "", tiers: [...(c ? c.querySelectorAll("[data-tier]") : [])].map((b) => [b.dataset.tier, b.getAttribute("aria-checked")]),
+      download: c && c.querySelector("#aiDownload") ? c.querySelector("#aiDownload").textContent : null, switches: [...(c ? c.querySelectorAll("input[role=switch]") : [])].map((i) => [i.id, i.checked]) };
+  });
+
+  console.log("\nthe Settings card before downloading");
+  {
+    await openSettings();
+    await page.waitForFunction(() => /This computer:/.test(document.getElementById("aiHw")?.textContent || ""), null, { timeout: 15000 }).catch(() => {});
+    const c = await card();
+    check("Built-in AI is there, off, and says nothing leaves the computer", /Built-in AI/.test(c.text) && /Off/.test(c.text) && /nothing you capture is ever sent anywhere/.test(c.text), c.text.slice(0, 300));
+    check("the hardware check and a suggested size, with why", /This computer:/.test(c.text) && /Suggested:/.test(c.text), c.text);
+    check("three sizes, one picked", c.tiers.length === 3 && c.tiers.filter(([, v]) => v === "true").length === 1, JSON.stringify(c.tiers));
+    check("a Download button; no switches yet", c.download === "Download AI model" && c.switches.length === 0, JSON.stringify(c));
+  }
+
   console.log("\nthe hardware check");
   {
     const h = await msg({ type: "ai-hardware" });
@@ -112,6 +135,16 @@ try {
     const s = await waitFor(async () => { const x = await msg({ type: "ai-status" }); return x.ready || x.error ? x : null; }, 90000);
     check("and finishes: ready", s && s.ready && !s.error, JSON.stringify(s));
     check("the model's files were fetched", hits.some((h) => /onnx\/model\.onnx/.test(h)) && hits.some((h) => /tokenizer\.json/.test(h)), hits.join(" "));
+  }
+
+  console.log("\nthe Settings card once downloaded");
+  {
+    await page.reload();
+    await openSettings();
+    await page.waitForFunction(() => /Ready/.test(document.getElementById("setAi")?.innerText || ""), null, { timeout: 15000 }).catch(() => {});
+    const c = await card();
+    check("Ready, with the model named", /Ready/.test(c.text) && /Model: tiny/.test(c.text), c.text.slice(0, 400));
+    check("three switches: campaigns on, everyday on, counts off", JSON.stringify(c.switches) === JSON.stringify([["aiCampaigns", true], ["aiEveryday", true], ["aiCounts", false]]), JSON.stringify(c.switches));
   }
 
   console.log("\nan answer is checked on this computer, with nothing fetched");

@@ -30,6 +30,7 @@ import { extractBrandAspects } from "../src/lib/aspects.js";
 import { siteKindOf } from "../src/lib/siteKind.js";
 import { renderCampaignView, CV_SECTIONS, sectionCounts, resetCampaignViewState } from "./campaignView.js";
 import { initDisplaySettings } from "./displaySettings.js";
+import { initAiSettings } from "./aiSettings.js";
 import { aggregateSources } from "../src/lib/sources.js";
 import { analyzeFanout, FANOUT_BENCHMARK, titleMatchesQueries } from "../src/lib/fanout.js";
 import { sanitizeText, trimLabel } from "../src/lib/text-sanitize.js";
@@ -8714,6 +8715,7 @@ initTheme();
 initStyle();
 initDetail();
 initDisplaySettings(document.getElementById("setDisplay"));
+initAiSettings(document.getElementById("setAi"));
 
 $("#exportJson")?.addEventListener("click", () =>
   download(`citoskeleton-export-${Date.now()}.json`, JSON.stringify(currentFilteredRecs, null, 2), "application/json")
