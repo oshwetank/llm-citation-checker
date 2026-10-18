@@ -100,7 +100,7 @@ try {
   {
     const h = await head();
     check("the campaign opens on its header", !!h);
-    check("it offers Start run, and no Pause, Resume or Stop", h && h.shown.join("|") === "Edit setup|Export…|Start run" && !h.live, h && h.shown.join("|"));
+    check("it offers Start run, and no Pause, Resume or Stop", h && h.shown.join("|") === "Edit setup|Export…|Start run|Run signed out" && !h.live, h && h.shown.join("|"));
     check("the service worker has no run going", !(await status()).running);
   }
 
@@ -183,7 +183,7 @@ try {
     const s = await waitFor(async () => { const x = await status(); return x && !x.running ? x : null; }, 8000);
     check("Stop ends the run in the service worker", !!s);
     const h = await waitFor(async () => { const x = await head(); return x && !x.live ? x : null; }, 4000);
-    check("the header offers Run again, no live controls", !!h && h.shown.join("|") === "Edit setup|Export…|Run again", h && h.shown.join("|"));
+    check("the header offers Run again, no live controls", !!h && h.shown.join("|") === "Edit setup|Export…|Run again|Run signed out", h && h.shown.join("|"));
     const runs = await ask({ type: "geo-run-list", profileId });
     check("the run is recorded as stopped", runs && runs.ok && runs.runs.length === 1 && runs.runs[0].status === "stopped", JSON.stringify(runs && runs.runs).slice(0, 200));
     await page.waitForTimeout(1500);
@@ -206,7 +206,7 @@ try {
       const c = document.querySelector(".app-content");
       return { run: !!h?.querySelector(".cp-run"), shown: h ? [...h.querySelectorAll(".cp-actions button")].filter((b) => getComputedStyle(b).display !== "none").map((b) => b.textContent) : [], wide: c.scrollWidth - c.clientWidth };
     });
-    check("the header and its actions are there", r.run && r.shown.join("|") === "Edit setup|Export…|Run again", r.shown.join("|"));
+    check("the header and its actions are there", r.run && r.shown.join("|") === "Edit setup|Export…|Run again|Run signed out", r.shown.join("|"));
     check("and fit the popup", r.wide <= 0, `${r.wide}px too wide`);
     await pop.close();
   }
