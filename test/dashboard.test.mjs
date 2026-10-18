@@ -341,7 +341,8 @@ try {
 
   console.log("\nCampaign results moved to Campaigns");
   {
-    const has = await page.evaluate(() => [...document.querySelectorAll("#dashboard select")].length <= 1 && !document.getElementById("geoMetrics"));
+    // The popup's "campaign prompts" menu (0.68.0) is a filter, not results.
+    const has = await page.evaluate(() => [...document.querySelectorAll("#dashboard select:not(.db-campsel)")].length <= 1 && !document.getElementById("geoMetrics"));
     check("the Dashboard holds no campaign results", has);
   }
 

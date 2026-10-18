@@ -95,8 +95,13 @@ export function historyRows(records, { profiles = [] } = {}) {
   const byKey = new Map();
   for (const r of records || []) {
     if (!r || !r.captureId) continue;
-    const key = normPrompt(r.userPrompt);
-    if (!key) continue;
+    const norm = normPrompt(r.userPrompt);
+    if (!norm) continue;
+    // A campaign's prompt is its own row (0.68.0): the Dashboard
+    // groups a campaign's prompts together and can leave them out, so the
+    // same words asked by hand stay a row of their own.
+    const pid = r.geo && r.geo.profileId;
+    const key = pid ? `${pid}|${norm}` : norm;
     if (!byKey.has(key)) byKey.set(key, []);
     byKey.get(key).push(r);
   }
@@ -159,7 +164,7 @@ export function historyRows(records, { profiles = [] } = {}) {
       products: sum((c) => (c.products || []).length),
       places: sum((c) => (c.places || []).length),
       images: sum((c) => (c.images || []).length),
-      campaign, fromCampaign: profileIds.length > 0,
+      campaign, fromCampaign: profileIds.length > 0, profileId: profileIds[0] || null,
       // Sample answers loaded on a fresh install say so wherever they show.
       sample: caps.every((c) => c.isDemo || String(c.captureId).startsWith("demo-")),
       fan,
@@ -232,6 +237,22 @@ export function groupRows(rows, now) {
   return groups;
 }
 
+/** One block per campaign, its most recent first; rows newest first within. */
+function campaignGroups(rows) {
+  const by = new Map();
+  for (const r of rows) {
+    const id = `campaign:${r.profileId || r.campaign}`;
+    if (!by.has(id)) by.set(id, { id, label: r.campaign || "A campaign", sub: "", rows: [], campaign: true, profileId: r.profileId || null, latestAt: 0 });
+    const g = by.get(id);
+    g.rows.push(r);
+    g.latestAt = Math.max(g.latestAt, r.latestAt || 0);
+  }
+  return [...by.values()].sort((a, b) => b.latestAt - a.latestAt).map((g) => {
+    const d = new Date(g.latestAt);
+    return { ...g, sub: `campaign · last asked ${d.getDate()} ${MONTH[d.getMonth()]}` };
+  });
+}
+
 /* ---------- search ---------- */
 
 // searchTokens() and matchesTokens() live in answerSearch.js, shared with
@@ -259,6 +280,10 @@ export function historyView(rows, f, { now = Date.now(), answerHits = new Map() 
   const toks = searchTokens(f.query);
   const hasQ = toks.length > 0;
   const engineOn = (e) => !f.engines || f.engines[e] !== false;
+  // Campaign prompts (0.68.0): "group" (each campaign's prompts in a block of
+  // their own, after the prompts asked by hand), "hide" or "only". The old
+  // campaign: true is "only".
+  const campaignsMode = f.campaigns || (f.campaign ? "only" : "group");
 
   // 1. the search
   const matched = rows.map((r) => {
@@ -274,7 +299,8 @@ export function historyView(rows, f, { now = Date.now(), answerHits = new Map() 
   const pre = matched.filter((r) => r.engines.some(engineOn)
     && inPeriod(f.period || "all", now, r.latestAt, { from: f.from, to: f.to })
     && (!f.repeat || r.asked > 1)
-    && (!f.campaign || r.fromCampaign)
+    && (campaignsMode !== "only" || r.fromCampaign)
+    && (campaignsMode !== "hide" || !r.fromCampaign)
     && (!f.ads || (r.ads || []).length > 0));
 
   // 3. kind of answer
@@ -354,6 +380,10 @@ export function historyView(rows, f, { now = Date.now(), answerHits = new Map() 
   return {
     tokens: toks, matched, pre, base, list, engineCounts, kindCounts, anyKind, weeks, fan, totals, sites, ads,
     withAds: matched.filter((r) => (r.ads || []).length).length,
-    groups: f.sort && f.sort !== "newest" ? [{ id: "all", label: f.sort === "asked" ? "Asked most often" : "Most engines", sub: "", rows: list }] : groupRows(list, now),
+    groups: f.sort && f.sort !== "newest" ? [{ id: "all", label: f.sort === "asked" ? "Asked most often" : "Most engines", sub: "", rows: list }]
+      : campaignsMode === "group" || campaignsMode === "only"
+        ? [...groupRows(list.filter((r) => !r.fromCampaign), now), ...campaignGroups(list.filter((r) => r.fromCampaign))]
+        : groupRows(list, now),
+    campaignsMode,
   };
 }

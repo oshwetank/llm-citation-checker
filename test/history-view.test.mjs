@@ -40,7 +40,7 @@ const records = [
   cap("gemini", HEAD, at(0, 9), { geo: { profileId: "p1", runId: "r2", promptId: "q1" }, sources: [src("91mobiles.com")], brandMentions: [m("Kovo"), m("Lumi")] }),
   cap("perplexity", HEAD + ".", at(0, 9), { geo: { profileId: "p1", runId: "r2", promptId: "q1" }, fanout: { search: q("headphones under 4000 reddit"), shopping: [], image: [] }, sources: [src("reddit.com")], brandMentions: [m("Zento")] }),
   cap("chatgpt", "best headphones under 4000", at(7, 9), { geo: { profileId: "p1", runId: "r1", promptId: "q1" } }),
-  cap("chatgpt", "best  headphones under 4000", at(14, 9)),
+  cap("chatgpt", "best  headphones under 4000", at(14, 9), { geo: { profileId: "p1", runId: "r0", promptId: "q1" } }),
   // ad-hoc, single engine
   cap("perplexity", "how does active noise cancellation work", at(0, 11), { fanout: { search: q("how does anc work", "feedforward vs feedback ANC"), shopping: [], image: [] }, sources: [src("rtings.com"), src("wikipedia.org")] }),
   cap("gemini", "best cafe to work from in Indiranagar", at(1, 18), { places: [{ name: "Cafe One" }, { name: "Cafe Two" }], sources: [src("zomato.com")] }),
@@ -52,9 +52,29 @@ const records = [
 ];
 const profiles = [{ id: "p1", name: "Budget headphones" }];
 
+console.log("\ncampaign prompts: grouped, left out, or alone (0.68.0)");
+{
+  // Asked for: "in the normal dashboard the campaign prompts should be
+  // grouped and there should be an option to look at the dashboard data
+  // without them".
+  const mixed = [...records, cap("chatgpt", HEAD, at(2, 9))];
+  const rs = historyRows(mixed, { profiles });
+  const heads = rs.filter((r) => normPrompt(r.text) === normPrompt(HEAD));
+  check("the same words asked by hand and by a campaign are two rows", heads.length === 2 && heads.filter((r) => r.fromCampaign).length === 1 && heads.find((r) => !r.fromCampaign).captures === 1, heads.map((r) => `${r.fromCampaign}:${r.captures}`).join(" "));
+  const all = { scope: { prompts: true, answers: true, fan: true }, period: "all" };
+  const g = historyView(rs, all, { now: NOW });
+  const last = g.groups[g.groups.length - 1];
+  check("by default a campaign's prompts are one block of their own, after the rest", last.campaign && last.label === "Budget headphones" && last.rows.length === 1 && g.groups.slice(0, -1).every((x) => !x.campaign && x.rows.every((r) => !r.fromCampaign)), g.groups.map((x) => `${x.label}(${x.rows.length})`).join(" | "));
+  const hid = historyView(rs, { ...all, campaigns: "hide" }, { now: NOW });
+  check("left out, none of a campaign's prompts count anywhere", hid.list.every((r) => !r.fromCampaign) && hid.list.length === rs.length - 1 && !hid.groups.some((x) => x.campaign), String(hid.list.length));
+  const only = historyView(rs, { ...all, campaigns: "only" }, { now: NOW });
+  check("or only them", only.list.length === 1 && only.groups.length === 1 && only.groups[0].campaign, String(only.list.length));
+}
+
 console.log("\nhistoryRows: one row per prompt");
 const rows = historyRows(records, { profiles });
-const row = (t) => rows.find((r) => r.key === normPrompt(t));
+// A campaign's prompt is keyed by its campaign too (0.68.0).
+const row = (t) => rows.find((r) => r.key === normPrompt(t) || r.key.endsWith(`|${normPrompt(t)}`));
 {
   check("prompts that differ only in case, spacing or a full stop are one row", rows.length === 8 && row(HEAD).captures === 5, rows.map((r) => r.text).join(" | "));
   const h = row(HEAD);
@@ -117,7 +137,7 @@ console.log("\nEngines, toggles and kinds");
   check("an engine switched off hides prompts only it answered", g.list.length === 2 && g.list.every((r) => r.engines.includes("gemini")), g.list.map((r) => r.text).join(" | "));
   check("engine counts don't depend on the engine filter", g.engineCounts.chatgpt === 4 && g.engineCounts.gemini === 2, JSON.stringify(g.engineCounts));
   const rep = historyView(rows, { ...base, repeat: true }, { now: NOW });
-  check("asked more than once", rep.list.length === 1 && rep.list[0].key === normPrompt(HEAD), rep.list.length);
+  check("asked more than once", rep.list.length === 1 && rep.list[0].key === row(HEAD).key, rep.list.length);
   const camp = historyView(rows, { ...base, campaign: true }, { now: NOW });
   check("from a campaign", camp.list.length === 1, camp.list.length);
   const k = historyView(rows, { ...base, kinds: { shopping: true } }, { now: NOW });
@@ -138,7 +158,7 @@ console.log("\nWeeks, totals, groups and sort");
   check("grouped Today, Yesterday, then earlier", g[0].label === "Today" && g[1].label === "Yesterday" && g[0].rows.length === 2, g.map((x) => `${x.label}:${x.rows.length}`).join(" "));
   check("older prompts are grouped by month", g.some((x) => x.label === "August"), g.map((x) => x.label).join());
   const s = historyView(rows, { ...base, sort: "asked" }, { now: NOW });
-  check("sort by asked most often", s.list[0].key === normPrompt(HEAD) && s.groups.length === 1, s.list[0].text);
+  check("sort by asked most often", s.list[0].key === row(HEAD).key && s.groups.length === 1, s.list[0].text);
 }
 
 console.log("\nSearches the engines ran");

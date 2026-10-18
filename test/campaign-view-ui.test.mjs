@@ -261,6 +261,37 @@ try {
     await page.waitForTimeout(1500);
   }
 
+  console.log("\nthe Dashboard: campaign prompts grouped, or left out (0.68.0)");
+  {
+    await page.evaluate(() => document.querySelector('[data-tab="dashboard"]')?.click());
+    await page.waitForTimeout(1500);
+    const read = () => page.evaluate(() => ({
+      blocks: [...document.querySelectorAll("#dashboard .db-campaign-block")].map((b) => ({ label: b.querySelector(".db-group-h")?.textContent || "", rows: b.querySelectorAll(".db-row").length })),
+      rows: document.querySelectorAll("#dashboard .db-row").length,
+      last: [...document.querySelectorAll("#dashboard .db-group-block")].pop()?.classList.contains("db-campaign-block"),
+      on: document.querySelector("#dashboard .db-campseg .on")?.dataset.campaigns,
+    }));
+    const g = await read();
+    check("a campaign's prompts are one block, named for the campaign, after the rest", g.on === "group" && g.blocks.length === 1 && /Campaign/.test(g.blocks[0].label) && g.blocks[0].rows === seeded.prompts && g.last, JSON.stringify(g));
+    await page.evaluate(() => document.querySelector('#dashboard .db-campseg [data-campaigns="hide"]')?.click());
+    await page.waitForTimeout(800);
+    const h = await read();
+    check("Left out: the Dashboard without them", h.on === "hide" && h.blocks.length === 0 && h.rows === g.rows - g.blocks[0].rows, JSON.stringify(h));
+    await page.evaluate(() => document.querySelector('#dashboard .db-campseg [data-campaigns="only"]')?.click());
+    await page.waitForTimeout(800);
+    const o = await read();
+    check("Only: just the campaign's", o.on === "only" && o.blocks.length === 1 && o.rows === g.blocks[0].rows, JSON.stringify(o));
+    await page.reload();
+    await page.waitForTimeout(1500);
+    await page.evaluate(() => document.querySelector('[data-tab="dashboard"]')?.click());
+    await page.waitForTimeout(1200);
+    check("the choice is kept", (await read()).on === "only");
+    await page.evaluate(() => document.querySelector('#dashboard .db-campseg [data-campaigns="group"]')?.click());
+    await page.waitForTimeout(600);
+    await page.evaluate(() => document.querySelector('[data-tab="loader"]')?.click());
+    await page.waitForTimeout(2500);
+  }
+
   if (SHOTS) {
     await page.evaluate(() => document.querySelector('[data-tab="loader"]')?.click());
     await page.waitForTimeout(2500);

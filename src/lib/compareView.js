@@ -14,7 +14,9 @@
  */
 import { normalizeMentions } from "./mention-list.js";
 import { sameBrand } from "./funnel-omitted.js";
-import { normDomain } from "./siteKind.js";
+import { normDomain, siteKindOf } from "./siteKind.js";
+import { pageTypeOf } from "./campaignView.js";
+import { parseQueryOperators } from "./fanout.js";
 import { normPrompt, knownVendors, answerKind } from "./analyzeView.js";
 
 export const ENGINE_ORDER = ["chatgpt", "gemini", "perplexity", "grok"];
@@ -61,9 +63,14 @@ function domainsOf(sources) {
   return m;
 }
 
-function named(rec) {
-  return normalizeMentions(rec.brandMentions || [], knownVendors(rec)).filter((b) => b.count > 0).map((b) => b.brand);
+function mentionsOf(rec) {
+  return normalizeMentions(rec.brandMentions || [], knownVendors(rec)).filter((b) => b.count > 0);
 }
+function named(rec) {
+  return mentionsOf(rec).map((b) => b.brand);
+}
+const pctOf = (n, d) => (d ? Math.round((n / d) * 1000) / 10 : 0);
+const normName = (s) => String(s || "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 
 function queries(rec) {
   return [].concat((rec.fanout && rec.fanout.search) || [], (rec.fanout && rec.fanout.shopping) || [], (rec.fanout && rec.fanout.image) || [])
@@ -84,10 +91,13 @@ function similar(a, b) {
  * @param {{ own?: {name:string} }} opts
  */
 export function compareView(answers, { own } = {}) {
+  const kindCtx = own ? { ownBrand: own.name, ownUrl: own.url || "" } : {};
   const engines = answers.map((r) => {
     const n = named(r);
+    const ments = mentionsOf(r);
     const sources = r.sources || [];
     const cited = sources.filter((s) => s.outcome === "cited");
+    const qs = queries(r);
     return {
       id: r.platform, label: LABEL[r.platform] || r.platform, captureId: r.captureId, capturedAt: r.capturedAt,
       named: n, first: n[0] || null, brands: n.length,
@@ -99,6 +109,15 @@ export function compareView(answers, { own } = {}) {
       // the others never show one, which is not the same as "no ad this time".
       ads: [...new Set((r.ads || []).map((a) => String(a.advertiser || a.targetDomain || "").trim()).filter(Boolean))],
       adFormat: r.platform === "chatgpt",
+      // 0.68.0: the detail the side by side shows (asked for "much more
+      // information, a lot like in campaign").
+      chars: r.answerChars || 0,
+      mentions: Object.fromEntries(ments.map((b) => [b.brand, b.count])),
+      mentionTotal: ments.reduce((a, b) => a + b.count, 0),
+      citations: cited.map((s, i) => ({ n: i + 1, url: String(s.url || ""), title: String(s.title || "").trim() || normDomain(s.domain || s.url), domain: normDomain(s.domain || s.url), kind: siteKindOf(s.domain || s.url, kindCtx), pageType: pageTypeOf(s.url) })),
+      products: (r.products || []).map((c, i) => ({ name: String(c.name || "").trim(), price: c.price || null, merchant: c.merchant || (c.merchants && c.merchants[0]) || null, i })).filter((c) => c.name),
+      siteSearches: qs.filter((q) => { const o = parseQueryOperators(q); return o.siteIncludes.length || o.siteExcludes.length; }).length,
+      avgWords: qs.length ? Math.round((qs.reduce((a, q) => a + q.split(/\s+/).filter(Boolean).length, 0) / qs.length) * 10) / 10 : 0,
     };
   });
   // Where each brand came, in every answer.
@@ -110,7 +129,10 @@ export function compareView(answers, { own } = {}) {
       return i < 0 ? null : i + 1;
     });
     const hits = cells.filter((c) => c != null);
-    return { name: b, isYou: !!own && sameBrand(own.name, b), cells, namedBy: hits.length, avg: hits.length ? hits.reduce((a, c) => a + c, 0) / hits.length : 99 };
+    const count = (e) => { const k = Object.keys(e.mentions).find((x) => sameBrand(x, b)); return k ? e.mentions[k] : 0; };
+    const mentions = engines.map(count);
+    return { name: b, isYou: !!own && sameBrand(own.name, b), cells, namedBy: hits.length, avg: hits.length ? hits.reduce((a, c) => a + c, 0) / hits.length : 99,
+      mentions, share: engines.map((e, i) => pctOf(mentions[i], e.mentionTotal)), firsts: cells.filter((c) => c === 1).length };
   }).sort((a, b) => b.namedBy - a.namedBy || a.avg - b.avg);
 
   // Which sites each engine used.
@@ -118,7 +140,8 @@ export function compareView(answers, { own } = {}) {
   engines.forEach((e) => e.domains.forEach((_, d) => allDomains.add(d)));
   const siteGrid = [...allDomains].map((d) => {
     const cells = engines.map((e) => e.domains.get(d) || null);
-    return { domain: d, cells, citedBy: cells.filter((c) => c === "cited").length, readBy: cells.filter(Boolean).length };
+    const pages = engines.map((e) => e.citations.filter((c) => c.domain === d).length);
+    return { domain: d, kind: siteKindOf(d, kindCtx), cells, pages, citedBy: cells.filter((c) => c === "cited").length, readBy: cells.filter(Boolean).length };
   }).sort((a, b) => b.citedBy - a.citedBy || b.readBy - a.readBy || a.domain.localeCompare(b.domain));
 
   // Searches each engine ran; a search another engine also ran is marked.
@@ -176,5 +199,30 @@ export function compareView(answers, { own } = {}) {
     ads: e.ads, adFormat: e.adFormat,
     model: (answers.find((r) => r.captureId === e.captureId) || {}).model || "",
   }));
-  return { engines: table, brandGrid, siteGrid, searchRows, diffs };
+  // Kinds of site each engine cited.
+  const KINDS = ["Your site", "Review sites", "Retailers", "Rival brand sites", "Forums & social", "Other"];
+  const kindMix = engines.map((e) => ({ id: e.id, label: e.label, total: e.citations.length,
+    parts: KINDS.map((k) => ({ label: k, n: e.citations.filter((c) => (KINDS.includes(c.kind) ? c.kind : "Other") === k).length })).filter((x) => x.n) }));
+  // Product cards, matched across engines by name.
+  const pmap = new Map();
+  engines.forEach((e, i) => e.products.forEach((c) => {
+    const k = normName(c.name);
+    if (!pmap.has(k)) pmap.set(k, { name: c.name, cells: engines.map(() => null) });
+    const row = pmap.get(k);
+    if (!row.cells[i]) row.cells[i] = { price: c.price, merchant: c.merchant, place: c.i + 1 };
+  }));
+  const productGrid = [...pmap.values()].map((x) => ({ ...x, shownBy: x.cells.filter(Boolean).length }))
+    .sort((a, b) => b.shownBy - a.shownBy || Math.min(...a.cells.filter(Boolean).map((c) => c.place)) - Math.min(...b.cells.filter(Boolean).map((c) => c.place)));
+  // How far the answers agree.
+  const n = engines.length;
+  const overlap = {
+    brandsAll: brandGrid.filter((b) => b.namedBy === n).length, brands: brandGrid.length,
+    sitesShared: siteGrid.filter((x) => x.citedBy > 1).length, sitesCited: siteGrid.filter((x) => x.citedBy > 0).length,
+    sameFirst: n > 1 && engines.every((e) => e.first && sameBrand(e.first, engines[0].first || "")),
+    searchesShared: searchRows.reduce((a, r) => a + r.queries.filter((q) => q.shared).length, 0),
+    productsShared: productGrid.filter((p) => p.shownBy > 1).length, products: productGrid.length,
+  };
+  const detail = engines.map((e) => ({ id: e.id, label: e.label, chars: e.chars, mentionTotal: e.mentionTotal, citations: e.citations, products: e.products.length,
+    searches: e.searches.length, siteSearches: e.siteSearches, avgWords: e.avgWords }));
+  return { engines: table, brandGrid, siteGrid, searchRows, diffs, kindMix, productGrid, overlap, detail };
 }

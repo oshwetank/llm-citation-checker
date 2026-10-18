@@ -495,17 +495,41 @@ try {
 
     await page.evaluate(() => document.querySelector("#analyze .at-engine-tab.cmp")?.click());
     await page.waitForTimeout(900);
+    // 0.68.0: Side by side is tabs, one part at a time.
+    const pane = async (id) => { await page.evaluate((id) => document.querySelector(`#analyze .at-cmp-tabs [data-pane="${id}"]`)?.click(), id); await page.waitForTimeout(700); };
+    const tabsCmp = await page.evaluate(() => [...document.querySelectorAll("#analyze .at-cmp-tabs [role=tab]")].map((b) => b.dataset.pane));
+    check("Side by side is tabs: summary, brands, sources, products, searches", ["sum", "brands", "sources", "products", "searches"].every((x) => tabsCmp.includes(x)) && tabsCmp[0] === "sum", tabsCmp.join(" | "));
     const c = await page.evaluate(() => {
       const d = Object.fromEntries([...document.querySelectorAll("#at-cmp-diffs .at-diffs li")].map((x) => [x.querySelector(".at-diff-k")?.textContent.trim(), x.lastElementChild?.textContent.trim()]));
       return {
         diffs: d,
         rows: document.querySelectorAll("#at-cmp-table .at-tr:not(.at-th)").length,
-        brandRows: document.querySelectorAll("#at-cmp-brands [role=row]:has([role=rowheader])").length,
-        sites: document.querySelectorAll("#at-cmp-sites [role=row]:has([role=rowheader])").length,
+        heads: [...document.querySelectorAll("#at-cmp-table .at-th [role=columnheader]")].map((x) => x.textContent),
+        tiles: document.querySelectorAll("#at-cmp-diffs .cv-tile").length,
+        one: document.querySelectorAll("#analyze .at-main > section").length,
         ansTabs: [...document.querySelectorAll("#at-answer .at-ans-tabs [role=tab]")].map((b) => b.textContent.trim()),
         singleGone: !document.getElementById("at-glance") && !document.getElementById("at-backing"),
       };
     });
+    check("the summary: how far they agree, and each engine in numbers with mentions, products and site: searches", c.tiles === 5 && ["Mentions", "Products", "site:", "Answer"].every((x) => c.heads.includes(x)) && c.one === 2, JSON.stringify({ tiles: c.tiles, heads: c.heads, one: c.one }));
+    await pane("brands");
+    c.brandRows = await page.evaluate(() => document.querySelectorAll("#at-cmp-brands [role=row]:has([role=rowheader])").length);
+    await page.evaluate(() => [...document.querySelectorAll("#at-cmp-brands .cv-seg button")].find((b) => b.textContent === "Mentions")?.click());
+    await page.waitForTimeout(700);
+    const ment = await page.evaluate(() => [...document.querySelectorAll("#at-cmp-brands [role=cell].c")].map((x) => x.textContent).filter((t) => t !== "—"));
+    check("brands can be read by place, mentions or share", ment.length > 0 && ment.every((t) => /^×\d+$/.test(t)), ment.slice(0, 5).join(" "));
+    await pane("sources");
+    const src = await page.evaluate(() => ({
+      sites: document.querySelectorAll("#at-cmp-sites [role=row]:has([role=rowheader])").length,
+      kinds: document.querySelectorAll("#at-cmp-kinds .at-cmp-kindrow").length,
+      cites: document.querySelectorAll("#at-cmp-cites .at-cmp-cite").length,
+      kindCol: !!document.querySelector("#at-cmp-sites .cv-pill"),
+    }));
+    c.sites = src.sites;
+    check("sources: kinds of site per engine, every cited page in order, and the site grid with each site's kind", src.kinds === 2 && src.cites > 0 && src.kindCol, JSON.stringify(src));
+    await pane("products");
+    check("product cards are lined up across engines", await page.evaluate(() => !!document.getElementById("at-cmp-products")));
+    await pane("sum");
     check("how the answers differ, in sentences", /ChatGPT named OnePlus first/.test(c.diffs["Who came first"] || ""), JSON.stringify(c.diffs).slice(0, 200));
     check("each engine in numbers", c.rows === 2, c.rows);
     check("where each brand came", c.brandRows >= 5, c.brandRows);

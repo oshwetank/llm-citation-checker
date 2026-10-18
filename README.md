@@ -11,12 +11,23 @@ Everything is stored **locally in your browser**. The extension makes **no netwo
 of its own**, except, if you turn on **Read the cited pages**, to the pages an answer cited;
 nothing leaves your device.
 
-> **v0.67.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.68.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **Dashboard: campaign prompts in their own block** (0.68.0). A campaign's prompts are grouped
+>   under the campaign's name, after what you asked by hand (its five latest, with "Show all").
+>   **Campaign prompts: Grouped · Left out · Only** shows the Dashboard with them, without them,
+>   or only them, and is remembered. The same words asked by hand and by a campaign are now two
+>   rows.
+> - **Side by side, rebuilt** (0.68.0). Comparing engines on one prompt is tabs: Summary (how
+>   far they agree, and each engine in numbers: answer kind and length, brands, mentions,
+>   products, searches, `site:` searches, pages read and cited, ads), Brands (place, mentions or
+>   share of mentions in each answer), Sources (kinds of site each engine cited, every cited page
+>   in order, and the site grid with each site's kind), Products (cards matched across engines
+>   with place and price), Searches and Ads. Long lists page.
 > - **Campaign page as tabs** (0.67.0). A campaign's results are nine tabs (Overview, Brands,
 >   Compare, Sources, Citations, Prompts, Products & topics, Searches & ads, Signals & data), one
 >   shown at a time, instead of one long page; long lists page through 10–20 rows at a time.
