@@ -573,7 +573,8 @@ html, body {
      faces after it only ever show for scripts outside the bundled subsets. */
   font-family: var(--font-sans);
   font-size: 13px;
-  line-height: 1.5;
+  /* Settings → Display → Line spacing (0.63.0) scales this. */
+  line-height: calc(1.5 * var(--ui-leading, 1));
   /* Plex is spaced for UI sizes already; the old -0.011em tightening was
      tuned for SF/Segoe and closes up Plex's counters at 11-12px. */
   letter-spacing: 0;
@@ -7237,3 +7238,60 @@ button.cv-pc { cursor: pointer; }
 .cv-delta.tone-flat { color: var(--fg-muted); }
 .cv-who .row-x { font: inherit; width: 20px; height: 20px; border-radius: 6px; border: 1px solid var(--border); background: var(--card-bg); color: var(--fg-muted); cursor: pointer; line-height: 1; }
 .cv-who .row-x:hover { color: var(--red-fg); border-color: var(--red-fg); }
+
+
+/* ---------- Display settings (0.63.0, ui/display-boot.js) ----------
+   Text size is a zoom on the page's two parts rather than on <html>, so the
+   popup keeps its fixed size and its content reflows inside it. Brightness
+   and contrast are a filter, set only when one is off 100% (a filter makes
+   its element the containing block for fixed children). */
+.app-header, .app-content { zoom: var(--ui-zoom, 1); }
+html[data-display-filter] .app-header, html[data-display-filter] .app-content { filter: brightness(var(--ui-bright, 1)) contrast(var(--ui-contrast, 1)); }
+html[data-density="compact"] .card, html[data-density="compact"] .cv-card { padding: 11px 12px; }
+html[data-density="compact"] .cv-tr { padding-top: 5px; padding-bottom: 5px; }
+html[data-density="compact"] .cv-sec { gap: 10px; margin-top: 18px; }
+html[data-density="compact"] .cv-tile, html[data-density="compact"] .cv-kpi { padding: 10px 12px; }
+html[data-density="compact"] .ab-row { padding-top: 9px; padding-bottom: 9px; }
+html[data-density="compact"] .drill-table td, html[data-density="compact"] .drill-table th { padding-top: 4px; padding-bottom: 4px; }
+html[data-density="compact"] .at-sec, html[data-density="compact"] .ap-card { padding: 12px; }
+
+/* The Display block in About → Settings. */
+.ds { display: flex; flex-direction: column; gap: 16px; padding: 14px 0 4px; border-top: 1px solid var(--line-soft, var(--border)); }
+.ds-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; }
+.ds-head b { font-size: 14px; font-weight: 600; }
+.ds-head span { color: var(--fg-muted); font-size: 12.5px; }
+.ds-head .ds-reset { margin-left: auto; }
+.ds-fonts { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.ds-font { font: inherit; text-align: left; display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: var(--r-ctl, 10px); border: 1px solid var(--border); background: var(--card-bg); color: var(--fg-primary); cursor: pointer; min-width: 0; }
+.ds-font:hover { border-color: var(--accent); }
+.ds-font[aria-checked="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-subtle); }
+.ds-font .ds-aa { font-size: 20px; line-height: 1.15; }
+.ds-font .ds-fname { font-size: 12px; color: var(--fg-muted); font-family: var(--font-sans); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ds-google { display: flex; flex-direction: column; gap: 8px; }
+.ds-gsearch { position: relative; max-width: 420px; }
+.ds-gsearch input { font: inherit; width: 100%; box-sizing: border-box; height: 34px; padding: 0 12px; border-radius: var(--r-ctl, 10px); border: 1px solid var(--border); background: var(--card-bg); color: var(--fg-primary); }
+.ds-gsearch input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ds-glist { list-style: none; margin: 4px 0 0; padding: 4px; border: 1px solid var(--border); border-radius: var(--r-ctl, 10px); background: var(--card-bg); max-height: 220px; overflow: auto; }
+.ds-glist li { display: flex; justify-content: space-between; gap: 10px; padding: 7px 10px; border-radius: 7px; cursor: pointer; font-size: 13px; }
+.ds-glist li[aria-selected="true"], .ds-glist li:hover { background: var(--accent-subtle); color: var(--accent); }
+.ds-glist li span { color: var(--fg-muted); font-size: 11.5px; }
+.ds-note { font-size: 12px; color: var(--fg-muted); display: flex; align-items: center; gap: 6px; }
+.ds-note.on { color: var(--amber-fg); }
+.ds-sliders { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 14px 22px; }
+.ds-slider { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ds-slider-top { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; }
+.ds-slider-top output { font-variant-numeric: tabular-nums; font-weight: 500; color: var(--accent); background: var(--accent-subtle); padding: 1px 8px; border-radius: 999px; font-size: 12px; }
+.ds-range { --p: 50%; -webkit-appearance: none; appearance: none; width: 100%; height: 22px; background: transparent; margin: 0; cursor: pointer; }
+.ds-range::-webkit-slider-runnable-track { height: 8px; border-radius: 999px; background: linear-gradient(to right, var(--accent) 0 var(--p), color-mix(in srgb, var(--fg-muted) 22%, transparent) var(--p) 100%); }
+.ds-range::-webkit-slider-thumb { -webkit-appearance: none; width: 20px; height: 20px; margin-top: -6px; border-radius: 50%; background: var(--card-bg); border: 2px solid var(--accent); box-shadow: 0 1px 4px rgba(0,0,0,.18); transition: transform .12s; }
+.ds-range:hover::-webkit-slider-thumb, .ds-range:focus-visible::-webkit-slider-thumb { transform: scale(1.12); }
+.ds-range:focus-visible { outline: none; }
+.ds-range:focus-visible::-webkit-slider-runnable-track { box-shadow: 0 0 0 3px var(--accent-subtle); }
+.ds-ticks { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--fg-muted); padding: 0 4px; font-variant-numeric: tabular-nums; }
+.ds-preview { border: 1px solid var(--border); border-radius: var(--r-card, 16px); background: var(--card-bg); padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
+.ds-preview .ds-pk { display: flex; gap: 18px; flex-wrap: wrap; }
+.ds-preview .ds-pk b { display: block; font-size: 22px; font-weight: 300; font-variant-numeric: tabular-nums; }
+.ds-preview .ds-pk span { color: var(--fg-muted); font-size: 12px; }
+.ds-preview p { margin: 0; color: var(--fg-secondary); }
+.ds-preview code { font-family: var(--font-mono); font-size: 12px; background: var(--surface-sunken, var(--bg-subtle)); padding: 2px 6px; border-radius: 5px; }
+@media (prefers-reduced-motion: reduce) { .ds-range::-webkit-slider-thumb { transition: none; } }

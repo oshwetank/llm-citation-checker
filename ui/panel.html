@@ -23,6 +23,7 @@
          who picked dark or Classic. A plain script, not inline: an extension
          page's CSP refuses inline script. -->
     <script src="theme-boot.js"></script>
+    <script src="display-boot.js"></script>
   </head>
   <body>
     <div class="app-wrapper">
@@ -34,7 +35,7 @@
             </div>
             <div class="brand-text">
               <span class="brand-title">CitoSkeleton</span>
-              <span class="version-badge">v0.64.0</span>
+              <span class="version-badge">v0.65.0</span>
               <span class="brand-sub">ChatGPT, Gemini, Perplexity &amp; Grok</span>
             </div>
           </div>
@@ -217,6 +218,10 @@
                         <button type="button" role="radio" class="ab-seg-btn" data-detail-pick="expert" aria-checked="false">Expert</button>
                       </div>
                     </div>
+                    <!-- Display (0.63.0): typeface, text size, brightness, contrast,
+                         line spacing and density. Applies at once, outside Save /
+                         Undo, in both views (ui/display-boot.js; drawn by panel.js). -->
+                    <div class="ds" id="setDisplay" aria-labelledby="setDisplayLabel"></div>
                     <div class="ab-row">
                       <label class="ab-row-text" for="setRetention">
                         <b>Captures to keep</b>

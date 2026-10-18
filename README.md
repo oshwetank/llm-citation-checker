@@ -11,12 +11,19 @@ Everything is stored **locally in your browser**. The extension makes **no netwo
 of its own**, except, if you turn on **Read the cited pages**, to the pages an answer cited;
 nothing leaves your device.
 
-> **v0.64.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.65.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **Display settings** (0.65.0, planned as 0.63.0). About → Settings → Display: fifteen bundled
+>   typefaces (Geist, IBM Plex Sans, Inter, Roboto, Open Sans, Lato, Source Sans 3, Noto Sans,
+>   Nunito, Work Sans, Manrope, DM Sans, Atkinson Hyperlegible Next, Merriweather, Lora; all SIL
+>   OFL, in `fonts/`), any Google Font by name, a code font, and sliders for text size,
+>   brightness, contrast and line spacing, plus Comfortable / Compact density. It applies before
+>   the first paint and in both the popup and the full tab. Only a Google Font makes a request
+>   (to fonts.googleapis.com), and the setting says so.
 > - **Campaign board, rebuilt** (0.64.0). A campaign's results open on the five headline numbers
 >   (share of voice, visibility, average position, mentions, responses), each split by engine and
 >   with the change since the run before, then: a brand leaderboard per engine; **you vs any rival**
@@ -694,6 +701,8 @@ Everything stays in your browser's IndexedDB. The extension makes no network req
 own, except, if you turn on Read the cited pages, to the pages an answer cited (without your
 cookies; that setting asks for access to all sites, and nothing is sent anywhere else). It
 asks for host access to the supported engines only (ChatGPT, Gemini, Perplexity and Grok).
+If you pick a Google Font in Settings → Display, the page asks fonts.googleapis.com (and
+fonts.gstatic.com) for that one font; the bundled typefaces load from the extension.
 Site icons on the campaign board come from Chrome's own favicon cache (the "favicon"
 permission); brand and engine marks are bundled (Simple Icons, CC0). Neither fetches anything.
 The network recorder (Debug capture) keeps only hosts, masked paths, query key names and
