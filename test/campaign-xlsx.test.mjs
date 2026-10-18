@@ -134,6 +134,7 @@ check("one head-to-head row per answer × rival", F.H.length === 18, F.H.length)
 }
 {
   const p = F.P.find((r) => r[5] === "Zento Pulse");
+  check("product card: the price keeps its currency (0.69.0)", p && p[col("P", "Currency")] === "INR", JSON.stringify(p));
   check("product card: price as a number and the stores it lists, without 'others'", p && p[col("P", "Price")] === 3499 && p[col("P", "Stores listed")] === 1 && p[col("P", "Rating")] === 4.3, JSON.stringify(p));
   check("store offers: one row per store a card lists (1+1+1+1)", F.O.length === 4, F.O.length);
 }

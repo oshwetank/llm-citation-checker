@@ -33,6 +33,7 @@
  * ChatGPT had selected (`DIL.useState("…")`). The result also has `blocks`:
  * the answer in order as text, cards and forms.
  */
+import { PRICE_RE as MONEY_RE } from "./money.js";
 
 const PUA_OPEN = "", PUA_MID = "", PUA_CLOSE = "";
 // An opening tag's attributes can hold JSX expressions with ">" in them
@@ -63,7 +64,8 @@ function isOnlyPrice(t) {
   const m = PRICE_RE.exec(String(t || "").trim());
   return !!m && String(t).trim().replace(m[0], "").replace(/[\s.,*()–-]/g, "").length === 0;
 }
-const PRICE_RE = /(?:(?:Around|About|Approx\.?|From|Starting at|Under|Only)\s+)?(?:[₹$€£¥]|Rs\.?\s?|INR\s?|USD\s?)\s?\d[\d,]*(?:\.\d+)?(?:\s?(?:lakh|k|K))?/;
+// Any currency, before or after the number (money.js, 0.69.0).
+const PRICE_RE = new RegExp(`(?:(?:Around|About|Approx\\.?|From|Starting at|Under|Only)\\s+)?(?:${MONEY_RE.source})`, "u");
 const ROW_ITEM_RE = new RegExp(
   String.raw`<AsyncImage\b${TAG_BODY}\/>` +
   String.raw`|<badge\b(${TAG_BODY})>([\s\S]*?)<\/badge>` +

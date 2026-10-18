@@ -9,6 +9,7 @@
  * bug (markdown links leaking verbatim into brand-mention cards) shipped
  * and went unnoticed until a user screenshot caught it.
  */
+import { PRICE_RE } from "./money.js";
 
 function sanitizeText(t) {
   if (!t) return "";
@@ -100,7 +101,8 @@ function trimLabel(raw, maxWords = 5) {
   // The next table column usually announces itself: a price, a rating, a
   // date, or the word that introduces one.
   s = s.split(/\s+(?:approx\.?|from|starting|price|rs\.?|inr|usd)\b/i)[0];
-  s = s.split(/[₹$€£]/)[0];
+  { const m = PRICE_RE.exec(s); if (m) s = s.slice(0, m.index); }
+  s = s.split(/[₹$€£¥₩]/)[0];
   s = s.split(/\s+\d[\d,.]*\s*(?:%|★|\/\s*\d)/)[0];
 
   const words = s.split(" ").filter(Boolean).slice(0, maxWords);

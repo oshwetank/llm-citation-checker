@@ -14,6 +14,7 @@
  * report is in the workbook" stays true.
  */
 
+import { averageByCurrency } from "./money.js";
 import { campaignBoard } from "./campaignBoard.js";
 import { campaignFacts, RAW } from "./campaignXlsx.js";
 import { computeMetrics, normName, domainOfUrl } from "./geo.js";
@@ -335,7 +336,7 @@ export function campaignReport(bundle = {}) {
       const x = byProduct.get(key);
       x.cards++;
       x.pos.push(p["Card position"]);
-      if (typeof p.Price === "number") x.prices.push(p.Price);
+      if (typeof p.Price === "number") x.prices.push({ amount: p.Price, currency: p.Currency || null });
       if (p["Card sends buyers to"]) x.dest.set(p["Card sends buyers to"], (x.dest.get(p["Card sends buyers to"]) || 0) + 1);
       const stores = O.filter((o) => o["Answer ID"] === p["Answer ID"] && o.Product === p.Product).map((o) => o.Store);
       if (stores.some((s) => isBrandStore(s, p.Brand, domOf(p.Brand)))) x.brandStore++;
@@ -353,7 +354,7 @@ export function campaignReport(bundle = {}) {
       cardsTotal: P.length, cardShare,
       destinations: [...dest.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([name, c]) => ({ name, pct: pct(c, mine.length), own: isBrandStore(name, OWN, ownDom) })),
       products: [...byProduct.values()].sort((a, b) => b.cards - a.cards || avg(a.pos) - avg(b.pos)).slice(0, 6).map((x) => ({
-        name: x.name, brand: x.brand, isOwn: sameName(x.brand, OWN), cards: x.cards, avgPos: avg(x.pos), avgPrice: avg(x.prices),
+        name: x.name, brand: x.brand, isOwn: sameName(x.brand, OWN), cards: x.cards, avgPos: avg(x.pos), ...(() => { const a = averageByCurrency(x.prices)[0]; return { avgPrice: a ? a.average : null, avgCurrency: a ? a.currency : null }; })(),
         dest: [...x.dest.entries()].sort((a, b) => b[1] - a[1]).map(([d]) => d)[0] || "", brandStore: pct(x.brandStore, x.cards),
       })),
       images: [...byImgHost.values()].sort((a, b) => b.images - a.images).slice(0, 5).map((x) => ({

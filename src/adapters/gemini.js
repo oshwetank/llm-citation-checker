@@ -17,6 +17,9 @@
  *   fan-out   : Flash-Lite app grounding does NOT expose sub-queries; we scan for
  *               a query array and otherwise report none (searched still true).
  */
+import { PRICE_RE } from "../lib/money.js";
+// "· ₹200-₹400", "$10–20", "€€ · 15–25 €": any currency, either side.
+const PRICE_RANGE_RE = new RegExp(`(?:${PRICE_RE.source})\\s*[-–—]\\s*\\S*\\d|\\d[\\d.,]*\\s*[-–—]\\s*(?:${PRICE_RE.source})`, "u");
 
 import { makeRecord, makeSource } from "../schema.js";
 import { walk, isHttpUrl, domainOf } from "../lib/deep.js";
@@ -202,7 +205,7 @@ function extractPrompt(reqBody) {
 function collectProducts(payload) {
   const out = [];
   const seen = new Set();
-  const PRICE = /(?:₹|Rs\.?|\$|€)\s?[\d,]+(?:\.\d+)?/;
+  const PRICE = PRICE_RE;
   walk({ payload }, (v) => {
     if (!Array.isArray(v) || v.length < 14) return;
     const hasShop = v.some((x) => typeof x === "string" && /google\.com\/search\?q=.*prds=/.test(x));
@@ -261,7 +264,7 @@ function collectPlaces(payload) {
     const website = v.find((x) => typeof x === "string" && /^https?:\/\/(?!maps\.google|www\.google)/.test(x)) || null;
     const mapsUrl = v.find((x) => typeof x === "string" && /^https?:\/\/maps\.google/.test(x)) || null;
     const latLng = v.find((x) => Array.isArray(x) && x.length === 2 && typeof x[0] === "number" && Math.abs(x[0]) <= 90);
-    const priceRange = v.find((x) => typeof x === "string" && /₹[\d,]+\s*[-–—]\s*₹?[\d,]+/.test(x));
+    const priceRange = v.find((x) => typeof x === "string" && x.length < 40 && PRICE_RANGE_RE.test(x));
     const hoursArr = v.find(
       (x) => Array.isArray(x) && x.length === 7 && x[0] === true && Array.isArray(x[1])
     );

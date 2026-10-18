@@ -20,6 +20,7 @@
  *
  * Pure: the background calls it over full records and the panel draws it.
  */
+import { hasPrice } from "./money.js";
 import { computeMetrics, normName, usageLimitOf } from "./geo.js";
 import { ranksIn, cardIsBrand, ENGINE_ORDER } from "./campaignBoard.js";
 import { siteKindOf, normDomain } from "./siteKind.js";
@@ -227,14 +228,14 @@ export function campaignView(recs, { profile, brands, prompts = [], engineFilter
   const words = (s) => s.split(/\s+/).filter(Boolean).length;
   const promptsSent = (e) => new Set(byEngine(recs, e).map(promptKey)).size;
   const searchStats = engines.map((e) => {
-    const qs = allQ.filter((q) => q.engine === e); const n = qs.length; const has = (re) => pctOf(qs.filter((q) => re.test(q.text)).length, n);
+    const qs = allQ.filter((q) => q.engine === e); const n = qs.length; const has = (re) => pctOf(qs.filter((q) => (typeof re === "function" ? re(q.text) : re.test(q.text))).length, n);
     return {
       // Gemini doesn't publish the searches it runs: none captured is not none run.
       engine: e, label: ENGINE_LABEL[e], published: e !== "gemini" || n > 0, n, perPrompt: promptsSent(e) ? r1(n / promptsSent(e)) : 0,
       avgWords: n ? r1(qs.reduce((s, q) => s + words(q.text), 0) / n) : 0,
       unanswered: qs.filter((q) => !q.answered).length,
       traits: [
-        ["price", "Price or budget", has(/₹|\$|€|£|\bprice\b|\bunder\b|\bbudget\b|\bcheap/i)],
+        ["price", "Price or budget", has((q) => hasPrice(q) || /\bprice\b|\bunder\b|\bbudget\b|\bcheap|\bcost\b/i.test(q))],
         ["year", "Says the year", has(/\b20\d\d\b/)],
         ["month", "Says the month", has(/\b(january|february|march|april|may|june|july|august|september|october|november|december)\b/i)],
         ["brand", "Names a brand", pctOf(qs.filter((q) => brands.some((b) => new RegExp(`\\b${b.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(q.text))).length, n)],

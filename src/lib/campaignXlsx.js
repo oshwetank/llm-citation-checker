@@ -20,6 +20,7 @@
  * PURE: bundle in, Workbook out (see xlsxWrite.js). The background builds it
  * — it holds the answer text positions need — and hands the panel the parts.
  */
+import { parsePrice, parseNumber } from "./money.js";
 import { Workbook, absRange, sheetRef, cellRef, colName } from "./xlsxWrite.js";
 import { brandPresence, normName, domainOfUrl, domainMatches } from "./geo.js";
 import { answerKind, resultPositions } from "./analyzeView.js";
@@ -44,9 +45,14 @@ const wordRe = (w) => new RegExp(`(^|[^\\p{L}\\p{N}])${String(w).replace(/[.*+?^
 function merchantsOf(p) {
   return String((p && p.merchant) || "").split(/\s*(?:\+|·|,|\band\b)\s*/i).map((x) => x.trim()).filter((x) => x && !/^others?$/i.test(x));
 }
-function priceNumber(s) {
-  const m = String(s || "").replace(/,/g, "").match(/\d+(?:\.\d+)?/);
-  return m ? Number(m[0]) : null;
+// The amount and its currency, so prices from different markets are never
+// added up as one (money.js, 0.69.0). A price with no currency mark keeps
+// its number and an empty currency.
+function priceOf(s) {
+  const p = parsePrice(s);
+  if (p) return p;
+  const n = parseNumber((String(s || "").match(/\d[\d.,]*/) || [])[0]);
+  return n == null ? { amount: null, currency: null } : { amount: n, currency: null };
 }
 const fanoutOf = (rec) => {
   const f = rec.fanout || {};
@@ -151,7 +157,7 @@ export function campaignFacts({ profile = {}, prompts = [], runs = [], records =
       const stores = merchantsOf(p);
       const imgDom = domainOfUrl(p.image || "");
       const ownStore = (m) => (ownDom && m.toLowerCase().includes(ownDom.split(".")[0])) || wordRe(OWN).test(m);
-      P.push([aid, run, prompt, engine, k + 1, p.name || "", b ? b.name : String(p.name || "").split(/\s+/)[0], b && b.isOwn ? 1 : 0, priceNumber(p.price), p.price || "",
+      P.push([aid, run, prompt, engine, k + 1, p.name || "", b ? b.name : String(p.name || "").split(/\s+/)[0], b && b.isOwn ? 1 : 0, priceOf(p.price).amount, priceOf(p.price).currency || "", p.price || "",
         Number.isFinite(Number(p.rating)) && p.rating !== null ? Number(p.rating) : null, Number.isFinite(Number(p.reviews)) && p.reviews !== null ? Number(p.reviews) : null,
         imgDom, stores[0] || "", stores.length, b && b.isOwn && stores.some(ownStore) ? 1 : 0]);
       stores.forEach((m, j) => O.push([aid, run, engine, p.name || "", b ? b.name : "", j + 1, m, ownStore(m) ? 1 : 0]));
@@ -187,7 +193,7 @@ export const RAW = [
   { key: "M", sheet: "Mentions", table: "tMentions", what: "One row per tracked brand an answer named", cols: ["Answer ID", "Run", "Prompt ID", "Engine", "Kind of answer", "Brand", "Brand type", "Position", "Mentions", "Named first", "Tracked", "Picked for", "Cited pages naming it", "Its site cited"] },
   { key: "S", sheet: "Sources data", table: "tSources", what: "One row per page an engine opened", cols: ["Answer ID", "Run", "Prompt ID", "Engine", "Domain", "URL", "Page title", "Kind of site", "Outcome", "Cited", "Names you", "Names a rival", "Brands on page", "Site of brand", "Your site", "Kind of page", "Place among citations", "Search result", "Found through", "Published"] },
   { key: "Q", sheet: "Engine searches", table: "tSearches", what: "One row per search an engine ran", cols: ["Answer ID", "Run", "Prompt ID", "Engine", "Kind of search", "Search text", "Words", "Names a brand", "Names you", "Has a year", "Asks Reddit", "Uses site:", "site: sites", "Sites left out"] },
-  { key: "P", sheet: "Product cards", table: "tProducts", what: "One row per product card", cols: ["Answer ID", "Run", "Prompt ID", "Engine", "Card position", "Product", "Brand", "Yours", "Price", "Price as shown", "Rating", "Reviews", "Image from", "Card sends buyers to", "Stores listed", "Your store listed"] },
+  { key: "P", sheet: "Product cards", table: "tProducts", what: "One row per product card", cols: ["Answer ID", "Run", "Prompt ID", "Engine", "Card position", "Product", "Brand", "Yours", "Price", "Currency", "Price as shown", "Rating", "Reviews", "Image from", "Card sends buyers to", "Stores listed", "Your store listed"] },
   { key: "O", sheet: "Store offers", table: "tOffers", what: "One row per store a product card lists", cols: ["Answer ID", "Run", "Engine", "Product", "Brand", "Store rank", "Store", "Your store"] },
   { key: "I", sheet: "Images", table: "tImages", what: "One row per image in an answer", cols: ["Answer ID", "Run", "Prompt ID", "Engine", "Image position", "Image from", "Served by the engine", "Image title", "Brand shown", "Yours"] },
   { key: "H", sheet: "Head to head", table: "tH2H", what: "One row per answer × rival", cols: ["Answer ID", "Run", "Engine", "Prompt ID", "Competitor", "Your position", "Rival position", "Outcome", "Result"] },

@@ -25,6 +25,7 @@
  * engine put what. Field names can be labelled by the on-device model on
  * request (nano.js labelRawFields) — those labels are shown as guesses.
  */
+import { PRICE_RE } from "./money.js";
 
 const MAX_VALUE = 20000;   // one value, in full up to this
 const MAX_SAMPLES = 50;    // distinct values kept per field
@@ -111,7 +112,7 @@ function classifyByValue(samples) {
   const s = samples.find((x) => typeof x === "string") || "";
   if (/^https?:\/\/\S+\.(?:jpe?g|png|webp|gif|avif)(?:[?#]|$)|^https?:\/\/[^/]*(?:images\.openai\.com|gstatic\.com|googleusercontent\.com)\//i.test(s)) return "shopping";
   if (/^https?:\/\//i.test(s)) return "sources";
-  if (/^(?:[₹$€£¥]|Rs\.?\s?)\s?[\d,.]+/.test(s)) return "shopping";
+  if (s.length < 40 && PRICE_RE.test(s) && PRICE_RE.exec(s).index === 0) return "shopping";
   // Prose: long, or markdown, or several sentences' worth of words.
   if (samples.some((x) => typeof x === "string" && /[a-z]{2,}\s+[a-z]{2,}/i.test(x) && (x.length > 160 || /\*\*|^#{1,4} |\n/.test(x)))) return "answer";
   // Conversation, response and choice ids (Gemini's c_…, r_…, rc_…).

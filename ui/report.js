@@ -16,6 +16,7 @@
  * continuation page, so nothing is ever cut off at the bottom.
  */
 
+import { formatMoney } from "../src/lib/money.js";
 import { answerReport } from "../src/lib/answerReport.js";
 import { dayLabel } from "../src/lib/campaignReport.js";
 
@@ -36,7 +37,8 @@ function html(strings, ...vals) {
 const P = (x) => (x == null ? "—" : `${Math.round(x)}%`);
 const D1 = (x) => (x == null ? "—" : Number(x).toFixed(1));
 const N = (x) => (x == null ? "—" : Number(x).toLocaleString("en-US"));
-const money = (x) => (x == null ? "—" : `₹${Math.round(x).toLocaleString("en-IN")}`);
+// In the price's own currency, never assumed (money.js, 0.69.0).
+const money = (x, cur) => formatMoney(x == null ? null : Math.round(x), cur || null);
 
 /* ---------- colours ----------
  * The panel's categorical hues, in its fixed order: your brand is always
@@ -229,7 +231,7 @@ function productsPage(m, p) {
     blocks.push(blk(html`<div class="grid2">${card(`Product card share, ${run}`, barList(p.cardShare.map((b) => ({ label: b.name, value: b.share, color: colorOf(b.name), bold: b.isOwn })), { width: 300, labelW: 64 }), note(`Of ${N(p.cardsTotal)} product cards shown.`))}${card(`Where ${own}’s cards send buyers`, p.destinations.length
       ? html`${barList(p.destinations.map((d) => ({ label: d.name, value: d.pct, color: d.own ? "#2a78d6" : "#94a3b8" })), { width: 300, labelW: 110, max: 100 })}${note(`First store in each ${own} card’s store list. Blue = ${own}’s own store; grey = someone else’s.`)}`
       : note(`No product card in these answers is ${own}’s.`))}</div>`));
-    blocks.push(blk(card(`Products shown most, ${run}`, table(["Product", ["Cards", "n"], ["Avg card position", "n"], ["Avg price", "n"], "Card sends buyers to", ["Brand store offered", "c"]], p.products.map((x) => html`<tr${raw(x.isOwn ? ' class="you"' : "")}><td>${x.name}</td><td class="n">${N(x.cards)}</td><td class="n">${D1(x.avgPos)}</td><td class="n">${money(x.avgPrice)}</td><td>${x.dest || "—"}</td><td class="c">${P(x.brandStore)}</td></tr>`)))));
+    blocks.push(blk(card(`Products shown most, ${run}`, table(["Product", ["Cards", "n"], ["Avg card position", "n"], ["Avg price", "n"], "Card sends buyers to", ["Brand store offered", "c"]], p.products.map((x) => html`<tr${raw(x.isOwn ? ' class="you"' : "")}><td>${x.name}</td><td class="n">${N(x.cards)}</td><td class="n">${D1(x.avgPos)}</td><td class="n">${money(x.avgPrice, x.avgCurrency)}</td><td>${x.dest || "—"}</td><td class="c">${P(x.brandStore)}</td></tr>`)))));
   } else {
     blocks.push(blk(card(`Product cards, ${run}`, note("No answer in this run showed product cards."))));
   }

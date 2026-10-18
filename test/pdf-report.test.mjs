@@ -105,6 +105,8 @@ check("the lede names the engines and the prompts", R.lede === "How ChatGPT, Gem
 {
   const pr = page(R, "products");
   check("Zento's cards send buyers to Amazon.in and to zento.in, its own store", eq(pr.destinations.map((d) => [d.name, d.pct, d.own]), [["Amazon.in", 50, false], ["zento.in", 50, true]]), JSON.stringify(pr.destinations));
+  const zp = pr.products.find((x) => x.name === "Zento Pulse");
+  check("a product's average price keeps its currency, not assumed rupees (0.69.0)", zp && zp.avgPrice === 3499 && zp.avgCurrency === "INR", JSON.stringify(zp));
   check("kinds of answer: 2 shopping, 3 informational, 1 from memory", eq(pr.kinds.map((k) => [k.label, k.answers]), [["Shopping", 2], ["Informational", 3], ["From memory", 1]]), JSON.stringify(pr.kinds.map((k) => [k.label, k.answers])));
 }
 {
