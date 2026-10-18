@@ -9098,7 +9098,13 @@ function renderLoaderStatus(s) {
         ),
         el("button", { className: "btn primary small", style: "flex-shrink:0" }, "Resume Now")
       );
-      banner.querySelector("button").onclick = () => send({ type: "loader-resume" }).then(refresh);
+      // Same as the header's Resume (this called a `refresh` that only
+      // exists inside another function, so the button threw instead).
+      banner.querySelector("button").onclick = async () => {
+        const r = await send({ type: "loader-resume" });
+        if (!r || r.ok === false) { showToast(r?.error || "Couldn't resume the run.", "error"); return; }
+        withScrollPreserved(() => renderLoaderStatus(r));
+      };
       if (hadCooldownBanner) banner.style.animation = "none";
       box.append(banner);
     } else {
