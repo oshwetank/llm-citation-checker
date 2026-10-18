@@ -49,3 +49,33 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   catch (e) { sendResponse({ ok: false, error: String(e && e.message || e) }); }
   return true;
 });
+
+/* The built-in AI model (0.70.0, src/lib/llmEngine.js) lives here too: the
+ * service worker sends it jobs and gets replies back. Its library is only
+ * imported on the first AI job, so reading cited pages stays light. */
+let engine = null;
+const getEngine = () => (engine = engine || import("../src/lib/llmEngine.js"));
+let lastProgress = 0;
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (!msg || msg.target !== "llm") return;
+  (async () => {
+    const e = await getEngine();
+    switch (msg.op) {
+      case "hardware": return e.hardware();
+      case "status": return e.status();
+      case "load": return e.load({ ...msg.args, onProgress: (p) => {
+        // Throttled: a 1.4 GB download reports thousands of steps.
+        const now = Date.now();
+        if (p && p.status === "progress_total" && now - lastProgress < 300 && p.progress < 100) return;
+        lastProgress = now;
+        try { chrome.runtime.sendMessage({ type: "ai-progress", progress: { status: p.status, file: p.file || null, loaded: p.loaded || 0, total: p.total || 0, pct: p.progress ?? null } }, () => void chrome.runtime.lastError); } catch (_) { /* nobody listening */ }
+      } });
+      case "generate": return e.generate(msg.args);
+      case "unload": await e.unload(); return { ok: true };
+      case "cached": return e.cachedBytes(msg.args.repo, msg.args.host);
+      case "remove": return e.removeCached(msg.args.repo, msg.args.host);
+      default: throw new Error(`unknown op ${msg.op}`);
+    }
+  })().then((r) => sendResponse({ ok: true, result: r }), (err) => sendResponse({ ok: false, error: String(err && err.message || err) }));
+  return true;
+});

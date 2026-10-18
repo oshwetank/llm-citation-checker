@@ -13,6 +13,7 @@
  */
 
 import { probeIsRead } from "./lib/geminiChannel.js";
+import { createAiService } from "./aiService.js";
 import { db } from "./lib/db.js";
 import {
   turnBudgetMs, legEta, INTER_PROMPT_MIN_MS, INTER_PROMPT_MAX_MS,
@@ -91,6 +92,12 @@ const DEFAULT_SETTINGS = {
   // Read the cited pages (0.62.0): off until asked for, since it is the one
   // thing that makes requests beyond the engines' own pages.
   readCitedPages: false, // diagnostic channel is OFF by default (it is chatty)
+  // The built-in AI (0.70.0): what it checks once downloaded, and whether
+  // the names it finds join the counts (off: counts stay the same on every
+  // computer, model or not).
+  aiOnCampaigns: true,
+  aiOnEveryday: true,
+  aiInCounts: false,
   maxCaptureMB: 8, // skip storing a single raw payload larger than this
   retentionMax: 2000, // keep at most N captures; oldest pruned first
 };
@@ -416,7 +423,16 @@ async function enrichCaptureWithAI(record) {
     // may have landed while the model was thinking.
     const current = await db.get("derived", record.captureId);
     if (!current) return;
-    current.brandMentions = finalBrands;
+    // 0.70.0: Nano's names no longer go into the counts directly (that made
+    // share of voice differ between a computer with Nano and one without,
+    // and Reprocess erased it). They are kept as an AI check, put back on
+    // every derive, and join the counts only with "Use AI-checked brands in
+    // counts" on.
+    const have = new Set((record.brandMentions || []).map((m) => String(m.brand || "").toLowerCase()));
+    const added = finalBrands.filter((m) => !have.has(String(m.brand || "").toLowerCase()));
+    const stances = new Map(finalBrands.filter((m) => m.stance).map((m) => [m.brand, m.stance]));
+    if (!(await aiSvc.saveNano(current, { added, stances }))) return;
+    await aiSvc.attach(current);
     await db.put("derived", current);
     try {
       chrome.runtime.sendMessage(
@@ -427,6 +443,18 @@ async function enrichCaptureWithAI(record) {
   } catch (_) {
     /* enrichment is optional; never let it surface as a capture failure */
   }
+}
+
+// The answer's language, from Chrome's own detector (0.70.0); no model needed.
+async function detectAnswerLang(record) {
+  const text = String(record.answerText || "").slice(0, 4000);
+  if (text.trim().length < 20 || !chrome.i18n || !chrome.i18n.detectLanguage) return null;
+  try {
+    const r = await chrome.i18n.detectLanguage(text);
+    const top = r && r.languages && r.languages[0];
+    if (top && top.language && top.language !== "und" && (r.isReliable || top.percentage >= 60)) return top.language;
+  } catch (_) { /* not available */ }
+  return null;
 }
 
 async function deriveAndStore(rawRow, rawText, settings, { settle = true } = {}) {
@@ -463,6 +491,11 @@ async function deriveAndStore(rawRow, rawText, settings, { settle = true } = {})
 
   await attachPages(record);
   await attachInteractions(record);
+  const lang = await detectAnswerLang(record);
+  if (lang) record.answerLang = lang;
+  // The built-in AI's stored check, put back on every derive and Reprocess
+  // without running the model (0.70.0).
+  await aiSvc.attach(record).catch(() => {});
   await db.put("derived", record);
   return settle ? settleSameAnswer(record) : record;
 }
@@ -861,6 +894,11 @@ const MIN_ADVANCE_GAP_MS = 2500; // ignore a second "done" arriving right after 
  * logging. */
 const errorLog = createErrorLog(db);
 const logErr = (where, err, ctx, trace) => { try { errorLog.record(where, err, ctx, trace); } catch (_) {} };
+
+// The built-in AI (0.70.0, src/aiService.js): the model runs in the
+// offscreen document; this keeps its queue, results and state.
+const broadcast = (m) => { try { chrome.runtime.sendMessage(m, () => void chrome.runtime.lastError); } catch (_) { /* no page open */ } };
+const aiSvc = createAiService({ db, getSettings, ensureOffscreen, logErr: (w, e, c) => logErr(w, e, c), broadcast });
 // The "capture" (network-trace breadcrumbs, replacing the old in-memory
 // DEBUG ring buffer) and "turn" (per-prompt outcome history, previously
 // only visible in the live progress view) categories of the same durable
@@ -1063,6 +1101,8 @@ chrome.alarms?.onAlarm?.addListener((alarm) => {
     // error log," which is the difference between an unfixable mystery and
     // a reportable bug.
     heartbeatTick().catch((err) => logErr("heartbeatTick", err));
+    // Answers left in the AI queue by a closed browser are picked up again.
+    aiSvc.kick();
   }
 });
 
@@ -2692,6 +2732,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             } catch (_) {}
             // Deliberately NOT awaited: the capture is already saved and shown.
             enrichCaptureWithAI(res.record);
+            // The built-in AI, when downloaded (0.70.0): queued, checked one at a time.
+            await aiSvc.enqueue(res.record).catch(() => {});
             // Also not awaited, and only with the setting on (0.62.0).
             readCitedPages(res.captureId).catch(() => {});
           }
@@ -3853,6 +3895,37 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, present: all.some(isDemoRecord), real: all.filter((r) => !isDemoRecord(r)).length });
           break;
         }
+        // The built-in AI (0.70.0).
+        case "ai-progress":
+          aiSvc.onProgress(msg.progress || null);
+          break;
+        case "ai-status":
+          sendResponse(await aiSvc.status());
+          break;
+        case "ai-hardware":
+          try { sendResponse({ ok: true, ...(await aiSvc.hardware()) }); } catch (e) { sendResponse({ ok: false, error: String(e && e.message || e) }); }
+          break;
+        case "ai-download":
+          sendResponse(await aiSvc.download({ tier: msg.tier, device: msg.device }));
+          break;
+        case "ai-remove":
+          sendResponse(await aiSvc.remove());
+          break;
+        case "ai-check-capture": {
+          const rec = await db.get("derived", msg.captureId);
+          const r = await aiSvc.enqueue(rec, { force: true });
+          if (r.ok && rec) { await aiSvc.attach(rec); await db.put("derived", rec); broadcast({ type: "capture-updated", captureId: rec.captureId }); }
+          sendResponse(r);
+          break;
+        }
+        // Tests only: a stand-in model served from this computer.
+        case "ai-test-model": {
+          const host = String((msg.model || {}).host || "");
+          if (!/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/$/.test(host)) { sendResponse({ ok: false, error: "local addresses only" }); break; }
+          await aiSvc.setState({ custom: { repo: String(msg.model.repo), host, dtype: msg.model.dtype || "fp32", label: "Test model" }, tier: null, downloadedAt: null });
+          sendResponse({ ok: true });
+          break;
+        }
         case "delete-record":
           await dropCapture(msg.captureId);
           sendResponse({ ok: true });
@@ -3863,6 +3936,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           await db.clear("runs");
           await db.clear("pages").catch(() => {});
           await db.clear("interactions").catch(() => {});
+          await db.clear("ai").catch(() => {});
+          await db.clear("aiQueue").catch(() => {});
           await chrome.storage.session.remove([NETLOG_KEY, PROBE_KEY]).catch(() => {});
           sendResponse({ ok: true });
           break;

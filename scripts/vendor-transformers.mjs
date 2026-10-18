@@ -60,9 +60,16 @@ if (process.argv.includes("--check")) {
     const p = join(OUT, name);
     if (!existsSync(p) || sha(p) !== hash) { console.log(`✗ ${name} does not match VENDOR.json`); bad++; }
   }
-  // The runtime must not build code from strings (no eval / new Function).
+  // The runtime must not build code from strings. The one exception is
+  // Emscripten's embind method invoker in ONNX Runtime's glue, reached only
+  // through emscripten::val calls the WebGPU and WASM paths here don't make
+  // (checked in Chromium under the extension's CSP, test/builtin-ai). Any
+  // other eval or new Function fails the check.
   const js = readFileSync(join(OUT, "transformers.min.js"), "utf8");
-  if (/\bnew Function\s*\(|[^.\w]eval\s*\(/.test(js)) { console.log("✗ transformers.min.js builds code from strings"); bad++; }
+  const fns = [...js.matchAll(/\bnew Function\s*\(/g)].map((m) => js.slice(m.index - 200, m.index + 40));
+  const known = fns.filter((ctx) => /emval_returnValue|methodName, destructorsRef/.test(ctx));
+  if (fns.length !== known.length || known.length > 1) { console.log(`✗ transformers.min.js builds code from strings (${fns.length} new Function, ${known.length} known)`); bad++; }
+  if (/[^.\w]eval\s*\(/.test(js)) { console.log("✗ transformers.min.js calls eval"); bad++; }
   console.log(bad ? `\n${bad} FAILED` : "\nALL PASSED");
   process.exit(bad ? 1 : 0);
 }

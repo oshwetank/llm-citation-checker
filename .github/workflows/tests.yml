@@ -55,6 +55,12 @@ jobs:
           done < <(find src ui test -name '*.js' -o -name '*.mjs' | sort)
           exit $fail
 
+      # The built-in AI's runtime ships inside the extension (0.70.0): its
+      # files must be exactly the vendored versions, and must not build code
+      # from strings.
+      - name: Check the vendored AI runtime
+        run: node scripts/vendor-transformers.mjs --check
+
       # A manifest that Chrome or the Web Store rejects is a shipping failure
       # the test suite never sees. The description limit is checked because a
       # submission was rejected for exactly that (146 chars against a 132 cap).
@@ -178,7 +184,7 @@ jobs:
                    test/saved-conversations-engine.test.mjs test/source-pipeline-ui.test.mjs test/tab-management.test.mjs \
                    test/timeout-diagnostics.test.mjs \
                    test/ui-visibility.test.mjs test/same-answer-store.test.mjs test/answer-extras-ui.test.mjs \
-                   test/theme-style.test.mjs test/genui-answer-ui.test.mjs test/cited-pages.test.mjs test/network-recorder.test.mjs test/page-copy.test.mjs test/campaign-view-ui.test.mjs test/display-settings.test.mjs test/gemini-channel-ui.test.mjs test/capture-pause.test.mjs; do
+                   test/theme-style.test.mjs test/genui-answer-ui.test.mjs test/cited-pages.test.mjs test/network-recorder.test.mjs test/page-copy.test.mjs test/campaign-view-ui.test.mjs test/display-settings.test.mjs test/gemini-channel-ui.test.mjs test/capture-pause.test.mjs test/builtin-ai.test.mjs; do
             echo "── $f"
             if ! node "$f"; then
               echo "::error file=$f::browser test failed"

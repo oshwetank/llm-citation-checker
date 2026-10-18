@@ -9,7 +9,7 @@
  */
 
 const DB_NAME = "lcfc";
-const DB_VERSION = 7;
+const DB_VERSION = 8;
 
 let dbPromise = null;
 
@@ -95,6 +95,17 @@ function openDb() {
       if (!db.objectStoreNames.contains("interactions")) {
         const it = db.createObjectStore("interactions", { keyPath: "id" });
         it.createIndex("captureId", "captureId", { unique: false });
+      }
+      // v8 (0.70.0): the built-in AI's checks, keyed by the answer's text,
+      // the model and the prompt version, so a duplicate answer is checked
+      // once and a reprocess never runs the model again; and the answers
+      // waiting for a check, so a browser restart loses none.
+      if (!db.objectStoreNames.contains("ai")) {
+        const ai = db.createObjectStore("ai", { keyPath: "key" });
+        ai.createIndex("captureId", "captureId", { unique: false });
+      }
+      if (!db.objectStoreNames.contains("aiQueue")) {
+        db.createObjectStore("aiQueue", { keyPath: "captureId" });
       }
     };
     req.onsuccess = () => resolve(req.result);
