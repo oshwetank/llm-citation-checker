@@ -221,7 +221,9 @@ export function oneCapturePerPrompt(records) {
 /** Records for one profile, optionally narrowed by engine / tags / time.
  * One capture per prompt per engine per run (see oneCapturePerPrompt);
  * `allCaptures` keeps every copy, for the diagnostics export. */
-export function selectTracked(records, { profileId, engines, tags, since, until, runId, allCaptures = false } = {}) {
+// tagMode "all" (0.67.0) keeps only prompts carrying every tag asked for;
+// the default, "any", keeps prompts carrying at least one.
+export function selectTracked(records, { profileId, engines, tags, tagMode = "any", since, until, runId, allCaptures = false } = {}) {
   const picked = (records || []).filter((r) => {
     if (!isTracked(r)) return false;
     if (profileId && r.geo.profileId !== profileId) return false;
@@ -231,7 +233,7 @@ export function selectTracked(records, { profileId, engines, tags, since, until,
     if (until && r.capturedAt > until) return false;
     if (tags && tags.length) {
       const rt = r.geo.tags || [];
-      if (!tags.some((t) => rt.includes(t))) return false;
+      if (tagMode === "all" ? !tags.every((t) => rt.includes(t)) : !tags.some((t) => rt.includes(t))) return false;
     }
     return true;
   });

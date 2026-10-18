@@ -13,8 +13,12 @@ import { brandSlug, siteSlug, markSvg } from "../src/lib/logos.js";
 
 let D = null;           // { el, engineIcon, openCapture, openDomain, openFullCompare, runHistory }
 let V = null;           // the view (src/lib/campaignView.js)
-const S = { brandEng: "all", brandSort: "sov", rival: null, pf: "all", cq: "", ce: "all", ck: "All", ct: "All", cboth: false, cpage: 0, copen: -1, prf: "all", prt: "All", propen: -1 };
-export function resetCampaignViewState() { Object.assign(S, { brandEng: "all", brandSort: "sov", rival: null, pf: "all", cq: "", ce: "all", ck: "All", ct: "All", cboth: false, cpage: 0, copen: -1, prf: "all", prt: "All", propen: -1 }); }
+// Each section's own state. It outlives a redraw of the board, so coming
+// back from an answer opened in Analyze finds every section as it was left.
+const FRESH = () => ({ section: "cv-overview", brandEng: "all", brandSort: "sov", rivals: [], cmpEng: null, cmpMetric: "sov", pf: "all", cq: "", ce: "all", ck: "All", ct: "All", cboth: false, cpage: 0, copen: -1, prf: "all", prt: "All", propen: -1, pg: {} });
+const S = FRESH();
+export function resetCampaignViewState() { Object.assign(S, FRESH()); }
+export function campaignViewSection() { return S.section; }
 
 const ENG = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok" };
 const pct = (x) => (x == null ? "—" : `${x >= 10 || x === 0 ? Math.round(x) : x.toFixed(1)}%`);
@@ -119,6 +123,39 @@ const empty = (text, icon) => h("div", { className: "cv-empty" }, icon || "", h(
 const tile = (label, value, sub, extra) => h("div", { className: "cv-tile" }, h("span", { className: "cv-tile-l" }, label), h("span", { className: "cv-tile-v" }, value), sub ? h("span", { className: "cv-tile-s" }, sub) : "", extra || "");
 function replace(id, fn) { const old = document.getElementById(id); if (old) old.replaceWith(fn()); }
 
+// A page of a long list (0.67.0, asked: "please don't have infinite scroll
+// layout"): `per` rows at a time with ‹ › and where you are.
+function paged(key, list, per, redo) {
+  const pages = Math.max(1, Math.ceil(list.length / per));
+  const at = Math.min(S.pg[key] || 0, pages - 1);
+  S.pg[key] = at;
+  const rows = list.slice(at * per, at * per + per);
+  if (list.length <= per) return { rows, pager: "" };
+  const prev = h("button", { type: "button", className: "cv-pg", "aria-label": "Previous page", disabled: at === 0 }, "‹");
+  const next = h("button", { type: "button", className: "cv-pg", "aria-label": "Next page", disabled: at >= pages - 1 }, "›");
+  prev.onclick = () => { S.pg[key] = at - 1; redo(); };
+  next.onclick = () => { S.pg[key] = at + 1; redo(); };
+  return { rows, pager: h("div", { className: "cv-pager", "data-pager": key }, h("span", { className: "cv-muted" }, `${at * per + 1}–${Math.min(list.length, at * per + per)} of ${list.length}`), prev, next) };
+}
+
+// Every prompt on the board opens its answer in Analyze (0.67.0). The answer
+// opened is the one in view: the engine's when a cell is clicked, else the
+// first engine that answered.
+function answerFor(text) {
+  const p = V.prompts.find((x) => x.text === text || x.id === text);
+  const c = p && p.cells.find((x) => x && x.answered && x.captureId);
+  return c ? c.captureId : null;
+}
+function promptLink(text, captureId, cls = "") {
+  const id = captureId || answerFor(text);
+  if (!id) return h("span", { className: `cv-ell ${cls}` }, text);
+  const b = h("button", { type: "button", className: `cv-plink cv-ell ${cls}`, title: "Open this answer in Analyze" }, text);
+  b.onclick = (ev) => { ev.stopPropagation(); D.openCapture(id); };
+  return b;
+}
+const youBadge = () => h("span", { className: "cv-badge you" }, V.own === D.realOwn || !D.realOwn ? "You" : "Viewing");
+const ownSiteLabel = () => (V.own === D.realOwn || !D.realOwn ? "Your own site" : `${V.own}'s own site`);
+
 /* ---------- 1. Overview ---------- */
 
 // The change since the run before, from campaignBoard()'s KPI tiles
@@ -189,12 +226,15 @@ function brandsSec() {
   const t = h("div", { className: "cv-table cv-lead", role: "table", "aria-label": "Brand leaderboard" });
   t.append(h("div", { className: "cv-tr cv-th", role: "row" }, ...["#", "Brand", "Share of voice", "Visibility", "Position", "Mentions", "Named first"].map((x) => h("span", { role: "columnheader" }, x))));
   const max = Math.max(1, ...rows.map((r) => r.sov));
-  rows.forEach((r, i) => {
+  const pg = paged("brands", rows, 15, () => replace("cv-brands", brandsSec));
+  const start = (S.pg.brands || 0) * 15;
+  pg.rows.forEach((r, j) => {
+    const i = start + j;
     const name = h("button", { type: "button", className: "cv-who cv-link cb-brand-btn", title: r.isOwn ? "" : `Compare ${r.name} with ${V.own}` }, brandMark(r.name), r.name);
-    if (!r.isOwn) name.onclick = () => { S.rival = r.name; replace("cv-compare", compareSec); document.getElementById("cv-compare")?.scrollIntoView({ block: "start", behavior: "smooth" }); };
+    if (!r.isOwn) name.onclick = () => { if (!S.rivals.includes(r.name)) S.rivals = [...S.rivals, r.name].slice(-MAX_RIVALS); goSection("cv-compare"); };
     // A brand found in the answers rather than typed in setup says so, and
     // can be left out (geo-brand-exclude), as on the board before 0.64.0.
-    const who = h("span", { role: "cell", className: "cv-who" }, name, r.isOwn ? h("span", { className: "cv-badge you" }, "You") : "",
+    const who = h("span", { role: "cell", className: "cv-who" }, name, r.isOwn ? youBadge() : "",
       r.auto ? h("span", { className: "cv-badge auto-tag", "data-term": "autoCompetitor" }, "found in answers") : "");
     if (r.auto && D.excludeBrand) {
       const x = h("button", { type: "button", className: "row-x", title: `Leave out ${r.name}`, "aria-label": `Leave out ${r.name}` }, "×");
@@ -208,89 +248,135 @@ function brandsSec() {
   });
   const grid = h("div", { className: "cv-table cv-heat", role: "table", "aria-label": "Visibility, brand by engine", style: `--cols:1.3fr repeat(${V.engines.length + 1}, 1fr)` });
   grid.append(h("div", { className: "cv-tr cv-th", role: "row" }, h("span", { role: "columnheader" }, "Brand"), h("span", { role: "columnheader" }, "All"), ...V.engines.map((e) => h("span", { role: "columnheader", className: "cv-who" }, engineMark(e, "s"), ENG[e]))));
-  V.brands.grid.forEach((r) => grid.append(h("div", { className: "cv-tr", role: "row" }, h("span", { role: "cell", className: "cv-who" }, brandMark(r.name, "s"), r.name),
+  const gpg = paged("grid", V.brands.grid, 15, () => replace("cv-brands", brandsSec));
+  gpg.rows.forEach((r) => grid.append(h("div", { className: "cv-tr", role: "row" }, h("span", { role: "cell", className: "cv-who" }, brandMark(r.name, "s"), r.name),
     ...[r.all, ...r.cells].map((x) => h("span", { role: "cell", className: `cv-cell${x == null ? " na" : ""}`, style: x == null ? "" : `--a:${(0.08 + x / 100 * 0.72).toFixed(2)}` }, x == null ? "—" : pct(x))))));
   return section("cv-brands", "Brands", `${rows.length} brands over ${answers} answers`, tools,
-    list ? card("", h("div", { className: "cv-scroll" }, t)) : empty("No answers from this engine."),
-    card("", h("h4", { className: "cv-h4" }, "Visibility, brand by engine"), h("div", { className: "cv-scroll" }, grid)));
+    list ? card("", h("div", { className: "cv-scroll" }, t), pg.pager) : empty("No answers from this engine."),
+    card("", h("h4", { className: "cv-h4" }, "Visibility, brand by engine"), h("div", { className: "cv-scroll" }, grid), gpg.pager));
 }
 
-/* ---------- 3. You vs rival ---------- */
+/* ---------- 3. Compare: you and one or more brands ---------- */
 
+// Asked for (0.67.0): "the option to compare with 1 or more brands", laid out
+// cleanly. Up to four rivals beside the brand in view; each table has one
+// column per brand, and the best figure in a row is marked.
+const MAX_RIVALS = 4;
+const CMP_MEASURES = [
+  ["sov", "Share of voice", pct], ["vis", "Visibility", pct], ["pos", "Average position", num, true], ["mentions", "Mentions", num],
+  ["firsts", "Named first", num], ["cards", "Product cards", num], ["firstCards", "First product card", num], ["inQueries", "In the engines’ searches", num],
+];
+function bestOf(vals, low) {
+  const xs = vals.filter((v) => v != null);
+  if (!xs.length) return null;
+  return low ? Math.min(...xs) : Math.max(...xs);
+}
 function compareSec() {
-  if (!V.rivals.length) return section("cv-compare", "You vs a rival", "", empty("No other brands in these answers yet."));
-  if (!S.rival || !V.compare[S.rival]) S.rival = V.rivals[0];
-  const c = V.compare[S.rival];
-  const me = c.me, th = c.them;
-  const picker = chips("Rival", V.rivals.map((n) => [n, n, null, brandMark(n, "s")]), S.rival, (n) => { S.rival = n; S.pf = "all"; replace("cv-compare", compareSec); });
-  const M = [
-    ["Share of voice", me.sov, th.sov, pct], ["Visibility", me.vis, th.vis, pct], ["Average position", me.pos, th.pos, num, true], ["Mentions", me.mentions, th.mentions, num],
-    ["Named first", me.firsts, th.firsts, num], ["Product cards", me.cards, th.cards, num], ["First product card", me.firstCards, th.firstCards, num], ["In the engines’ searches", me.inQueries, th.inQueries, num],
-  ];
-  let mw = 0, tw = 0;
-  const duel = h("div", { className: "cv-duel" });
-  M.forEach(([label, a, b, f, low]) => {
-    const A = a ?? (low ? 99 : 0), B = b ?? (low ? 99 : 0);
-    const meBetter = low ? A < B : A > B, tie = A === B;
-    if (!tie) meBetter ? mw++ : tw++;
-    const w = (x) => (low ? (x >= 99 ? 4 : Math.min(A, B) / x * 100) : Math.max(A, B) ? x * 100 / Math.max(A, B) : 0);
-    duel.append(h("div", { className: "cv-div" },
-      h("span", { className: "l" }, h("span", { className: `cv-num${meBetter && !tie ? " win" : ""}` }, f(a)), h("i", { className: `me${meBetter || tie ? "" : " dim"}`, style: `width:${Math.max(3, w(A))}%` })),
-      h("span", { className: "m" }, label),
-      h("span", { className: "r" }, h("i", { className: `them${!meBetter || tie ? "" : " dim"}`, style: `width:${Math.max(3, w(B))}%` }), h("span", { className: `cv-num${!meBetter && !tie ? " win" : ""}` }, f(b)))));
+  if (!V.rivals.length) return section("cv-compare", "Compare brands", "", empty("No other brands in these answers yet."));
+  S.rivals = S.rivals.filter((n) => V.compare[n]);
+  if (!S.rivals.length) S.rivals = [V.rivals[0]];
+  if (!S.cmpEng || !V.engines.includes(S.cmpEng)) S.cmpEng = V.engines[0];
+  const redo = () => replace("cv-compare", compareSec);
+  const C = S.rivals.map((n) => V.compare[n]);
+  const names = [V.own, ...S.rivals];
+  const sideOf = (i, key) => (i === 0 ? C[0].me[key] : C[i - 1].them[key]);
+
+  const pick = h("div", { className: "cv-chips", role: "group", "aria-label": "Brands to compare" });
+  V.rivals.forEach((n) => {
+    const on = S.rivals.includes(n);
+    const full = !on && S.rivals.length >= MAX_RIVALS;
+    const b = h("button", { type: "button", className: `cv-chip${on ? " on" : ""}`, "aria-pressed": on ? "true" : "false", disabled: full, title: full ? `Up to ${MAX_RIVALS} at once` : "" }, brandMark(n, "s"), n);
+    b.onclick = () => { S.rivals = on ? S.rivals.filter((x) => x !== n) : [...S.rivals, n]; S.pg.cmpP = 0; redo(); };
+    pick.append(b);
   });
-  const head = h("div", { className: "cv-vs" },
-    h("div", { className: "cv-vs-side me" }, h("div", {}, h("b", {}, V.own), h("span", { className: "cv-muted" }, `ahead on ${mw} of ${M.length}`)), brandMark(V.own, "xl")),
-    h("span", { className: "cv-vs-mid" }, "vs"),
-    h("div", { className: "cv-vs-side" }, brandMark(S.rival, "xl"), h("div", {}, h("b", {}, S.rival), h("span", { className: "cv-muted" }, `ahead on ${tw} of ${M.length}`))));
-  const tg = c.together;
-  const [mb, ml] = mixBar([{ label: "Both named", n: tg.both, c: "var(--cv-ink)" }, { label: `Only ${V.own}`, n: tg.onlyMe, c: "var(--you)" }, { label: `Only ${S.rival}`, n: tg.onlyThem, c: "var(--cv-them)" }, { label: "Neither", n: tg.neither, c: "var(--cv-dim)" }]);
-  const together = card("", h("h4", { className: "cv-h4" }, "Named in the same answers", h("span", { className: "cv-sub" }, `of ${tg.answers}`)), mb, ml,
-    h("p", { className: "cv-line" }, h("span", { className: "cv-lgroup" }, brandMark(V.own, "s"), brandMark(S.rival, "s")), `When both are named, ${V.own} comes first in ${tg.meFirst} and ${S.rival} in ${tg.themFirst}.`));
-  const eng = card("", h("h4", { className: "cv-h4" }, "Engine by engine"));
-  c.engines.forEach((e) => {
-    const row = h("div", { className: "cv-eng-duel" }, h("div", { className: "cv-who" }, engineMark(e.engine), ENG[e.engine], h("span", { className: "cv-muted" }, `${e.answers} answers`)));
-    if (!e.me) row.append(h("span", { className: "cv-muted" }, "No answers"));
-    else [["Share of voice", e.me.sov, e.them.sov, pct], ["Visibility", e.me.vis, e.them.vis, pct], ["Position", e.me.pos, e.them.pos, num, true]].forEach(([l, a, b, f, low]) => {
-      const A = a ?? 0, B = b ?? 0, max = Math.max(A, B) || 1;
-      const wa = low ? (A ? Math.min(A, B || A) / A * 100 : 0) : A * 100 / max, wb = low ? (B ? Math.min(A || B, B) / B * 100 : 0) : B * 100 / max;
-      row.append(h("div", { className: "cv-div sm" }, h("span", { className: "l" }, h("span", { className: "cv-num" }, f(a)), h("i", { className: "me", style: `width:${Math.max(3, wa)}%` })), h("span", { className: "m" }, l), h("span", { className: "r" }, h("i", { className: "them", style: `width:${Math.max(3, wb)}%` }), h("span", { className: "cv-num" }, f(b)))));
-    });
-    eng.append(row);
+  const tools = h("div", { className: "cv-tools" }, h("span", { className: "cv-muted" }, `Compare ${V.own} with`), pick,
+    h("span", { className: "cv-muted" }, `${S.rivals.length} of ${MAX_RIVALS}`));
+
+  const colStyle = `--n:${names.length};--cols:minmax(150px,1.4fr) repeat(${names.length}, minmax(84px,1fr))`;
+  const headRow = (first) => h("div", { className: "cv-tr cv-th", role: "row" }, h("span", { role: "columnheader" }, first),
+    ...names.map((n, i) => h("span", { role: "columnheader", className: `cv-who${i === 0 ? " cv-me" : ""}` }, brandMark(n, "s"), h("span", { className: "cv-ell" }, n))));
+  const cell = (v, f, best, i) => h("span", { role: "cell", className: `cv-num${v != null && v === best ? " cv-best" : ""}${i === 0 ? " cv-me" : ""}` }, v == null ? "—" : f(v));
+
+  // Measures
+  const mt = h("div", { className: "cv-table cv-cmp", role: "table", "aria-label": "Measures", style: colStyle });
+  mt.append(headRow("Measure"));
+  CMP_MEASURES.forEach(([key, label, f, low]) => {
+    const vals = names.map((_, i) => sideOf(i, key));
+    const best = bestOf(vals, low);
+    mt.append(h("div", { className: "cv-tr", role: "row" }, h("span", { role: "cell", className: "cv-strong" }, label), ...vals.map((v, i) => cell(v, f, best, i))));
   });
-  const topics = card("", h("h4", { className: "cv-h4" }, "Topic by topic", h("span", { className: "cv-sub" }, "share of voice")));
-  const tmax = Math.max(10, ...c.topics.flatMap((t) => [t.me ? t.me.sov : 0, t.them ? t.them.sov : 0]));
-  c.topics.filter((t) => t.me && t.them).forEach((t) => {
-    const a = t.me.sov, b = t.them ? t.them.sov : 0, sc = (x) => x * 100 / tmax, gap = Math.round((a - b) * 10) / 10;
-    topics.append(h("div", { className: "cv-dumb" }, h("span", { className: "cv-ell" }, t.topic), h("span", { className: "cv-num cv-muted" }, String(t.answers)),
-      h("span", { className: "cv-dumb-track" }, h("i", { className: "line", style: `left:${Math.min(sc(a), sc(b))}%;width:${Math.abs(sc(a) - sc(b))}%` }), h("i", { className: "dot them", style: `left:${sc(b)}%`, title: `${S.rival} ${pct(b)}` }), h("i", { className: "dot me", style: `left:${sc(a)}%`, title: `${V.own} ${pct(a)}` })),
-      h("span", { className: `cv-badge ${gap >= 0 ? "good" : "bad"}` }, `${gap >= 0 ? "+" : ""}${gap} pts`)));
+  const wins = names.map((_, i) => CMP_MEASURES.filter(([key, , , low]) => { const vals = names.map((__, j) => sideOf(j, key)); const best = bestOf(vals, low); return best != null && vals[i] === best; }).length);
+  mt.append(h("div", { className: "cv-tr cv-foot-row", role: "row" }, h("span", { role: "cell", className: "cv-muted" }, "Best on"), ...wins.map((w, i) => h("span", { role: "cell", className: `cv-num${i === 0 ? " cv-me" : ""}` }, `${w} of ${CMP_MEASURES.length}`))));
+
+  // Engine by engine, one measure at a time
+  const MET = [["sov", "Share of voice", pct], ["vis", "Visibility", pct], ["pos", "Position", num, true], ["mentions", "Mentions", num]];
+  const met = MET.find((m) => m[0] === S.cmpMetric) || MET[0];
+  const et = h("div", { className: "cv-table cv-cmp", role: "table", "aria-label": "Engine by engine", style: colStyle });
+  et.append(headRow("Engine"));
+  C[0].engines.forEach((e, k) => {
+    const vals = names.map((_, i) => { const x = i === 0 ? e.me : C[i - 1].engines[k].them; return x ? x[met[0]] : null; });
+    const best = bestOf(vals, met[3]);
+    et.append(h("div", { className: "cv-tr", role: "row" }, h("span", { role: "cell", className: "cv-who" }, engineMark(e.engine, "s"), ENG[e.engine], h("span", { className: "cv-muted" }, ` · ${e.answers}`)),
+      ...(e.me ? vals.map((v, i) => cell(v, met[2], best, i)) : [h("span", { role: "cell", className: "cv-span cv-muted" }, "No answers")])));
   });
-  const lead = (x) => (x.me && (!x.them || x.me < x.them) ? "me" : x.them && (!x.me || x.them < x.me) ? "them" : "none");
-  const P = c.prompts.map((p) => ({ ...p, leads: p.cells.filter((x) => x && !x.noAnswer).map(lead) }));
-  const PF = [["all", "All", () => true], ["them", `${S.rival} ahead`, (p) => p.leads.includes("them")], ["only", `Only ${S.rival} named`, (p) => p.cells.some((x) => x && !x.noAnswer && x.them && !x.me)], ["me", `${V.own} ahead everywhere`, (p) => p.leads.length && p.leads.every((l) => l === "me")]];
-  const prompts = card("", h("div", { className: "cv-tools" }, h("h4", { className: "cv-h4" }, "Prompt by prompt", h("span", { className: "cv-sub" }, `place in each answer, ${V.own} · ${S.rival}`)),
-    chips("Show", PF.map(([id, l, f]) => [id, l, P.filter(f).length]), S.pf, (id) => { S.pf = id; replace("cv-compare", compareSec); })));
-  const pt = h("div", { className: "cv-table cv-pduel", role: "table", "aria-label": "Prompt by prompt", style: `--n-eng:${V.engines.length}` });
-  pt.append(h("div", { className: "cv-tr cv-th", role: "row" }, h("span", { role: "columnheader" }, "Prompt"), ...V.engines.map((e) => h("span", { role: "columnheader", className: "cv-who" }, engineMark(e, "s"), ENG[e]))));
-  P.filter((PF.find((f) => f[0] === S.pf) || PF[0])[2]).forEach((p) => pt.append(h("div", { className: "cv-tr", role: "row" }, h("span", { role: "cell", className: "cv-ell" }, p.text),
-    ...p.cells.map((x, i) => {
-      if (!x) return h("span", { role: "cell", className: "cv-pc na" }, "—");
-      if (x.noAnswer) return h("span", { role: "cell", className: "cv-pc na" }, "no answer");
-      const b = h("button", { type: "button", role: "cell", className: `cv-pc ${lead(x)}`, title: `Open this ${ENG[V.engines[i]]} answer` }, h("b", {}, x.me ? String(x.me) : "–"), " · ", x.them ? String(x.them) : "–");
-      b.onclick = () => D.openCapture(x.captureId);
-      return b;
-    }))));
-  prompts.append(h("div", { className: "cv-scroll" }, pt));
-  const prodCol = (name, list) => h("div", { className: "cv-col" }, h("div", { className: "cv-who" }, brandMark(name), h("b", {}, name)),
-    ...(list.length ? list.map((p) => h("div", { className: "cv-prod" }, h("span", { className: "cv-ell" }, p.name), h("span", { className: "cv-badge" }, `×${p.cards}`), p.first ? h("span", { className: "cv-badge gold" }, `1st ×${p.first}`) : "")) : [empty("No product cards")]));
-  const quoteCol = (name, list) => h("div", { className: "cv-col" }, h("div", { className: "cv-who" }, brandMark(name), h("b", {}, name)),
-    ...(list.length ? list.map((q) => h("figure", { className: "cv-quote" }, h("blockquote", {}, `…${q.text}…`), h("figcaption", { className: "cv-who" }, engineMark(q.engine, "s"), h("span", { className: "cv-ell" }, q.prompt)))) : [empty("No lines to quote")]));
-  const full = h("button", { type: "button", className: "cv-link cv-more" }, `Full comparison with ${S.rival} ›`);
-  full.onclick = () => D.openFullCompare(S.rival);
-  return section("cv-compare", "You vs a rival", picker, card("cv-vs-card", head, duel), h("div", { className: "cv-grid2" }, together, eng), topics, prompts,
-    h("div", { className: "cv-grid2" }, card("", h("h4", { className: "cv-h4" }, "Product cards"), h("div", { className: "cv-cols" }, prodCol(V.own, c.products.me), prodCol(S.rival, c.products.them))),
-      card("", h("h4", { className: "cv-h4" }, "How the answers word it"), h("div", { className: "cv-cols" }, quoteCol(V.own, c.quotes.me), quoteCol(S.rival, c.quotes.them)))), full);
+  const engCard = card("", h("div", { className: "cv-tools" }, h("h4", { className: "cv-h4" }, "Engine by engine"),
+    seg("Measure", MET.map(([id, l]) => [id, l]), met[0], (id) => { S.cmpMetric = id; redo(); })), h("div", { className: "cv-scroll" }, et));
+
+  // Topic by topic
+  const tt = h("div", { className: "cv-table cv-cmp", role: "table", "aria-label": "Topic by topic", style: colStyle });
+  tt.append(headRow("Topic · answers"));
+  C[0].topics.forEach((t, k) => {
+    const vals = names.map((_, i) => { const x = i === 0 ? t.me : C[i - 1].topics[k].them; return x ? x[met[0]] : null; });
+    const best = bestOf(vals, met[3]);
+    tt.append(h("div", { className: "cv-tr", role: "row" }, h("span", { role: "cell", className: "cv-ell" }, t.topic, h("span", { className: "cv-muted" }, ` · ${t.answers}`)), ...vals.map((v, i) => cell(v, met[2], best, i))));
+  });
+  const topicCard = card("", h("h4", { className: "cv-h4" }, "Topic by topic", h("span", { className: "cv-sub" }, met[1].toLowerCase())), h("div", { className: "cv-scroll" }, tt));
+
+  // Named together
+  const tog = card("", h("h4", { className: "cv-h4" }, `Named in the same answers as ${V.own}`, h("span", { className: "cv-sub" }, `of ${C[0].together.answers}`)));
+  C.forEach((c) => {
+    const tg = c.together;
+    const [mb] = mixBar([{ label: "Both", n: tg.both, c: "var(--cv-ink)" }, { label: `Only ${V.own}`, n: tg.onlyMe, c: "var(--you)" }, { label: `Only ${c.name}`, n: tg.onlyThem, c: "var(--cv-them)" }, { label: "Neither", n: tg.neither, c: "var(--cv-dim)" }]);
+    tog.append(h("div", { className: "cv-tog" }, h("span", { className: "cv-who" }, brandMark(c.name, "s"), h("b", {}, c.name)), mb,
+      h("span", { className: "cv-muted small" }, `both ${tg.both} · only ${V.own} ${tg.onlyMe} · only ${c.name} ${tg.onlyThem} · neither ${tg.neither}. Both named: ${V.own} first in ${tg.meFirst}, ${c.name} in ${tg.themFirst}.`)));
+  });
+  tog.append(h("div", { className: "cv-legend" }, ...[["var(--cv-ink)", "Both"], ["var(--you)", `Only ${V.own}`], ["var(--cv-them)", "Only the rival"], ["var(--cv-dim)", "Neither"]].map(([c, l]) => h("span", {}, h("i", { style: `background:${c}` }), l))));
+
+  // Prompt by prompt, one engine at a time
+  const P = C[0].prompts.map((p, k) => {
+    const e = V.engines.indexOf(S.cmpEng);
+    const base = p.cells[e];
+    const places = base && !base.noAnswer ? [base.me, ...C.map((c) => (c.prompts[k].cells[e] || {}).them || null)] : null;
+    return { text: p.text, captureId: base && base.captureId, places, noAnswer: !base || base.noAnswer };
+  });
+  const lead = (pl) => { const xs = pl.map((v, i) => [v, i]).filter(([v]) => v); return xs.length ? xs.sort((a, b2) => a[0] - b2[0])[0][1] : -1; };
+  const PF = [["all", "All", () => true], ["ahead", `A rival ahead of ${V.own}`, (p) => p.places && lead(p.places) > 0], ["missing", `${V.own} not named`, (p) => p.places && !p.places[0] && p.places.some(Boolean)], ["first", `${V.own} first`, (p) => p.places && lead(p.places) === 0]];
+  const f = (PF.find((x) => x[0] === S.pf) || PF[0])[2];
+  const shown = P.filter(f);
+  const { rows, pager } = paged("cmpP", shown, 12, redo);
+  const pt = h("div", { className: "cv-table cv-cmp", role: "table", "aria-label": "Prompt by prompt", style: colStyle });
+  pt.append(headRow("Prompt"));
+  rows.forEach((p) => {
+    if (!p.places) { pt.append(h("div", { className: "cv-tr", role: "row" }, h("span", { role: "cell" }, promptLink(p.text, p.captureId)), h("span", { role: "cell", className: "cv-span cv-muted" }, p.noAnswer ? "No answer from this engine" : "—"))); return; }
+    const best = bestOf(p.places, true);
+    pt.append(h("div", { className: "cv-tr", role: "row" }, h("span", { role: "cell" }, promptLink(p.text, p.captureId)),
+      ...p.places.map((v, i) => h("span", { role: "cell", className: `cv-num${v && v === best ? " cv-best" : ""}${i === 0 ? " cv-me" : ""}` }, v ? ord(v) : h("span", { className: "cv-muted" }, "not named")))));
+  });
+  const promptCard = card("", h("div", { className: "cv-tools" }, h("h4", { className: "cv-h4" }, "Prompt by prompt", h("span", { className: "cv-sub" }, "place in the answer; a prompt opens it")),
+    seg("Engine", V.engines.map((e) => [e, ENG[e], engineMark(e, "s")]), S.cmpEng, (id) => { S.cmpEng = id; S.pg.cmpP = 0; redo(); })),
+    chips("Show", PF.map(([id, l, g]) => [id, l, P.filter(g).length]), S.pf, (id) => { S.pf = id; S.pg.cmpP = 0; redo(); }),
+    shown.length ? h("div", { className: "cv-scroll" }, pt) : empty("No prompt matches."), pager);
+
+  // Products and wording, a column per brand
+  const prodsOf = (i) => (i === 0 ? C[0].products.me : C[i - 1].products.them);
+  const quotesOf = (i) => (i === 0 ? C[0].quotes.me : C[i - 1].quotes.them);
+  const cols = (fn) => h("div", { className: "cv-cols", style: `--n:${names.length}` }, ...names.map((n, i) => h("div", { className: "cv-col" }, h("div", { className: "cv-who" }, brandMark(n), h("b", {}, n)), ...fn(i))));
+  const prodCard = card("", h("h4", { className: "cv-h4" }, "Product cards"), cols((i) => (prodsOf(i).length ? prodsOf(i).map((p) => h("div", { className: "cv-prod" }, h("span", { className: "cv-ell" }, p.name), h("span", { className: "cv-badge" }, `×${p.cards}`), p.first ? h("span", { className: "cv-badge gold" }, `1st ×${p.first}`) : "")) : [empty("No product cards")])));
+  const quoteCard = card("", h("h4", { className: "cv-h4" }, "How the answers word it"), cols((i) => (quotesOf(i).length ? quotesOf(i).map((q) => h("figure", { className: "cv-quote" }, h("blockquote", {}, `…${q.text}…`), h("figcaption", { className: "cv-who" }, engineMark(q.engine, "s"), promptLink(q.prompt, q.captureId)))) : [empty("No lines to quote")])));
+  const more = h("div", { className: "cv-tools" }, ...S.rivals.map((n) => { const b = h("button", { type: "button", className: "cv-link cv-more" }, `Full comparison with ${n} ›`); b.onclick = () => D.openFullCompare(n); return b; }));
+  return section("cv-compare", "Compare brands", `${V.own} and ${S.rivals.length === 1 ? S.rivals[0] : `${S.rivals.length} others`}`, tools,
+    card("", h("h4", { className: "cv-h4" }, "Measures", h("span", { className: "cv-sub" }, "best in each row marked")), h("div", { className: "cv-scroll" }, mt)),
+    engCard, topicCard, tog, promptCard, prodCard, quoteCard, more);
 }
 
 /* ---------- 4. Sources ---------- */
@@ -301,12 +387,14 @@ function sourcesSec(drill) {
     tile("Citations", String(s.total), V.citations.byEngine.map((e) => `${ENG[e.engine]} ${e.n}`).join(" · "), h("span", { className: "cv-lgroup" }, ...V.engines.map((e) => engineMark(e, "s")))),
     tile("Sites cited", String(s.sites), s.domains.length ? `top 5 hold ${Math.round(s.domains.slice(0, 5).reduce((n, d) => n + d.citations, 0) * 100 / Math.max(1, s.total))}%` : ""),
     tile("Pages the engines read", String(s.read), "cited or not"),
-    tile("Your own site", String(V.citations.ownSite), `of ${s.total} citations`, brandMark(V.own, "s")));
+    tile(ownSiteLabel(), String(V.citations.ownSite), `of ${s.total} citations`, brandMark(V.own, "s")));
   const [kb, kl] = mixBar(V.citations.kinds.map((k) => ({ label: k.label, n: k.n, c: KIND_COLOR[k.label] || "var(--kind-other)" })));
   const dl = h("div", { className: "cv-table cv-doms", role: "table", "aria-label": "Most cited sites" });
   dl.append(h("div", { className: "cv-tr cv-th", role: "row" }, ...["#", "Site", "Kind", "Citations", "Answers citing it", "Cited by"].map((x) => h("span", { role: "columnheader" }, x))));
   const max = Math.max(1, ...s.domains.map((d) => d.citations));
-  s.domains.slice(0, 15).forEach((d, i) => {
+  const dpg = paged("doms", s.domains, 15, () => replace("cv-sources", () => sourcesSec(SRC_DRILL)));
+  dpg.rows.forEach((d, j) => {
+    const i = (S.pg.doms || 0) * 15 + j;
     const b = h("button", { type: "button", className: "cv-who cv-link", title: "Its pages and the prompts that cited them" }, siteMark(d.domain, "m"), h("span", { className: "cv-ell" }, d.domain));
     b.onclick = () => D.openDomain(d.domain);
     dl.append(h("div", { className: "cv-tr", role: "row" }, h("span", { role: "cell", className: "cv-num cv-muted" }, String(i + 1)), h("span", { role: "cell" }, b),
@@ -315,9 +403,9 @@ function sourcesSec(drill) {
       h("span", { role: "cell", className: "cv-num" }, `${d.answers} · ${pct(d.pct)}`), h("span", { role: "cell", className: "cv-lgroup" }, ...d.engines.map((e) => engineMark(e, "s")))));
   });
   const pages = card("", h("h4", { className: "cv-h4" }, "Most cited pages"));
-  s.pages.slice(0, 10).forEach((p) => pages.append(h("div", { className: "cv-page" }, siteMark(p.domain, "m"), h("a", { href: p.url, target: "_blank", rel: "noopener", className: "cv-ell" }, p.title || p.url), h("span", { className: "cv-badge" }, `×${p.citations}`))));
+  s.pages.slice(0, 15).forEach((p) => pages.append(h("div", { className: "cv-page" }, siteMark(p.domain, "m"), h("a", { href: p.url, target: "_blank", rel: "noopener", className: "cv-ell" }, p.title || p.url), h("span", { className: "cv-badge" }, `×${p.citations}`))));
   return section("cv-sources", "Sources", `${s.total} citations from ${s.sites} sites`, tiles, card("", h("h4", { className: "cv-h4" }, "Kinds of sites cited"), kb, kl),
-    card("", h("h4", { className: "cv-h4" }, "Most cited sites"), h("div", { className: "cv-scroll" }, dl)), pages, drill || "");
+    card("", h("h4", { className: "cv-h4" }, "Most cited sites"), h("div", { className: "cv-scroll" }, dl), dpg.pager), pages, drill || "");
 }
 
 /* ---------- 5. Citations ---------- */
@@ -337,7 +425,7 @@ function citationsSec() {
       ["How recent", C.freshness.map((x, i) => ({ label: x.label, n: x.n, c: i === C.freshness.length - 1 ? "var(--cv-dim)" : RAMP[i] }))],
       ["Where the engine found it", C.lanes.map((x, i) => ({ label: x.label, n: x.n, c: RAMP[(i * 2) % RAMP.length] }))]].map(([t, parts]) => { const [b, l] = mixBar(parts); return card("", h("h4", { className: "cv-h4" }, t), b, l); }));
   const tiles = h("div", { className: "cv-tiles" }, tile("Citations", String(C.total), `${C.pages} different pages`), tile("Cited by both engines", String(C.bothEngines), "same site, same prompt", h("span", { className: "cv-lgroup" }, ...V.engines.slice(0, 2).map((e) => engineMark(e, "s")))),
-    tile("Typical page age", C.medianAgeDays == null ? "—" : `${C.medianAgeDays} days`, "median of dated pages"), tile("Your own site", String(C.ownSite), `of ${C.total}`, brandMark(V.own, "s")));
+    tile("Typical page age", C.medianAgeDays == null ? "—" : `${C.medianAgeDays} days`, "median of dated pages"), tile(ownSiteLabel(), String(C.ownSite), `of ${C.total}`, brandMark(V.own, "s")));
   const q = h("input", { type: "search", id: "cvCitQ", className: "cv-search", placeholder: "Site, page or prompt", value: S.cq, "aria-label": "Filter citations" });
   q.oninput = () => { S.cq = q.value; S.cpage = 0; const pos = q.selectionStart; redo(); const n = document.getElementById("cvCitQ"); if (n) { n.focus(); n.setSelectionRange(pos, pos); } };
   const cnt = (f) => rows.filter(f).length;
@@ -371,7 +459,7 @@ function citationsSec() {
       t.append(h("div", { className: "cv-detail", role: "row" },
         h("div", { className: "cv-stack" }, h("span", { className: "cv-muted" }, "What the engine was shown"), h("p", {}, r.snippet || "No snippet was sent."), h("a", { href: r.url, target: "_blank", rel: "noopener", className: "cv-ell cv-mono" }, r.url)),
         h("div", { className: "cv-stack" }, kv("Pages this answer read", String(r.read)), kv("Pages it cited", String(r.of)), kv("Found through", r.lane === "news" ? "News results" : r.lane ? "Web search" : "Not sent"), kv("Kind of site", r.kind),
-          kv("Named first", r.first || "no brand"), kv("Kind of answer", r.answerKind === "info" ? "Informational" : r.answerKind), go)));
+          kv("Named first", r.first || "no brand"), kv("Kind of answer", r.answerKind === "info" ? "Informational" : r.answerKind), kv("Prompt", promptLink(r.prompt, r.captureId)), go)));
     }
   });
   const prev = h("button", { type: "button", className: "cv-pg", "aria-label": "Previous page", disabled: S.cpage === 0 }, "‹");
@@ -398,7 +486,8 @@ function promptsSec() {
   t.append(h("div", { className: "cv-tr cv-th", role: "row" }, h("span", { role: "columnheader" }, "Prompt"), h("span", { role: "columnheader" }, "Topic"),
     ...V.engines.map((e) => h("span", { role: "columnheader", className: "cv-who" }, engineMark(e, "s"), ENG[e])),
     ...["Visibility", "Position", "Named first", `${V.own}'s card`, "Searches"].map((x) => h("span", { role: "columnheader" }, x))));
-  shown.forEach((p) => {
+  const ppg = paged("prompts", shown, 15, redo);
+  ppg.rows.forEach((p) => {
     const open = S.propen === p.i;
     const cells = p.cells.map((c, i) => {
       if (!c) return h("span", { role: "cell", className: "cv-pc na" }, "—");
@@ -407,9 +496,10 @@ function promptsSec() {
       b.onclick = (ev) => { ev.stopPropagation(); D.openCapture(c.captureId); };
       return b;
     });
-    const toggle = h("button", { type: "button", className: "cv-link cv-ell cv-ptext", "aria-expanded": open ? "true" : "false" }, h("span", { className: `cv-chev${open ? " open" : ""}`, "aria-hidden": "true" }, "›"), p.text);
+    // The prompt opens its answer; the arrow beside it, its searches.
+    const toggle = h("button", { type: "button", className: "cv-ptoggle", "aria-expanded": open ? "true" : "false", "aria-label": open ? "Hide its searches" : "Show its searches" }, h("span", { className: `cv-chev${open ? " open" : ""}`, "aria-hidden": "true" }, "›"));
     toggle.onclick = () => { S.propen = open ? -1 : p.i; redo(); };
-    t.append(h("div", { className: "cv-tr", role: "row" }, h("span", { role: "cell" }, toggle), h("span", { role: "cell" }, h("span", { className: "cv-pill" }, p.topic)), ...cells,
+    t.append(h("div", { className: "cv-tr", role: "row" }, h("span", { role: "cell", className: "cv-ptext" }, toggle, promptLink(p.text)), h("span", { role: "cell" }, h("span", { className: "cv-pill" }, p.topic)), ...cells,
       h("span", { role: "cell", className: "cv-num" }, p.visibility == null ? "—" : pct(p.visibility)), h("span", { role: "cell", className: "cv-num" }, num(p.avgPos)),
       h("span", { role: "cell", className: "cv-lgroup" }, ...p.firsts.map((n) => brandMark(n, "s"))), h("span", { role: "cell", className: "cv-ell cv-muted" }, p.topProduct || "—"),
       h("span", { role: "cell", className: "cv-num cv-muted" }, String(p.queries.length))));
@@ -417,8 +507,8 @@ function promptsSec() {
       ...(p.queries.length ? p.queries.map((x) => h("span", { className: "cv-who cv-mono" }, engineMark(x.engine, "s"), x.text)) : [h("span", { className: "cv-muted" }, "No searches were sent.")]))));
   });
   return section("cv-prompts", "Prompt rankings", `${V.own}'s place in each answer · ${P.length} prompts`,
-    h("div", { className: "cv-tools" }, chips("Show", PF.map(([id, l, f]) => [id, l, P.filter(f).length]), S.prf, (id) => { S.prf = id; redo(); }), chips("Topic", [["All", "All topics"], ...topics.map((x) => [x, x])], S.prt, (id) => { S.prt = id; redo(); })),
-    card("", h("div", { className: "cv-scroll" }, t), h("p", { className: "cv-legend cv-foot" }, h("span", { className: "cv-pc first" }, "1"), " named first ", h("span", { className: "cv-pc mid" }, "2"), " 2nd–3rd ", h("span", { className: "cv-pc low" }, "4"), " lower ", h("span", { className: "cv-pc out" }, "✕"), " not named")));
+    h("div", { className: "cv-tools" }, chips("Show", PF.map(([id, l, f]) => [id, l, P.filter(f).length]), S.prf, (id) => { S.prf = id; S.pg.prompts = 0; redo(); }), chips("Topic", [["All", "All topics"], ...topics.map((x) => [x, x])], S.prt, (id) => { S.prt = id; S.pg.prompts = 0; redo(); })),
+    card("", h("div", { className: "cv-scroll" }, t), ppg.pager, h("p", { className: "cv-legend cv-foot" }, h("span", { className: "cv-pc first" }, "1"), " named first ", h("span", { className: "cv-pc mid" }, "2"), " 2nd–3rd ", h("span", { className: "cv-pc low" }, "4"), " lower ", h("span", { className: "cv-pc out" }, "✕"), " not named")));
 }
 
 /* ---------- 7. Products & topics ---------- */
@@ -428,10 +518,11 @@ function productsSec() {
   const pt = h("div", { className: "cv-table cv-prodt", role: "table", "aria-label": "Product cards" });
   pt.append(h("div", { className: "cv-tr cv-th", role: "row" }, ...["#", "Product", "Cards · first card", "Brand"].map((x) => h("span", { role: "columnheader" }, x))));
   const max = Math.max(1, ...p.rows.map((x) => x.cards));
-  p.rows.slice(0, 15).forEach((x, i) => pt.append(h("div", { className: `cv-tr${x.brand === V.own ? " you" : ""}`, role: "row" }, h("span", { role: "cell", className: "cv-num cv-muted" }, String(i + 1)),
+  const prpg = paged("prods", p.rows, 10, () => replace("cv-products", productsSec));
+  prpg.rows.forEach((x, j) => { const i = (S.pg.prods || 0) * 10 + j; pt.append(h("div", { className: `cv-tr${x.brand === V.own ? " you" : ""}`, role: "row" }, h("span", { role: "cell", className: "cv-num cv-muted" }, String(i + 1)),
     h("span", { role: "cell", className: "cv-ell" }, x.name),
     h("span", { role: "cell", className: "cv-barcell" }, h("span", { className: "cv-mix sm" }, h("i", { style: `width:${x.first * 100 / max}%;background:var(--you)` }), h("i", { style: `width:${(x.cards - x.first) * 100 / max}%;background:var(--you-soft)` })), h("span", { className: "cv-num" }, `${x.cards} · ${x.first}`)),
-    h("span", { role: "cell", className: "cv-who" }, x.brand ? brandMark(x.brand, "s") : "", x.brand || "—"))));
+    h("span", { role: "cell", className: "cv-who" }, x.brand ? brandMark(x.brand, "s") : "", x.brand || "—"))); });
   const share = card("", h("h4", { className: "cv-h4" }, "Card share by brand", h("span", { className: "cv-sub" }, `of ${p.total} cards`)));
   p.share.forEach((x) => share.append(h("div", { className: `cv-bl${x.isOwn ? " you" : ""}` }, brandMark(x.name, "s"), h("span", { className: "cv-ell" }, x.name), bar(x.pct, x.isOwn ? "var(--you)" : "var(--cv-dim)"), h("span", { className: "cv-num" }, pct(x.pct)), h("span", { className: "cv-num cv-muted" }, `${x.first} first`))));
   const tt = h("div", { className: "cv-table cv-topics", role: "table", "aria-label": "Topics" });
@@ -444,7 +535,7 @@ function productsSec() {
       h("span", { role: "cell" }, h("span", { className: `cv-badge ${ahead ? "good" : "bad"}` }, ahead ? `${V.own} ahead` : `${x.rival.name} ahead`))));
   });
   return section("cv-products", "Products & topics", p.total ? `${p.total} product cards in ${p.answersWithCards} answers` : "",
-    p.total ? h("div", { className: "cv-grid2" }, card("", h("h4", { className: "cv-h4" }, "Products shown as cards"), h("div", { className: "cv-scroll" }, pt)), share) : empty("No answer in this view showed product cards."),
+    p.total ? h("div", { className: "cv-grid2" }, card("", h("h4", { className: "cv-h4" }, "Products shown as cards"), h("div", { className: "cv-scroll" }, pt), prpg.pager), share) : empty("No answer in this view showed product cards."),
     card("", h("h4", { className: "cv-h4" }, "Topics", h("span", { className: "cv-sub" }, "prompts grouped by their tags, or by what they ask about")), h("div", { className: "cv-scroll" }, tt)));
 }
 
@@ -463,18 +554,19 @@ function searchesSec() {
   const brands = card("", h("h4", { className: "cv-h4" }, "Brands named in the searches", h("span", { className: "cv-sub" }, "the engine had them in mind before reading anything")));
   const bmax = Math.max(1, ...s.brands.map((b) => b.n));
   s.brands.length ? s.brands.forEach((b) => brands.append(h("div", { className: `cv-bl${b.isOwn ? " you" : ""}` }, brandMark(b.name, "s"), h("span", { className: "cv-ell" }, b.name), bar(b.n * 100 / bmax, b.isOwn ? "var(--you)" : "var(--cv-dim)"), h("span", { className: "cv-num" }, String(b.n))))) : brands.append(empty("No search named a tracked brand."));
-  const ex = card("", h("h4", { className: "cv-h4" }, "Same prompt, each engine"), s.example ? h("p", { className: "cv-muted" }, `“${s.example.prompt}”`) : "");
+  const ex = card("", h("h4", { className: "cv-h4" }, "Same prompt, each engine"), s.example ? h("p", { className: "cv-muted" }, "For ", promptLink(s.example.prompt)) : "");
   if (s.example) s.example.byEngine.forEach((x) => ex.append(h("div", { className: "cv-ex" }, engineMark(x.engine), h("div", { className: "cv-stack" }, ...x.queries.map((q) => h("span", { className: "cv-mono" }, q))))));
   else ex.append(empty("No prompt has searches from more than one engine."));
   const site = s.site;
   const sr = h("div", { className: "cv-stack" });
-  site.rows.forEach((r) => sr.append(h("div", { className: "cv-site-row" }, engineMark(r.engine), h("div", { className: "cv-stack" }, h("span", { className: "cv-mono" }, r.text), h("span", { className: "cv-muted" }, `for “${r.prompt}”`)),
+  const spg = paged("site", site.rows, 8, () => replace("cv-searches", searchesSec));
+  spg.rows.forEach((r) => sr.append(h("div", { className: "cv-site-row" }, engineMark(r.engine), h("div", { className: "cv-stack" }, h("span", { className: "cv-mono" }, r.text), h("span", { className: "cv-muted" }, "for ", promptLink(r.prompt))),
     h("div", { className: "cv-chips" }, ...r.include.map((d) => h("span", { className: "cv-pill cv-who" }, siteMark(d, "s"), d)), ...r.exclude.map((d) => h("span", { className: "cv-pill cv-who ex" }, siteMark(d, "s"), `not ${d}`)),
       r.laterCited == null ? h("span", { className: "cv-pill cv-muted" }, "no answer to check") : h("span", { className: `cv-pill ${r.laterCited.length ? "good" : ""}` }, r.laterCited.length ? `cited: ${r.laterCited.join(", ")}` : "none cited later")))));
   const siteCard = card("cv-site", h("div", { className: "cv-who" }, h("span", { className: "cv-op" }, "site:"), h("span", { className: "cv-stack" }, h("b", {}, "Searches limited to chosen sites"), h("span", { className: "cv-muted" }, "With site: in a search, the engine only looks inside the sites it names."))),
     h("div", { className: "cv-tiles" }, tile("site: searches", String(site.count), `of ${s.total}`), tile("Sites named", String(site.domains.length), site.domains.slice(0, 3).map((d) => d.domain).join(", ")),
       tile("Your site named", site.ownTargeted ? "Yes" : "0", site.ownTargeted ? "" : "never targeted")),
-    site.rows.length ? sr : "",
+    site.rows.length ? sr : "", spg.pager,
     h("div", { className: "cv-grid3" }, ...site.byEngine.filter((e) => !e.n).map((e) => empty(e.engine === "gemini" && !e.of ? "Gemini doesn't publish its searches." : `${ENG[e.engine]} ran no site: searches in ${e.of}.`, engineMark(e.engine)))));
   const a = V.ads;
   const adsCard = card("cv-ads", h("div", { className: "cv-who" }, h("span", { className: "cv-op ad" }, "AD"), h("span", { className: "cv-stack" }, h("b", {}, "Ads shown with the answers"), h("span", { className: "cv-muted" }, "ChatGPT can show a sponsored card after an answer. The other engines have no ad format."))),
@@ -484,7 +576,8 @@ function searchesSec() {
   else {
     const at = h("div", { className: "cv-table cv-adt", role: "table", "aria-label": "Ads" });
     at.append(h("div", { className: "cv-tr cv-th", role: "row" }, ...["Advertiser", "Ad", "Prompt", "Named in answer", "Site cited", `${V.own} there`].map((x) => h("span", { role: "columnheader" }, x))));
-    a.rows.forEach((x) => {
+    const apg = paged("ads", a.rows, 10, () => replace("cv-searches", searchesSec));
+    apg.rows.forEach((x) => {
       const b = h("button", { type: "button", className: "cv-tr cv-rowbtn", role: "row", title: "Open the answer" }, h("span", { role: "cell", className: "cv-who" }, siteMark(x.domain || x.advertiser, "m"), x.advertiser),
         h("span", { role: "cell", className: "cv-stack" }, h("span", { className: "cv-ell cv-strong" }, x.title || x.label), h("span", { className: "cv-ell cv-muted" }, x.domain)),
         h("span", { role: "cell", className: "cv-ell" }, x.prompt), h("span", { role: "cell" }, h("span", { className: `cv-badge ${x.namedInAnswer ? "good" : ""}` }, x.namedInAnswer ? "Yes" : "No")),
@@ -492,7 +585,7 @@ function searchesSec() {
       b.onclick = () => D.openCapture(x.captureId);
       at.append(b);
     });
-    adsCard.append(h("div", { className: "cv-scroll" }, at));
+    adsCard.append(h("div", { className: "cv-scroll" }, at), apg.pager);
   }
   return section("cv-searches", "Searches, site: and ads", `${s.total} searches across ${s.byEngine.filter((e) => e.published).length} engines`, eng, h("div", { className: "cv-grid2" }, brands, ex), siteCard, adsCard);
 }
@@ -503,7 +596,9 @@ function signalsSec(runHistory) {
   const g = V.signals;
   const ag = card("", h("h4", { className: "cv-h4" }, "Engine agreement", h("span", { className: "cv-sub" }, "the same brand named first")),
     h("div", { className: "cv-big-row" }, h("span", { className: "cv-big" }, String(g.agreement.same)), h("span", { className: "cv-muted" }, ` of ${g.agreement.of} prompts`)), bar(g.agreement.of ? g.agreement.same * 100 / g.agreement.of : 0, "var(--cv-ink)"));
-  g.agreement.differ.slice(0, 12).forEach((d) => ag.append(h("div", { className: "cv-differ" }, h("span", { className: "cv-ell" }, d.text), ...d.firsts.filter((f) => f.first).map((f) => h("span", { className: "cv-who" }, engineMark(f.engine, "s"), brandMark(f.first, "s"), f.first)))));
+  const dfp = paged("differ", g.agreement.differ, 8, () => replace("cv-signals", () => signalsSec(RUN_HISTORY)));
+  dfp.rows.forEach((d) => ag.append(h("div", { className: "cv-differ" }, promptLink(d.text), ...d.firsts.filter((f) => f.first).map((f) => h("span", { className: "cv-who" }, engineMark(f.engine, "s"), brandMark(f.first, "s"), f.first)))));
+  ag.append(dfp.pager);
   const br = card("", h("h4", { className: "cv-h4" }, "Search breadth", h("span", { className: "cv-sub" }, "per answer")));
   const bt = h("div", { className: "cv-table cv-breadth", role: "table", "aria-label": "Search breadth" });
   bt.append(h("div", { className: "cv-tr cv-th", role: "row" }, ...["Engine", "Searches", "Pages read", "Pages cited"].map((x) => h("span", { role: "columnheader" }, x))));
@@ -512,10 +607,11 @@ function signalsSec(runHistory) {
   const KL = { shopping: "Shopping", info: "Informational", local: "Local", images: "Image-led", memory: "From memory" };
   const [kb, kl] = mixBar(g.kinds.map((k) => ({ label: KL[k.id] || k.id, n: k.n, c: `var(--ak-${k.id}, var(--kind-other))` })));
   const tiles = h("div", { className: "cv-tiles" },
-    tile("Your own site", `${g.ownSite.citations}`, `of ${g.ownSite.of} citations`, brandMark(V.own, "s")),
+    tile(ownSiteLabel(), `${g.ownSite.citations}`, `of ${g.ownSite.of} citations`, brandMark(V.own, "s")),
     tile("Coverage gaps", String(g.gaps.length), "answers without you that name two or more rivals"),
     tile("First product card", `${g.firstCard.own}`, `of ${g.firstCard.of} answers with cards`));
-  const gaps = g.gaps.length ? card("", h("h4", { className: "cv-h4" }, "Prompts with a gap"), ...g.gaps.map((x) => h("div", { className: "cv-differ" }, h("span", { className: "cv-ell" }, x.text)))) : "";
+  const gpp = paged("gaps", g.gaps, 8, () => replace("cv-signals", () => signalsSec(RUN_HISTORY)));
+  const gaps = g.gaps.length ? card("", h("h4", { className: "cv-h4" }, "Prompts with a gap"), ...gpp.rows.map((x) => h("div", { className: "cv-differ" }, promptLink(x.text))), gpp.pager) : "";
   const qt = h("div", { className: "cv-table cv-quality", role: "table", "aria-label": "Data quality" });
   qt.append(h("div", { className: "cv-tr cv-th", role: "row" }, ...["Engine", "Answered", "", "Notes"].map((x) => h("span", { role: "columnheader" }, x))));
   g.quality.forEach((x) => {
@@ -533,16 +629,69 @@ function signalsSec(runHistory) {
 
 /* ---------- the board ---------- */
 
+// One section at a time behind a row of tabs (0.67.0). Asked for: "why is
+// all the things in one infinite scroll … FIX the campaign layout"; the
+// section links had sat in the app bar, where they wrapped.
 export const CV_SECTIONS = [
-  ["cv-overview", "Overview"], ["cv-brands", "Brands"], ["cv-compare", "You vs rival"], ["cv-sources", "Sources"], ["cv-citations", "Citations"],
-  ["cv-prompts", "Prompts"], ["cv-products", "Products & topics"], ["cv-searches", "Searches, site: & ads"], ["cv-signals", "Signals"],
+  ["cv-overview", "Overview"], ["cv-brands", "Brands"], ["cv-compare", "Compare"], ["cv-sources", "Sources"], ["cv-citations", "Citations"],
+  ["cv-prompts", "Prompts"], ["cv-products", "Products & topics"], ["cv-searches", "Searches & ads"], ["cv-signals", "Signals & data"],
 ];
-/** The count shown on each section link. */
+const SECTION_FN = {
+  "cv-overview": () => overviewSec(), "cv-brands": () => brandsSec(), "cv-compare": () => compareSec(), "cv-sources": () => sourcesSec(SRC_DRILL),
+  "cv-citations": () => citationsSec(), "cv-prompts": () => promptsSec(), "cv-products": () => productsSec(), "cv-searches": () => searchesSec(), "cv-signals": () => signalsSec(RUN_HISTORY),
+};
+/** The count shown on each tab. */
 export function sectionCounts(v) {
   return { "cv-brands": v.brands.all.length, "cv-sources": v.sources.sites, "cv-citations": v.citations.total, "cv-prompts": v.prompts.length, "cv-searches": v.searches.total };
 }
+let SRC_DRILL = null, RUN_HISTORY = null, PANEL = null, TABS = null, restoredTab = false;
+
+function tabBar() {
+  const counts = sectionCounts(V);
+  const bar = h("div", { className: "cv-tabs", role: "tablist", "aria-label": "Sections" });
+  CV_SECTIONS.forEach(([id, label]) => {
+    const on = id === S.section;
+    const b = h("button", { type: "button", role: "tab", className: `cv-tab${on ? " on" : ""}`, id: `${id}-tab`, "aria-selected": on ? "true" : "false", "aria-controls": "cvPanel", tabIndex: on ? 0 : -1, "data-section": id }, label);
+    if (counts[id] != null) b.append(h("span", { className: "cv-cnt" }, String(counts[id])));
+    b.onclick = () => goSection(id);
+    bar.append(b);
+  });
+  // Arrow keys move between tabs, as a tab list does.
+  bar.onkeydown = (e) => {
+    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft" && e.key !== "Home" && e.key !== "End") return;
+    e.preventDefault();
+    const i = CV_SECTIONS.findIndex(([id]) => id === S.section);
+    const n = e.key === "Home" ? 0 : e.key === "End" ? CV_SECTIONS.length - 1 : (i + (e.key === "ArrowRight" ? 1 : -1) + CV_SECTIONS.length) % CV_SECTIONS.length;
+    goSection(CV_SECTIONS[n][0]);
+    document.getElementById(`${CV_SECTIONS[n][0]}-tab`)?.focus();
+  };
+  return bar;
+}
+
+/** Shows one section; the page above it (header, filters, tabs) stays put. */
+export function goSection(id) {
+  if (!SECTION_FN[id] || !PANEL) return;
+  const changed = S.section !== id;
+  S.section = id;
+  try { localStorage.setItem("cito-cv-section", id); } catch (_) { /* this view only */ }
+  const tabs = tabBar();
+  TABS.replaceWith(tabs);
+  TABS = tabs;
+  PANEL.replaceChildren(SECTION_FN[id]());
+  PANEL.setAttribute("aria-labelledby", `${id}-tab`);
+  // A new section starts at its top, with the tabs still in sight.
+  if (changed) {
+    const top = TABS.getBoundingClientRect().top;
+    if (top < 0 || top > window.innerHeight * 0.6) TABS.scrollIntoView({ block: "start" });
+  }
+}
 
 export function renderCampaignView(box, view, deps, { sourcesDrill, runHistory } = {}) {
-  D = deps; V = view;
-  box.append(overviewSec(), brandsSec(), compareSec(), sourcesSec(sourcesDrill), citationsSec(), promptsSec(), productsSec(), searchesSec(), signalsSec(runHistory));
+  D = deps; V = view; SRC_DRILL = sourcesDrill || null; RUN_HISTORY = runHistory || null;
+  if (!S.section || !SECTION_FN[S.section]) S.section = "cv-overview";
+  // The tab last open, once per page load; after that S remembers it.
+  if (!restoredTab) { restoredTab = true; try { const saved = localStorage.getItem("cito-cv-section"); if (saved && SECTION_FN[saved]) S.section = saved; } catch (_) { /* default */ } }
+  TABS = tabBar();
+  PANEL = h("div", { className: "cv-panel", id: "cvPanel", role: "tabpanel", "aria-labelledby": `${S.section}-tab` }, SECTION_FN[S.section]());
+  box.append(TABS, PANEL);
 }

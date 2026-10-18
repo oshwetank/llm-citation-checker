@@ -11,12 +11,22 @@ Everything is stored **locally in your browser**. The extension makes **no netwo
 of its own**, except, if you turn on **Read the cited pages**, to the pages an answer cited;
 nothing leaves your device.
 
-> **v0.66.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.67.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **Campaign page as tabs** (0.67.0). A campaign's results are nine tabs (Overview, Brands,
+>   Compare, Sources, Citations, Prompts, Products & topics, Searches & ads, Signals & data), one
+>   shown at a time, instead of one long page; long lists page through 10–20 rows at a time.
+>   Every prompt on the board opens its answer in Analyze, and Back (the page's, the browser's,
+>   or the Campaigns tab) returns to the same tab, filters, page and scroll.
+> - **Filters and comparison** (0.67.0). Filter by one, several or all engines; by tags, matching
+>   any or all of the ones picked; and put **any brand in view**, yours or a rival's, so the whole
+>   board measures it. **Compare** sets up to four brands beside the one in view, a column each,
+>   with the best figure in every row marked: eight measures, engine by engine, topic by topic,
+>   named together, prompt by prompt, product cards and how the answers word each brand.
 > - **Gemini captured again** (0.66.0). Gemini now sends its answers over a different channel,
 >   so 0.65.0 saw none of them and every Gemini prompt in a campaign timed out. This release
 >   reads it: the answer, the pages under "Searched the web", and product cards with their store

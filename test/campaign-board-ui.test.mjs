@@ -143,18 +143,25 @@ try {
   await page.waitForTimeout(2500);
   const settle = (ms = 1600) => page.waitForTimeout(ms);
   const header = () => page.evaluate(() => document.querySelector("#cpHead .cp-scope")?.textContent || "");
+  // 0.67.0: one section at a time, behind a row of tabs.
+  const tab = async (id) => { await page.evaluate((id) => document.querySelector(`.cv-tab[data-section="${id}"]`)?.click(), id); await page.waitForTimeout(400); };
 
   console.log("\nthe board, in the full tab");
   check("the campaign's results are a board under the campaign",
     await page.evaluate(() => !!document.querySelector("#loader #campaignResults #cv-overview")));
   {
-    const ids = await page.evaluate(() => [...document.querySelectorAll("#campaignResults section[id]")].map((s) => s.id));
-    // 0.64.0: the board the owner approved on the canvas, nine sections.
-    const want = ["cv-overview", "cv-brands", "cv-compare", "cv-sources", "cv-citations", "cv-prompts", "cv-products", "cv-searches", "cv-signals", "cb-sources"];
-    const missing = want.filter((x) => !ids.includes(x));
-    check("every section has a place on it", missing.length === 0, `missing: ${missing.join(", ") || "none"}`);
-    const nav = await page.evaluate(() => [...document.querySelectorAll(".cb-nav-btn")].map((b) => b.textContent));
-    check("with links to jump between them", nav.length >= 5, nav.join(" | "));
+    // 0.64.0: the board the owner approved on the canvas, nine sections;
+    // 0.67.0: each behind its own tab.
+    const want = ["cv-overview", "cv-brands", "cv-compare", "cv-sources", "cv-citations", "cv-prompts", "cv-products", "cv-searches", "cv-signals"];
+    const tabs = await page.evaluate(() => [...document.querySelectorAll("#campaignResults .cv-tabs [role=tab]")].map((b) => b.dataset.section));
+    const missing = want.filter((x) => !tabs.includes(x));
+    check("every section has a tab", missing.length === 0, `missing: ${missing.join(", ") || "none"}`);
+    const seen = [];
+    for (const id of want) { await tab(id); seen.push(await page.evaluate((id) => document.querySelectorAll("#campaignResults section.cv-sec").length === 1 && !!document.getElementById(id), id)); }
+    check("and each tab shows its section, alone", seen.every(Boolean), JSON.stringify(seen));
+    await tab("cv-sources");
+    check("the sites table with its drill-downs is in Sources", await page.evaluate(() => !!document.querySelector("#cv-sources #cb-sources")));
+    await tab("cv-overview");
     const overflow = await page.evaluate(() => document.scrollingElement.scrollWidth - document.scrollingElement.clientWidth);
     check("and nothing on it widens the page", overflow <= 0, `${overflow}px wider than the window`);
   }
@@ -180,22 +187,25 @@ try {
         sub: head?.querySelector(".cp-sub")?.textContent || "",
         btns,
         beside: !!(name && acts) && acts.left > name.right && Math.abs(acts.top - name.top) < 30,
-        filters: head ? ["#cbRun", 'select[aria-label="Engine"]'].every((q) => head.querySelector(`#cpFilters ${q}`)) : false,
+        filters: head ? ["#cbRun", ".cb-engs", ".brand-picker"].every((q) => head.querySelector(`#cpFilters ${q}`)) : false,
         oldCards: !!document.querySelector("#loader .campaign-summary") || [...document.querySelectorAll("#loader .card-header h3")].some((x) => /^(Run|Results)$/.test(x.textContent)),
         kpisTop: Math.round(document.getElementById("cv-overview").getBoundingClientRect().top),
-        history: document.querySelectorAll("#cv-signals .loader-history-row").length,
-        headNav: [...document.querySelectorAll("#headerPage .cb-nav-btn")].map((x) => x.textContent),
+        headNav: [...document.querySelectorAll("#headerPage .cb-nav-btn, #headerPage .cv-tab")].map((x) => x.textContent),
+        tabsTop: Math.round(document.querySelector(".cv-tabs").getBoundingClientRect().top),
       };
     });
     check("the page opens on the campaign's own header", h.first === "cpHead", h.cards.join(" > "));
     check("named, with what it covers", h.name === "Board Test" && /\d+ prompts × 2 engines/.test(h.sub) && /last run/.test(h.sub), `${h.name} — ${h.sub}`);
     check("Edit setup, Export…, Run again and Run signed out beside the name", h.btns.join("|") === "Edit setup|Export…|Run again|Run signed out" && h.beside, `${h.btns.join("|")} beside=${h.beside}`);
     check("Pause, Resume and Stop only while a run is going", !h.btns.some((x) => /Pause|Resume|Stop/.test(x)), h.btns.join("|"));
-    check("the run and engine filters are in it", h.filters);
+    check("the run, brand and engine filters are in it", h.filters);
     check("no separate summary, run or results card", !h.oldCards);
     check("the board starts right under it", h.kpisTop < 420, `${h.kpisTop}px down`);
-    check("run history sits with the signals and data quality", h.history === 2, `${h.history} rows`);
-    check("the section links sit in the app bar", h.headNav.length >= 5, h.headNav.join(" | "));
+    check("the section tabs sit on the board, not in the app bar", h.headNav.length === 0 && h.tabsTop < 400, `${h.headNav.join(" | ")} tabs at ${h.tabsTop}px`);
+    await tab("cv-signals");
+    const history = await page.evaluate(() => document.querySelectorAll("#cv-signals .loader-history-row").length);
+    check("run history sits with the signals and data quality", history === 2, `${history} rows`);
+    await tab("cv-overview");
   }
 
   console.log("\none run at a time, compared with the one before");
@@ -220,6 +230,7 @@ try {
 
     // The run history above the board (a set-up campaign's run card) points
     // it at a run; newest first, so the last row is run 1.
+    await tab("cv-signals");
     await page.evaluate(() => [...document.querySelectorAll("#loader .loader-history-row")].pop()?.click());
     await settle(2000);
     check("a run in the run history opens the board on that run",
@@ -237,6 +248,7 @@ try {
     await settle();
     const after = await header();
     check("a tag narrows every number to its prompts", after.startsWith("1 answer ") && before !== after, `${before} -> ${after}`);
+    await tab("cv-prompts");
     const rows = await page.evaluate(() => document.querySelectorAll("#cv-prompts .cv-prompts .cv-tr:not(.cv-th)").length);
     check("including the prompt grid", rows === 1, String(rows));
     await page.evaluate(() => [...document.querySelectorAll('#loader .cb-tags[aria-label="Tags"] .linkbtn')].find((c) => c.textContent === "Clear")?.click());
@@ -246,25 +258,28 @@ try {
 
   console.log("\nwhat kind of answer each prompt got");
   {
+    await tab("cv-signals");
     const kinds = await page.evaluate(() => [...document.querySelectorAll("#cv-signals .cv-legend > span")].map((x) => x.textContent));
     const n = await page.evaluate(() => [...document.querySelectorAll("#cv-signals .cv-legend b")].reduce((a, b) => a + Number(b.textContent), 0));
     check("the kinds of answer add up to every answer in the run", n === seeded.answers, kinds.join(" | "));
+    await tab("cv-products");
     const cards = await page.evaluate(() => document.querySelectorAll("#cv-products .cv-prodt .cv-tr:not(.cv-th)").length);
     check("product cards from the shopping answers are listed", cards > 0, String(cards));
   }
 
   console.log("\nprompt by prompt");
   {
+    await tab("cv-prompts");
     const grid = await page.evaluate(() => {
       const rows = [...document.querySelectorAll("#cv-prompts .cv-prompts .cv-tr:not(.cv-th)")];
       return {
         heads: document.querySelectorAll("#cv-prompts .cv-prompts .cv-th .cv-eng").length,
-        rows: rows.map((r) => ({ text: r.querySelector(".cv-ptext")?.textContent || "", cells: r.querySelectorAll(".cv-pc").length })),
+        rows: rows.map((r) => ({ text: r.querySelector(".cv-ptext .cv-ell")?.textContent || "", cells: r.querySelectorAll(".cv-pc").length })),
       };
     });
     check("one row per tracked prompt", grid.rows.length === seeded.prompts, grid.rows.map((r) => r.text).join(" | "));
     check("with a cell for each of the campaign's engines", grid.heads === 2 && grid.rows.every((r) => r.cells === 2), JSON.stringify(grid));
-    await page.evaluate(() => document.querySelector("#cv-prompts .cv-ptext")?.click());
+    await page.evaluate(() => document.querySelector("#cv-prompts .cv-ptoggle")?.click());
     await settle(800);
     const sub = await page.evaluate(() => document.querySelector("#cv-prompts .cv-detail")?.textContent || "");
     check("a prompt opens to the searches the engines ran for it", /Searches the engines ran/.test(sub), sub.slice(0, 120));
@@ -286,8 +301,10 @@ try {
     await page.waitForTimeout(1200);
     await page.evaluate(() => document.querySelector('[data-tab="loader"]')?.click());
     await page.waitForTimeout(2500);
-    check("the board renders in the popup", await page.evaluate(() => document.body.classList.contains("popup") && !!document.getElementById("cv-overview")));
-    check("its section links are under the filters, not in the popup's bar", await page.evaluate(() => document.querySelectorAll("#cpHead .cb-nav-btn").length >= 5 && !document.querySelector("#headerPage .cb-nav-btn")));
+    // It opens on the tab last used in the full tab (kept in this browser).
+    check("the board renders in the popup, on the tab last open", await page.evaluate(() => document.body.classList.contains("popup") && document.querySelector(".cv-tab.on")?.dataset.section === "cv-prompts" && !!document.getElementById("cv-prompts")));
+    check("its section tabs are on the board, not in the popup's bar", await page.evaluate(() => document.querySelectorAll("#campaignResults .cv-tabs .cv-tab").length === 9 && !document.querySelector("#headerPage .cb-nav-btn, #headerPage .cv-tab")));
+    await tab("cv-prompts");
     const wide = await page.evaluate(() => { const c = document.querySelector(".app-content"); return c.scrollWidth - c.clientWidth; });
     check("nothing on it widens the popup", wide <= 0, `${wide}px`);
     // The prompt table is wider than the popup and scrolls inside its own box.
@@ -312,33 +329,23 @@ try {
       check("an idle Campaigns tab leaves the scroll position alone", writes === 0, `${writes} writes in 3.4s, about one per status poll`);
     }
 
-    // Reported in the screenshots for this release: after a section link, the
-    // popup's frame itself had scrolled — the header slid over the content and
-    // the footer floated mid-popup over an empty band. The frame is overflow:
-    // hidden, which is still a scroll container that scrollIntoView() moves.
-    await page.evaluate(() => document.querySelector(".cb-nav-btn[data-section=\"cv-prompts\"]")?.click());
-    // The jump is a smooth scroll; wait until it stops rather than a fixed
-    // time. (The 332px CI first put down to a slow runner was the status
-    // poll cancelling the scroll; see the check above.)
-    await page.evaluate(() => new Promise((resolve) => {
-      const c = document.querySelector(".app-content");
-      let last = -1, still = 0;
-      const tick = () => {
-        if (c.scrollTop === last) still++; else { still = 0; last = c.scrollTop; }
-        if (still >= 5) resolve(); else setTimeout(tick, 100);
-      };
-      setTimeout(tick, 200);
-      setTimeout(resolve, 10000);
-    }));
+    // Reported in the 0.55 screenshots: after a section link the popup's frame
+    // itself had scrolled, the header sliding over the content and the footer
+    // floating mid-popup. 0.67.0's tabs replace the links: a tab, picked with
+    // the page scrolled down, shows its section with the tabs in sight and
+    // the frame left alone.
+    await page.evaluate(() => { document.querySelector(".app-content").scrollTop = 600; });
+    await page.waitForTimeout(300);
+    await tab("cv-citations");
     const g = await page.evaluate(() => {
       const w = document.querySelector(".app-wrapper"), c = document.querySelector(".app-content"), f = document.querySelector(".credit-footer");
-      const wr = w.getBoundingClientRect(), cr = c.getBoundingClientRect(), fr = f.getBoundingClientRect(), pr = document.getElementById("cv-prompts").getBoundingClientRect();
-      return { frame: w.scrollTop, content: c.scrollTop, gap: Math.round(wr.bottom - fr.bottom), promptsTop: Math.round(pr.top - cr.top) };
+      const wr = w.getBoundingClientRect(), cr = c.getBoundingClientRect(), fr = f.getBoundingClientRect(), tr = document.querySelector(".cv-tabs").getBoundingClientRect();
+      return { frame: w.scrollTop, gap: Math.round(wr.bottom - fr.bottom), tabsTop: Math.round(tr.top - cr.top), shown: !!document.getElementById("cv-citations") };
     });
-    check("a section link scrolls the content", g.content > 0, JSON.stringify(g));
-    check("and not the popup's frame", g.frame === 0, JSON.stringify(g));
+    check("a tab shows its section", g.shown, JSON.stringify(g));
+    check("and not the popup's frame scrolled", g.frame === 0, JSON.stringify(g));
     check("so the footer stays at the bottom", Math.abs(g.gap) <= 2, JSON.stringify(g));
-    check("and the section lands at the top of the content", g.promptsTop >= -2 && g.promptsTop < 40, JSON.stringify(g));
+    check("with the tabs still in sight at the top", g.tabsTop >= -2 && g.tabsTop < 60, JSON.stringify(g));
   }
 
   check("no uncaught page errors throughout", pageErrors.length === 0, pageErrors.join(" | "));

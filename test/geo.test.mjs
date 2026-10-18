@@ -42,6 +42,17 @@ function rec({ answerText = "", brands = [], sources = [], geo = null, at = Date
 }
 const G = (extra = {}) => ({ profileId: "p1", runId: "r1", promptId: "q1", tags: [], ...extra });
 
+/* ---------------- tags: any or all (0.67.0) ---------------- */
+console.log("a group of tags: prompts with any of them, or all of them");
+{
+  const t = (id, tags) => ({ ...rec({ geo: G({ promptId: id, tags }), at: 1 }), answerChars: 100 });
+  const recs = [t("a", ["buying"]), t("b", ["buying", "tv"]), t("c", ["tv"]), t("d", ["watches"])];
+  const ids = (o) => selectTracked(recs, { profileId: "p1", tags: ["buying", "tv"], ...o }).map((r) => r.geo.promptId).sort().join(",");
+  check("any of them, by default", ids({}) === "a,b,c", ids({}));
+  check("all of them, when asked", ids({ tagMode: "all" }) === "b", ids({ tagMode: "all" }));
+  check("one tag is the same either way", selectTracked(recs, { profileId: "p1", tags: ["tv"], tagMode: "all" }).length === 2);
+}
+
 /* ---------------- one capture per prompt ---------------- */
 console.log("one capture per prompt, per engine, per run");
 {
