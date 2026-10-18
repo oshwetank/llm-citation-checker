@@ -770,6 +770,7 @@
       let sendTicks = 0;
       let searchDone = false;
       let injected = false;
+      let retypes = 0; // times a doubled prompt was cleared and typed again
       let tosTicks = 0;           // ticks spent on grok.com's /tos-gate
       let submitTried = 0;
       let sentOk = false;
@@ -908,6 +909,18 @@
         if (submitTried === 0) {
           if (!text) { T("text-empty"); injected = false; return; }
           if (text !== want && text.length < Math.min(12, want.length)) { T("text-short", text.length); injected = false; return; }
+          // The prompt in the box twice ("…under 30000Best gaming phones…"):
+          // the clear before typing didn't take, or the page pre-filled ?q=
+          // after it. ChatGPT got 13 of 30 campaign prompts doubled this way
+          // in the owner's Motorola run (0.62.2). Clear and type it again.
+          if (text !== want && text.length >= want.length * 1.5 && text.includes(want) && retypes < 3) {
+            retypes++;
+            T("text-doubled");
+            clearComposer(box);
+            if (norm(composerText(box))) { if (/^(textarea|input)$/i.test(box.tagName)) box.value = ""; else box.textContent = ""; box.dispatchEvent(new InputEvent("input", { bubbles: true })); }
+            injected = false;
+            return;
+          }
         } else if (!text) {
           /* The composer emptied after we pressed send. That is NOT proof the
            * prompt went anywhere, and treating it as proof is what made every

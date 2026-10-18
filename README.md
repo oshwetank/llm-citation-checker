@@ -20,6 +20,10 @@ nothing leaves your device.
 > - **Campaigns while a run goes** (0.62.2). The page no longer jumps back to the top with each
 >   capture: it holds still while the run goes, its progress keeps updating, and the results
 >   are drawn once the run finishes or is stopped. The board only ever shows finished runs.
+> - **ChatGPT prompts sent twice** (0.62.2). In a campaign, ChatGPT sometimes got the prompt
+>   doubled ("Best gaming phones under 30000Best gaming phones under 30000"): its own pre-fill
+>   landed on top of the typed prompt. The box is now checked before sending and the prompt
+>   typed again. Answers already captured from a doubled prompt stay as they were asked.
 > - **Grok in campaigns** (0.62.2). A Grok turn counts only once Grok has finished its answer;
 >   before, a capture with just the search results ended the turn and no answer was kept. When
 >   Grok says the account hit its usage limit, its prompts pause on a cooldown instead of
