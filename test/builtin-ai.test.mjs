@@ -93,6 +93,12 @@ try {
     const rec = await record(res.captureId);
     check("a capture says the AI check is off", rec && rec.aiStatus === "off", rec && rec.aiStatus);
     check("and Chrome's detector gave its language", rec && rec.answerLang === "en", rec && rec.answerLang);
+    const tab = await context.newPage();
+    await tab.goto(`chrome-extension://${extId}/ui/panel.html?mode=tab&capture=${res.captureId}`);
+    await tab.waitForSelector("#at-ai", { timeout: 15000 }).catch(() => {});
+    const t = await tab.evaluate(() => document.getElementById("at-ai")?.innerText || "");
+    check("Analyze says the AI check is off, and where to turn it on", /AI check off/.test(t) && /Settings/.test(t) && /English/.test(t), t);
+    await tab.close();
   }
 
   const openSettings = async () => {
@@ -143,6 +149,7 @@ try {
     await openSettings();
     await page.waitForFunction(() => /Ready/.test(document.getElementById("setAi")?.innerText || ""), null, { timeout: 15000 }).catch(() => {});
     const c = await card();
+    if (process.env.SHOTS) await page.locator("#setAi").screenshot({ path: `${process.env.SHOTS}/ai-card.png` });
     check("Ready, with the model named", /Ready/.test(c.text) && /Model: tiny/.test(c.text), c.text.slice(0, 400));
     check("three switches: campaigns on, everyday on, counts off", JSON.stringify(c.switches) === JSON.stringify([["aiCampaigns", true], ["aiEveryday", true], ["aiCounts", false]]), JSON.stringify(c.switches));
   }
@@ -189,6 +196,45 @@ try {
     check("'Check with built-in AI' queues it anyway", q && q.ok, JSON.stringify(q));
     const r1 = await waitFor(async () => { const r = await record(res.captureId); return r && r.aiStatus === "done" ? r : null; }, 120000);
     check("and it is checked", !!r1);
+  }
+
+  console.log("\nAnalyze shows the check");
+  {
+    // A filled-in check, as the real model would leave it, put straight into
+    // the store; Reprocess puts it on the record.
+    await page.evaluate(async (captureId) => {
+      const { aiKey } = await import("/src/lib/aiCheck.js");
+      const rec = await new Promise((r) => chrome.runtime.sendMessage({ type: "get-record", captureId }, (x) => r(x.record)));
+      const names = (rec.brandMentions || []).map((m) => m.brand);
+      const ai = { key: aiKey(rec, "tiny"), captureId, v: 1, source: "builtin", model: "Qwen3.5 test", modelRepo: "tiny", at: Date.now(),
+        lang: "en", market: { country: "IN", currency: "INR", scope: "national", evidence: ["₹"] }, intent: "best_top", funnel: "decision", audience: "consumer", vertical: "smartphones",
+        topics: { en: ["foldable phones"], orig: ["foldable phones"] },
+        entities: [{ name: names[0], type: "brand", owner: "Made-up Group", stance: "recommended", quote: "a made-up quote for the test" }],
+        missed: [{ name: "Orbix Labs", type: "brand", quote: "Orbix Labs makes cases" }],
+        checks: { calls: 3, retries: 0, unreadable: 0, ms: 900, dropped: [{ field: "missed", value: "Fakebrand", why: "not written in the answer" }] } };
+      await new Promise((res, rej) => { const o = indexedDB.open("lcfc"); o.onsuccess = () => { const t = o.result.transaction("ai", "readwrite"); t.objectStore("ai").put(ai); t.oncomplete = res; t.onerror = rej; }; o.onerror = rej; });
+    }, id);
+    await msg({ type: "reprocess-all" });
+    await page.waitForTimeout(800);
+    const tab = await context.newPage();
+    await tab.goto(`chrome-extension://${extId}/ui/panel.html?mode=tab&capture=${id}`);
+    await tab.waitForSelector("#at-ai", { timeout: 15000 }).catch(() => {});
+    const a = await tab.evaluate(() => { const s = document.getElementById("at-ai"); return s ? { text: s.innerText, rail: !!document.querySelector('.at-rail-item[data-target="at-ai"]'), q: s.querySelectorAll(".at-ai-q").length } : null; });
+    if (process.env.SHOTS) { await tab.setViewportSize({ width: 1280, height: 900 }); await tab.waitForTimeout(300); await tab.locator("#at-ai").screenshot({ path: `${process.env.SHOTS}/at-ai.png` }); }
+    check("an AI check section, with its rail entry", a && a.rail, JSON.stringify(a && { rail: a.rail }));
+    check("language and market, named in words", a && /English/.test(a.text) && /India/.test(a.text) && /INR/.test(a.text), a && a.text.slice(0, 300));
+    check("intent, stage, audience, industry and topics", a && /Best, top & reviews/.test(a.text) && /Ready to choose/.test(a.text) && /Consumers/.test(a.text) && /smartphones/.test(a.text) && /foldable phones/.test(a.text), a && a.text);
+    check("each brand's type, owner and stance, with its quote", a && /Made-up Group/.test(a.text) && /Recommended/.test(a.text) && a.q >= 2, a && a.text);
+    check("names it found, marked as not in your counts", a && /Also found by AI/.test(a.text) && /Orbix Labs/.test(a.text) && /not in your counts/.test(a.text), a && a.text);
+    check("and how many claims were left out", a && /1 claim left out/.test(a.text), a && a.text);
+    // With "Use AI-checked brands in counts" on, the found name joins the
+    // counts only if it is written in the answer (it isn't here).
+    await msg({ type: "settings-set", patch: { aiInCounts: true } });
+    await msg({ type: "reprocess-all" });
+    const r = await record(id);
+    check("a found name that isn't in the answer text never joins the counts", r && !(r.brandMentions || []).some((m) => m.brand === "Orbix Labs"), JSON.stringify((r.brandMentions || []).map((m) => m.brand)));
+    await msg({ type: "settings-set", patch: { aiInCounts: false } });
+    await tab.close();
   }
 
   console.log("\nRemove deletes the downloaded files");

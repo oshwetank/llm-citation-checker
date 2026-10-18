@@ -1996,7 +1996,7 @@ const AT_SEC_ICON = {
   "at-glance": ["bars", "teal"], "at-you": ["tag", "ind"], "at-products": ["cart", "coral"], "at-places": ["pin", "coral"],
   "at-images": ["image", "pink"], "at-parts": ["pages", "amber"], "at-memory": ["noglobe", "amber"], "at-ads": ["ad", "amber"],
   "at-backing": ["link", "amber"], "at-sites": ["globe", "sky"], "at-built": ["search", "vio"], "at-changes": ["clock", "amber"],
-  "at-details": ["chip", "slate"],
+  "at-details": ["chip", "slate"], "at-ai": ["spark", "vio"],
   "at-cmp-diffs": ["spark", "vio"], "at-cmp-table": ["bars", "teal"], "at-cmp-brands": ["tag", "ind"], "at-cmp-sites": ["globe", "sky"],
   "at-cmp-searches": ["search", "amber"], "at-cmp-ads": ["ad", "amber"],
 };
@@ -2637,6 +2637,9 @@ function atRenderSingle(main, rec, ctx) {
     add(atYouSection(rec, { you, brands, searches, own }), placed ? placed.value.replace(/^Named /, "") : "");
   }
 
+  /* 2b. the built-in AI's check (0.70.0) */
+  add(atAiSection(rec), rec.ai && rec.aiStatus === "done" ? ((rec.ai.entities || []).length + (rec.ai.missed || []).length) || "" : "");
+
   /* 3. what led the answer */
   if (kind.id === "memory") add(atMemorySection(rec, { brands, mentions, engineLabel }));
   const products = productsView(rec, { own, knownBrands });
@@ -2821,6 +2824,105 @@ function atMemorySection(rec, { brands, mentions, engineLabel }) {
 
 /* The ad ChatGPT showed with the answer: the card as it was, and the facts
  * that tie it to the answer. What an ad cost or did is not in the capture. */
+/* The built-in AI's check (0.70.0): what the answer is (language, market,
+ * intent, audience, topics), each brand's type, owner and how the answer
+ * treats it with the quote that shows it, and names the rules missed. Every
+ * claim here was checked against the answer before it was kept (lib/
+ * aiValidate.js); what wasn't backed is counted at the foot. Counts change
+ * only with "Use AI-checked brands in counts" on. */
+const AI_LABEL = {
+  comparison: "Comparisons & alternatives", local: "Local & near me", price_value: "Price, cost & value", trust: "Trust, safety & compliance",
+  careers: "Jobs & careers", howto: "How-to & information", for_use: "For a person or use", best_top: "Best, top & reviews", other: "Other",
+  awareness: "Learning about options", consideration: "Comparing options", decision: "Ready to choose", post_purchase: "After buying",
+  consumer: "Consumers", business: "Businesses", public_sector: "Public sector", mixed: "Mixed",
+  local_scope: "Local", national: "National", regional: "Regional", global: "Global",
+  brand: "Brand", product: "Product", retailer: "Store", publisher: "Publisher", institution: "Institution", place: "Place", person: "Person",
+  recommended: "Recommended", positive: "Positive", neutral: "Neutral", negative: "Negative", advised_against: "Advised against", mentioned: "Mentioned",
+};
+const AI_STANCE_TONE = { recommended: "ok", positive: "ok", neutral: "neutral", negative: "bad", advised_against: "bad", mentioned: "neutral" };
+function aiName(kind, code) {
+  if (!code) return "";
+  try { return new Intl.DisplayNames([navigator.language || "en"], { type: kind }).of(code) || code; } catch (_) { return code; }
+}
+function atAiSection(rec) {
+  const ai = rec.aiStatus === "done" ? rec.ai : null;
+  const st = rec.aiStatus || "off";
+  const chip = ai ? apPill(ai.source === "nano" ? "Gemini Nano" : "Built-in AI", "info", ai.model || "")
+    : apPill({ queued: "Queued", "not-checked": "Not checked", failed: "Check failed", off: "AI check off" }[st] || "AI check off", st === "failed" ? "warn" : "neutral");
+  const sec = atSection("at-ai", "AI check", "", chip);
+  sec.dataset.rail = "AI check";
+  const lang = (ai && ai.lang) || rec.answerLang || null;
+  const facts = el("div", { className: "at-ai-facts" });
+  const fact = (k, v, title) => { if (v) facts.append(el("div", { className: "at-ai-fact", ...(title ? { title } : {}) }, el("span", { className: "k" }, k), el("b", { className: "v" }, v))); };
+  fact("Language", lang ? aiName("language", lang) : "", ai && ai.lang ? "Read by the AI" : "Chrome’s language detector");
+  if (ai && ai.market) {
+    const m = ai.market;
+    fact("Market", [m.country ? aiName("region", m.country) : "", m.currency || "", m.scope ? AI_LABEL[m.scope === "local" ? "local_scope" : m.scope] : ""].filter(Boolean).join(" · "),
+      m.evidence && m.evidence.length ? `From: ${m.evidence.join(", ")}` : "");
+  }
+  if (ai) {
+    fact("What it asks", AI_LABEL[ai.intent] || "");
+    fact("Stage", AI_LABEL[ai.funnel] || "");
+    fact("For", AI_LABEL[ai.audience] || "");
+    fact("Industry", ai.vertical || "");
+    if (ai.topics && (ai.topics.en.length || ai.topics.orig.length)) {
+      const same = ai.topics.orig.join("|").toLowerCase() === ai.topics.en.join("|").toLowerCase();
+      fact("Topics", [ai.topics.en.join(", "), !same && ai.topics.orig.length ? `(${ai.topics.orig.join(", ")})` : ""].filter(Boolean).join(" "));
+    }
+  }
+  if (facts.childNodes.length) sec.append(facts);
+
+  if (!ai) {
+    const why = {
+      off: "The built-in AI isn’t downloaded. Turn it on in About → Settings → Built-in AI to check each answer’s market, intent and how it treats each brand, on this computer.",
+      queued: "Waiting its turn: answers are checked one at a time, in the background.",
+      "not-checked": "Not checked yet: checks for this kind of answer are off in Settings.",
+      failed: `The check didn’t finish${rec.aiError ? ` (${rec.aiError})` : ""}.`,
+    }[st] || "";
+    sec.append(el("p", { className: "ap-muted at-ai-why" }, why));
+    if (st === "not-checked" || st === "failed") {
+      const b = el("button", { className: "at-btn sm", type: "button", id: "atAiCheck" }, "Check with built-in AI");
+      b.onclick = async () => { b.disabled = true; b.textContent = "Queued…"; await send({ type: "ai-check-capture", captureId: rec.captureId }); };
+      sec.append(b);
+    }
+    return sec;
+  }
+
+  const ents = ai.entities || [];
+  if (ents.length) {
+    const t = el("table", { className: "at-tbl at-ai-tbl" });
+    t.append(el("thead", {}, el("tr", {}, el("th", {}, "Name"), el("th", {}, "What it is"), el("th", {}, "Owner"), el("th", {}, "How the answer treats it"))));
+    const tb = el("tbody");
+    ents.forEach((e) => tb.append(el("tr", {},
+      el("td", {}, el("bdi", {}, e.name)), el("td", {}, AI_LABEL[e.type] || e.type || ""), el("td", {}, e.owner ? el("bdi", {}, e.owner) : el("span", { className: "ap-muted" }, "—")),
+      el("td", {}, apPill(AI_LABEL[e.stance] || e.stance || "Mentioned", AI_STANCE_TONE[e.stance] || "neutral"), e.quote ? el("q", { className: "at-ai-q" }, e.quote) : ""))));
+    t.append(tb);
+    sec.append(el("h3", { className: "at-h3" }, "Brands the rules found, labelled"), el("div", { className: "at-tbl-wrap" }, t));
+  }
+  const missed = ai.missed || [];
+  if (missed.length) {
+    const inCounts = (rec.brandMentions || []).some((m) => m.aiAdded);
+    sec.append(el("h3", { className: "at-h3" }, "Also found by AI", el("span", { className: "ap-muted" }, inCounts ? " · in your counts" : " · not in your counts")));
+    const ul = el("ul", { className: "at-ai-missed" });
+    missed.forEach((x) => ul.append(el("li", {}, el("b", {}, el("bdi", {}, x.name)), el("span", { className: "ap-muted" }, ` · ${AI_LABEL[x.type] || x.type}`), x.quote ? el("q", { className: "at-ai-q" }, x.quote) : "")));
+    sec.append(ul);
+  }
+  if (!ents.length && !missed.length) sec.append(el("p", { className: "ap-muted" }, "The AI found nothing it could back with a quote from the answer."));
+  const ch = ai.checks || {};
+  const dropped = (ch.dropped || []).length;
+  sec.append(el("p", { className: "ap-muted at-foot" }, `Checked by ${ai.model || "the built-in AI"} on this computer, ${new Date(ai.at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}. `,
+    dropped ? `${plural(dropped, "claim")} left out because the answer didn’t back ${dropped === 1 ? "it" : "them"}. ` : "Every claim above is backed by the answer. ",
+    ch.unreadable ? `${plural(ch.unreadable, "reply", "replies")} couldn’t be read. ` : ""));
+  if (dropped) {
+    const det = el("details", { className: "at-ai-dropped x-only" }, el("summary", {}, "What was left out"));
+    const ul = el("ul");
+    ch.dropped.slice(0, 40).forEach((d) => ul.append(el("li", {}, `${d.field}: ${typeof d.value === "string" ? d.value : JSON.stringify(d.value)} — ${d.why}`)));
+    det.append(ul);
+    sec.append(det);
+  }
+  return sec;
+}
+
 function atAdsSection(rec, { knownBrands }) {
   const ads = adsView(rec, { knownBrands });
   const sec = atSection("at-ads", "Ad shown with the answer", ads.length > 1 ? ads.length : "", apPill("Sponsored", "warn", "Paid placement, not part of the answer"));

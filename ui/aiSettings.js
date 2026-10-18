@@ -41,7 +41,7 @@ export function initAiSettings(slot) {
     const tier = chosen || s.tier || (pick && pick.tier) || "standard";
     slot.replaceChildren();
     const chip = s.downloading ? h("span", { className: "ai-chip busy" }, s.progress && s.progress.pct != null ? `Downloading ${Math.round(s.progress.pct)}%` : "Downloading…")
-      : s.ready ? h("span", { className: "ai-chip ok" }, `Ready · ${s.model ? `${s.model.label} (${s.model.params})` : ""}${s.device ? ` · ${s.device === "webgpu" ? "graphics chip" : "processor"}` : ""}`)
+      : s.ready ? h("span", { className: "ai-chip ok" }, `Ready · ${s.model ? (s.model.params ? `${s.model.label} (${s.model.params})` : s.model.label) : ""}${s.device ? ` · ${s.device === "webgpu" ? "graphics chip" : "processor"}` : ""}`)
       : s.error ? h("span", { className: "ai-chip bad" }, "Download failed")
       : h("span", { className: "ai-chip" }, "Off");
     slot.append(h("div", { className: "ab-row ai-head" },
@@ -53,7 +53,7 @@ export function initAiSettings(slot) {
     const hw = s.hardware;
     if (hw) {
       const bits = [hw.webgpu ? `graphics chip found${hw.adapter ? ` (${hw.adapter})` : ""}` : "no graphics-chip access (WebGPU)", hw.deviceMemory ? `${hw.deviceMemory}+ GB memory` : null, hw.freeBytes != null ? `${gb(hw.freeBytes)} free for the extension` : null].filter(Boolean);
-      slot.append(h("p", { className: "ai-hw", id: "aiHw" }, h("b", {}, "This computer: "), bits.join(" · "), pick ? h("span", { className: "ai-why" }, ` Suggested: ${pick.tier ? TIERS[pick.tier].label : "none"}. ${pick.reason}`) : null));
+      slot.append(h("p", { className: "ai-hw", id: "aiHw" }, h("b", {}, "This computer: "), bits.join(" · "), pick ? h("span", { className: "ai-why" }, `. Suggested: ${pick.tier ? TIERS[pick.tier].label : "none"}. ${pick.reason}`) : null));
     } else slot.append(h("p", { className: "ai-hw", id: "aiHw" }, "Checking this computer…"));
 
     const seg = h("div", { className: "ab-seg ai-seg", role: "radiogroup", "aria-labelledby": "aiLabel", id: "aiTier" });
