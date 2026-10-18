@@ -283,6 +283,7 @@
   // are kept as probes: stored apart from captures (never shown as answers),
   // for the owner to save and send ("Payloads it couldn't read").
   const GEMINI_PROBE_RE = /\/v1\/processSession\b|\/batchexecute\b/;
+  let geminiUpload = ""; // the last WebChannel upload that carried a prompt
   function probe(url, method, reqBody, body) {
     if (!IS_GEMINI || !debugOn() || !body) return;
     try {
@@ -420,9 +421,49 @@
           sent = text.length;
         };
         const later = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => flush(false), 1500); };
-        this.addEventListener("progress", later);
-        this.addEventListener("readystatechange", () => { if (xhr.readyState === 3) later(); });
-        this.addEventListener("loadend", () => flush(true));
+        if (debugOn()) {
+          this.addEventListener("progress", later);
+          this.addEventListener("readystatechange", () => { if (xhr.readyState === 3) later(); });
+          this.addEventListener("loadend", () => flush(true));
+        }
+        // The answer itself (0.66.0). The prompt goes up in a POST; its
+        // reply comes down the RID=rpc GET, every frame repeating the
+        // answer so far. Frames run ~50 KB each, so only the newest data
+        // frame and the largest are kept, never the whole stream, and they
+        // are handed over once the stream has gone quiet.
+        if (this.__lcfc_post && /req\d+___data__=/.test(reqBody) && reqBody.length > 100) geminiUpload = reqBody; // not an acknowledgement (~40 chars)
+        if (!this.__lcfc_post && /[?&]RID=rpc\b/.test(this.__lcfc_url)) {
+          let read = 0, lastData = "", bigData = "", fresh = false, quiet = null;
+          const scan = () => {
+            const s = replyText();
+            while (read < s.length) {
+              const m = /^\s*(\d+)\n/.exec(s.slice(read, read + 24));
+              if (!m) break;
+              const end = read + m[0].length + Number(m[1]);
+              if (end > s.length) break; // the rest of this frame is still coming
+              const frame = s.slice(read + m[0].length, end);
+              read = end;
+              if (frame.length < 200 || /^\[\[\d+,\["noop"\]\]\]$/.test(frame.trim())) continue;
+              lastData = frame;
+              if (frame.length >= bigData.length) bigData = frame;
+              fresh = true;
+            }
+          };
+          const hand = () => {
+            if (quiet) { clearTimeout(quiet); quiet = null; }
+            scan();
+            if (!fresh) return;
+            fresh = false;
+            const frames = bigData && bigData !== lastData ? [bigData, lastData] : [lastData];
+            const raw = frames.map((f) => `${f.length}\n${f}`).join("");
+            lastData = ""; bigData = "";
+            emit({ url: xhr.__lcfc_url, reqBody: geminiUpload || "", transport: "webchannel", raw, capturedAt: Date.now() });
+          };
+          const grew = () => { scan(); if (quiet) clearTimeout(quiet); quiet = setTimeout(hand, 2500); };
+          this.addEventListener("progress", grew);
+          this.addEventListener("readystatechange", () => { if (xhr.readyState === 3) grew(); });
+          this.addEventListener("loadend", hand);
+        }
       }
       // Listened for whatever the setting says now: a page's first requests
       // go out before content-iso.js has read it; netlog() checks it later.

@@ -21,8 +21,9 @@
 import { makeRecord, makeSource } from "../schema.js";
 import { walk, isHttpUrl, domainOf } from "../lib/deep.js";
 import { detectBrands } from "../lib/brands.js";
+import { isChannelText, readGeminiChannel, channelPrompt } from "../lib/geminiChannel.js";
 
-export const ADAPTER_VERSION = "gemini@0.3.0";
+export const ADAPTER_VERSION = "gemini@0.4.0";
 
 const FAVICON_RE = /gstatic\.com|googleusercontent|favicon-tbn/i;
 
@@ -380,8 +381,89 @@ function extractFanout(_payload, diag, reasoning, cardSearches = []) {
 export const FANOUT_UNSUPPORTED_NOTE =
   "fanout: Gemini masks search sub-queries in standard chat; recovered when Thinking mode exposes formulation.";
 
+// The prompt of a WebChannel answer: from the upload, else the page's ?q=
+// (Gemini opens /app?q=… when a prompt is sent from the address bar or a
+// campaign).
+function channelUserPrompt(rawCapture) {
+  const up = channelPrompt(rawCapture.reqBody);
+  if (up) return up;
+  try { const q = new URL(rawCapture.pageUrl).searchParams.get("q"); if (q && q.trim()) return q.trim(); } catch (_) { /* no address */ }
+  return null;
+}
+
+// 0.66.0: Gemini's answer over its WebChannel (lib/geminiChannel.js has the
+// field map). Sources are the pages under "Searched the web"; Gemini shows
+// them as the answer's sources, so they count as cited.
+async function adaptChannel(rawCapture, opts, diag) {
+  const r = readGeminiChannel(rawCapture.raw);
+  if (!r) {
+    diag.usedFallback = true;
+    diag.notes.push("webchannel: no answer in the frames (a status frame, or the stream was cut)");
+  }
+  const { text: answer, cards } = stripCardPlaceholders(r ? r.answer : "");
+  const sources = (r ? r.sources : []).map((s) => makeSource({
+    url: s.url,
+    domain: domainOf(s.url),
+    title: s.title,
+    outcome: "cited",
+    type: "citation",
+    platformSpecific: s.via ? { via: s.via } : {},
+  }));
+  const products = (r ? r.products : []).map((p) => ({
+    name: p.name,
+    price: p.price,
+    brand: p.brand,
+    rating: p.rating,
+    merchant: p.merchant,
+    url: p.shoppingUrl,
+    ...(p.description ? { description: p.description.slice(0, 600) } : {}),
+    ...(p.offers.length ? { offers: p.offers } : {}),
+    ...(p.images.length ? { images: p.images } : {}),
+  }));
+  const userPrompt = channelUserPrompt(rawCapture);
+  const brandMentions = await extractBrandMentions(answer, { products, places: [], sources, tracked: opts.tracked, prompt: userPrompt });
+  const seenE = new Set();
+  const entities = [];
+  const addE = (t, c) => { const k = c + "|" + (t || "").toLowerCase(); if (t && !seenE.has(k)) { seenE.add(k); entities.push({ text: t, category: c }); } };
+  products.forEach((p) => { addE(p.name, "Product"); if (p.merchant) addE(p.merchant, "Retailer"); });
+  brandMentions.forEach((b) => addE(b.brand, b.category === "place" ? "Place" : "Brand"));
+  const searched = !!(r && (r.sources.length || r.searchLabels.length || r.products.length));
+  if (r && !r.searchLabels.length) diag.notes.push(FANOUT_UNSUPPORTED_NOTE);
+  return makeRecord({
+    captureId: rawCapture.captureId,
+    platform: "gemini",
+    model: r && r.model ? `Gemini ${r.model}` : "gemini",
+    capturedAt: rawCapture.capturedAt,
+    pageUrl: rawCapture.pageUrl,
+    rawRef: rawCapture.captureId,
+    userPrompt,
+    // The reply id ties the stream's repeated hand-overs to one answer (sameAnswer.js).
+    ...(r && r.responseId ? { turnId: r.responseId } : {}),
+    ...(r && r.conversationId ? { conversationId: r.conversationId } : {}),
+    searched,
+    turnUseCase: products.length ? "shopping" : sources.length ? "web" : "general",
+    fanout: { search: [], shopping: [], image: [] },
+    sources,
+    products,
+    places: [],
+    entities,
+    brandMentions,
+    answerChars: answer.length,
+    answerText: answer,
+    platformSpecific: {
+      transport: "webchannel",
+      ...(cards.length ? { cards } : {}),
+      ...(r && r.searchLabels.length ? { searchLabels: r.searchLabels } : {}),
+      ...(r && r.location ? { location: r.location } : {}),
+      ...(r && r.country ? { country: r.country } : {}),
+    },
+    _extraction: diag,
+  });
+}
+
 export async function adapt(rawCapture, opts = {}) {
   const diag = { adapterVersion: ADAPTER_VERSION, usedFallback: false, notes: [] };
+  if (isChannelText(rawCapture.raw)) return adaptChannel(rawCapture, opts, diag);
   const payloads = parseStreamGenerate(rawCapture.raw || "");
 
   // Use the largest (most complete) streamed frame for everything — model,

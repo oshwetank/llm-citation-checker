@@ -112,7 +112,7 @@ jobs:
                    test/concurrency.test.mjs test/diagnostics-summary.test.mjs \
                    test/dom-harvest-multiturn.test.mjs test/engine-submit-signal.test.mjs test/errorlog.test.mjs \
                    test/fanout.test.mjs test/feedback-bundle.test.mjs \
-                   test/gemini-answer.test.mjs test/geo.test.mjs \
+                   test/gemini-answer.test.mjs test/gemini-channel.test.mjs test/geo.test.mjs \
                    test/grok-gateway.test.mjs test/grok-render-citation-tags.test.mjs \
                    test/interception-endpoints.test.mjs test/dom-harvest.test.mjs test/nano-stance.test.mjs \
                    test/onboarding.test.mjs \
@@ -178,7 +178,7 @@ jobs:
                    test/saved-conversations-engine.test.mjs test/source-pipeline-ui.test.mjs test/tab-management.test.mjs \
                    test/timeout-diagnostics.test.mjs \
                    test/ui-visibility.test.mjs test/same-answer-store.test.mjs test/answer-extras-ui.test.mjs \
-                   test/theme-style.test.mjs test/genui-answer-ui.test.mjs test/cited-pages.test.mjs test/network-recorder.test.mjs test/page-copy.test.mjs test/campaign-view-ui.test.mjs test/display-settings.test.mjs; do
+                   test/theme-style.test.mjs test/genui-answer-ui.test.mjs test/cited-pages.test.mjs test/network-recorder.test.mjs test/page-copy.test.mjs test/campaign-view-ui.test.mjs test/display-settings.test.mjs test/gemini-channel-ui.test.mjs; do
             echo "── $f"
             if ! node "$f"; then
               echo "::error file=$f::browser test failed"
