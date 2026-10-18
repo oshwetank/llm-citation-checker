@@ -20,7 +20,7 @@ import {
 } from "./lib/pacing.js";
 import { createErrorLog } from "./lib/errorlog.js";
 import { BUILD } from "./lib/build.js";
-import { checkEnginesAuth, AUTH_COOKIES } from "./lib/auth-check.js";
+import { checkEnginesAuth, checkEngineAuth, AUTH_COOKIES } from "./lib/auth-check.js";
 import { buildDemoRecords, isDemoRecord } from "./lib/demo-data.js";
 import { buildCampaignXlsx, campaignCsvFiles, campaignExportCounts } from "./lib/campaignXlsx.js";
 import { campaignReport } from "./lib/campaignReport.js";
@@ -82,6 +82,11 @@ const DEFAULT_SETTINGS = {
   myBrand: { name: "", url: "" },
   competitors: [], // [{ name, url }]
   debugCapture: false,
+  // Pause capture (0.66.0): the switch at the top of the popup and the tab.
+  // While on, nothing from an engine page is stored: no answers, no
+  // after-answer requests, no probes, no network log. A campaign run's own
+  // tabs still record, since starting a run asks for exactly that.
+  capturePaused: false,
   // Read the cited pages (0.62.0): off until asked for, since it is the one
   // thing that makes requests beyond the engines' own pages.
   readCitedPages: false, // diagnostic channel is OFF by default (it is chatty)
@@ -117,8 +122,50 @@ async function setSettings(patch) {
 }
 // Keep the cache honest if settings are changed from another context.
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && changes.lcfcSettings) settingsCache = null;
+  if (area === "local" && changes.lcfcSettings) { settingsCache = null; idleBadge(); }
 });
+
+// The toolbar icon says "off" while capture is paused, on every page, so a
+// paused recorder is never mistaken for a working one. A run's progress
+// badge takes the icon while it runs.
+async function idleBadge() {
+  if (loader && loader.running) return;
+  try {
+    const paused = !!(await getSettings()).capturePaused;
+    await chrome.action.setBadgeText({ text: paused ? "off" : "" });
+    if (paused) await chrome.action.setBadgeBackgroundColor({ color: "#57534e" });
+    await chrome.action.setTitle({ title: paused ? "CitoSkeleton: capture paused" : "CitoSkeleton" });
+  } catch (_) { /* no action API in some test contexts */ }
+}
+
+// Whether a message from an engine page is dropped because capture is
+// paused. A campaign run's tab is exempt.
+async function capturePausedFor(sender) {
+  if (!(await getSettings()).capturePaused) return false;
+  const tabId = sender && sender.tab && sender.tab.id;
+  return !(loader && loader.running && tabId != null && legForTab(tabId));
+}
+
+// How the answer was asked (0.66.0): from a private (incognito) window, and
+// whether the engine had a signed-in session in that window's cookie store.
+// Signed-out and private answers carry no account history or memory, which
+// is why they're worth telling apart.
+async function sessionOf(sender, platform, url) {
+  const tab = sender && sender.tab;
+  const out = { private: !!(tab && tab.incognito), signedIn: "unknown" };
+  if (platform === "chatgpt" && /\/backend-anon\//.test(url || "")) { out.signedIn = "out"; return out; }
+  try {
+    let storeId;
+    if (tab && tab.id != null && chrome.cookies.getAllCookieStores) {
+      const stores = await chrome.cookies.getAllCookieStores();
+      const st = stores.find((x) => (x.tabIds || []).includes(tab.id));
+      if (st) storeId = st.id;
+    }
+    const r = await checkEngineAuth(platform, (q) => chrome.cookies.getAll(storeId ? { ...q, storeId } : q));
+    out.signedIn = r.status;
+  } catch (_) { /* unknown */ }
+  return out;
+}
 
 // Reloading the extension orphans content scripts already running in open tabs
 // (they can no longer reach the new service worker — capture goes silent).
@@ -234,6 +281,7 @@ async function storeCapture(payload, meta) {
     projectId: (meta && meta.projectId) || null, // on raw so reprocess preserves it
     runId: (meta && meta.runId) || null,
     geo: (meta && meta.geo) || null, // ditto: tracking provenance must survive reprocess
+    session: (meta && meta.session) || null, // private window / signed in (0.66.0)
 
     gz: await gzipString(rawText),
     rawSchema: 1,
@@ -385,6 +433,7 @@ async function deriveAndStore(rawRow, rawText, settings, { settle = true } = {})
   record.projectId = rawRow.projectId || null;
   record.runId = rawRow.runId || null;
   record.geo = rawRow.geo || null;
+  if (rawRow.session) record.session = rawRow.session;
 
   // Don't store 0-signal captures (empty autocomplete, failed navigation, etc.)
   if (!record.userPrompt && !record.answerChars && (!record.sources || !record.sources.length)) {
@@ -968,6 +1017,7 @@ async function ensureHeartbeatAlarm() {
   }
 }
 ensureHeartbeatAlarm();
+idleBadge();
 
 // Fires once, as soon as the browser itself starts (not just this worker) —
 // the earliest possible chance to notice a run left mid-flight by the
@@ -2163,7 +2213,7 @@ async function loaderStart(prompts, options) {
     const allowed = await new Promise((res) => chrome.extension.isAllowedIncognitoAccess(res));
     if (!allowed) {
       loader.running = false;
-      return { ok: false, error: "Enable 'Allow in Incognito' for this extension at chrome://extensions first." };
+      return { ok: false, incognitoBlocked: true, error: "To run signed out, allow CitoSkeleton in private windows first: chrome://extensions → CitoSkeleton → Details → Allow in Incognito." };
     }
     try {
       const win = await chrome.windows.create({ incognito: true });
@@ -2298,7 +2348,12 @@ async function geoRunStart(profileId, runOpts = {}) {
       // through here rather than calling loaderStart directly, so without
       // this the override would be silently dropped and the dialog would
       // reappear forever.
-      skipAuthCheck: !!runOpts.skipAuthCheck,
+      skipAuthCheck: !!runOpts.skipAuthCheck || !!runOpts.privateWindow,
+      // Signed out (0.66.0): the run opens its own private window, whose
+      // cookie store has no engine session, so the answers carry no
+      // account history or memory. Being signed out there is the point, so
+      // the sign-in check is skipped.
+      incognito: !!runOpts.privateWindow,
     }
   );
   if (!res.ok) return res;
@@ -2310,6 +2365,7 @@ async function geoRunStart(profileId, runOpts = {}) {
     promptIds: prompts.map((p) => p.id),
     expected: vol.submissions,
     status: "running",
+    ...(runOpts.privateWindow ? { privateWindow: true } : {}),
   }));
   // Stamp the cadence clock now rather than on completion: the "run due today"
   // reminder should not keep nagging through a run that is already in flight.
@@ -2554,6 +2610,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       switch (msg?.type) {
         case "raw-conversation": {
           const tabId = sender?.tab?.id;
+          if (await capturePausedFor(sender)) { sendResponse({ ok: true, captureId: null, skipped: "paused" }); break; }
           let meta = null;
           if (loader.running) {
             const found = legForTab(tabId);
@@ -2590,6 +2647,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               }
             }
           }
+          meta = { ...(meta || {}), session: await sessionOf(sender, platformFromUrl((msg.payload || {}).pageUrl || (msg.payload || {}).url), (msg.payload || {}).url) };
           const res = await storeCapture(msg.payload, meta);
           if (res && res.captureId) {
             loaderOnCapture(tabId, res.record);
@@ -3167,7 +3225,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
         case "geo-run-start": {
-          sendResponse(await geoRunStart(msg.profileId, { skipAuthCheck: !!msg.skipAuthCheck }));
+          sendResponse(await geoRunStart(msg.profileId, { skipAuthCheck: !!msg.skipAuthCheck, privateWindow: !!msg.privateWindow }));
           break;
         }
         // Opens an engine's own sign-in page for the pre-flight auth gate.
@@ -3623,6 +3681,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           try {
             await chrome.action.setBadgeText({ text: "" });
           } catch (_) {}
+          idleBadge();
           sendResponse({ ok: true });
           break;
 
@@ -3649,11 +3708,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         // The network recorder (0.62.0, Debug capture only; content-main.js).
         case "netlog": {
+          if (await capturePausedFor(sender)) { sendResponse({ ok: true, skipped: "paused" }); break; }
           await netlogAppend(Array.isArray(msg.entries) ? msg.entries.slice(0, 200) : []);
           sendResponse({ ok: true });
           break;
         }
         case "probe": {
+          if (await capturePausedFor(sender)) { sendResponse({ ok: true, skipped: "paused" }); break; }
           await probeAppend(msg.payload || {});
           sendResponse({ ok: true });
           break;
@@ -3713,6 +3774,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
         case "page-interaction":
+          if (await capturePausedFor(sender)) { sendResponse({ ok: true, skipped: "paused" }); break; }
           sendResponse(await onPageInteraction(msg.payload || {}));
           break;
         // Read (or re-read) one answer's cited pages now, from Analyze.

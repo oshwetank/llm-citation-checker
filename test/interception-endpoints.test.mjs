@@ -122,9 +122,13 @@ const ENGINES = {
     capture: [
       "https://chatgpt.com/backend-api/conversation",
       "https://chatgpt.com/backend-api/f/conversation",
+      // Signed out (0.66.0): the same stream on backend-anon.
+      "https://chatgpt.com/backend-anon/conversation",
+      "https://chatgpt.com/backend-anon/f/conversation",
     ],
     ignore: [
       "https://chatgpt.com/backend-api/conversations?offset=0", // history list, not a turn
+      "https://chatgpt.com/backend-anon/conversations?offset=0",
       "https://chatgpt.com/_next/static/chunks/main.js",
     ],
   },

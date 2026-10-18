@@ -58,7 +58,8 @@
            str.includes('"type":"pong"');
   };
 
-  const CHATGPT_RE = /\/backend-api\/(?:f\/)?conversation(?:\?|$)/i;
+  // backend-anon is the same stream for someone not signed in (0.66.0).
+  const CHATGPT_RE = /\/backend-(?:api|anon)\/(?:f\/)?conversation(?:\?|$)/i;
   const GEMINI_RE = /assistant\.lamda\.BardFrontendService\/StreamGenerate|\/StreamGenerate\b/i;
   // NOTE: `sse` is in the /rest/ alternation deliberately. The previous
   // pattern had `\/api\/sse\/` and `\/rest\/(threads|queries|answers|

@@ -2035,6 +2035,7 @@ function renderAnalyzeTab(rec, root) {
     rec.geo ? el("span", { className: "at-chip at-chip-campaign", title: "Captured by a campaign run" }, `Campaign · ${profile ? profile.name : "removed campaign"}`)
       : el("span", { className: "at-chip", title: "Asked by hand, not by a campaign" }, "Ad-hoc"),
     own ? el("span", { className: "at-chip", title: own.source === "settings" ? "Your brand, from Settings" : `The brand of the campaign ${own.campaign || ""}`.trim() }, `Tracking ${own.name}`) : "", // "" not null: the DOM's own append() writes null out as text
+    sessionChip(rec),
     eng,
     el("span", { className: "at-asked" }, `Asked ${engineLabel}`),
     el("span", { className: "ap-when", title: new Date(rec.capturedAt).toLocaleString() }, `· ${rec.model ? `${rec.model} · ` : ""}${apDate(rec.capturedAt)}, ${apTime(rec.capturedAt)}`));
@@ -8034,6 +8035,15 @@ function renderCampaignHead(profile) {
     };
     await attempt(false);
   });
+  // Signed out (0.66.0): the same run in a private window with no engine
+  // session, for answers without account history or memory.
+  const privBtn = el("button", { className: "btn ghost cp-btn cp-run cp-run-private", type: "button", title: "Run in a private window, signed out of every engine: answers without your account's history or memory" }, "Run signed out");
+  privBtn.onclick = withBusy(privBtn, "Starting…", async () => {
+    if (!confirm(`Run signed out?\n\n${vol.submissions} submissions (${vol.prompts} prompts × ${vol.engines} engines) will be sent from a new private window, signed out of every engine, so the answers carry no account history or memory.\n\nEngines that need an account (or limit signed-out use) may refuse some prompts.`)) return;
+    const r = await send({ type: "geo-run-start", profileId: profile.id, privateWindow: true });
+    if (!r || !r.ok) { showToast((r && r.error) || "Couldn't start the run.", "error"); return; }
+    loadGeo();
+  });
   const pauseBtn = el("button", { className: "btn ghost cp-btn cp-live cp-pause", type: "button" }, "Pause");
   pauseBtn.onclick = async () => {
     const r = await send({ type: "loader-pause" });
@@ -8054,7 +8064,7 @@ function renderCampaignHead(profile) {
     const r = await send({ type: "loader-stop" });
     withScrollPreserved(() => renderLoaderStatus(r));
   };
-  const actions = el("div", { className: "cp-actions" }, edit, exp, runBtn, pauseBtn, resumeBtn, stopBtn);
+  const actions = el("div", { className: "cp-actions" }, edit, exp, runBtn, privBtn, pauseBtn, resumeBtn, stopBtn);
   if (campaignManageOpen) {
     const del = el("button", { className: "btn ghost danger cp-btn", type: "button" }, "Delete campaign");
     del.onclick = trashCampaign(profile);
@@ -8400,6 +8410,46 @@ document.querySelectorAll("[data-tab]").forEach((btn) =>
 $("#openTab").addEventListener("click", () =>
   chrome.tabs.create({ url: chrome.runtime.getURL("ui/panel.html") })
 );
+
+// How the answer was asked (0.66.0): from a private window and/or signed
+// out, which is when an engine answers without the account's history or
+// memory. Nothing is shown for a normal signed-in answer.
+function sessionChip(rec) {
+  const s = rec && rec.session;
+  if (!s) return "";
+  const parts = [s.private ? "Private window" : "", s.signedIn === "out" ? "Signed out" : ""].filter(Boolean);
+  if (!parts.length) return "";
+  return el("span", { className: "at-chip at-chip-session", title: "Asked without a signed-in session's history or memory" }, parts.join(" · "));
+}
+
+// Pause capture (0.66.0). Asked for: "there are times when people don't
+// want any record of their conversations". While paused the background
+// stores nothing from an engine page; the popup, the tab and the toolbar
+// icon all say so, and follow each other through storage.
+function paintCaptureToggle(paused) {
+  const b = document.getElementById("capToggle");
+  if (!b) return;
+  b.setAttribute("aria-checked", String(!paused));
+  b.classList.toggle("paused", !!paused);
+  b.querySelector(".cap-label").textContent = paused ? "Paused" : "Capturing";
+  b.title = paused
+    ? "Capture is paused: nothing from ChatGPT, Gemini, Perplexity or Grok is being kept. A campaign run still records its own tabs. Click to capture again."
+    : "Capturing your engine chats. Click to pause.";
+  document.body.classList.toggle("capture-paused", !!paused);
+}
+$("#capToggle")?.addEventListener("click", async () => {
+  const paused = !document.getElementById("capToggle").classList.contains("paused");
+  paintCaptureToggle(paused);
+  const r = await send({ type: "settings-set", patch: { capturePaused: paused } });
+  if (!r || !r.ok) { paintCaptureToggle(!paused); showToast("Couldn't change capture.", "error"); return; }
+  showToast(paused ? "Capture paused. Nothing from your chats is kept until you turn it back on." : "Capturing again.");
+});
+send({ type: "settings-get" }).then((r) => paintCaptureToggle(!!(r && r.settings && r.settings.capturePaused))).catch(() => {});
+try {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes.lcfcSettings) paintCaptureToggle(!!((changes.lcfcSettings.newValue || {}).capturePaused));
+  });
+} catch (_) { /* no storage events in this context */ }
 
 // Light or dark, kept in this browser (the popup and the full tab share it).
 // Picked in About → Settings since 0.56.0; the top bar's button went, as on

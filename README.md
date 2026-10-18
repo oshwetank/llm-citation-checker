@@ -11,12 +11,24 @@ Everything is stored **locally in your browser**. The extension makes **no netwo
 of its own**, except, if you turn on **Read the cited pages**, to the pages an answer cited;
 nothing leaves your device.
 
-> **v0.65.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.66.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **Gemini captured again** (0.66.0). Gemini now sends its answers over a different channel,
+>   so 0.65.0 saw none of them and every Gemini prompt in a campaign timed out. This release
+>   reads it: the answer, the pages under "Searched the web", and product cards with their store
+>   and price.
+> - **Pause capture** (0.66.0). A switch beside the logo, in the popup and the full tab. While
+>   paused nothing from ChatGPT, Gemini, Perplexity or Grok is kept, and the toolbar icon says
+>   "off". A campaign run you start still records its own tabs.
+> - **Signed-out and private-window answers** (0.66.0). Answers asked in a private (Incognito)
+>   window or while signed out are captured and marked so in Analyze; ChatGPT's signed-out
+>   stream is read too. A campaign can **Run signed out**, in a new private window, for answers
+>   without your account's history or memory. Allow CitoSkeleton in Incognito at
+>   chrome://extensions first.
 > - **Display settings** (0.65.0, planned as 0.63.0). About → Settings → Display: fifteen bundled
 >   typefaces (Geist, IBM Plex Sans, Inter, Roboto, Open Sans, Lato, Source Sans 3, Noto Sans,
 >   Nunito, Work Sans, Manrope, DM Sans, Atkinson Hyperlegible Next, Merriweather, Lora; all SIL
