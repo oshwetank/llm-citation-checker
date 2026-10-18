@@ -11,12 +11,15 @@ Everything is stored **locally in your browser**. The extension makes **no netwo
 of its own**, except, if you turn on **Read the cited pages**, to the pages an answer cited;
 nothing leaves your device.
 
-> **v0.68.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.68.1** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **Dashboard filters, laid out** (0.68.1). The filters are four labelled rows (Look in,
+>   Engines, When, Show) instead of one run of chips that wrapped anywhere, with one style for
+>   "on" and the duplicate caption gone.
 > - **Dashboard: campaign prompts in their own block** (0.68.0). A campaign's prompts are grouped
 >   under the campaign's name, after what you asked by hand (its five latest, with "Show all").
 >   **Campaign prompts: Grouped · Left out · Only** shows the Dashboard with them, without them,

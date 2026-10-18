@@ -5624,7 +5624,7 @@ function renderDashboardImpl() {
   }
   const top = el("section", { className: "db-card db-top", "aria-label": "Search and filters" });
   wrap.append(top);
-  if (!popup) top.append(el("div", { className: "db-caption" }, "Everything you’ve captured · stored on this computer"));
+  // The app bar already says what this is (0.68.1: it was said twice).
   top.append(search);
 
   /* --- filters --- */
@@ -5676,8 +5676,11 @@ function renderDashboardImpl() {
     });
     top.append(kinds);
   } else {
-    const row = el("div", { className: "db-filters" });
-    const scope = el("div", { className: "db-group", role: "group", "aria-label": "Look in" }, el("span", { className: "db-label" }, "Look in"));
+    // 0.68.1, reported as "a mess": the filters are labelled rows, a label
+    // column on the left and each row's controls beside it, instead of one
+    // run of chips that wrapped wherever the width ran out.
+    const row = el("div", { className: "db-filters db-fgrid" });
+    const scope = el("div", { className: "db-group", role: "group", "aria-label": "Look in" });
     [["prompts", "Prompts"], ["answers", "Answers"], ["fan", "Searches engines ran"]].forEach(([k, l]) => scope.append(dbChip(l, !!dbScope[k], () => {
       dbScope = { ...dbScope, [k]: !dbScope[k] };
       if (k === "answers") { dbAnswerFor = ""; dbRequestAnswers(); }
@@ -5687,12 +5690,17 @@ function renderDashboardImpl() {
     ENGINE_ORDER.forEach((id) => eng.append(dbChip([engineIconEl(id), dbEngineLabel(id), el("span", { className: "db-n" }, String(v.engineCounts[id] || 0))], dbEngines[id] !== false, engineToggle(id), { cls: "engine" })));
     const seg = el("div", { className: "db-seg", role: "group", "aria-label": "When" });
     PERIODS.forEach((p) => { const b = el("button", { className: `db-seg-btn${p.id === period ? " on" : ""}`, type: "button", "aria-pressed": p.id === period ? "true" : "false" }, p.id === "custom" && period === "custom" && dbRange ? rangeLabel(dbRange.from, dbRange.to) : p.label); b.onclick = () => setPeriod(p.id); seg.append(b); });
-    const toggles = el("div", { className: "db-group" });
-    toggles.append(
-      dbChip(`${dbRepeat ? "✓ " : ""}Asked more than once`, dbRepeat, () => { dbRepeat = !dbRepeat; renderDashboard(); }, { cls: "toggle" }));
-    row.append(scope, eng, seg, toggles, dbCampaignSeg());
+    const when = el("div", { className: "db-group" }, seg);
+    if (period === "custom") when.append(rangeBox());
+    const show = el("div", { className: "db-group" },
+      dbChip(`${dbRepeat ? "✓ " : ""}Asked more than once`, dbRepeat, () => { dbRepeat = !dbRepeat; renderDashboard(); }, { cls: "toggle" }),
+      el("span", { className: "db-sep", "aria-hidden": "true" }), dbCampaignSeg());
+    const line = (label, ctl) => row.append(el("span", { className: "db-flabel" }, label), ctl);
+    line("Look in", scope);
+    line("Engines", eng);
+    line("When", when);
+    line("Show", show);
     top.append(row);
-    if (period === "custom") top.append(rangeBox());
   }
   if (recent.length && !dbQuery) {
     const rr = el("div", { className: "db-recent" }, el("span", { className: "db-label" }, popup ? "Recent" : "Your recent searches"));

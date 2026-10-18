@@ -139,7 +139,11 @@ try {
     // innerText returns the transformed text.
     check("no Performance Overview, no Top Domains column", !/Performance Overview|Top Domains/i.test(r.text));
     check("no campaign picker on the Dashboard", !r.campaignPicker);
-    check("it says where the data lives", /stored on this computer/.test(r.text));
+    // Once, in the app bar (0.68.1: the card repeated it).
+    const where = await page.evaluate(() => ({ bar: document.getElementById("headerPage")?.innerText || "", inCard: /stored on this computer/.test(document.querySelector("#dashboard .db-top")?.innerText || "") }));
+    check("it says where the data lives, once, in the app bar", /stored on this computer/.test(where.bar) && !where.inCard, JSON.stringify(where));
+    const rows = await page.evaluate(() => [...document.querySelectorAll("#dashboard .db-fgrid .db-flabel")].map((x) => x.textContent));
+    check("the filters are labelled rows: Look in, Engines, When, Show", rows.join("|") === "Look in|Engines|When|Show", rows.join("|"));
   }
 
   console.log("\nOne row per prompt");

@@ -293,6 +293,9 @@ try {
   }
 
   if (SHOTS) {
+    await page.evaluate(() => document.querySelector('[data-tab="dashboard"]')?.click());
+    await page.waitForTimeout(1200);
+    await page.screenshot({ path: `${SHOTS}/db-filters.png`, clip: { x: 0, y: 0, width: 1440, height: 420 } });
     await page.evaluate(() => document.querySelector('[data-tab="loader"]')?.click());
     await page.waitForTimeout(2500);
     for (const theme of ["light", "dark"]) {
