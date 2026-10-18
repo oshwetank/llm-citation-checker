@@ -228,5 +228,23 @@ console.log("\nA custom span of days (0.60.2)");
   check("the span reads as dates", rangeLabel("2026-09-27", "2026-10-02", NOW) === "27 Sep – 2 Oct" && rangeLabel("2025-12-30", "2026-01-02", NOW) === "30 Dec 2025 – 2 Jan", rangeLabel("2025-12-30", "2026-01-02", NOW));
 }
 
+console.log("\nlanguage and market (0.70.0)");
+{
+  const rs = historyRows([
+    cap("chatgpt", "mejor banco digital", at(0), { answerLang: "es", ai: { lang: "es-MX", market: { country: "MX" } } }),
+    cap("gemini", "melhor banco digital", at(0), { answerLang: "pt" }),
+    cap("chatgpt", "best digital bank", at(1), { answerLang: "en", ai: { lang: "en", market: { country: "GB" } } }),
+    cap("perplexity", "best budget laptop", at(1)),
+  ]);
+  const v = historyView(rs, { period: "all" }, { now: NOW });
+  check("languages counted, the AI's reading first, as base codes", JSON.stringify(v.langCounts) === JSON.stringify([{ code: "en", n: 1 }, { code: "es", n: 1 }, { code: "pt", n: 1 }]), JSON.stringify(v.langCounts));
+  check("markets counted from the AI's check", v.marketCounts.map((x) => x.code).join() === "GB,MX", JSON.stringify(v.marketCounts));
+  const es = historyView(rs, { period: "all", lang: "es" }, { now: NOW });
+  check("filter by language", es.list.length === 1 && es.list[0].text === "mejor banco digital", es.list.map((r) => r.text).join());
+  const gb = historyView(rs, { period: "all", market: "GB" }, { now: NOW });
+  check("filter by market", gb.list.length === 1 && gb.list[0].text === "best digital bank");
+  check("the counts don't shrink when one is picked", es.langCounts.length === 3);
+}
+
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
 process.exit(failures ? 1 : 0);

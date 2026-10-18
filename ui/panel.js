@@ -5427,6 +5427,8 @@ let dbEngines = { chatgpt: true, gemini: true, perplexity: true, grok: true };
 let dbPeriod = null;         // null until picked: the view's default, widened if that would show nothing
 let dbRange = null;          // { from, to } as "YYYY-MM-DD" when the period is "custom"
 let dbRepeat = false;
+// The answers' language and market (0.70.0), null = any.
+let dbLang = null, dbMarket = null;
 // Campaign prompts on the Dashboard (0.68.0): "group" (a block per
 // campaign, after the prompts asked by hand), "hide" or "only". Kept in this
 // browser, so the Dashboard opens the way it was left.
@@ -5685,6 +5687,10 @@ function dbHistoryRows() {
 }
 
 function renderDashboard() { withScrollPreserved(renderDashboardImpl); }
+function dbCodeName(kind, code) {
+  try { return new Intl.DisplayNames([navigator.language || "en"], { type: kind }).of(code) || code; } catch (_) { return code; }
+}
+
 function renderDashboardImpl() {
   const root = $("#dashboard");
   if (!root) return;
@@ -5702,7 +5708,7 @@ function renderDashboardImpl() {
     return;
   }
   const period = dbPeriod || dbDefaultPeriod(all, popup);
-  const v = historyView(all, { query: dbQuery, scope: dbScope, engines: dbEngines, period, from: dbRange && dbRange.from, to: dbRange && dbRange.to, kinds: dbKinds, week: dbWeek, repeat: dbRepeat, campaigns: dbCampaigns, sort: dbSort }, { now: Date.now(), answerHits: dbAnswerHits });
+  const v = historyView(all, { query: dbQuery, scope: dbScope, engines: dbEngines, period, from: dbRange && dbRange.from, to: dbRange && dbRange.to, kinds: dbKinds, week: dbWeek, repeat: dbRepeat, campaigns: dbCampaigns, sort: dbSort, lang: dbLang, market: dbMarket }, { now: Date.now(), answerHits: dbAnswerHits });
   currentFilteredRecs = v.list.flatMap((r) => r.captureIds).map((id) => ALL_RECORDS.find((x) => x.captureId === id)).filter(Boolean);
   const periodPhrase = period === "custom" ? (dbRange ? `in ${rangeLabel(dbRange.from, dbRange.to)}` : "between the dates you picked") : (PERIODS.find((p) => p.id === period) || PERIODS[5]).phrase;
 
@@ -5803,6 +5809,15 @@ function renderDashboardImpl() {
     line("Engines", eng);
     line("When", when);
     line("Show", show);
+    // Language and market (0.70.0): only when there is a choice to make.
+    const pickRow = (list, cur, kind, set) => {
+      const g = el("div", { className: "db-group", role: "group", "aria-label": kind === "language" ? "Language" : "Market" });
+      g.append(dbChip("Any", !cur, () => { set(null); renderDashboard(); }, { cls: "scope" }));
+      list.slice(0, 12).forEach((x) => g.append(dbChip([dbCodeName(kind, x.code), el("span", { className: "db-n" }, String(x.n))], cur === x.code, () => { set(cur === x.code ? null : x.code); renderDashboard(); }, { cls: "scope" })));
+      return g;
+    };
+    if (v.langCounts.length > 1 || dbLang) line("Language", pickRow(v.langCounts, dbLang, "language", (c) => { dbLang = c; }));
+    if (v.marketCounts.length > 1 || dbMarket) line("Market", pickRow(v.marketCounts, dbMarket, "region", (c) => { dbMarket = c; }));
     top.append(row);
   }
   if (recent.length && !dbQuery) {

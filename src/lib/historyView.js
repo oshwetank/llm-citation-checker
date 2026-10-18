@@ -91,6 +91,8 @@ const namedBrands = (rec) => normalizeMentions(rec.brandMentions || [], knownVen
  * @param {object[]} records  light capture rows
  * @param {{ profiles?: object[] }} opts  campaigns, to name a campaign's prompts
  */
+const baseLang = (l) => (l ? String(l).toLowerCase().split(/[-_]/)[0] : null);
+
 export function historyRows(records, { profiles = [] } = {}) {
   const byKey = new Map();
   for (const r of records || []) {
@@ -171,6 +173,10 @@ export function historyRows(records, { profiles = [] } = {}) {
       sites: [...siteMap.values()].map((x) => ({ domain: x.domain, cited: x.cited })),
       ads: [...new Set(adHits.map((h) => h.advertiser))],
       adHits,
+      // The answers' languages and markets (0.70.0): the built-in AI's
+      // reading when there is one, else Chrome's language detector.
+      langs: [...new Set(latestPer.map((c) => baseLang((c.ai && c.ai.lang) || c.answerLang)).filter(Boolean))],
+      markets: [...new Set(latestPer.map((c) => c.ai && c.ai.market && c.ai.market.country).filter(Boolean))],
     });
   }
   return rows.sort((a, b) => b.latestAt - a.latestAt);
@@ -302,11 +308,17 @@ export function historyView(rows, f, { now = Date.now(), answerHits = new Map() 
     && (campaignsMode !== "only" || r.fromCampaign)
     && (campaignsMode !== "hide" || !r.fromCampaign)
     && (!f.ads || (r.ads || []).length > 0));
+  // Language and market (0.70.0), counted before they filter so the
+  // choices show how many prompts each one would leave.
+  const tally = (key) => { const m = new Map(); pre.forEach((r) => (r[key] || []).forEach((v) => m.set(v, (m.get(v) || 0) + 1))); return [...m.entries()].map(([code, n]) => ({ code, n })).sort((a, b) => b.n - a.n || a.code.localeCompare(b.code)); };
+  const langCounts = tally("langs");
+  const marketCounts = tally("markets");
+  const preLM = pre.filter((r) => (!f.lang || (r.langs || []).includes(f.lang)) && (!f.market || (r.markets || []).includes(f.market)));
 
   // 3. kind of answer
   const anyKind = !!f.kinds && Object.values(f.kinds).some(Boolean);
-  const kindCounts = Object.fromEntries(KINDS.map((k) => [k.id, pre.filter((r) => r.kind === k.id).length]));
-  const base = pre.filter((r) => !anyKind || f.kinds[r.kind]);
+  const kindCounts = Object.fromEntries(KINDS.map((k) => [k.id, preLM.filter((r) => r.kind === k.id).length]));
+  const base = preLM.filter((r) => !anyKind || f.kinds[r.kind]);
 
   // 4. the week picked on the chart
   const lastWeek = weekStart(now);
@@ -378,7 +390,7 @@ export function historyView(rows, f, { now = Date.now(), answerHits = new Map() 
   };
 
   return {
-    tokens: toks, matched, pre, base, list, engineCounts, kindCounts, anyKind, weeks, fan, totals, sites, ads,
+    tokens: toks, matched, pre, base, list, engineCounts, kindCounts, anyKind, weeks, fan, totals, sites, ads, langCounts, marketCounts,
     withAds: matched.filter((r) => (r.ads || []).length).length,
     groups: f.sort && f.sort !== "newest" ? [{ id: "all", label: f.sort === "asked" ? "Asked most often" : "Most engines", sub: "", rows: list }]
       : campaignsMode === "group" || campaignsMode === "only"
