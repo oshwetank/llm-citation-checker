@@ -11,12 +11,22 @@ Everything is stored **locally in your browser**. The extension makes **no netwo
 of its own**, except, if you turn on **Read the cited pages**, to the pages an answer cited;
 nothing leaves your device.
 
-> **v0.62.2** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.64.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **Campaign board, rebuilt** (0.64.0). A campaign's results open on the five headline numbers
+>   (share of voice, visibility, average position, mentions, responses), each split by engine and
+>   with the change since the run before, then: a brand leaderboard per engine; **you vs any rival**
+>   on eight measures, engine by engine, topic by topic and prompt by prompt; sources; **every
+>   citation in detail** (kind of page, its place in the answer, its rank in ChatGPT's results, how
+>   old it is, whether both engines cited it), with search and filters; prompt rankings; products
+>   and topics; **the searches the engines ran, `site:` searches and ads**; and signals about the
+>   data itself (engine agreement, gaps, usage limits). Engines, brands and sites carry logos;
+>   site icons come from Chrome's own favicon cache, so nothing is fetched. The workbook export
+>   gains the same citation detail, `site:` columns and the ad shown with each answer.
 > - **Campaigns while a run goes** (0.62.2). The page no longer jumps back to the top with each
 >   capture: it holds still while the run goes, its progress keeps updating, and the results
 >   are drawn once the run finishes or is stopped. The board only ever shows finished runs.
@@ -684,6 +694,8 @@ Everything stays in your browser's IndexedDB. The extension makes no network req
 own, except, if you turn on Read the cited pages, to the pages an answer cited (without your
 cookies; that setting asks for access to all sites, and nothing is sent anywhere else). It
 asks for host access to the supported engines only (ChatGPT, Gemini, Perplexity and Grok).
+Site icons on the campaign board come from Chrome's own favicon cache (the "favicon"
+permission); brand and engine marks are bundled (Simple Icons, CC0). Neither fetches anything.
 The network recorder (Debug capture) keeps only hosts, masked paths, query key names and
 reply key names, in session storage, cleared when the browser closes. Raw payloads are gzipped; storage is capped
 (default 2,000 captures, 8 MB per payload) with oldest-first pruning. Clear everything from

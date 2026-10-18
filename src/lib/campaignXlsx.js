@@ -22,7 +22,9 @@
  */
 import { Workbook, absRange, sheetRef, cellRef, colName } from "./xlsxWrite.js";
 import { brandPresence, normName, domainOfUrl, domainMatches } from "./geo.js";
-import { answerKind } from "./analyzeView.js";
+import { answerKind, resultPositions } from "./analyzeView.js";
+import { pageTypeOf } from "./campaignView.js";
+import { parseQueryOperators } from "./fanout.js";
 import { siteKindOf } from "./siteKind.js";
 import { extractBrandAspects } from "./aspects.js";
 import { cardIsBrand } from "./campaignBoard.js";
@@ -103,7 +105,9 @@ export function campaignFacts({ profile = {}, prompts = [], runs = [], records =
       ownDom && cited.some((s) => domainMatches(s.domain, ownDom)) ? 1 : 0, products.length, ownCards, images.length, ownImages,
       text ? text.split(/\s+/).filter(Boolean).length : 0,
       answerText === "none" ? "" : answerText === "full" ? text.slice(0, 32000) : text.replace(/\s+/g, " ").slice(0, 300),
-      rec.pageUrl || rec.conversationUrl || ""]);
+      rec.pageUrl || rec.conversationUrl || "",
+      // 0.64.0: the ad shown after the answer, if any (ChatGPT only).
+      (rec.ads || []).length ? 1 : 0, (rec.ads || []).map((a) => a.advertiser || a.targetDomain || "").filter(Boolean).join(", ")]);
 
     // One row per tracked brand the answer named (or showed on a card).
     pres.filter((p) => p.present).forEach((p) => {
@@ -116,21 +120,29 @@ export function campaignFacts({ profile = {}, prompts = [], runs = [], records =
         picked, pagesNaming, dom && cited.some((s) => domainMatches(s.domain, dom)) ? 1 : 0]);
     });
 
-    // One row per page the engine opened.
+    // One row per page the engine opened. 0.64.0 adds what the board's
+    // citations show: the kind of page, its place among the answer's
+    // citations, its rank in ChatGPT's results, the lane, and its date.
+    const ranks = resultPositions(rec);
     sources.forEach((s) => {
+      const ps = s.platformSpecific || {};
+      const pub = typeof ps.pubDate === "number" && ps.pubDate > 0 ? new Date(ps.pubDate < 1e12 ? ps.pubDate * 1000 : ps.pubDate) : null;
+      const place = s.outcome === "cited" ? cited.indexOf(s) + 1 : null;
       const d = s.domain || domainOfUrl(s.url);
       const site = brands.find((b) => brandDom.get(b.name) && domainMatches(d, brandDom.get(b.name)));
       const on = `${s.title || ""} ${s.snippet || ""}`;
       const named = brands.filter((b) => wordRe(b.name).test(on)).map((b) => b.name);
       S.push([aid, run, prompt, engine, d, s.url || "", s.title || "", siteKindOf(d, { ownBrand: OWN, ownUrl: own.url, brands: brands.map((b) => b.name) }),
         s.outcome === "cited" ? "Cited" : "Read only", s.outcome === "cited" ? 1 : 0, named.includes(OWN) ? 1 : 0, named.some((x) => x !== OWN) ? 1 : 0,
-        named.join(", "), site ? site.name : "", site && site.isOwn ? 1 : 0]);
+        named.join(", "), site ? site.name : "", site && site.isOwn ? 1 : 0,
+        pageTypeOf(s.url), place, rec.platform === "chatgpt" ? ranks.get(s.url) || null : null, ps.resultSource || ps.refType || "", pub]);
     });
 
     // One row per search the engine ran.
     fan.forEach(([k, q]) => {
       Qs.push([aid, run, prompt, engine, k, q, q.split(/\s+/).filter(Boolean).length,
-        brands.some((b) => wordRe(b.name).test(q)) ? 1 : 0, wordRe(OWN).test(q) ? 1 : 0, YEAR.test(q) ? 1 : 0, /reddit/i.test(q) ? 1 : 0]);
+        brands.some((b) => wordRe(b.name).test(q)) ? 1 : 0, wordRe(OWN).test(q) ? 1 : 0, YEAR.test(q) ? 1 : 0, /reddit/i.test(q) ? 1 : 0,
+        ...(() => { const ops = parseQueryOperators(q); return [ops.siteIncludes.length || ops.siteExcludes.length ? 1 : 0, ops.siteIncludes.join(", "), ops.siteExcludes.join(", ")]; })()]);
     });
 
     // One row per product card, and per store a card lists.
@@ -171,10 +183,10 @@ export function campaignFacts({ profile = {}, prompts = [], runs = [], records =
 /* The raw tables' columns. The prefix names every column in the workbook
    (A_Run, M_Brand, …), so formulas read clearly and survive sorting. */
 export const RAW = [
-  { key: "A", sheet: "Answers", table: "tAnswers", what: "One row per prompt × engine × run", cols: ["Answer ID", "Run", "Run date", "Prompt ID", "Prompt", "Tags", "Kind of answer", "Engine", "Captured at", "Searched web", "Searches", "Web searches", "Shopping searches", "Image searches", "Pages read", "Pages cited", "Brands named", "You named", "Your position", "Your mentions", "Named first", "Cites your site", "Product cards", "Your cards", "Images", "Your images", "Words", "Answer text", "Conversation URL"] },
+  { key: "A", sheet: "Answers", table: "tAnswers", what: "One row per prompt × engine × run", cols: ["Answer ID", "Run", "Run date", "Prompt ID", "Prompt", "Tags", "Kind of answer", "Engine", "Captured at", "Searched web", "Searches", "Web searches", "Shopping searches", "Image searches", "Pages read", "Pages cited", "Brands named", "You named", "Your position", "Your mentions", "Named first", "Cites your site", "Product cards", "Your cards", "Images", "Your images", "Words", "Answer text", "Conversation URL", "Ad shown", "Advertisers"] },
   { key: "M", sheet: "Mentions", table: "tMentions", what: "One row per tracked brand an answer named", cols: ["Answer ID", "Run", "Prompt ID", "Engine", "Kind of answer", "Brand", "Brand type", "Position", "Mentions", "Named first", "Tracked", "Picked for", "Cited pages naming it", "Its site cited"] },
-  { key: "S", sheet: "Sources data", table: "tSources", what: "One row per page an engine opened", cols: ["Answer ID", "Run", "Prompt ID", "Engine", "Domain", "URL", "Page title", "Kind of site", "Outcome", "Cited", "Names you", "Names a rival", "Brands on page", "Site of brand", "Your site"] },
-  { key: "Q", sheet: "Engine searches", table: "tSearches", what: "One row per search an engine ran", cols: ["Answer ID", "Run", "Prompt ID", "Engine", "Kind of search", "Search text", "Words", "Names a brand", "Names you", "Has a year", "Asks Reddit"] },
+  { key: "S", sheet: "Sources data", table: "tSources", what: "One row per page an engine opened", cols: ["Answer ID", "Run", "Prompt ID", "Engine", "Domain", "URL", "Page title", "Kind of site", "Outcome", "Cited", "Names you", "Names a rival", "Brands on page", "Site of brand", "Your site", "Kind of page", "Place among citations", "Search result", "Found through", "Published"] },
+  { key: "Q", sheet: "Engine searches", table: "tSearches", what: "One row per search an engine ran", cols: ["Answer ID", "Run", "Prompt ID", "Engine", "Kind of search", "Search text", "Words", "Names a brand", "Names you", "Has a year", "Asks Reddit", "Uses site:", "site: sites", "Sites left out"] },
   { key: "P", sheet: "Product cards", table: "tProducts", what: "One row per product card", cols: ["Answer ID", "Run", "Prompt ID", "Engine", "Card position", "Product", "Brand", "Yours", "Price", "Price as shown", "Rating", "Reviews", "Image from", "Card sends buyers to", "Stores listed", "Your store listed"] },
   { key: "O", sheet: "Store offers", table: "tOffers", what: "One row per store a product card lists", cols: ["Answer ID", "Run", "Engine", "Product", "Brand", "Store rank", "Store", "Your store"] },
   { key: "I", sheet: "Images", table: "tImages", what: "One row per image in an answer", cols: ["Answer ID", "Run", "Prompt ID", "Engine", "Image position", "Image from", "Served by the engine", "Image title", "Brand shown", "Yours"] },

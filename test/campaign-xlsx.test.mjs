@@ -255,5 +255,24 @@ check("csvCell writes dates as ISO", csvCell(new Date(Date.UTC(2026, 9, 3))) ===
   check("counts carry each table's column count", c.cols.answers === RAW[0].cols.length && c.cols.h2h === RAW.find((r) => r.key === "H").cols.length);
 }
 
+console.log("\n0.64.0: the board's citation detail, site: searches and ads are in the raw tables");
+{
+  const B = bundle();
+  const r = B.records.find((x) => x.platform === "chatgpt" && (x.sources || []).some((s) => s.outcome === "cited"));
+  r.sources = r.sources.map((s, i) => (i === 0 ? { ...s, url: "https://smartprix.com/best-headphones-under-4000", outcome: "cited", platformSpecific: { markerIds: ["turn0search2"], pubDate: 1_700_000_000, resultSource: "news" } } : s));
+  r.fanout = { ...r.fanout, search: [...(r.fanout.search || []), { query: "zento review site:rtings.com -site:reddit.com" }] };
+  r.ads = [{ advertiser: "Kovo", targetDomain: "kovo.com" }];
+  const G = campaignFacts(B);
+  const S0 = G.S.find((row) => row[col("S", "URL")] === "https://smartprix.com/best-headphones-under-4000");
+  check("a cited page carries its kind, place, result rank, lane and date",
+    S0 && S0[col("S", "Kind of page")] === "List of picks" && S0[col("S", "Place among citations")] === 1 && S0[col("S", "Search result")] === 3 && S0[col("S", "Found through")] === "news"
+      && S0[col("S", "Published")] instanceof Date && S0[col("S", "Published")].getTime() === 1_700_000_000_000, JSON.stringify(S0));
+  const Q0 = G.Q.find((row) => /site:/.test(row[col("Q", "Search text")]));
+  check("a site: search says which sites it kept to and which it left out",
+    Q0 && Q0[col("Q", "Uses site:")] === 1 && Q0[col("Q", "site: sites")] === "rtings.com" && Q0[col("Q", "Sites left out")] === "reddit.com", JSON.stringify(Q0));
+  const A0 = G.A.filter((row) => row[col("A", "Ad shown")] === 1);
+  check("an answer with an ad names the advertiser", A0.length === 1 && A0[0][col("A", "Advertisers")] === "Kovo", JSON.stringify(A0.map((x) => x.slice(-2))));
+}
+
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);
