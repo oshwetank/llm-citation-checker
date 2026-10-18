@@ -93,7 +93,9 @@ export function channelStream({ steps = 4, firstId = 10, response = RESPONSE, an
   const frames = [];
   let id = firstId;
   frames.push(JSON.stringify([[id++, ["noop"]]]));
-  const status = msg([2, msg([7, msg([1, msg([2, msg([1, response])], [4, msg([4, msg([2, msg([1, CONVERSATION], [2, response])], [7, msg([2, msg([1, "google"], [2, msg([6, "Searching the web"])])])])])])])])]);
+  // As on the wire, the status frame carries the long topic list too.
+  const noise = msg([25, msg([5, msg(...many(1, Array.from({ length: 60 }, (_, k) => `topic-${k}`)))])]);
+  const status = msg([2, msg([7, msg([1, msg([2, msg([1, response])], [4, msg([4, msg([2, msg([1, CONVERSATION], [2, response])], [7, msg([2, msg([1, "google"], [2, msg([6, "Searching the web"])])])], noise)])])])])]);
   frames.push(JSON.stringify([[id++, [b64(status)]]]));
   for (let k = 1; k <= steps; k++) frames.push(JSON.stringify([[id++, [b64(responsePayload(Math.ceil((answer.length * k) / steps), { response, answer }))]]]));
   return frames.map((f) => `${f.length}\n${f}`).join("");

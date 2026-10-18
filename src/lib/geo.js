@@ -663,6 +663,12 @@ export function turnAnswered(r) {
   if (!hasSignal(r)) return false;
   const ps = (r && r.platformSpecific) || {};
   if (r.platform === "grok" && ps.transport === "gateway") return ps.gatewayStatus === "completed" && (r.answerChars || 0) > 0;
+  // Gemini's stream is handed over whenever it goes quiet, which can be
+  // while it is still searching (0.69.0): done only with answer text.
+  if (r.platform === "gemini" && ps.transport === "webchannel") return (r.answerChars || 0) > 0;
+  // ChatGPT signed out (0.69.0): handed over whenever its stream goes quiet,
+  // so a snapshot still being written doesn't count.
+  if (r.platform === "chatgpt" && ps.transport === "conversation-source") return (r.answerChars || 0) > 0 && !/progress|stream|pending|running|generat/i.test(ps.status || "");
   return true;
 }
 

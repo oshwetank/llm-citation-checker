@@ -511,6 +511,11 @@ console.log("\nwhen a campaign turn is answered (0.62.2)");
   check("nor one Grok cut off", !turnAnswered(gw({ gatewayStatus: "incomplete" }, { answerChars: 0 })));
   check("one Grok completed, with text, is", turnAnswered(gw({ gatewayStatus: "completed" }, { answerChars: 900 })));
   check("other engines keep the old rule", turnAnswered({ platform: "perplexity", userPrompt: "q", answerChars: 10 }));
+  // 0.69.0: Gemini's stream went quiet while it searched; that hand-over has
+  // the prompt and no answer, and finished the turn on an empty answer.
+  const gem = (chars) => ({ platform: "gemini", userPrompt: "best linen shirt", platformSpecific: { transport: "webchannel" }, answerChars: chars });
+  check("a Gemini stream with no answer yet doesn't finish the turn", hasSignal(gem(0)) && !turnAnswered(gem(0)));
+  check("with its answer it does", turnAnswered(gem(1400)));
   check("Grok's usage limit is read off the capture", usageLimitOf(gw({ gatewayError: "usage_limit_reached" })) === "usage_limit_reached" && usageLimitOf(gw({ gatewayError: "stream_error" })) === null);
 }
 

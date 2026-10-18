@@ -125,10 +125,14 @@ const ENGINES = {
       // Signed out (0.66.0): the same stream on backend-anon.
       "https://chatgpt.com/backend-anon/conversation",
       "https://chatgpt.com/backend-anon/f/conversation",
+      // Signed out, the lighter app (0.69.0): the answer as ndjson.
+      "https://chatgpt.com/unauth-mweb/conversation/updates?lightweight_authenticated=1&operationId=abc",
     ],
     ignore: [
       "https://chatgpt.com/backend-api/conversations?offset=0", // history list, not a turn
       "https://chatgpt.com/backend-anon/conversations?offset=0",
+      "https://chatgpt.com/unauth-mweb/conversation/prepare?lightweight_authenticated=1",
+      "https://chatgpt.com/unauth-mweb/events/business",
       "https://chatgpt.com/_next/static/chunks/main.js",
     ],
   },

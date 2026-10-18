@@ -59,7 +59,9 @@
   };
 
   // backend-anon is the same stream for someone not signed in (0.66.0).
-  const CHATGPT_RE = /\/backend-(?:api|anon)\/(?:f\/)?conversation(?:\?|$)/i;
+  // unauth-mweb: signed out, the answer comes from conversation/updates as
+  // ndjson (0.69.0; lib/chatgptSource.js reads it).
+  const CHATGPT_RE = /\/backend-(?:api|anon)\/(?:f\/)?conversation(?:\?|$)|\/unauth-mweb\/conversation\/updates(?:\?|$)/i;
   const GEMINI_RE = /assistant\.lamda\.BardFrontendService\/StreamGenerate|\/StreamGenerate\b/i;
   // NOTE: `sse` is in the /rest/ alternation deliberately. The previous
   // pattern had `\/api\/sse\/` and `\/rest\/(threads|queries|answers|
@@ -293,21 +295,30 @@
   }
 
   // Drain a cloned stream to text without disturbing the branch the page reads.
-  async function drain(stream, meta) {
+  // `quietMs`: also hand it over whenever it goes quiet that long, for a
+  // stream that may stay open after its answer (ChatGPT's signed-out
+  // conversation/updates, 0.69.0); the copies are folded into one answer.
+  async function drain(stream, meta, { quietMs = 0 } = {}) {
     const reader = stream.getReader();
     const decoder = new TextDecoder();
-    let raw = "";
+    let raw = "", sent = 0, timer = null;
+    const hand = () => {
+      timer = null;
+      if (raw.length > sent && !isBackgroundSubscription(raw)) { sent = raw.length; emit({ ...meta, raw, capturedAt: Date.now() }); }
+    };
     try {
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
         raw += decoder.decode(value, { stream: true });
+        if (quietMs) { if (timer) clearTimeout(timer); timer = setTimeout(hand, quietMs); }
       }
     } catch (_) {
       /* partial capture is still useful */
     }
+    if (timer) clearTimeout(timer);
     raw += decoder.decode();
-    if (raw && !isBackgroundSubscription(raw)) {
+    if (raw && raw.length > sent && !isBackgroundSubscription(raw)) {
       emit({ ...meta, raw, capturedAt: Date.now() });
     }
   }
@@ -364,7 +375,7 @@
       try {
         const cloned = resp.clone();
         if (cloned.body) {
-          drain(cloned.body, { url, reqBody, transport: "fetch" });
+          drain(cloned.body, { url, reqBody, transport: "fetch" }, { quietMs: /\/unauth-mweb\//.test(url || "") ? 3000 : 0 });
         } else if (typeof cloned.text === "function") {
           cloned.text().then((raw) => {
             if (raw && !isBackgroundSubscription(raw)) {

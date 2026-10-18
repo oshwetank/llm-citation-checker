@@ -8219,9 +8219,10 @@ function renderCampaignHead(profile) {
   // session, for answers without account history or memory.
   const privBtn = el("button", { className: "btn ghost cp-btn cp-run cp-run-private", type: "button", title: "Run in a private window, signed out of every engine: answers without your account's history or memory" }, "Run signed out");
   privBtn.onclick = withBusy(privBtn, "Starting…", async () => {
-    if (!confirm(`Run signed out?\n\n${vol.submissions} submissions (${vol.prompts} prompts × ${vol.engines} engines) will be sent from a new private window, signed out of every engine, so the answers carry no account history or memory.\n\nEngines that need an account (or limit signed-out use) may refuse some prompts.`)) return;
+    if (!confirm(`Run signed out?\n\n${vol.submissions} submissions (${vol.prompts} prompts × ${vol.engines} engines) will be sent from a new private window, signed out of every engine, so the answers carry no account history or memory.\n\nGrok needs an account, so it is left out. Other engines may limit how much you can ask signed out.`)) return;
     const r = await send({ type: "geo-run-start", profileId: profile.id, privateWindow: true });
     if (!r || !r.ok) { showToast((r && r.error) || "Couldn't start the run.", "error"); return; }
+    if (r.leftOut && r.leftOut.length) showToast("Grok is left out of signed-out runs: it needs a signed-in account.");
     loadGeo();
   });
   const pauseBtn = el("button", { className: "btn ghost cp-btn cp-live cp-pause", type: "button" }, "Pause");

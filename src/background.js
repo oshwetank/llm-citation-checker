@@ -161,8 +161,20 @@ async function sessionOf(sender, platform, url) {
       const st = stores.find((x) => (x.tabIds || []).includes(tab.id));
       if (st) storeId = st.id;
     }
-    const r = await checkEngineAuth(platform, (q) => chrome.cookies.getAll(storeId ? { ...q, storeId } : q));
-    out.signedIn = r.status;
+    // The cookies the engine's page itself is sent (0.69.0). Asked by domain,
+    // Google's session cookies on google.com were out of reach (the
+    // extension has gemini.google.com, not google.com), so every Gemini
+    // answer read "unknown". By the page's address they are the ones it gets.
+    const spec = AUTH_COOKIES[platform];
+    const pageUrl = tab && tab.url && /^https:/.test(tab.url) ? new URL(tab.url).origin + "/" : null;
+    if (spec && pageUrl) {
+      const got = (await chrome.cookies.getAll(storeId ? { url: pageUrl, storeId } : { url: pageUrl })) || [];
+      if (got.some((c) => spec.names.includes(c.name) && c.value)) out.signedIn = "in";
+      else if (got.length) out.signedIn = "out";
+    } else {
+      const r = await checkEngineAuth(platform, (q) => chrome.cookies.getAll(storeId ? { ...q, storeId } : q));
+      out.signedIn = r.status;
+    }
   } catch (_) { /* unknown */ }
   return out;
 }
@@ -424,6 +436,7 @@ async function deriveAndStore(rawRow, rawText, settings, { settle = true } = {})
     {
       captureId: rawRow.captureId,
       raw,
+      url: rawRow.url,
       reqBody: rawRow.reqBody,
       capturedAt: rawRow.capturedAt,
       pageUrl: rawRow.pageUrl,
@@ -437,6 +450,13 @@ async function deriveAndStore(rawRow, rawText, settings, { settle = true } = {})
 
   // Don't store 0-signal captures (empty autocomplete, failed navigation, etc.)
   if (!record.userPrompt && !record.answerChars && (!record.sources || !record.sources.length)) {
+    return null;
+  }
+  // A Gemini stream handed over before the answer began (0.69.0): only its
+  // "Searching the web" frames had come when the stream went quiet. It is no
+  // answer yet; the next hand-over brings it. Stored, it was an empty answer
+  // that finished the campaign turn.
+  if (record.platform === "gemini" && (record.platformSpecific || {}).transport === "webchannel" && !record.answerChars) {
     return null;
   }
 
@@ -2331,8 +2351,14 @@ async function geoRunStart(profileId, runOpts = {}) {
   // this line would have happily run it anyway. availableEngines() is the
   // one place that decides "can this actually run", enforced here where the
   // run is kicked off, not just in the picker UI.
-  const engines = (profile.engines || []).filter((e) => availableEngines().some((a) => a.id === e));
+  let engines = (profile.engines || []).filter((e) => availableEngines().some((a) => a.id === e));
   if (!engines.length) return { ok: false, error: "Select at least one engine with an active adapter." };
+  // Signed out, Grok's page sent no chat request at all for any prompt in
+  // the owner's run (0.69.0): it needs an account. It is left out and the
+  // run says so rather than timing out on every prompt.
+  const leftOut = runOpts.privateWindow ? engines.filter((e) => e === "grok") : [];
+  if (leftOut.length) engines = engines.filter((e) => !leftOut.includes(e));
+  if (!engines.length) return { ok: false, error: "Grok needs a signed-in account, so it can't run signed out. Pick another engine for this campaign." };
 
   const vol = runVolume(prompts, engines);
   const geoRunId = crypto.randomUUID();
@@ -2371,7 +2397,7 @@ async function geoRunStart(profileId, runOpts = {}) {
   // reminder should not keep nagging through a run that is already in flight.
   await db.put("profiles", { ...profile, lastRunAt: Date.now() });
 
-  return { ok: true, geoRunId, ...vol, loaderRunId: res.runId };
+  return { ok: true, geoRunId, ...vol, loaderRunId: res.runId, ...(leftOut.length ? { leftOut } : {}) };
 }
 
 // Finds the (platform, leg) that owns a given tab, across every platform and

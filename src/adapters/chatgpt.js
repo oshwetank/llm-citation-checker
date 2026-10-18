@@ -23,6 +23,7 @@ import { isKnownRetrievalName, enginesNamedIn } from "../lib/retrieval.js";
 import { walk, collectByKey, collectObjects, firstPath, isHttpUrl, domainOf } from "../lib/deep.js";
 import { detectBrands } from "../lib/brands.js";
 import { isGenUi, readGenUi } from "../lib/genui.js";
+import { isConversationSource, readConversationSource } from "../lib/chatgptSource.js";
 
 export const ADAPTER_VERSION = "chatgpt@0.5.0";
 
@@ -706,10 +707,10 @@ function mergeGenUiCards(products, cards, imageLists) {
       // picture leads; the listing's stays as the fallback. Before 0.62.1
       // "realme Buds Air 8" and its listing "Realme Buds Air8 With 55db Anc,
       // …" were two products.
-      out.push({ ...hit, name: c.name, listingName: hit.name !== c.name ? hit.name : undefined, price: hit.price || c.price || null, image: (pics[0] && pics[0].url) || hit.image || null, subtitle: c.subtitle || null, badge: c.badge || null, headline: c.headline || null });
+      out.push({ ...hit, name: c.name, listingName: hit.name !== c.name ? hit.name : undefined, price: hit.price || c.price || null, merchant: hit.merchant || c.merchant || null, image: (pics[0] && pics[0].url) || hit.image || null, subtitle: c.subtitle || null, badge: c.badge || null, headline: c.headline || null });
     } else {
       out.push({
-        id: `answer-${c.n}`, name: c.name, price: c.price || null, merchant: null, rating: null, reviews: null,
+        id: `answer-${c.n}`, name: c.name, price: c.price || null, merchant: c.merchant || null, rating: null, reviews: null,
         image: (pics[0] && pics[0].url) || null, cite: null, renderAs: "answer-card", supplier: null,
         listing: false, subtitle: c.subtitle || null, badge: c.badge || null, headline: c.headline || null,
       });
@@ -783,8 +784,38 @@ function genUiBindings(nodes) {
   return out;
 }
 
+// Signed out (0.69.0): /unauth-mweb/conversation/updates, ndjson (see
+// lib/chatgptSource.js). Read by name; what it can't find stays empty.
+async function adaptSource(rawCapture, opts, diag) {
+  const r = readConversationSource(rawCapture.raw);
+  if (!r) { diag.usedFallback = true; diag.notes.push("signed-out stream: no answer text found in it"); }
+  const answerText = r ? cleanPassage(r.answer) : "";
+  const sources = (r ? r.sources : []).map((x) => makeSource({
+    url: x.url, domain: domainOf(x.url), title: x.title || domainOf(x.url), snippet: x.snippet || null,
+    outcome: x.cited ? "cited" : "fetched", type: x.cited ? "citation" : "search_result", platformSpecific: {},
+  }));
+  const fanout = { search: (r ? r.queries : []).map((q) => ({ query: q, round: 1 })), shopping: [], image: [] };
+  let userPrompt = (r && r.prompt) || extractPrompt(rawCapture.reqBody);
+  if (!userPrompt) { try { userPrompt = new URL(rawCapture.pageUrl).searchParams.get("q") || null; } catch (_) { /* no address */ } }
+  const { brands: brandMentions, entities: baseEntities } = await detectBrandsForCapture(answerText, [], opts.tracked, sources, [], userPrompt);
+  const entities = extractEntities(baseEntities, [], brandMentions, sources, []);
+  if (r && !r.queries.length) diag.notes.push("signed-out stream: no searches named in it");
+  return makeRecord({
+    captureId: rawCapture.captureId, platform: "chatgpt", model: null,
+    capturedAt: rawCapture.capturedAt, pageUrl: rawCapture.pageUrl, rawRef: rawCapture.captureId,
+    conversationId: r ? r.conversationId : null,
+    ...(r && r.messageId ? { turnId: r.messageId } : {}),
+    userPrompt, searched: sources.length > 0 || fanout.search.length > 0, fanout, sources,
+    products: [], places: [], entities, images: [], brandMentions,
+    answerChars: answerText.length, answerText,
+    platformSpecific: { transport: "conversation-source", signedOut: true, wordCount: answerText.trim() ? answerText.trim().split(/\s+/).length : 0, ...(r && r.status ? { status: r.status } : {}) },
+    _extraction: diag,
+  });
+}
+
 export async function adapt(rawCapture, opts = {}) {
   const diag = { adapterVersion: ADAPTER_VERSION, usedFallback: false, notes: [] };
+  if (isConversationSource(rawCapture.raw, rawCapture.url)) return adaptSource(rawCapture, opts, diag);
   const nodes = parseSse(rawCapture.raw || "");
 
   const fanout = extractFanout(nodes, diag);

@@ -56,6 +56,13 @@ const plain = (s) => String(s || "")
   .replace(/\s+/g, " ")
   .trim();
 
+// "Shop: X", "Sold by X", "Available at X", "Buy at X", "Store: X".
+const STORE_RE = /^(?:Shop|Store|Seller|Sold by|Available (?:at|on|from)|Buy (?:at|on|from)|From)\s*:?\s+(.{2,60})$/i;
+// A text that is nothing but a price ("₹23,999", "$1,299.00", "From €45").
+function isOnlyPrice(t) {
+  const m = PRICE_RE.exec(String(t || "").trim());
+  return !!m && String(t).trim().replace(m[0], "").replace(/[\s.,*()–-]/g, "").length === 0;
+}
 const PRICE_RE = /(?:(?:Around|About|Approx\.?|From|Starting at|Under|Only)\s+)?(?:[₹$€£¥]|Rs\.?\s?|INR\s?|USD\s?)\s?\d[\d,]*(?:\.\d+)?(?:\s?(?:lakh|k|K))?/;
 const ROW_ITEM_RE = new RegExp(
   String.raw`<AsyncImage\b${TAG_BODY}\/>` +
@@ -165,8 +172,12 @@ function readCard(row, n, cites) {
     name = attr(e[1], "value") || plain(items[nameAt].raw);
     ref = refsOf(attr(e[1], "ref") || "")[0] || null;
   } else {
-    nameAt = items.findIndex((it) => it.kind === "title" && it.size === "lg");
-    if (nameAt < 0) nameAt = items.findIndex((it) => it.kind === "title");
+    // A title that is only a price is the price, not the name (0.69.0: a
+    // saree answer put "1. Pure Katan Silk…" in the medium title and
+    // "₹23,999" in the large one, and every card was named by its price).
+    const onlyPrice = (it) => isOnlyPrice(plain(it.raw));
+    nameAt = items.findIndex((it) => it.kind === "title" && it.size === "lg" && !onlyPrice(it));
+    if (nameAt < 0) nameAt = items.findIndex((it) => it.kind === "title" && !onlyPrice(it));
     if (nameAt < 0) return null;
     name = plain(items[nameAt].raw).replace(/^\d+\.\s*/, "");
   }
@@ -185,12 +196,15 @@ function readCard(row, n, cites) {
   const mdTitle = parts.find((p) => p.kind === "title" && p.size === "md" && priceIn(p));
   const price = mdTitle ? plain(mdTitle.text) : (parts.map(priceIn).find(Boolean) || "");
   const badge = (parts.find((p) => p.kind === "badge") || {}).text || "";
-  const headline = (parts.find((p) => p.kind === "title" && p !== mdTitle) || {}).text || "";
+  const headline = (parts.find((p) => p.kind === "title" && p !== mdTitle && !isOnlyPrice(plain(p.text))) || {}).text || "";
+  // The store, where the card names one ("Shop: …", "Sold by …", "Available at …").
+  const shopLine = parts.map((p) => plain(p.text)).map((t) => STORE_RE.exec(t)).find(Boolean);
+  const merchant = shopLine ? shopLine[1].trim().replace(/[.;,]+$/, "") : null;
   const sub = parts.find((p) => p.kind === "text" && p.size === "sm");
   const bullets = parts.filter((p) => p.kind === "md" && /^[-*]\s+/.test(p.text)).map((p) => plain(p.text.replace(/^[-*]\s+/, "").replace(/[\s\S]*?/g, "")));
   const cardCites = [...row.matchAll(/<Cite\b[^>]*\/>/g)].flatMap((c) => refsOf(c[0]));
   return {
-    card: { n, name: plain(name), ref, price, badge, headline: plain(headline), subtitle: sub ? plain(sub.text) : "", bullets, cites: [...new Set(cardCites)], image },
+    card: { n, name: plain(name), ref, price, badge, headline: plain(headline), subtitle: sub ? plain(sub.text) : "", bullets, cites: [...new Set(cardCites)], image, merchant },
     block: { type: "card", n, name: plain(name), ref, price, badge, image, parts },
   };
 }

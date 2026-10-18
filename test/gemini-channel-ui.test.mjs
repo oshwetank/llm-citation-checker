@@ -44,8 +44,9 @@ const UPLOAD = uploadBody(PROMPT);
 const STREAM = channelStream();
 const CH = "https://geminiweb-pa.clients6.google.com/v1/processSession";
 // Gemini's order: the upload, a tiny acknowledgement upload, then the
-// answer's long GET; the GET is read a second time to stand for a later
-// reconnect that repeats the finished frames.
+// answer's long GETs. The first carries only the "Searching the web" status
+// and goes quiet (0.69.0: handed over like that, it was stored as an empty
+// answer that finished the campaign turn); the second brings the answer.
 const PAGE = `<!doctype html><body>stub<script>
   const xhr = (method, url, body) => new Promise((done) => { const x = new XMLHttpRequest(); x.open(method, url); x.onloadend = done; x.send(body); });
   (async () => {
@@ -62,9 +63,12 @@ const context = await chromium.launchPersistentContext(`${PROFILE_BASE}-${Date.n
   args: [`--disable-extensions-except=${EXT_PATH}`, `--load-extension=${EXT_PATH}`, "--headless=new", "--no-sandbox"],
 });
 try {
-  await context.route(/^https:\/\/geminiweb-pa\.clients6\.google\.com\//, (route) => {
+  let gets = 0;
+  await context.route(/^https:\/\/geminiweb-pa\.clients6\.google\.com\//, async (route) => {
     const get = route.request().method() === "GET";
-    return route.fulfill({ status: 200, headers: { "access-control-allow-origin": "https://gemini.google.com", "access-control-allow-credentials": "true", "content-type": "text/plain" }, body: get ? STREAM : "51\n[[0,[\"c\",\"abc\",null,8]]]" });
+    if (get && gets++ === 0) await new Promise((r) => setTimeout(r, 300));
+    const body = get ? (gets === 1 ? channelStream({ steps: 0 }) : STREAM) : "51\n[[0,[\"c\",\"abc\",null,8]]]";
+    return route.fulfill({ status: 200, headers: { "access-control-allow-origin": "https://gemini.google.com", "access-control-allow-credentials": "true", "content-type": "text/plain" }, body });
   });
   await context.route(/^https:\/\/gemini\.google\.com\//, (route) => route.fulfill({ status: 200, contentType: "text/html", body: PAGE }));
 
@@ -78,6 +82,8 @@ try {
   await panel.evaluate(() => localStorage.setItem("cito-tour-seen", "1"));
   const msg = (m) => panel.evaluate((m) => new Promise((r) => chrome.runtime.sendMessage(m, r)), m);
 
+  // A Google session cookie, as a signed-in browser has on google.com.
+  await context.addCookies([{ name: "__Secure-1PSID", value: "made-up", domain: ".google.com", path: "/", secure: true, httpOnly: true, sameSite: "None" }]);
   const p = await context.newPage();
   await p.goto("https://gemini.google.com/app/0a1b2c3d4e5f6071");
   await p.waitForFunction(() => document.title === "done", null, { timeout: 15000 }).catch(() => {});
@@ -85,12 +91,15 @@ try {
 
   console.log("\nthe answer is captured, with Debug capture off");
   const recs = (((await msg({ type: "get-records" })) || {}).records || []).filter((r) => r.platform === "gemini");
-  check("one Gemini answer, not one per hand-over", recs.length === 1, String(recs.length));
+  check("one Gemini answer: the status-only hand-over is not stored, the repeat folds in", recs.length === 1, String(recs.length));
   const rec = (recs[0] && ((await msg({ type: "get-record", captureId: recs[0].captureId })) || {}).record) || {};
   check("with the prompt that went up", rec.userPrompt === PROMPT, rec.userPrompt);
   check("the answer", /^For a \*\*waterproof phone/.test(rec.answerText || "") && /Kovo Aqua Pro/.test(rec.answerText || ""), (rec.answerText || "").slice(0, 80));
   check("three cited pages", (rec.sources || []).length === 3, JSON.stringify((rec.sources || []).map((s) => s.domain)));
   check("two product cards", (rec.products || []).length === 2 && rec.products[0].name === "Zento X9 5G", JSON.stringify((rec.products || []).map((x) => x.name)));
+  // 0.69.0: Google's session cookie lives on google.com; read by the page's
+  // address it is found, so the answer says it was asked signed in.
+  check("marked as asked signed in", rec.session && rec.session.signedIn === "in" && rec.session.private === false, JSON.stringify(rec.session));
   const probes = ((await msg({ type: "get-probes" })) || {}).probes || [];
   check("nothing kept as a probe", probes.length === 0, String(probes.length));
 

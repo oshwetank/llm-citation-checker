@@ -130,5 +130,19 @@ console.log("\nvalues a card binds by name, and one product per card (0.62.1)");
   check("nor a different number", !sameProduct("Zento Pods 3", "Zento Pods 4 Earbuds"));
 }
 
+// 0.69.0: a card whose large title is only its price, the name in the
+// medium title and the store in a small "Shop:" line (a real shopping answer
+// for a made-up-here product named every card by its price). Made-up names.
+console.log("\ncards that put the price in the large title");
+{
+  const card = (n, name, price, shop) => `  <row align=start gap={3}>\n    <AsyncImage query="${name}" aspectRatio="3:4" maxWidth="132px"/>\n    <box flex="1" gap={1}>\n      <title size="md">${n}. ${name}</title>\n      <title size="lg">${price}</title>\n      A made-up product for the test.\n\n      <text color="secondary" size="sm">Shop: ${shop}</text>\n    </box>\n  </row>`;
+  const code = `<box gap={4}>\n${card(1, "Lumora Silk Weave One", "€239.00", "Weaver House")}\n${card(2, "Kovo Linen Throw", "$89", "Kovo Store")}\n</box>`;
+  const g = readGenUi(code);
+  check("the name is the title that isn't a price", g.cards.map((c) => c.name).join("|") === "Lumora Silk Weave One|Kovo Linen Throw", g.cards.map((c) => c.name).join("|"));
+  check("the price is the price", g.cards.map((c) => c.price).join("|") === "€239.00|$89", g.cards.map((c) => c.price).join("|"));
+  check("and the store comes from its Shop: line", g.cards.map((c) => c.merchant).join("|") === "Weaver House|Kovo Store", g.cards.map((c) => c.merchant).join("|"));
+  check("a price is never the headline", g.cards.every((c) => !/[€$]/.test(c.headline)), g.cards.map((c) => c.headline).join("|"));
+}
+
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);
