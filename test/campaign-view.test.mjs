@@ -173,5 +173,5 @@ console.log("\nLogos");
   check("no mark gives a letter badge", markSvg({ text: "smartprix.com" }).includes(">S</text>"));
 }
 
-console.log(failures ? `\n${failures} failed` : "\nall passed");
+console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);

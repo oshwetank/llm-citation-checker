@@ -181,5 +181,5 @@ try {
 } finally {
   await context.close();
 }
-console.log(failures ? `\n${failures} failed` : "\nall passed");
+console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);
