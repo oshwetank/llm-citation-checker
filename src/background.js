@@ -33,6 +33,7 @@ import { offersFrom, attachOffers, productUpdateFrom, productPanelFrom, formChoi
 import { searchAnswers } from "./lib/answerSearch.js";
 import { answerKey, sameAnswer, mergeAnswers, SAME_ANSWER_WINDOW_MS, SAME_REPLY_WINDOW_MS } from "./lib/sameAnswer.js";
 import { campaignBoard, brandDetail } from "./lib/campaignBoard.js";
+import { campaignView } from "./lib/campaignView.js";
 import { adapt as adaptChatGpt, cleanPassage } from "./adapters/chatgpt.js";
 import { enrichBrandsWithAI, enrichBrandStance } from "./lib/ai-brands.js";
 import { adapt as adaptGemini } from "./adapters/gemini.js";
@@ -3127,6 +3128,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({
             ok: true,
             board: campaignBoard(recs, { profile, brands, viewAs: msg.viewAs, prompts, runs: runs.filter((r) => !live.has(r.id)), runId, all, engineFilter: msg.engines || [], tags: msg.tags || [] }),
+            // The 0.64.0 board's sections, over the same answers.
+            view: campaignView(recs, { profile, brands, prompts, engineFilter: msg.engines || [] }),
             runId: runId || "all",
             runs: runs.filter((r) => !live.has(r.id)).map((r) => ({ id: r.id, startedAt: r.startedAt, status: r.status, captured: r.captured || 0, expected: r.expected || 0, hasAnswers: all.some((x) => x.geo && x.geo.runId === r.id) })),
             brands: brands.map((b) => ({ name: b.name, isOwn: !!b.isOwn, auto: !!b.auto })),
