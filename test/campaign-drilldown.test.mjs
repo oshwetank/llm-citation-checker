@@ -196,14 +196,15 @@ try {
   });
   check("the seeded campaign can be opened in Campaigns", picked);
   await page.waitForTimeout(2500);
-  check("its results show below it", await page.evaluate(() => !!document.querySelector("#loader #campaignResults #cb-kpis")));
+  check("its results show below it", await page.evaluate(() => !!document.querySelector("#loader #campaignResults #cv-overview")));
 
   // One row per brand in the board's brand table.
-  const brandRows = () => page.evaluate(() => [...document.querySelectorAll("#cb-brands .cb-brand-row")].map((r) => ({
+  // 0.64.0: the leaderboard in the Brands section.
+  const brandRows = () => page.evaluate(() => [...document.querySelectorAll("#cv-brands .cv-lead .cv-tr[data-brand]")].map((r) => ({
     name: r.getAttribute("data-brand") || "",
     own: r.classList.contains("own-brand"),
     auto: !!r.querySelector(".auto-tag"),
-    sov: r.querySelectorAll('[role="cell"]')[1]?.textContent || "",
+    sov: r.querySelectorAll('[role="cell"]')[2]?.textContent || "",
     removable: !!r.querySelector(".row-x"),
   })));
   const settle = (ms = 1600) => page.waitForTimeout(ms);
@@ -259,7 +260,7 @@ try {
     // An inferred brand: removing a typed competitor asks first, which a
     // headless run can't answer.
     const victim = await page.evaluate(() => {
-      const row = [...document.querySelectorAll("#cb-brands .cb-brand-row")].find((r) => r.querySelector(".auto-tag") && r.querySelector(".row-x"));
+      const row = [...document.querySelectorAll("#cv-brands .cv-lead .cv-tr[data-brand]")].find((r) => r.querySelector(".auto-tag") && r.querySelector(".row-x"));
       if (!row) return null;
       row.querySelector(".row-x").click();
       return row.getAttribute("data-brand");
@@ -283,128 +284,41 @@ try {
     }
   }
 
-  console.log("\nthe campaign view can be pointed at any brand");
+  // 0.64.0: the board is about your brand; any other brand is set beside it
+  // in "You vs rival" (the "Viewing as" picker is gone).
+  console.log("\nany brand can be set beside yours");
   {
-    // A dropdown rather than chips: twenty tracked brands is a realistic
-    // campaign, and a wrapping chip row would push the numbers off screen at
-    // exactly the point the campaign gets interesting.
-    const sw = await page.evaluate(() => {
-      const sel = document.querySelector("#loader .brand-picker");
-      if (!sel) return null;
-      return {
-        options: [...sel.options].map((o) => o.textContent),
-        groups: [...sel.querySelectorAll("optgroup")].map((g) => g.label),
-        selected: sel.options[sel.selectedIndex]?.textContent || "",
-      };
-    });
-    check("the brand selector is a dropdown, so it survives many brands", !!sw);
-    check("every tracked brand is an option", sw && sw.options.length > 1, sw && String(sw.options.length));
-    // Your brand, then the competitors you typed, then the ones found in the
-    // answers — this campaign has none typed, so two groups.
-    check("your brand and competitors are grouped",
-      sw && sw.groups[0] === "Your brand" && sw.groups.length >= 2 && sw.groups.slice(1).every((g) => /^(Competitors|Found in the answers)/.test(g)),
-      sw && sw.groups.join(" | "));
-    check("each option carries its visibility, so the list is still a ranking",
-      sw && sw.options.every((o) => /\d+(\.\d+)?%$/.test(o.trim())), sw && sw.options[0]);
-    check("it starts on the own brand", /\(you\)/.test(sw?.selected || ""), sw?.selected);
-
-    const target = await page.evaluate(() => {
-      const sel = document.querySelector("#loader .brand-picker");
-      const opt = [...sel.options].find((o) => !/\(you\)/.test(o.textContent));
-      if (!opt) return null;
-      sel.value = opt.value;
-      sel.dispatchEvent(new Event("change", { bubbles: true }));
-      return opt.value;
-    });
-    check("a competitor can be selected", !!target, String(target));
-    if (target) {
-      await settle();
-      const after = await page.evaluate(() => ({
-        active: document.querySelector("#loader .brand-picker")?.value || "",
-        title: document.getElementById("cb-kpis-h")?.textContent || "",
-        hint: document.querySelector("#cb-kpis .cb-hint")?.textContent || "",
-        focusedRow: document.querySelector("#cb-brands .cb-brand-row.focused-brand")?.getAttribute("data-brand") || "",
-        ppTitle: [...document.querySelectorAll('#cb-prompts [role="columnheader"]')].map((h) => h.textContent).join(" | "),
-      }));
-      check("the switcher follows the click", after.active === target, after.active);
-      // The headline numbers must name the brand they are about.
-      check("the headline numbers name the brand they describe",
-        after.title.includes(target) && after.hint.includes(target), `${after.title} · ${after.hint}`);
-      check("the brand table highlights the selected row", after.focusedRow === target, after.focusedRow);
-      check("the prompt-by-prompt grid re-points at it too", after.ppTitle.includes(target), after.ppTitle);
-
-      // ...and must not say "your" about a competitor, on any of the focus
-      // tabs: the tiles are written for your own brand ("Your cards", "cite
-      // you"), and 0.50.0's first build left the labels saying it.
-      const tabs = await page.evaluate(() => [...document.querySelectorAll("#cb-kpis .cb-focus-tab")].map((t) => t.textContent));
-      const said = [];
-      for (let i = 0; i < tabs.length; i++) {
-        await page.evaluate((i) => document.querySelectorAll("#cb-kpis .cb-focus-tab")[i]?.click(), i);
-        await settle(1200);
-        const txt = await page.evaluate(() => [...document.querySelectorAll("#cb-kpis .k-label, #cb-kpis .k-sub")].map((k) => k.textContent));
-        said.push(...txt.filter((x) => /\byou(r)?\b/i.test(x)).map((x) => `${tabs[i]}: ${x}`));
-      }
-      check("and no tile calls a competitor \"you\" or \"your\"", said.length === 0, said.join(" | "));
-      await page.evaluate(() => document.querySelector("#cb-kpis .cb-focus-tab")?.click());
-      await settle(1200);
-
-      // Back to your own brand for everything after this.
-      await page.evaluate(() => {
-        const sel = document.querySelector("#loader .brand-picker");
-        sel.value = [...sel.options].find((o) => /\(you\)/.test(o.textContent)).value;
-        sel.dispatchEvent(new Event("change", { bubbles: true }));
-      });
-      await settle();
-    }
+    const rivals = await page.evaluate(() => [...document.querySelectorAll("#cv-compare .cv-chips .cv-chip")].map((b) => b.textContent));
+    const names = (await brandRows()).filter((r) => !r.own).map((r) => r.name);
+    check("every other brand on the leaderboard can be picked", names.every((n) => rivals.some((r) => r.endsWith(n))), `${rivals.join(", ")} vs ${names.join(", ")}`);
+    const target = names[names.length - 1];
+    await page.evaluate((t) => [...document.querySelectorAll("#cv-brands .cv-lead .cv-tr[data-brand]")].find((r) => r.getAttribute("data-brand") === t)?.querySelector(".cb-brand-btn")?.click(), target);
+    await settle(1200);
+    const after = await page.evaluate(() => ({
+      picked: document.querySelector("#cv-compare .cv-chip.on")?.textContent || "",
+      them: document.querySelectorAll("#cv-compare .cv-vs-side b")[1]?.textContent || "",
+      cols: document.querySelector("#cv-compare .cv-pduel")?.closest(".cv-card")?.querySelector(".cv-sub")?.textContent || "",
+    }));
+    check("a brand's name on the leaderboard puts it beside yours", after.picked.endsWith(target) && after.them === target, JSON.stringify(after));
+    check("the prompt-by-prompt comparison names it too", after.cols.includes(target), after.cols);
+    const said = await page.evaluate(() => [...document.querySelectorAll("#cv-compare .cv-vs-side")].map((x) => x.textContent));
+    check("and neither side calls the rival \"you\"", !/\byou\b/i.test(said[1] || ""), said.join(" | "));
   }
 
-  console.log("\nthe headline numbers, one focus at a time");
+  console.log("\nthe headline numbers first");
   {
-    // Until 0.49.0 this asserted "four headline numbers, not six", with the
-    // source numbers and capture counts folded into a closed disclosure — the
-    // reported clutter was twelve tiles above the fold. The 0.50.0 board
-    // answers that complaint differently: the tiles are grouped by what the
-    // answer showed (mentions, citations, product cards, images, map pins) and
-    // one group is on screen at a time, with the brand-visibility numbers
-    // first. The source numbers and capture counts get their own sections
-    // instead of a disclosure. What this guards is the same: the brand's
-    // visibility is what you see first, and nothing was dropped to get there.
     const k = await page.evaluate(() => ({
-      tabs: [...document.querySelectorAll("#cb-kpis .cb-focus-tab")].map((t) => t.textContent),
-      on: document.querySelector("#cb-kpis .cb-focus-tab.on")?.textContent || "",
-      labels: [...document.querySelectorAll("#cb-kpis .k-label")].map((x) => x.textContent),
-      source: document.getElementById("cb-source")?.textContent || "",
-      collected: document.getElementById("cb-collected")?.textContent || "",
+      labels: [...document.querySelectorAll("#cv-overview .cv-kpi-l")].map((x) => x.textContent),
+      engines: document.querySelectorAll("#cv-overview .cv-eng-table .cv-tr:not(.cv-th)").length,
+      split: [...document.querySelectorAll("#cv-overview .cv-kpi:nth-child(2) .cv-split-row")].map((r) => r.textContent),
+      source: document.getElementById("cv-sources")?.textContent || "",
+      quality: document.getElementById("cv-signals")?.textContent || "",
     }));
-    check("the numbers are grouped by what the answers showed",
-      ["Mentions", "Citations", "Product cards", "Images", "Map listings"].every((t) => k.tabs.includes(t)), k.tabs.join(" | "));
-    check("it opens on mentions", k.on === "Mentions", k.on);
-    check("led by the brand-visibility numbers",
-      k.labels.slice(0, 4).join("|") === "Visibility|Share of voice|Avg position|Mentions", k.labels.join(" | "));
-    check("your site as a source has its own section",
-      /Source visibility/.test(k.source) && /Citations/.test(k.source), k.source.slice(0, 120));
-    check("and so do the capture counts",
-      /Answers captured/.test(k.collected) && /Searches the engines ran/.test(k.collected), k.collected.slice(0, 120));
-
-    await page.evaluate(() => [...document.querySelectorAll("#cb-kpis .cb-focus-tab")].find((t) => t.textContent === "Citations")?.click());
-    await settle(1200);
-    const cit = await page.evaluate(() => [...document.querySelectorAll("#cb-kpis .k-label")].map((x) => x.textContent));
-    check("the Citations focus swaps in the source numbers",
-      cit.includes("Source visibility") && cit.includes("Citation share"), cit.join(" | "));
-    await page.evaluate(() => document.querySelector("#cb-kpis .cb-focus-tab")?.click());
-    await settle(1200);
-
-    // Only meaningful with more than one engine to compare — with one engine
-    // it would just be the headline numbers again.
-    const engines = await page.evaluate(() => document.querySelectorAll('#cb-prompts [role="columnheader"] .ap-sr').length);
-    const split = await page.evaluate(() => [...document.querySelectorAll("#cb-by-engine .cb-engine-row")].map((r) => r.textContent));
-    if (engines > 1) {
-      check("the selected brand is broken down per engine", split.length === engines, `${split.length} rows for ${engines} engines`);
-      check("each engine shows its visibility and average position",
-        split.every((r) => /\d+%/.test(r) && /avg/.test(r)), split.join(" | "));
-    } else {
-      check(`only one engine in this data (${engines}) — the per-engine split has one row`, split.length <= 1);
-    }
+    check("share of voice, visibility, position, mentions, responses", k.labels.join("|") === "Share of voice|Visibility|Average position|Mentions|Responses", k.labels.join(" | "));
+    check("each split by engine", k.split.length >= 1 && k.split.every((r) => /\d+%|no answers/.test(r)), k.split.join(" | "));
+    check("with a row per engine below", k.engines >= 1, String(k.engines));
+    check("your site as a source has its own place", /Your own site/.test(k.source), k.source.slice(0, 120));
+    check("and so does the data the numbers rest on", /Data quality/.test(k.quality) && /Answered/.test(k.quality), k.quality.slice(0, 120));
   }
 
   console.log("\nclicking a competitor gives you something to analyse");
@@ -412,13 +326,17 @@ try {
     // Reported: "when I click on any brand I don't get to know much about
     // that competition's visibility, I don't get data to analyse it." Since
     // 0.50.0 a brand opens its own page in place of the board (it was a modal).
-    const clicked = await page.evaluate(() => {
-      const row = [...document.querySelectorAll("#cb-brands .cb-brand-row")].find((r) => !r.classList.contains("own-brand"));
+    // 0.64.0: the name puts it in "You vs rival"; "Full comparison" opens
+    // the brand's own page, as a name did before.
+    const clicked = await page.evaluate(async () => {
+      const row = [...document.querySelectorAll("#cv-brands .cv-lead .cv-tr[data-brand]")].find((r) => !r.classList.contains("own-brand"));
       if (!row) return null;
       row.querySelector(".cb-brand-btn").click();
+      await new Promise((r) => setTimeout(r, 400));
+      document.querySelector("#cv-compare .cv-more")?.click();
       return row.getAttribute("data-brand");
     });
-    check("a competitor's name opens its detail", !!clicked, String(clicked));
+    check("a competitor's full comparison opens its detail", !!clicked, String(clicked));
     if (clicked) {
       await settle(2000);
       const m = await page.evaluate(() => {
@@ -493,7 +411,7 @@ try {
       }
       await page.evaluate(() => document.querySelector(".cb-detail-head .analyze-context-back")?.click());
       await settle();
-      check("and the back button returns to the board", await page.evaluate(() => !!document.getElementById("cb-kpis") && !document.getElementById("cb-detail-h")));
+      check("and the back button returns to the board", await page.evaluate(() => !!document.getElementById("cv-overview") && !document.getElementById("cb-detail-h")));
     }
   }
 
@@ -504,7 +422,7 @@ try {
     // select drove only the ad-hoc record list, while the campaign section
     // read a SEPARATE variable set by its own duplicate dropdown.
     const before = await page.evaluate(() => ({
-      kpis: [...document.querySelectorAll("#cb-kpis .k-value")].map((k) => k.textContent),
+      kpis: [...document.querySelectorAll("#cv-overview .cv-kpi-v")].map((k) => k.textContent),
       // One engine control for the results, not two with the same word on
       // them. Other selects (the run, the brand) are legitimately there.
       engineSelects: [...document.querySelectorAll("#loader select")]
@@ -525,9 +443,9 @@ try {
     if (switched) {
       await settle(1800);
       const after = await page.evaluate(() => ({
-        kpis: [...document.querySelectorAll("#cb-kpis .k-value")].map((k) => k.textContent),
+        kpis: [...document.querySelectorAll("#cv-overview .cv-kpi-v")].map((k) => k.textContent),
         scope: document.querySelector("#loader .scope-note")?.textContent || "",
-        engineSplit: document.querySelectorAll("#cb-by-engine .cb-engine-row").length,
+        engineSplit: document.querySelectorAll("#cv-overview .cv-eng-table .cv-tr:not(.cv-th)").length,
       }));
       check("the campaign's numbers actually change",
         after.kpis.join("|") !== before.kpis.join("|"),
@@ -543,7 +461,7 @@ try {
         sel.dispatchEvent(new Event("change", { bubbles: true }));
       });
       await settle(1800);
-      const restored = await page.evaluate(() => [...document.querySelectorAll("#cb-kpis .k-value")].map((k) => k.textContent));
+      const restored = await page.evaluate(() => [...document.querySelectorAll("#cv-overview .cv-kpi-v")].map((k) => k.textContent));
       check("and clearing the filter restores the full numbers",
         restored.join("|") === before.kpis.join("|"),
         `${restored.join(", ")} vs ${before.kpis.join(", ")}`);
@@ -740,11 +658,11 @@ try {
 
         // The failure itself, reproduced: destroy the page section that owns
         // one gradient and check an icon living on document.body still paints.
-        // The section is one of the board's (.cb-sec); the survivor is any
+        // The section is one of the board's (.cv-sec since 0.64.0); the survivor is any
         // other copy, moved onto document.body the way a modal's is.
         const survived = await page.evaluate(() => {
           const gem = [...document.querySelectorAll(".llm-icon")].filter((i) => i.querySelector("linearGradient"));
-          const owner = gem.map((i) => i.closest("#campaignResults .cb-sec")).find(Boolean);
+          const owner = gem.map((i) => i.closest("#campaignResults .cv-sec, #campaignResults .cb-sec")).find(Boolean);
           const survivor = owner && gem.find((i) => !owner.contains(i));
           if (!owner || !survivor) return { owner: !!owner, survivor: !!survivor };
           document.body.appendChild(survivor);

@@ -28,6 +28,7 @@ import { overTimeView } from "../src/lib/overTimeView.js";
 import { historyRows, historyView, highlightRuns, dayDiff, shortDate, PERIODS, KINDS, ENGINE_ORDER, rangeLabel } from "../src/lib/historyView.js";
 import { extractBrandAspects } from "../src/lib/aspects.js";
 import { siteKindOf } from "../src/lib/siteKind.js";
+import { renderCampaignView, CV_SECTIONS, sectionCounts, resetCampaignViewState } from "./campaignView.js";
 import { aggregateSources } from "../src/lib/sources.js";
 import { analyzeFanout, FANOUT_BENCHMARK, titleMatchesQueries } from "../src/lib/fanout.js";
 import { sanitizeText, trimLabel } from "../src/lib/text-sanitize.js";
@@ -6394,6 +6395,7 @@ function renderCampaignResults(profile) {
   if (cbProfileId !== profile.id) {
     cbProfileId = profile.id; cbRun = null; cbViewAs = null; cbTags = []; cbFocus = "mentions";
     cbPromptFilter = "all"; cbOpenPrompts = new Set(); cbDetail = null;
+    resetCampaignViewState();
   }
   const box = el("section", { className: "campaign-results", id: "campaignResults", "aria-labelledby": "campaignResultsH" });
   box.append(el("div", { className: "card" }, el("div", { className: "card-header" }, el("h3", { id: "campaignResultsH" }, "Results")), el("div", { className: "muted small" }, "Loading results…")));
@@ -6478,10 +6480,12 @@ async function renderCampaignBoard(box, profile) {
     // Newest first, as the run picker lists them; the PDF reports on one.
     runList: runsWithAnswers.map((x) => ({ id: x.id, no: runNo(x.id), date: runDate(x.startedAt) })),
   });
+  // 0.64.0: the board is about your brand; any rival is one click away in
+  // "You vs rival", so the "Viewing as" picker is gone.
+  void picker;
   controls.append(
     el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Run"), runSel),
-    el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Engine"), engine),
-    el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Viewing as"), picker));
+    el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Engine"), engine));
   if (!wb.isConnected) controls.append(wb);
   head.append(controls);
   if (geoEngineFilter.length) head.append(el("span", { className: "scope-note muted small" }, `${(availableEngines().find((e) => e.id === geoEngineFilter[0]) || {}).label || geoEngineFilter[0]} only`));
@@ -6499,8 +6503,10 @@ async function renderCampaignBoard(box, profile) {
   // Jump links to the board's sections: in the app bar in the full tab, as
   // on the canvas; under the filters in the popup, whose bar has no room.
   const nav = el("nav", { className: "cb-nav", "aria-label": "Sections" });
-  [["cb-brands", "Brands"], ["cb-kinds", "By kind of answer"], ["cb-runs", "Breakdowns"], ["cb-prompts", "Prompts"], ["cb-sources", "Sources"], ["cb-collected", "Data collected"]].forEach(([id, label]) => {
-    const a = el("button", { className: "cb-nav-btn", type: "button" }, label);
+  const counts = r.view ? sectionCounts(r.view) : {};
+  CV_SECTIONS.forEach(([id, label]) => {
+    const a = el("button", { className: "cb-nav-btn", type: "button", "data-section": id }, label);
+    if (counts[id] != null) a.append(el("span", { className: "cv-cnt" }, String(counts[id])));
     a.onclick = () => document.getElementById(id)?.scrollIntoView({ block: "start", behavior: "smooth" });
     nav.append(a);
   });
@@ -6514,38 +6520,6 @@ async function renderCampaignBoard(box, profile) {
     box.append(el("div", { className: "card" }, el("div", { className: "empty" }, "No answers for these filters yet. Run the campaign, or widen the filters above."), renderRunHistory(profile)));
     return;
   }
-
-  /* --- KPIs, five ways --- */
-  // The views the campaign measures (setup); all of them for one set up
-  // before the choice existed.
-  const offered = CB_FOCUS.filter(([id]) => id === "mentions" || !profile.measure || profile.measure[id]);
-  if (!b.available[cbFocus] || !offered.some(([id]) => id === cbFocus)) cbFocus = "mentions";
-  const kp = el("section", { className: "card cb-kpis", id: "cb-kpis", "aria-labelledby": "cb-kpis-h" });
-  const focusTabs = el("div", { className: "cb-focus", role: "tablist", "aria-label": "What to look at" });
-  offered.forEach(([id, label, glyph]) => {
-    const on = cbFocus === id;
-    const t = el("button", { className: `cb-focus-tab${on ? " on" : ""}${b.available[id] ? "" : " empty"}`, type: "button", role: "tab", "aria-selected": on ? "true" : "false", title: b.available[id] ? "" : "No answer in this view had any" }, glyphEl(glyph, 14), label);
-    t.onclick = () => { cbFocus = id; rerender(); };
-    focusTabs.append(t);
-  });
-  const hint = (CB_FOCUS.find((f) => f[0] === cbFocus) || CB_FOCUS[0])[3];
-  kp.append(el("div", { className: "cb-sec-head" }, el("h3", { className: "cb-h", id: "cb-kpis-h" }, `${view.name} in this campaign`), focusTabs),
-    el("div", { className: "muted small cb-hint" }, `${view.name}${view.isOwn ? " (you)" : ""} · ${hint}`));
-  const tiles = el("div", { className: "cb-tiles" });
-  // The tiles are written for your own brand ("Your cards", "cite you"); viewed
-  // as a competitor they name it instead, labels included.
-  const whose = (t) => (view.isOwn ? t : t.replace(/\b[Yy]our\b/g, `${view.name}’s`).replace(/\byou\b/g, view.name));
-  b.focus[cbFocus].forEach((k, i) => {
-    const term = CB_TERMS[k.label];
-    tiles.append(el("div", { className: `cb-kpi geo-kpi${i === 0 ? " lead" : ""}` },
-      el("div", { className: "k-label", ...(term ? { "data-term": term } : {}) }, whose(k.label)),
-      el("div", { className: "k-value" }, k.value),
-      k.sub ? el("div", { className: "k-sub muted" }, whose(k.sub)) : null,
-      k.delta ? el("div", { className: `k-delta tone-${k.delta.tone > 0 ? "up" : k.delta.tone < 0 ? "down" : "flat"}` }, k.delta.text) : null));
-  });
-  if (cbFocus === "local" && !b.available.local) tiles.append(el("p", { className: "muted small cb-note" }, "No answer in this campaign showed a map, so there are no pins to count: pin share, pin position and whether a listing links to the brand’s site."));
-  kp.append(tiles);
-  box.append(kp);
 
   /* --- competitors inferred from the answers, stated, never applied silently --- */
   const auto = r.brands.filter((x) => x.auto).map((x) => x.name);
@@ -6600,253 +6574,23 @@ async function renderCampaignBoard(box, profile) {
     box.append(banner);
   }
 
-  /* --- by kind of answer --- */
-  const kinds = el("div", { className: "cb-table cb-kind-table", role: "table", "aria-label": "By kind of answer" });
-  kinds.append(el("div", { className: "cb-tr cb-th", role: "row" }, ...["Kind of answer", "Answers", "Named in text", "Site cited", "Product card", "Images", "Map pin", "Cited pages, by kind of site"].map((h) => el("span", { role: "columnheader" }, h))));
-  const KG = { shopping: "cart", info: "book", images: "image", memory: "noglobe", local: "pin", all: "globe" };
-  const AK = { shopping: "shopping", info: "info", images: "images", memory: "memory", local: "local" };
-  b.byKind.forEach((k) => {
-    const tone = (x) => (x == null ? "na" : x >= 60 ? "good" : "plain");
-    kinds.append(el("div", { className: `cb-tr${k.id === "all" ? " total" : ""}${k.answers ? "" : " none"}`, role: "row" },
-      el("span", { role: "rowheader", className: `cb-kindname${AK[k.id] ? ` k-${AK[k.id]}` : ""}` }, el("span", { className: "db-kind-ic" }, glyphEl(KG[k.id], 14)), k.label),
-      el("span", { role: "cell", className: "num" }, String(k.answers)),
-      el("span", { role: "cell", className: `num t-${tone(k.named)}` }, cbPct(k.named)),
-      el("span", { role: "cell", className: `num t-${tone(k.cited)}` }, k.id === "memory" ? "no search" : cbPct(k.cited)),
-      el("span", { role: "cell", className: "num" }, k.card ? `${cbPct(k.card.pct)}${k.card.avg ? ` · avg card ${k.card.avg.toFixed(1)}` : ""}` : "—"),
-      el("span", { role: "cell", className: "num" }, k.images ? `${k.images.mine} of ${k.images.of}` : "—"),
-      el("span", { role: "cell", className: "num" }, cbPct(k.pin)),
-      cbSourceMix(k)));
-  });
-  box.append(cbSection("cb-kinds", `How ${view.name} shows up, by kind of answer`, "a carousel, an explainer, a map or pictures, and the kinds of site each one cited", el("div", { className: "cb-scroll" }, kinds)));
-
-  /* --- product cards --- */
-  if (b.products.total) {
-    const t = el("div", { className: "cb-table cb-prod-table", role: "table", "aria-label": "Product cards" });
-    t.append(el("div", { className: "cb-tr cb-th", role: "row" }, ...["Product", "Shown", "Avg card", "Engines", "Card sends buyers to", "Own store"].map((h) => el("span", { role: "columnheader" }, h))));
-    b.products.rows.forEach((p) => t.append(el("div", { className: `cb-tr${p.isView ? " mine" : ""}`, role: "row" },
-      el("span", { role: "rowheader" }, el("b", {}, p.name), el("span", { className: `muted small${p.isView ? " you" : ""}` }, ` ${p.brand}${p.isView && view.isOwn ? " · you" : ""}`)),
-      el("span", { role: "cell", className: "num" }, String(p.shown)),
-      el("span", { role: "cell", className: "num" }, cbPos(p.avgPos)),
-      el("span", { role: "cell", className: "cb-engs" }, ...p.engines.map((e) => { const ic = engineIconEl(e); ic.setAttribute("title", dbEngineLabel(e)); return ic; })),
-      el("span", { role: "cell", className: "small" }, p.dest.join(" · ") || "—"),
-      el("span", { role: "cell", className: p.own ? "t-good" : "t-bad" }, p.own ? "yes" : "no"))));
-    const bars = (rows, title) => {
-      const max = Math.max(1, ...rows.map((x) => x.n));
-      return el("div", { className: "cb-barlist" }, el("h4", { className: "cb-h4" }, title),
-        ...rows.map((x) => el("div", { className: `cb-barrow${x.own ? " own" : ""}` }, el("span", {}, x.name + (x.own ? " · own site" : "")), cbBar((x.n / max) * 100, x.own ? "own" : ""), el("span", { className: "num" }, String(x.n)))));
-    };
-    const side = el("div", { className: "cb-pair" });
-    if (b.products.destinations.length) side.append(bars(b.products.destinations, `Where ${view.name}’s cards send buyers`));
-    if (b.products.cardImages.length) side.append(bars(b.products.cardImages, `Where ${view.name}’s card images come from`));
-    box.append(cbSection("cb-products", "Product cards across the campaign", `${b.products.total} cards in ${b.products.answers} answers`,
-      el("div", { className: "cb-scroll" }, t), side.childNodes.length ? side : null, el("p", { className: "muted small" }, b.products.note)));
-  }
-
-  /* --- brands compared --- */
-  const bt = el("div", { className: "cb-table cb-brand-table", role: "table", "aria-label": "Brands compared" });
-  bt.append(el("div", { className: "cb-tr cb-th", role: "row" },
-    el("span", { role: "columnheader" }, "Brand"),
-    ...[["Visibility", "visibility"], ["Share of voice", "shareOfVoice"], ["Mentions", "mentions"], ["Avg position", "avgPosition"], ["Citations", "citations"], ["Source visibility", "sourceVisibility"]].map(([h, term]) => el("span", { role: "columnheader", className: "num", "data-term": term }, h)),
-    el("span", { role: "columnheader", className: "ap-sr" }, "Remove")));
-  const maxSov = Math.max(1, ...b.brandRows.map((x) => x.shareOfVoice));
-  b.brandRows.forEach((x) => {
-    const tag = x.isOwn ? el("span", { className: "cb-tag you" }, "you") : x.auto ? el("span", { className: "cb-tag found auto-tag", title: "Found in your answers — not a competitor you set" }, "found by us") : el("span", { className: "cb-tag" }, "competitor");
-    const name = el("button", { className: "cb-brand-btn", type: "button", title: `${x.name}: head to head, engines and prompt by prompt` }, x.name);
-    name.onclick = () => { cbDetail = x.name; rerender(); };
-    const row = el("div", { className: `cb-tr cb-brand-row${x.isOwn ? " own-brand" : ""}${x.isView ? " focused-brand" : ""}`, role: "row", "data-brand": x.name },
-      el("span", { role: "rowheader", className: "cb-brand-cell" }, name, tag),
-      el("span", { role: "cell", className: "cb-num-bar" }, el("span", { className: "num" }, cbPct(x.visibility)), cbBar(x.visibility, x.isOwn ? "own" : "")),
-      el("span", { role: "cell", className: "cb-num-bar" }, el("span", { className: "num" }, cbPct(x.shareOfVoice)), cbBar((x.shareOfVoice / maxSov) * 100, x.isOwn ? "own" : "")),
-      el("span", { role: "cell", className: "num" }, String(x.mentions)),
-      el("span", { role: "cell", className: "num" }, cbPos(x.avgPosition)),
-      el("span", { role: "cell", className: "num" }, String(x.citations)),
-      el("span", { role: "cell", className: "cb-num-bar" }, el("span", { className: "num" }, cbPct(x.sourceVisibility)), cbBar(x.sourceVisibility, "src")));
-    const cell = el("span", { role: "cell" });
-    if (!x.isOwn) {
-      const drop = el("button", { className: "row-x", type: "button", title: `Remove ${x.name} from this campaign`, "aria-label": `Remove ${x.name} from this campaign` }, "×");
-      drop.onclick = async () => {
-        drop.disabled = true;
-        // An inferred brand is left out; a competitor you typed comes off
-        // the campaign's competitor list, where you put it.
-        const res = x.auto
-          ? await send({ type: "geo-brand-exclude", profileId: profile.id, name: x.name })
-          : (confirm(`Remove ${x.name} from this campaign's competitors?`) ? await send({ type: "geo-profile-save", profile: { ...profile, competitors: (profile.competitors || []).filter((c) => c.name !== x.name) } }) : { ok: false, cancelled: true });
-        if (!res.ok) { drop.disabled = false; if (!res.cancelled) showToast(res.error || "Couldn't remove that brand", "error"); return; }
-        if (cbViewAs === x.name) cbViewAs = null;
-        showToast(`${x.name} is no longer counted as a competitor`);
-        loadGeo();
-      };
-      cell.append(drop);
-    }
-    row.append(cell);
-    bt.append(row);
-  });
-  box.append(cbSection("cb-brands", "Brands compared", "Click a brand for head-to-head, engines and prompt-by-prompt detail",
-    el("div", { className: "cb-scroll" }, bt),
-    el("p", { className: "muted small" }, el("span", { "data-term": "mentionPool" }, `Share of voice counts ${b.mentionPool} mentions of tracked brands.`), " ", el("span", { title: SENTIMENT_NOTE }, "Tone isn’t scored: a mention counts the same whether the answer praises or criticises the brand."))));
-
-  /* --- as a source, and by engine --- */
-  const pair1 = el("div", { className: "cb-pair" });
-  pair1.append(cbSection("cb-source", `${view.name} as a source`, view.domain || "",
-    el("div", { className: "cb-mini-tiles" },
-      el("div", {}, el("b", {}, cbPct(b.asSource.sourceVisibility)), el("span", { className: "muted small", "data-term": "sourceVisibility" }, "Source visibility")),
-      el("div", {}, el("b", {}, String(b.asSource.citations)), el("span", { className: "muted small", "data-term": "citations" }, "Citations")),
-      el("div", {}, el("b", {}, `${b.asSource.citations}/${b.asSource.answers}`), el("span", { className: "muted small" }, view.domain ? `Answers citing ${view.domain}` : "Answers citing its site"))),
-    el("p", { className: "muted small" }, b.asSource.note)));
-  const eng = el("div", { className: "cb-engine-list engine-split" });
-  b.byEngine.forEach((e) => {
-    const ic = engineIconEl(e.id);
-    eng.append(el("div", { className: "cb-engine-row engine-split-cell" }, el("span", { className: "cb-engine-name" }, ic, e.label), cbBar(e.visibility, view.isOwn ? "own" : ""),
-      el("span", { className: "num engine-split-nums" }, el("span", {}, fmtPct(e.visibility)), el("span", { className: "muted" }, ` · avg ${cbPos(e.avgPosition)}`))));
-  });
-  pair1.append(cbSection("cb-by-engine", `${view.name} by engine`, "visibility · average position", eng));
-  box.append(pair1);
-
-  /* --- data collected --- */
-  const c = b.collected;
-  box.append(cbSection("cb-collected", "Data collected", "",
-    el("div", { className: "cb-mini-tiles wide" },
-      el("div", {}, el("b", {}, String(c.answers)), el("span", { className: "muted small", "data-term": "responses" }, `Answers captured${c.runs > 1 ? `, ${c.runs} runs` : ""}`)),
-      el("div", {}, el("b", {}, String(c.searched)), el("span", { className: "muted small", "data-term": "withSearch" }, "Searched the web")),
-      el("div", {}, el("b", {}, String(c.searches)), el("span", { className: "muted small", "data-term": "fanout" }, "Searches the engines ran")),
-      el("div", {}, el("b", {}, String(c.domains)), el("span", { className: "muted small", "data-term": "uniqueDomains" }, "Unique domains"))),
-    renderRunHistory(profile)));
-
-  /* --- run by run, and brand by engine --- */
-  const pair2 = el("div", { className: "cb-pair" });
-  if (b.acrossRuns.runs.length > 1) {
-    const cols = `minmax(110px, 1fr) repeat(${b.acrossRuns.runs.length}, 96px) 64px`;
-    const t = el("div", { className: "cb-grid", role: "table", style: `grid-template-columns:${cols}`, "aria-label": "Visibility across runs" });
-    t.append(el("div", { className: "cb-grid-row", role: "row" }, el("span", { role: "columnheader" }, "Brand"),
-      ...b.acrossRuns.runs.map((x) => el("span", { role: "columnheader", className: "num nowrap" }, `${x.label} · ${new Date(x.at).toLocaleDateString(undefined, { day: "numeric", month: "short" })}`)),
-      el("span", { role: "columnheader", className: "num" }, "Change")));
-    b.acrossRuns.rows.forEach((x) => t.append(el("div", { className: `cb-grid-row${x.isView ? " mine" : ""}`, role: "row" },
-      el("span", { role: "rowheader", className: x.isView ? "you" : "" }, x.name),
-      ...x.cells.map((v) => el("span", { role: "cell", className: "num" }, v == null ? "—" : `${v}%`)),
-      el("span", { role: "cell", className: `num ${x.delta > 0 ? "t-good" : x.delta < 0 ? "t-bad" : ""}` }, x.delta == null ? "—" : `${x.delta > 0 ? "▲" : x.delta < 0 ? "▼" : "="} ${Math.abs(x.delta)}`))));
-    pair2.append(cbSection("cb-runs", "Visibility across runs", "share of answers that named the brand", el("div", { className: "cb-scroll" }, t)));
-  }
-  if (b.heat.engines.length > 1) {
-    const cols = `minmax(110px, 1fr) repeat(${b.heat.engines.length}, minmax(52px, 70px))`;
-    const t = el("div", { className: "cb-grid cb-heat", role: "table", style: `grid-template-columns:${cols}`, "aria-label": "Each brand on each engine" });
-    t.append(el("div", { className: "cb-grid-row", role: "row" }, el("span", { role: "columnheader" }, "Brand"), ...b.heat.engines.map((e) => el("span", { role: "columnheader", className: "c", title: e.label }, engineIconEl(e.id)))));
-    b.heat.rows.forEach((x) => t.append(el("div", { className: `cb-grid-row${x.isView ? " mine" : ""}`, role: "row" },
-      el("span", { role: "rowheader", className: x.isView ? "you" : "" }, x.name),
-      ...x.cells.map((v, i) => el("span", { role: "cell", className: `cb-heat-cell${v != null && v >= 55 ? " dark" : ""}`, style: v == null ? "" : `--h:${Math.round(8 + v * 0.8)}%`, "aria-label": `${x.name} on ${b.heat.engines[i].label}: ${v == null ? "no answers" : `${v}%`}` }, v == null ? "—" : `${v}%`)))));
-    pair2.append(cbSection(b.acrossRuns.runs.length > 1 ? "cb-heat" : "cb-runs", "Each brand on each engine", "visibility, darker is higher", el("div", { className: "cb-scroll" }, t), b.heat.note ? el("p", { className: "muted small" }, b.heat.note) : null));
-  }
-  if (pair2.childNodes.length) box.append(pair2);
-
-  /* --- topics, and what each brand is recommended for --- */
-  const pair3 = el("div", { className: "cb-pair" });
-  if (b.topics.length) {
-    const t = el("div", { className: "cb-table cb-topic-table", role: "table", "aria-label": "By topic" });
-    t.append(el("div", { className: "cb-tr cb-th", role: "row" }, ...["Tag", "Answers", view.name, "Strongest rival", "Gap"].map((h) => el("span", { role: "columnheader" }, h))));
-    b.topics.forEach((x) => t.append(el("div", { className: "cb-tr", role: "row" },
-      el("span", { role: "rowheader" }, el("span", { className: "tag" }, x.tag)),
-      el("span", { role: "cell", className: "num" }, String(x.answers)),
-      el("span", { role: "cell", className: "num" }, `${x.you}%`),
-      el("span", { role: "cell" }, `${x.rival} · ${x.rivalV}%`),
-      el("span", { role: "cell", className: `num ${x.gap > 0 ? "t-good" : x.gap < 0 ? "t-bad" : ""}` }, `${x.gap > 0 ? "+" : ""}${x.gap} pts`))));
-    pair3.append(cbSection("cb-topics", "By topic", `your prompt tags · ${view.name} against the strongest rival`, t));
-  }
-  if (b.recommend.length) {
-    const list = el("div", { className: "cb-recommend" });
-    b.recommend.forEach((x) => list.append(el("div", { className: `cb-rec-row${x.isView ? " mine" : ""}` }, el("b", {}, x.name),
-      el("span", { className: "ap-chips" }, ...x.aspects.map((a) => el("span", { className: "ap-bchip" }, `${a.label} · ${a.n}`))))));
-    pair3.append(cbSection("cb-recommend", "What the engines recommend each brand for", "times picked for", list));
-  }
-  if (pair3.childNodes.length) box.append(pair3);
-
-  /* --- kinds of sites, and the sites that cite rivals but not you --- */
-  const pair4 = el("div", { className: "cb-pair" });
-  if (b.siteKinds.rows.length) {
-    const max = Math.max(1, ...b.siteKinds.rows.map((x) => x.n));
-    const list = el("div", { className: "cb-barlist" });
-    b.siteKinds.rows.forEach((x) => list.append(el("div", { className: "cb-barrow kinds" },
-      el("span", {}, el("i", { className: "cb-swatch", style: `background:var(${AP_KIND_VAR[x.label]})` }), x.label, el("span", { className: "muted small" }, x.eg ? ` · ${x.eg}` : "")),
-      cbBar((x.n / max) * 100, "kind"), el("span", { className: "num" }, String(x.n)),
-      el("span", { className: "num muted small", title: `cited pages in this kind that mention ${view.name}` }, `${x.you} about ${view.name}`))));
-    pair4.append(cbSection("cb-sitekinds", "Kinds of sites cited", `${b.siteKinds.total} citations`, list));
-  }
-  {
-    const t = el("div", { className: "cb-table cb-gap-table", role: "table", "aria-label": `Sites that cite rivals but not ${view.name}` });
-    t.append(el("div", { className: "cb-tr cb-th", role: "row" }, ...["Site", "Cited", "Brands it mentions", view.name].map((h) => el("span", { role: "columnheader" }, h))));
-    b.gapSites.forEach((x) => t.append(el("div", { className: "cb-tr", role: "row" },
-      el("span", { role: "rowheader" }, el("b", {}, x.site), el("span", { className: "muted small" }, ` ${x.kind}`)),
-      el("span", { role: "cell", className: "num" }, String(x.cited)),
-      el("span", { role: "cell", className: "ap-chips" }, ...x.rivals.map((n) => el("span", { className: "ap-bchip" }, n))),
-      el("span", { role: "cell", className: "t-bad small" }, "not mentioned"))));
-    pair4.append(cbSection("cb-gaps", `Sites that cite rivals but not ${view.name}`, "cited pages that name a rival and never this brand",
-      b.gapSites.length ? t : el("p", { className: "ap-note" }, `Every cited page that mentions a rival also mentions ${view.name}.`)));
-  }
-  box.append(pair4);
-
-  /* --- searches --- */
-  const s = b.searches;
-  const sq = el("div", { className: "cb-search-stats" },
-    ...[[String(s.total), "searches"], [s.perAnswer.toFixed(1), "per answer"], [cbPct(s.nameBrand), "name a brand"], [cbPct(s.nameView), `name ${view.name}`], [cbPct(s.reddit), "ask Reddit"], [cbPct(s.year), "include a year"]]
-      .map(([v, l]) => el("div", {}, el("b", {}, v), el("span", { className: "muted small" }, l))));
-  const ql = el("ol", { className: "cb-queries" });
-  s.top.forEach((q) => ql.append(el("li", {}, el("span", { className: "cb-q" }, q.text), el("span", { className: "num muted" }, `×${q.n}`), el("span", { className: "small muted" }, q.lead ? `${q.lead} came first` : ""))));
-  box.append(cbSection("cb-searches", "Searches the engines ran for this campaign", "", sq, s.top.length ? ql : el("p", { className: "ap-note" }, "The engines didn't publish any searches for these answers.")));
-
-  /* --- prompt by prompt --- */
-  const pg = b.prompts;
-  const filters = el("div", { className: "cb-pfilters", role: "group", "aria-label": "Show prompts" });
-  [["all", "All"], ["first", "Named first"], ["lower", "Named lower"], ["not", "Not named"]].forEach(([id, label]) => {
-    const on = cbPromptFilter === id;
-    const f = el("button", { className: `db-chip${on ? " on scope" : ""}`, type: "button", "aria-pressed": on ? "true" : "false" }, `${label} · ${pg.counts[id]}`);
-    f.onclick = () => { cbPromptFilter = id; rerender(); };
-    filters.append(f);
-  });
-  // The prompt keeps at least 160px; the grid scrolls sideways only when the
-  // engine columns leave it less than that (four engines in the popup).
-  const pop = document.body.classList.contains("popup");
-  const fixed = [28, ...b.engines.map(() => (pop ? 50 : 58)), pop ? 44 : 64, pop ? 64 : 90];
-  const cols = `28px minmax(0, 1fr) ${fixed.slice(1).map((w) => `${w}px`).join(" ")}`;
-  const grid = el("div", { className: "cb-grid cb-prompt-grid", role: "table", style: `grid-template-columns:${cols};min-width:${fixed.reduce((a, w) => a + w, 160)}px`, "aria-label": "Prompt by prompt" });
-  grid.append(el("div", { className: "cb-grid-row", role: "row" }, el("span", { role: "columnheader" }, "#"),
-    el("span", { role: "columnheader" }, `Prompt · where ${view.name} came in each engine’s answer`),
-    ...b.engines.map((e) => el("span", { role: "columnheader", className: "c", title: e.label }, engineIconEl(e.id), el("span", { className: "ap-sr" }, e.label))),
-    el("span", { role: "columnheader", className: "num" }, "Cites its site"),
-    el("span", { role: "columnheader", className: "num" }, "Last run")));
-  const posCell = (cell, engLabel) => {
-    if (!cell) return el("span", { role: "cell", className: "c" }, el("span", { className: "cb-pos none", title: `No answer from ${engLabel}` }, "·"));
-    const label = cell.pos === 0 ? "✕" : cell.pos === "shown" ? "card" : `#${cell.pos}`;
-    const cls = cell.pos === 0 ? "out" : cell.pos === 1 ? "first" : "in";
-    const btn = el("button", { className: `cb-pos ${cls}${cell.cited ? " cited" : ""}`, type: "button",
-      title: `${cell.pos === 0 ? `${view.name} not named` : cell.pos === "shown" ? `${view.name} shown on a card, not in the text` : `${view.name} named #${cell.pos}`} by ${engLabel}${cell.cited ? `, and the answer cited ${view.domain || "its site"}` : ""} — open the answer` }, label);
-    btn.onclick = () => openCapture(cell.captureId);
-    return el("span", { role: "cell", className: "c" }, btn);
-  };
-  pg.rows.filter((p) => cbPromptFilter === "all" || p.status === cbPromptFilter).forEach((p) => {
-    const open = cbOpenPrompts.has(p.id);
-    const text = el("span", { role: "cell", className: "cb-ptext" }, el("span", { className: "cb-ptitle", title: p.text }, p.text),
-      el("span", { className: "muted small" }, [p.words > 30 ? `${p.words}-word prompt` : "", ...(p.tags || [])].filter(Boolean).join(" · ")));
-    const more = el("span", { role: "cell", className: "num small" });
-    if (p.lastAt) more.append(el("span", { className: "muted", title: new Date(p.lastAt).toLocaleString() }, relTime(p.lastAt)));
-    if (p.history.length) {
-      const t = el("button", { className: "linkbtn", type: "button", "aria-expanded": open ? "true" : "false", title: open ? "Hide earlier runs" : "Show earlier runs" }, open ? " hide" : ` +${p.history.length}`);
-      t.onclick = () => { if (open) cbOpenPrompts.delete(p.id); else cbOpenPrompts.add(p.id); rerender(); };
-      more.append(t);
-    }
-    grid.append(el("div", { className: `cb-grid-row st-${p.status}`, role: "row" },
-      el("span", { role: "cell", className: "muted" }, String(p.n)), text,
-      ...p.cells.map((cell, i) => posCell(cell, b.engines[i].label)),
-      el("span", { role: "cell", className: "num" }, p.citedYou ? String(p.citedYou) : "—"), more));
-    if (open) p.history.forEach((h) => grid.append(el("div", { className: "cb-grid-row sub", role: "row" },
-      el("span", { role: "cell" }), el("span", { role: "cell", className: "muted small" }, `${h.label} · ${new Date(h.at).toLocaleDateString(undefined, { day: "numeric", month: "short" })}`),
-      ...h.cells.map((cell, i) => posCell(cell, b.engines[i].label)), el("span", { role: "cell" }), el("span", { role: "cell" }))));
-  });
-  box.append(cbSection("cb-prompts", "Prompt by prompt", pg.avgWhenNamed ? `average position when named: ${pg.avgWhenNamed.toFixed(1)}` : "",
-    filters, el("div", { className: "cb-scroll" }, grid),
-    el("p", { className: "muted small cb-legend" }, el("span", { className: "cb-pos first" }, "#1"), " named first  ", el("span", { className: "cb-pos in" }, "#3"), " named lower  ", el("span", { className: "cb-pos out" }, "✕"), " not named  ", el("span", { className: "cb-pos in cited" }, "#2"), ` that answer cited ${view.domain || "its site"}`)));
-
-  /* --- sources --- */
-  const srcBox = cbSection("cb-sources", "Sources the engines used", "", el("div", { className: "muted small" }, "Loading sources…"));
-  box.append(srcBox);
-  renderCampaignSources(srcBox, profile, { runId: r.runId === "all" ? undefined : r.runId, focusBrand: view.isOwn ? undefined : view.name });
+  /* --- the board (0.64.0): src/lib/campaignView.js, drawn by ui/campaignView.js --- */
+  // The sources table with its drill-downs stays, at the foot of Sources.
+  const srcBox = cbSection("cb-sources", "Every site, with its pages", "", el("div", { className: "muted small" }, "Loading sources…"));
+  renderCampaignView(box, r.view, {
+    el, engineIcon: engineIconEl, openCapture,
+    deltas: Object.fromEntries(((b.focus && b.focus.mentions) || []).map((k) => [k.label, k.delta])),
+    openDomain: (d) => openCampaignDomain(profile, d),
+    openFullCompare: (name) => { cbDetail = name; renderCampaigns(); },
+    excludeBrand: async (name, btn) => {
+      btn.disabled = true;
+      const res = await send({ type: "geo-brand-exclude", profileId: profile.id, name });
+      if (!res.ok) { btn.disabled = false; showToast(res.error || "Couldn't leave that brand out", "error"); return; }
+      showToast(`${name} is no longer counted as a competitor`);
+      loadGeo();
+    },
+  }, { sourcesDrill: srcBox, runHistory: renderRunHistory(profile) });
+  renderCampaignSources(srcBox, profile, { runId: r.runId === "all" ? undefined : r.runId });
 }
 
 /* The sources table: domains or URLs, reach before volume, each row drilling

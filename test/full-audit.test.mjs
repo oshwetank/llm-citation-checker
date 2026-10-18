@@ -409,8 +409,10 @@ try {
   await page.evaluate(() => document.querySelector('[data-tab="loader"]')?.click());
   await page.waitForTimeout(2500);
   drain();
-  check("the campaign's results show in Campaigns", await page.evaluate(() => !!document.querySelector("#loader #campaignResults #cb-kpis")));
-  for (const sel of ["#cb-brands .cb-brand-btn", "#cb-sources td.td-domain button", "#cb-gaps .cb-tr", "#cb-kpis .cb-focus-tab:nth-child(3)"]) {
+  check("the campaign's results show in Campaigns", await page.evaluate(() => !!document.querySelector("#loader #campaignResults #cv-overview")));
+  // 0.64.0's board: a rival, the full comparison, a domain, a citation row,
+  // the citations' engine switch and a prompt.
+  for (const sel of ["#cv-brands .cb-brand-btn", "#cv-compare .cv-more", "#cb-sources td.td-domain button", "#cv-sources .cv-doms .cv-link", "#cv-citations .cv-rowbtn", "#cv-citations .cv-seg button:nth-child(2)", "#cv-prompts .cv-ptext"]) {
     const found = await page.evaluate((s) => document.querySelectorAll(s).length, sel);
     if (!found) continue;
     await page.evaluate(async (s) => {

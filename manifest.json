@@ -13,7 +13,8 @@
     "languageModel",
     "cookies",
     "offscreen",
-    "scripting"
+    "scripting",
+    "favicon"
   ],
   "host_permissions": [
     "https://chatgpt.com/*",

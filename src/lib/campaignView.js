@@ -185,7 +185,8 @@ export function campaignView(recs, { profile, brands, prompts = [], engineFilter
 
   // ---- brands
   const firstsIn = (list) => Object.fromEntries([...countBy(list.map(firstOf).filter(Boolean), (x) => x)]);
-  const board = (m, list) => Object.entries(m).map(([name, x]) => ({ name, isOwn: name === own.name, ...x, firsts: firstsIn(list)[name] || 0 }))
+  const autoOf = new Set(brands.filter((b) => b.auto).map((b) => b.name));
+  const board = (m, list) => Object.entries(m).map(([name, x]) => ({ name, isOwn: name === own.name, auto: autoOf.has(name), ...x, firsts: firstsIn(list)[name] || 0 }))
     .sort((a, b) => b.sov - a.sov || b.vis - a.vis);
   const brandsSection = {
     all: board(all, ok),
@@ -228,7 +229,8 @@ export function campaignView(recs, { profile, brands, prompts = [], engineFilter
   const searchStats = engines.map((e) => {
     const qs = allQ.filter((q) => q.engine === e); const n = qs.length; const has = (re) => pctOf(qs.filter((q) => re.test(q.text)).length, n);
     return {
-      engine: e, label: ENGINE_LABEL[e], n, perPrompt: promptsSent(e) ? r1(n / promptsSent(e)) : 0,
+      // Gemini doesn't publish the searches it runs: none captured is not none run.
+      engine: e, label: ENGINE_LABEL[e], published: e !== "gemini" || n > 0, n, perPrompt: promptsSent(e) ? r1(n / promptsSent(e)) : 0,
       avgWords: n ? r1(qs.reduce((s, q) => s + words(q.text), 0) / n) : 0,
       unanswered: qs.filter((q) => !q.answered).length,
       traits: [
