@@ -7938,7 +7938,7 @@ function renderPromptManager(profile, dis, persistDetails) {
     const buildManual = () => {
       const ta = el("textarea", {
         id: "cs-manual", className: "cs-textarea", rows: 5,
-        placeholder: "One prompt per line — add tags after a | (pipe)…\nbest trading app in India | finance, beginner\nbest broker for beginners | finance",
+        placeholder: "One prompt per line — add tags after a | (pipe)…\nbest accounting software for small business | software, smb\nZento vs Kovo for freelancers | comparison",
       });
       // Reported: a long prompt's own commas were being read as tag
       // separators, turning most of the sentence into tags — splitting on
@@ -8877,7 +8877,7 @@ async function openFeedbackModal(rec) {
     className: "diag-report-text",
     rows: 4,
     id: "feedbackNote",
-    placeholder: "What looked wrong, and what you expected instead? (e.g. \"the brand list shows Optical Zoom instead of the phones\")",
+    placeholder: "What looked wrong, and what you expected instead? (e.g. \"the brand list shows a feature name instead of the brands\")",
   });
   body.append(note);
 

@@ -12,6 +12,7 @@
  * No network calls. Nothing leaves the device.
  */
 
+import { probeIsRead } from "./lib/geminiChannel.js";
 import { db } from "./lib/db.js";
 import {
   turnBudgetMs, legEta, INTER_PROMPT_MIN_MS, INTER_PROMPT_MAX_MS,
@@ -3749,6 +3750,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         case "probe": {
           if (await capturePausedFor(sender)) { sendResponse({ ok: true, skipped: "paused" }); break; }
+          // A reply the Gemini reader already turns into an answer isn't kept (0.69.0).
+          if (probeIsRead(msg.payload || {})) { sendResponse({ ok: true, skipped: "read" }); break; }
           await probeAppend(msg.payload || {});
           sendResponse({ ok: true });
           break;

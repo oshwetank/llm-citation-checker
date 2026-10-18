@@ -238,3 +238,20 @@ export function channelPrompt(body) {
   } catch (_) { /* not a form */ }
   return prompt ? prompt.trim() : null;
 }
+
+/**
+ * Is this Debug-capture probe one the reader already understands (0.69.0)?
+ * Since 0.66.0 the WebChannel's prompt upload and its RID=rpc answer stream
+ * are read into answers, so keeping them as "payloads it couldn't read" only
+ * buried the probes that matter (batchexecute calls, unknown shapes). A
+ * stream whose frames don't read as an answer is still kept.
+ */
+export function probeIsRead(p) {
+  const url = String((p && p.url) || "");
+  if (!/\/v1\/processSession\b/.test(url)) return false;
+  const method = String((p && p.method) || "GET").toUpperCase();
+  if (method === "POST") return !!channelPrompt(p.reqBody) || !/req\d+___data__=/.test(String(p.reqBody || ""));
+  if (!/[?&]RID=rpc\b/.test(url)) return false;
+  const r = readGeminiChannel(String(p.body || ""));
+  return !!(r && r.answer);
+}

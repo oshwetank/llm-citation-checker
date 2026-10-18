@@ -11,12 +11,29 @@ Everything is stored **locally in your browser**. The extension makes **no netwo
 of its own**, except, if you turn on **Read the cited pages**, to the pages an answer cited;
 nothing leaves your device.
 
-> **v0.68.1** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.69.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **For any brand, anywhere** (0.69.0). Prices are read in any currency, before or after the
+>   number ($, €, £, ¥, ₹, R$, kr, zł, CHF, AED, ₩ and more), and shown in their own currency in
+>   the reports and the workbook (a new Currency column); averages never mix currencies. Topics
+>   without tags are grouped by what the prompt asks for (Comparisons & alternatives, Local & near
+>   me, Price, cost & value, Trust, safety & compliance, Jobs & careers, How-to & information, For
+>   a person or use, Best, top & reviews), in several languages, so B2B, services and public-sector
+>   prompts no longer all land in "Other". Shops, marketplaces and review sites from many more
+>   countries are known, and a new site group, **Public & reference**, holds government and public
+>   bodies, universities, research, encyclopedias and analyst firms. Country and currency names are
+>   never taken for brands.
+> - **Signed-out ChatGPT and Gemini fixes** (0.69.0). Signed-out ChatGPT answers (its
+>   `unauth-mweb` stream) are captured. A Gemini hand-over made mid-search, with no answer yet, no
+>   longer finishes the turn. Gemini answers say whether you were signed in (this needs the new
+>   `google.com` site access, where Google keeps its sign-in). A card whose large title is only a
+>   price is named by the product, and its store is kept. Private-window runs leave Grok out and
+>   say so (Grok sends nothing signed out). Debug capture no longer keeps Gemini replies the reader
+>   already reads.
 > - **Dashboard filters, laid out** (0.68.1). The filters are four labelled rows (Look in,
 >   Engines, When, Show) instead of one run of chips that wrapped anywhere, with one style for
 >   "on" and the duplicate caption gone.

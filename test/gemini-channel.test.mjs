@@ -8,7 +8,7 @@
  * frames here are made up in the shape mapped from the owner's probes
  * (test/helpers/gemini-channel.mjs).
  */
-import { readGeminiChannel, channelPrompt, isChannelText, protoAt, channelPayloads } from "../src/lib/geminiChannel.js";
+import { readGeminiChannel, channelPrompt, isChannelText, protoAt, channelPayloads, probeIsRead } from "../src/lib/geminiChannel.js";
 import { adapt } from "../src/adapters/gemini.js";
 import { channelStream, uploadBody, responsePayload, ANSWER, SOURCES, PRODUCTS, RESPONSE, CONVERSATION } from "./helpers/gemini-channel.mjs";
 
@@ -67,6 +67,17 @@ console.log("\nthe adapter");
   check("searched, shopping, the model and the reply id", rec.searched === true && rec.turnUseCase === "shopping" && rec.model === "Gemini 3.6 Flash" && rec.turnId === RESPONSE, JSON.stringify([rec.searched, rec.turnUseCase, rec.model, rec.turnId]));
   const fromUrl = await adapt({ captureId: "g2", raw: channelStream(), reqBody: "", pageUrl: `https://gemini.google.com/app?q=${encodeURIComponent(PROMPT)}`, capturedAt: 1 });
   check("with no upload seen, the prompt comes from the page's ?q=", fromUrl.userPrompt === PROMPT, fromUrl.userPrompt);
+}
+
+console.log("\nDebug probes the reader already reads are not kept (0.69.0)");
+{
+  const URL_GET = "https://geminiweb-pa.clients6.google.com/v1/processSession?VER=8&RID=rpc&SID=x&TYPE=xmlhttp";
+  const URL_POST = "https://geminiweb-pa.clients6.google.com/v1/processSession?VER=8&RID=123&SID=x";
+  check("an answer stream is read", probeIsRead({ url: URL_GET, method: "GET", body: channelStream() }));
+  check("a prompt upload is read", probeIsRead({ url: URL_POST, method: "POST", reqBody: uploadBody("best kettle") }));
+  check("a stream with no answer is kept", !probeIsRead({ url: URL_GET, method: "GET", body: "51\n[[0,[\"c\",\"abc\",null,8]]]" }));
+  check("an unknown shape is kept", !probeIsRead({ url: URL_GET, method: "GET", body: '{"answer_chunk":"x"}' }));
+  check("batchexecute is always kept", !probeIsRead({ url: "https://gemini.google.com/_/BardChatUi/data/batchexecute?rpcids=X", method: "POST", body: "x" }));
 }
 
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");

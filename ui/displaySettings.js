@@ -10,7 +10,8 @@ const CD = globalThis.CitoDisplay;
 let googleList = null; // [[family, category, weights]], loaded on first search
 
 const CAT = { s: "Sans serif", r: "Serif", d: "Display", h: "Handwriting", m: "Monospace" };
-const SAMPLE = "Aa Moto 1st ₹29,999";
+// Made-up brand and an amount with no market assumed (0.69.0).
+const SAMPLE = "Aa Zento 1st 29,999";
 
 function h(tag, props = {}, ...kids) {
   const n = document.createElement(tag);
@@ -142,8 +143,8 @@ export function initDisplaySettings(slot) {
 
     slot.append(h("div", { className: "ds-preview", "aria-label": "Preview" },
       h("div", { className: "ds-pk" }, h("div", {}, h("b", {}, "37.4%"), h("span", {}, "Share of voice")), h("div", {}, h("b", {}, "96.6%"), h("span", {}, "Visibility")), h("div", {}, h("b", {}, "1.6"), h("span", {}, "Average position"))),
-      h("p", {}, "Motorola Edge 70 Fusion was the first card in 10 of ChatGPT's 29 answers, ahead of the Nothing Phone (3a) Pro."),
-      h("p", {}, "Searched: ", h("code", {}, "best phones under ₹30000 site:91mobiles.com"))));
+      h("p", {}, "Zento Nova was named first in 10 of ChatGPT's 29 answers, ahead of Kovo Air."),
+      h("p", {}, "Searched: ", h("code", {}, "best project management software site:reviews.example"))));
     // Keep any slider the user is dragging focused across a redraw from elsewhere.
   };
   redraw();
