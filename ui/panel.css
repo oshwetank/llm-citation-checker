@@ -7006,3 +7006,6 @@ a.at-review-src:hover { text-decoration: underline; }
 .at-read-inline { margin-left: 8px; }
 .at-backing-row.flash { background: var(--at-tint, var(--accent-subtle)); transition: background 0.4s; }
 @media (prefers-reduced-motion: reduce) { .at-backing-row.flash { transition: none; } }
+
+/* Campaigns while a run is going (0.62.2): its answers wait for the end. */
+.cb-run-wait { margin: 0 0 12px; padding: 10px 14px; border-radius: 10px; background: var(--bg-subtle); color: var(--fg-secondary); font-size: 13px; }

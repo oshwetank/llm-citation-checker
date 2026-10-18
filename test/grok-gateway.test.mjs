@@ -199,8 +199,20 @@ console.log("\nPage script: one capture per Grok answer, handed over on response
   check("which holds only the second answer", all[1] && all[1].raw.includes("Night mode answer.") && !all[1].raw.includes("Pixel 9a"), all[1] && all[1].raw.slice(0, 200));
   check("and the second prompt", all[1] && all[1].reqBody.includes(SECOND));
 
+  // 0.62.2: Grok pauses between its searches and its answer. A capture
+  // handed over in that pause (search results, no answer) made a campaign
+  // count the turn done; the owner's Motorola run lost all 30 Grok answers.
+  const THIRD = "and under 25000";
+  ws.send(itemCreate(THIRD));
+  ws.receive(frame({ type: "response.chunk", chunk: { web_search_results: { results: [{ url: "https://phonereview.example/a", title: "A" }] } } }));
+  runTimers();
+  check("a pause after the search results hands nothing over", captures().length === 2, captures().length);
+  ws.receive(frame({ type: "response.chunk", chunk: { text: { text: "Under 25000, the Zento Nova 8.", channel: "FINAL" } } }));
+  ws.receive(frame({ type: "response.done", response: { status: "completed" } }));
+  check("the answer is handed over whole on response.done", captures().length === 3 && captures()[2].raw.includes("Zento Nova 8") && captures()[2].raw.includes("phonereview.example"), captures().length);
+
   ws.close();
-  check("closing the socket does not hand the last answer over twice", captures().length === 2, captures().length);
+  check("closing the socket does not hand the last answer over twice", captures().length === 3, captures().length);
 
   const rec = await adapt({ captureId: "e2e", raw: first[0].raw, reqBody: first[0].reqBody, capturedAt: 1 });
   check("end to end: the handed-over capture reads as the right prompt and answer",

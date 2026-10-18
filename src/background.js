@@ -42,7 +42,7 @@ import {
   MAX_PROFILES, TRASH_RETENTION_DAYS, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
   selectTracked, computeMetrics, computeSeries, brandPresence, normName,
   effectiveTrackedBrands, headToHead, brandSourceDomains, availableEngines,
-  hasSignal, countCompletedForRun, countCompletedForLeg, isPrunableCapture,
+  hasSignal, turnAnswered, usageLimitOf, countCompletedForRun, countCompletedForLeg, isPrunableCapture,
 } from "./lib/geo.js";
 export { hasSignal };
 
@@ -1185,6 +1185,50 @@ function describeTimeout(probe, unreadable = null, tab = null, nav = []) {
 // behaviour); the tab-closed path passes a short delay to avoid hammering
 // chrome.tabs.update in a tight loop if every remaining prompt in the list
 // would also fail against the same closed tab.
+/* Pause one engine's legs on a cooldown, then resume them (a limit seen on
+ * the page, or reported by the engine itself — Grok's gateway, 0.62.2). Other
+ * engines keep running. */
+async function pauseForLimit(matched, detail) {
+  const p = loader.platforms[matched];
+  const cooldownMs = parseCooldownFromNotice(detail);
+  const resumeAt = Date.now() + cooldownMs;
+  p.rateLimitedUntil = resumeAt;
+  p.cooldownReason = typeof detail === "string" ? detail.slice(0, 160) : "rate limit";
+
+  for (const leg of p.legs || []) {
+    clearWatchdog(leg);
+    leg.paused = true;
+  }
+
+  // Arm an auto-resume timer for this specific platform
+  if (p.cooldownTimer) clearTimeout(p.cooldownTimer);
+  p.cooldownTimer = setTimeout(() => {
+    p.rateLimitedUntil = null;
+    p.cooldownTimer = null;
+    if (loader.running) {
+      for (const leg of p.legs || []) {
+        leg.paused = false;
+      }
+      logErr(`run:auto-resume:${matched}`, "Cooldown expired, auto-resuming platform queue", { platform: matched, runId: loader.runId });
+      (p.legs || []).forEach((l) => loaderAdvanceLeg(p, l));
+      persistLoaderState();
+      syncGeoRun();
+    }
+  }, cooldownMs);
+
+  loader.interrupted = {
+    at: Date.now(),
+    reason: "rate limit",
+    platform: matched,
+    detail: p.cooldownReason,
+    autoResumeAt: resumeAt,
+  };
+
+  await persistLoaderState();
+  syncGeoRun(undefined, `cooldown: ${matched} (${formatCooldown(cooldownMs)})`);
+  notifyRateLimited(`${matched}: ${p.cooldownReason} (Auto-resuming in ${formatCooldown(cooldownMs)})`);
+}
+
 function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "", extraCtx = null) {
   if (!leg) return;
   loader.errors++;
@@ -1741,6 +1785,9 @@ function loaderStatus() {
     etaMs = Math.max(etaMs, s.etaMs);
   }
   return {
+    // Which campaign this run is for: the Campaigns page holds that one still
+    // while it runs (0.62.2).
+    profileId: (loader.options && loader.options.geo && loader.options.geo.profileId) || null,
     running: loader.running,
     paused: loader.paused || anyPlatformPaused,
     total: totalTasks,
@@ -2399,8 +2446,19 @@ function loaderOnCapture(tabId, record) {
    */
   if (leg.idx >= leg.prompts.length || leg.inFlightIdx !== leg.idx) return;
 
-  // Ignore empty race-loser captures — advancing on those silently SKIPS prompts.
-  if (!hasSignal(record)) return;
+  // The engine says this account has hit its limit (Grok's gateway sends it
+  // as a stream_error). Pause this engine's legs on the same cooldown a limit
+  // seen on the page gets; the prompt is asked again when it resumes. Until
+  // 0.62.2 these turns were logged "ok" with no answer.
+  const limit = usageLimitOf(record);
+  if (limit) {
+    logErr(`run:usage-limit:${plat}`, `${plat}: usage limit reached`, { platform: plat, promptIndex: (leg.startOffset || 0) + leg.idx, runId: loader.runId, detail: limit });
+    pauseForLimit(plat, `usage limit reached (${limit})`);
+    return;
+  }
+  // Ignore empty race-loser captures — advancing on those silently SKIPS
+  // prompts — and, on Grok's gateway, captures of an answer still on its way.
+  if (!turnAnswered(record)) return;
   // Ignore a second completion arriving immediately after one we already counted.
   if (leg.lastAdvanceAt && Date.now() - leg.lastAdvanceAt < MIN_ADVANCE_GAP_MS) return;
 
@@ -2646,50 +2704,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             const found = legForTab(tabId);
             if (found && found.leg.token && found.leg.token === msg.token) matched = found.plat;
           }
-          if (matched) {
-            const p = loader.platforms[matched];
-            const cooldownMs = parseCooldownFromNotice(msg.detail);
-            const resumeAt = Date.now() + cooldownMs;
-            p.rateLimitedUntil = resumeAt;
-            p.cooldownReason = typeof msg.detail === "string" ? msg.detail.slice(0, 160) : "rate limit";
-
-            for (const leg of p.legs || []) {
-              clearWatchdog(leg);
-              leg.paused = true;
-            }
-
-            // Arm an auto-resume timer for this specific platform
-            if (p.cooldownTimer) clearTimeout(p.cooldownTimer);
-            p.cooldownTimer = setTimeout(() => {
-              p.rateLimitedUntil = null;
-              p.cooldownTimer = null;
-              if (loader.running) {
-                for (const leg of p.legs || []) {
-                  leg.paused = false;
-                }
-                logErr(`run:auto-resume:${matched}`, "Cooldown expired, auto-resuming platform queue", { platform: matched, runId: loader.runId });
-                (p.legs || []).forEach((l) => loaderAdvanceLeg(p, l));
-                persistLoaderState();
-                syncGeoRun();
-              }
-            }, cooldownMs);
-
-            loader.interrupted = {
-              at: Date.now(),
-              reason: "rate limit",
-              platform: matched,
-              detail: p.cooldownReason,
-              autoResumeAt: resumeAt,
-            };
-
-            await persistLoaderState();
-            syncGeoRun(undefined, `cooldown: ${matched} (${formatCooldown(cooldownMs)})`);
-            notifyRateLimited(`${matched}: ${p.cooldownReason} (Auto-resuming in ${formatCooldown(cooldownMs)})`);
-          }
+          if (matched) await pauseForLimit(matched, msg.detail);
           sendResponse({ ok: !!matched });
           break;
         }
-
         // The content script tried to type and submit this turn's prompt and
         // couldn't (composer never mounted, or the send control never accepted
         // it). Previously it just stopped trying and said nothing, so the run
@@ -3090,9 +3108,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const profile = await db.get("profiles", msg.profileId);
           if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
           const records = await db.getAll("derived");
-          const all = selectTracked(records, { profileId: msg.profileId, engines: msg.engines, tags: msg.tags });
           const runs = (await db.getAll("geoRuns")).filter((r) => r.profileId === msg.profileId)
             .sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+          // A run still going isn't on the board (0.62.2, asked: "only show
+          // the data of the campaign when it's done or stopped"): its answers
+          // are left out of every view, the default and "all runs" included.
+          const live = new Set(runs.filter((r) => r.status === "running").map((r) => r.id));
+          const all = selectTracked(records, { profileId: msg.profileId, engines: msg.engines, tags: msg.tags }).filter((x) => !(x.geo && live.has(x.geo.runId)));
           // The run shown: the one asked for; by default the latest run that
           // has answers, so the board opens on "now" with the change since
           // the run before; "all" combines every run.
@@ -3104,9 +3126,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
           sendResponse({
             ok: true,
-            board: campaignBoard(recs, { profile, brands, viewAs: msg.viewAs, prompts, runs, runId, all, engineFilter: msg.engines || [], tags: msg.tags || [] }),
+            board: campaignBoard(recs, { profile, brands, viewAs: msg.viewAs, prompts, runs: runs.filter((r) => !live.has(r.id)), runId, all, engineFilter: msg.engines || [], tags: msg.tags || [] }),
             runId: runId || "all",
-            runs: runs.map((r) => ({ id: r.id, startedAt: r.startedAt, status: r.status, captured: r.captured || 0, expected: r.expected || 0, hasAnswers: all.some((x) => x.geo && x.geo.runId === r.id) })),
+            runs: runs.filter((r) => !live.has(r.id)).map((r) => ({ id: r.id, startedAt: r.startedAt, status: r.status, captured: r.captured || 0, expected: r.expected || 0, hasAnswers: all.some((x) => x.geo && x.geo.runId === r.id) })),
             brands: brands.map((b) => ({ name: b.name, isOwn: !!b.isOwn, auto: !!b.auto })),
             excludedBrands: profile.excludedBrands || [],
             tags: [...new Set(prompts.flatMap((p) => p.tags || []))],

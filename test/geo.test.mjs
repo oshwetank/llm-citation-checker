@@ -12,7 +12,7 @@ import {
   isTracked, partitionRecords, selectTracked,
   normName, domainOfUrl, domainMatches, bucketKey, runDue, runVolume,
   allTags, availableEngines, ENGINES, MAX_PROFILES,
-  hasSignal, countCompletedForRun,
+  hasSignal, turnAnswered, usageLimitOf, countCompletedForRun,
 } from "../src/lib/geo.js";
 import { adapt as adaptChatGpt } from "../src/adapters/chatgpt.js";
 import { makeRecord } from "../src/schema.js";
@@ -491,6 +491,16 @@ console.log("\nwhat a campaign measures survives a save");
   check("only the known views, as booleans", p.measure && Object.keys(p.measure).join() === "citations,products,images,local", JSON.stringify(p.measure));
   check("a campaign from before the choice has none (every view offered)", makeProfile({ name: "Old" }).measure === null);
   check("a save of an old campaign doesn't invent one", makeProfile({ ...makeProfile({ name: "Old" }), locked: true }).measure === null);
+}
+
+console.log("\nwhen a campaign turn is answered (0.62.2)");
+{
+  const gw = (ps, extra = {}) => ({ platform: "grok", userPrompt: "best phone", sources: [{ url: "https://a.example" }], platformSpecific: { transport: "gateway", ...ps }, ...extra });
+  check("a Grok gateway capture with only the prompt and search results is not an answer", hasSignal(gw({})) && !turnAnswered(gw({})));
+  check("nor one Grok cut off", !turnAnswered(gw({ gatewayStatus: "incomplete" }, { answerChars: 0 })));
+  check("one Grok completed, with text, is", turnAnswered(gw({ gatewayStatus: "completed" }, { answerChars: 900 })));
+  check("other engines keep the old rule", turnAnswered({ platform: "perplexity", userPrompt: "q", answerChars: 10 }));
+  check("Grok's usage limit is read off the capture", usageLimitOf(gw({ gatewayError: "usage_limit_reached" })) === "usage_limit_reached" && usageLimitOf(gw({ gatewayError: "stream_error" })) === null);
 }
 
 console.log(failures ? `\nFAILED (${failures})` : "\nALL PASSED");

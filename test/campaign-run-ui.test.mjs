@@ -20,6 +20,7 @@
  */
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { readFileSync } from "node:fs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const EXT_PATH = path.resolve(HERE, "..");
@@ -138,6 +139,27 @@ try {
     await page.waitForTimeout(1500);
     const heads = await page.evaluate(() => window.__heads);
     check("a new header is live from the start, not after the next status reply", heads.length > 0 && heads.every(Boolean), JSON.stringify(heads));
+  }
+
+  console.log("\nA capture mid-run doesn't rebuild the page (0.62.2)");
+  {
+    // Reported: "with each new prompt run/capture the layout bounces, if you
+    // have scrolled down, you will be bounced back up forcefully". Every
+    // capture used to empty the Campaigns page and build it again.
+    await page.evaluate(() => {
+      window.__rebuilt = 0;
+      new MutationObserver((ms) => ms.forEach((m) => m.addedNodes.forEach((n) => { if (n.id === "cpHead") window.__rebuilt++; })))
+        .observe(document.getElementById("loader"), { childList: true });
+    });
+    const raw = readFileSync(path.join(HERE, "fixtures", "chatgpt-phone-under.txt"), "utf8");
+    for (let i = 0; i < 3; i++) {
+      await ask({ type: "raw-conversation", payload: { raw, reqBody: JSON.stringify({ messages: [{ author: { role: "user" }, content: { parts: [`ad-hoc question ${i}`] } }] }), pageUrl: "https://chatgpt.com/", capturedAt: Date.now() } });
+      await page.waitForTimeout(700);
+    }
+    await page.waitForTimeout(800);
+    check("three captures, no rebuild of the page", await page.evaluate(() => window.__rebuilt) === 0, String(await page.evaluate(() => window.__rebuilt)));
+    const wait = await page.evaluate(() => document.querySelector("#campaignResults .cb-run-wait")?.textContent || "");
+    check("the results say the running run's answers come at the end", /appear here when it finishes or is stopped/.test(wait), wait || "no note");
   }
 
   console.log("\nPause and Resume");

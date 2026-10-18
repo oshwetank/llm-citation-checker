@@ -505,6 +505,12 @@
         };
 
         const scheduleEmit = () => {
+          // Grok's gateway pauses between its searches and its answer; a
+          // capture handed over in that pause had the prompt and the search
+          // results but no answer, and a campaign counted the turn done on
+          // it (0.62.2). On Grok the answer is handed over on response.done,
+          // or when the socket closes; the timer is for Perplexity.
+          if (IS_GROK) return;
           if (emitTimer) clearTimeout(emitTimer);
           emitTimer = setTimeout(flush, 1200);
         };

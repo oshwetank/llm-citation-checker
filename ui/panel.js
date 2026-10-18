@@ -1226,7 +1226,8 @@ function refreshFromBroadcast() {
     refreshPending = null;
     const scroller = activeScroller();
     const y = scroller ? scroller.scrollTop : 0;
-    await load(); // awaits geoP, so the Campaigns tab has rendered before we restore
+    cpFromBroadcast = true;
+    try { await load(); } finally { cpFromBroadcast = false; } // awaits geoP, so the Campaigns tab has rendered before we restore
     if (scroller && scroller.scrollTop !== y) scroller.scrollTop = y; // see withScrollPreserved
   }, 400);
 }
@@ -6253,16 +6254,29 @@ async function loadGeo() {
     if (qs.ok) GEO_PROMPTS = qs.prompts;
   }
   selectedPromptIds = new Set();
+  // While this campaign's run is going, a new capture changes nothing the
+  // page shows (the board leaves the running run out), so the page isn't
+  // rebuilt: rebuilding it on every capture bounced the reader back to the
+  // top (0.62.2, reported). Progress keeps updating on its own poll.
+  if (cpFromBroadcast && cpHolding(active) && document.getElementById("cpHead")) return;
   renderCampaigns();
 }
+// A run for this campaign is in progress (renderLoaderStatus keeps cpLive).
+let cpFromBroadcast = false; // set while refreshFromBroadcast's load() runs
+function cpHolding(profile) { return !!(profile && cpLive.live && cpLive.profileId === profile.id); }
 
 /* ---------- Campaigns tab (setup + prompts + LLMs + run, formerly
    Tracking + Loader) ---------- */
 
 function renderCampaigns() { withScrollPreserved(renderCampaignsImpl); }
+// Where the reader was, read before the page is emptied: read after, the
+// page is one line tall and the value comes back clamped to the top.
+let cpScrollY = 0;
 function renderCampaignsImpl() {
   const root = $("#loader");
   if (!root) return;
+  const sc = activeScroller();
+  cpScrollY = sc ? sc.scrollTop : 0;
   root.textContent = "";
   const profile = geoActive();
   cbHeaderNav = null;
@@ -6384,14 +6398,17 @@ function renderCampaignResults(profile) {
   const box = el("section", { className: "campaign-results", id: "campaignResults", "aria-labelledby": "campaignResultsH" });
   box.append(el("div", { className: "card" }, el("div", { className: "card-header" }, el("h3", { id: "campaignResultsH" }, "Results")), el("div", { className: "muted small" }, "Loading results…")));
   // Filled once the box is in the page. It starts as one line, so the scroll
-  // position is put back once the board reaches its real height: otherwise
-  // every new capture during a run jumped the page to the top.
+  // position (read before the page was emptied) is put back once the board
+  // reaches its real height.
   const scroller = activeScroller();
-  const y = scroller ? scroller.scrollTop : 0;
+  const y = cpScrollY;
+  const running = cpHolding(profile);
   setTimeout(async () => {
     if (cbDetail) await renderCampaignBrandDetail(box, profile);
     else await renderCampaignBoard(box, profile);
-    if (scroller && y && scroller.scrollTop !== y) scroller.scrollTop = y; // see withScrollPreserved
+    // A run in progress isn't on the board yet (0.62.2, asked): say so.
+    if (running) box.prepend(el("p", { className: "cb-run-wait", role: "status" }, "A run is in progress. Its answers appear here when it finishes or is stopped; the board below is the runs already finished."));
+    if (scroller && y > 0 && scroller.scrollTop !== y) scroller.scrollTop = y;
   }, 0);
   return box;
 }
@@ -8233,7 +8250,7 @@ function renderPromptManager(profile, dis, persistDetails) {
 // The run's state as last reported, so a header rebuilt mid-run (every
 // capture re-renders the tab) shows Pause / Stop straight away rather than
 // "Run again" until the next status reply.
-let cpLive = { live: false, paused: false };
+let cpLive = { live: false, paused: false, profileId: null };
 function renderCampaignHead(profile) {
   const head = el("section", { className: `card cp-head${cpLive.live ? " live" : ""}${cpLive.paused ? " paused" : ""}`, id: "cpHead", "aria-labelledby": "cpName" });
   head.append(el("div", { className: "cp-switch" }, el("span", { className: "muted small" }, `Campaigns · ${GEO_PROFILES.length} of ${MAX_PROFILES}`), renderCampaignSwitcher()));
@@ -9219,7 +9236,11 @@ function renderLoaderStatus(s) {
   const hadCooldownBanner = !!box.querySelector(".cooldown-banner");
   box.textContent = "";
   const wasLive = cpLive.live;
-  cpLive = { live: !!(s && s.total && s.running), paused: !!(s && s.running && s.paused) };
+  const wasProfile = cpLive.profileId;
+  cpLive = { live: !!(s && s.total && s.running), paused: !!(s && s.running && s.paused), profileId: (s && s.running && s.profileId) || null };
+  // The run just ended: its campaign's page, held still while it ran, is
+  // drawn once with the finished run on the board.
+  if (wasLive && !cpLive.live && wasProfile && geoActive() && geoActive().id === wasProfile) setTimeout(() => loadGeo(), 0);
   // The run history is drawn once per render; when a run ends, redraw it so
   // it doesn't keep saying "Running".
   if (wasLive && !cpLive.live) {

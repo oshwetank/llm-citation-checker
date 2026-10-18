@@ -649,6 +649,28 @@ export function hasSignal(r) {
 }
 
 /**
+ * Whether a capture finishes a campaign turn (0.62.2). hasSignal() is enough
+ * for most engines, but Grok's gateway hands over what it has whenever its
+ * socket goes quiet: the prompt, then the search results, then the answer.
+ * In the owner's Motorola run every Grok turn was counted on the first of
+ * those, the tab moved on, and none of the 30 answers was ever captured. A
+ * gateway turn is done only once Grok says the response completed and there
+ * is answer text.
+ */
+export function turnAnswered(r) {
+  if (!hasSignal(r)) return false;
+  const ps = (r && r.platformSpecific) || {};
+  if (r.platform === "grok" && ps.transport === "gateway") return ps.gatewayStatus === "completed" && (r.answerChars || 0) > 0;
+  return true;
+}
+
+/** An engine-side limit the capture itself reports (Grok's stream_error). */
+export function usageLimitOf(r) {
+  const e = r && r.platformSpecific && r.platformSpecific.gatewayError;
+  return typeof e === "string" && /limit|rate|quota|too_many/i.test(e) ? e : null;
+}
+
+/**
  * How many prompts have genuinely completed for one platform of one Loader
  * run, per the derived store itself — not per any in-memory or persisted
  * counter. `runId` matches `record.runId`, stamped on every capture made
