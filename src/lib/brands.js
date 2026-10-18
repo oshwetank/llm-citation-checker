@@ -21,6 +21,7 @@
  * only to label what was detected as `own` / `competitor`, so share-of-voice can
  * be reported. Detection stays automatic.
  */
+import { wordRe } from "./textMatch.js";
 
 const PUA_OPEN = String.fromCodePoint(0xe200);
 const PUA_MID = String.fromCodePoint(0xe202);
@@ -753,7 +754,7 @@ export function namedInProse(text, name) {
   const n = String(name || "").trim();
   if (!t || !n) return false;
   const wanted = n.split(/\s+/);
-  const re = new RegExp(`\\b${escapeRegExp(n)}\\b`, "gi");
+  const re = wordRe(n, "gi");
   let m;
   while ((m = re.exec(t))) {
     const lineStart = t.lastIndexOf("\n", Math.max(0, m.index - 1)) + 1;
@@ -1210,7 +1211,7 @@ export function detectBrands(answerText, plainText, ctx = {}) {
       ? matchCompressedLabel(text, cand.name).filter(
           (h) => !claimed.some(([cs, ce]) => h.start >= cs && h.end <= ce)
         ).filter((h) => writtenAsName(text, h))
-      : [...text.matchAll(new RegExp(`\\b${escapeRegExp(cand.name)}\\b`, "gi"))]
+      : [...text.matchAll(wordRe(cand.name, "gi"))]
           .map((m) => ({ start: m.index, end: m.index + cand.name.length }))
           .filter((h) => !claimed.some(([cs, ce]) => h.start >= cs && h.end <= ce));
     // A cited domain whose every mention reads as an attribution is the

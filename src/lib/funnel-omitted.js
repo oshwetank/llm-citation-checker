@@ -19,6 +19,7 @@
  * entry is precisely the case this module exists to surface.
  */
 
+import { wordRe } from "./textMatch.js";
 import { matchCompressedLabel, vendorFromProductName, escapeRegExp } from "./brands.js";
 
 // Sub-brands that belong to a parent. Additive only: an unknown name is
@@ -103,7 +104,7 @@ export function buildBrandVocabulary(rec) {
       if (t.length < 3) continue;
       if (!/^[A-Z][A-Za-z]*$/.test(t)) continue; // capitalised, letters only
       if (QUERY_STOP.has(t.toLowerCase())) continue;
-      if (!new RegExp(`\\b${escapeRegExp(t)}\\b`, "i").test(srcBlob)) continue;
+      if (!wordRe(t, "i").test(srcBlob)) continue;
       add(t);
     }
   }
@@ -129,7 +130,7 @@ export function extractBrandsFromText(text, vocab) {
   if (!text || !vocab || !vocab.size) return [];
   const found = [];
   vocab.forEach((display) => {
-    const verbatim = new RegExp(`\\b${escapeRegExp(display)}\\b`, "i").test(text);
+    const verbatim = wordRe(display, "i").test(text);
     if (verbatim || matchCompressedLabel(text, display).length) found.push({ brand: display });
   });
   return found;

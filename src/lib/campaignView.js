@@ -20,6 +20,7 @@
  *
  * Pure: the background calls it over full records and the panel draws it.
  */
+import { wordRe } from "./textMatch.js";
 import { hasPrice } from "./money.js";
 import { computeMetrics, normName, usageLimitOf } from "./geo.js";
 import { ranksIn, cardIsBrand, ENGINE_ORDER } from "./campaignBoard.js";
@@ -252,13 +253,13 @@ export function campaignView(recs, { profile, brands, prompts = [], engineFilter
         ["price", "Price or budget", has((q) => hasPrice(q) || /\bprice\b|\bunder\b|\bbudget\b|\bcheap|\bcost\b/i.test(q))],
         ["year", "Says the year", has(/\b20\d\d\b/)],
         ["month", "Says the month", has(/\b(january|february|march|april|may|june|july|august|september|october|november|december)\b/i)],
-        ["brand", "Names a brand", pctOf(qs.filter((q) => brands.some((b) => new RegExp(`\\b${b.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(q.text))).length, n)],
+        ["brand", "Names a brand", pctOf(qs.filter((q) => brands.some((b) => wordRe(b.name, "i").test(q.text))).length, n)],
         ["review", "Reviews or \"vs\"", has(/review|\bvs\b|versus|compar/i)],
         ["site", "Uses site:", has(/\bsite:/i)],
       ].map(([id, label, pct]) => ({ id, label, pct })),
     };
   });
-  const brandInQueries = brands.map((b) => ({ name: b.name, isOwn: b === own, n: allQ.filter((q) => new RegExp(`\\b${b.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(q.text)).length }))
+  const brandInQueries = brands.map((b) => ({ name: b.name, isOwn: b === own, n: allQ.filter((q) => wordRe(b.name, "i").test(q.text)).length }))
     .filter((x) => x.n).sort((a, b) => b.n - a.n);
   const ownDomain = normDomain((own.url || "").replace(/^https?:\/\//, "").split("/")[0]);
   const citedDomainsFor = (prompt, engine) => new Set(ok.filter((r) => r.platform === engine && promptText(r.userPrompt) === prompt)

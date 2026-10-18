@@ -30,6 +30,7 @@
  *                  fabricated 0-100 number in a measurement tool would be
  *                  worse than the honest gap. See SENTIMENT_NOTE.
  */
+import { wordRe } from "./textMatch.js";
 
 export const MAX_PROFILES = 3;
 
@@ -64,10 +65,13 @@ export const availableEngines = () => ENGINES.filter((e) => e.available);
 // Brand names are compared loosely (case, punctuation, spacing) because the
 // same company shows up as "Angel One" / "AngelOne" / "angel one" across
 // answers, and a tracking table that lists those as three brands is useless.
+// Letters and digits of any script (0.70.0): an ASCII-only key made every
+// non-Latin brand name "" and so never found.
 export function normName(s) {
   return String(s ?? "")
+    .normalize("NFC")
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/[^\p{L}\p{N}\p{M}]+/gu, " ")
     .trim();
 }
 
@@ -308,7 +312,7 @@ export function brandPresence(rec, trackedBrands) {
       // tool, and this only ever runs when the detector found nothing.
       const name = String(b.name);
       const hasUpper = /[A-Z]/.test(name);
-      const re = new RegExp(`\\b${escapeRegExp(name)}\\b`, "gi");
+      const re = wordRe(name, "gi");
       let m;
       while ((m = re.exec(text))) {
         if (hasUpper && m[0] === m[0].toLowerCase()) continue;

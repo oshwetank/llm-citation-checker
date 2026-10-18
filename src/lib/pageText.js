@@ -14,6 +14,7 @@
  * offscreen document that runs Mozilla Readability and the hidden-tab
  * fallback are in background.js and ui/offscreen.js.
  */
+import { wordRe } from "./textMatch.js";
 import { buildBrandVocabulary, extractBrandsFromText } from "./funnel-omitted.js";
 
 export const MAX_PAGES = 15;
@@ -60,7 +61,7 @@ export function pageBrands(text, rec) {
   const vocab = buildBrandVocabulary(rec || {});
   if (!vocab.size) return [];
   return extractBrandsFromText(t, vocab).map(({ brand }) => {
-    const re = new RegExp(`\\b${brand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi");
+    const re = wordRe(brand, "gi");
     const hits = [...t.matchAll(re)];
     const at = hits.length ? hits[0].index : -1;
     const context = at >= 0 ? t.slice(Math.max(0, at - 80), at + brand.length + 80).replace(/\s+/g, " ").trim() : "";

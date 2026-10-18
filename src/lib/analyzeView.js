@@ -17,6 +17,7 @@
  * say (Gemini doesn't publish its searches; a product card names stores but
  * not their prices) the view says so instead of filling the gap.
  */
+import { wordRe } from "./textMatch.js";
 import { analyzeFanout, parseQueryOperators } from "./fanout.js";
 import { computeBrandMatrix, sameBrand } from "./funnel-omitted.js";
 import { normalizeMentions } from "./mention-list.js";
@@ -529,7 +530,7 @@ export function yourBrandView(rec, own, { knownBrands, previous, max = 4 } = {})
   }
   const images = rec.images || [];
   if (images.length >= 3) {
-    const k = images.filter((m) => new RegExp(`\\b${own.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(`${m.title || ""} ${m.attribution || ""} ${m.url || ""}`)).length;
+    const k = images.filter((m) => wordRe(own.name, "i").test(`${m.title || ""} ${m.attribution || ""} ${m.url || ""}`)).length;
     tiles.push({ key: "images", label: "Images", value: `${k} of ${images.length}`, sub: k ? "show your brand" : "none show it", tone: k ? "good" : "bad" });
   }
   let since = null;
