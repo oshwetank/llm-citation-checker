@@ -397,17 +397,32 @@
       // a piece at a time once it goes quiet for a moment.
       if (IS_GEMINI && !this.__lcfc_conv && GEMINI_PROBE_RE.test(this.__lcfc_url || "")) {
         const xhr = this, reqBody = typeof body === "string" ? body : "";
-        let sent = 0, timer = null;
-        const flush = () => {
+        let sent = 0, timer = null, upSent = false;
+        // The reply as text whatever its responseType (an arraybuffer or JSON
+        // reply has no responseText, and reading it throws).
+        const replyText = () => {
+          try {
+            const t = xhr.responseType;
+            if (!t || t === "text") return xhr.responseText || "";
+            if (t === "arraybuffer" && xhr.response) return new TextDecoder().decode(xhr.response);
+            if (t === "json" && xhr.response != null) return JSON.stringify(xhr.response);
+          } catch (_) { /* not readable yet */ }
+          return "";
+        };
+        const flush = (final) => {
           if (timer) { clearTimeout(timer); timer = null; }
-          let text = "";
-          try { text = xhr.responseText || ""; } catch (_) { return; }
-          if (text.length - sent < 200) return;
+          const text = replyText();
+          // What went up (the prompt, as WebChannel's base64 protobuf) is
+          // kept once even when its reply is a few bytes of acknowledgement.
+          if (!upSent && /req\d+___data__=/.test(reqBody)) { upSent = true; probe(xhr.__lcfc_url, xhr.__lcfc_method, reqBody, text || "(no reply)"); sent = text.length; return; }
+          if (text.length - sent < (final ? 1 : 200)) return;
           probe(xhr.__lcfc_url, xhr.__lcfc_method, reqBody, text.slice(sent));
           sent = text.length;
         };
-        this.addEventListener("progress", () => { if (timer) clearTimeout(timer); timer = setTimeout(flush, 1500); });
-        this.addEventListener("loadend", flush);
+        const later = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => flush(false), 1500); };
+        this.addEventListener("progress", later);
+        this.addEventListener("readystatechange", () => { if (xhr.readyState === 3) later(); });
+        this.addEventListener("loadend", () => flush(true));
       }
       // Listened for whatever the setting says now: a page's first requests
       // go out before content-iso.js has read it; netlog() checks it later.

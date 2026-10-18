@@ -11,12 +11,22 @@ Everything is stored **locally in your browser**. The extension makes **no netwo
 of its own**, except, if you turn on **Read the cited pages**, to the pages an answer cited;
 nothing leaves your device.
 
-> **v0.62.1** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.62.2** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **Campaigns while a run goes** (0.62.2). The page no longer jumps back to the top with each
+>   capture: it holds still while the run goes, its progress keeps updating, and the results
+>   are drawn once the run finishes or is stopped. The board only ever shows finished runs.
+> - **Grok in campaigns** (0.62.2). A Grok turn counts only once Grok has finished its answer;
+>   before, a capture with just the search results ended the turn and no answer was kept. When
+>   Grok says the account hit its usage limit, its prompts pause on a cooldown instead of
+>   being logged as answered.
+> - **Gemini** (0.62.2): its answers now travel over a Google WebChannel carrying protobuf. The
+>   extension reads the prompt out of it and keeps the stream (Debug capture on) for the
+>   reader that comes next.
 > - **No more phantom prompts** (0.62.1). Reopening a Grok conversation stored its answer again
 >   as a new one, under a prompt nobody asked ("Youbest good quality…": Grok's hidden "You"
 >   label glued to the question). The page reader now runs only after a prompt was sent from
