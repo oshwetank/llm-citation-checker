@@ -1,0 +1,12 @@
+{
+  "transformers": "@huggingface/transformers@4.3.1",
+  "onnxruntime": "onnxruntime-web@1.31.0-dev.20260914-8d85527a0",
+  "command": "node scripts/vendor-transformers.mjs",
+  "files": {
+    "transformers.min.js": "8d6716d9086f57c30a4bf367dba61b887593573c770c454465e8019b2703e743",
+    "LICENSE-transformers.txt": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "ort-wasm-simd-threaded.asyncify.mjs": "0966b6105cd936744498aa60df7a22cbd47af3374dbc64a9ab561c08a71e3611",
+    "ort-wasm-simd-threaded.asyncify.wasm": "49871f5a4409519797e127440868a6d1923339d9185907f301a5b2a1d90af082",
+    "LICENSE-onnxruntime.txt": "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c"
+  }
+}
