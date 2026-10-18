@@ -412,8 +412,13 @@ try {
   check("the campaign's results show in Campaigns", await page.evaluate(() => !!document.querySelector("#loader #campaignResults #cv-overview")));
   // 0.64.0's board: a rival, the full comparison, a domain, a citation row,
   // the citations' engine switch and a prompt.
-  for (const sel of ["#cv-brands .cb-brand-btn", "#cv-compare .cv-more", "#cb-sources td.td-domain button", "#cv-sources .cv-doms .cv-link", "#cv-citations .cv-rowbtn", "#cv-citations .cv-seg button:nth-child(2)", "#cv-prompts .cv-ptext"]) {
+  // 0.67.0: each behind its section's tab, opened first; and the tabs
+  // themselves.
+  for (const sel of ["#cv-brands .cb-brand-btn", "#cv-compare .cv-more", "#cv-compare .cv-chip", "#cb-sources td.td-domain button", "#cv-sources .cv-doms .cv-link", "#cv-citations .cv-rowbtn", "#cv-citations .cv-seg button:nth-child(2)", "#cv-prompts .cv-ptoggle", "#cv-signals .loader-history-row"]) {
+    const sec = sel.startsWith("#cb-sources") ? "cv-sources" : sel.slice(1).split(" ")[0];
+    await page.evaluate(async (id) => { document.querySelector(`.cv-tab[data-section="${id}"]`)?.click(); await new Promise((r) => setTimeout(r, 1200)); }, sec);
     const found = await page.evaluate((s) => document.querySelectorAll(s).length, sel);
+    check(`${sel} is there`, found > 0);
     if (!found) continue;
     await page.evaluate(async (s) => {
       const n = document.querySelector(s);

@@ -3173,7 +3173,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // the data of the campaign when it's done or stopped"): its answers
           // are left out of every view, the default and "all runs" included.
           const live = new Set(runs.filter((r) => r.status === "running").map((r) => r.id));
-          const all = selectTracked(records, { profileId: msg.profileId, engines: msg.engines, tags: msg.tags }).filter((x) => !(x.geo && live.has(x.geo.runId)));
+          const all = selectTracked(records, { profileId: msg.profileId, engines: msg.engines, tags: msg.tags, tagMode: msg.tagMode }).filter((x) => !(x.geo && live.has(x.geo.runId)));
           // The run shown: the one asked for; by default the latest run that
           // has answers, so the board opens on "now" with the change since
           // the run before; "all" combines every run.
@@ -3187,7 +3187,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             ok: true,
             board: campaignBoard(recs, { profile, brands, viewAs: msg.viewAs, prompts, runs: runs.filter((r) => !live.has(r.id)), runId, all, engineFilter: msg.engines || [], tags: msg.tags || [] }),
             // The 0.64.0 board's sections, over the same answers.
-            view: campaignView(recs, { profile, brands, prompts, engineFilter: msg.engines || [] }),
+            // Seen from any brand (0.67.0, asked: "look at the entire data
+            // for not just my brand but other competition as well"): the
+            // board measures whichever brand is picked against the rest.
+            view: campaignView(recs, { profile, brands: msg.viewAs && brands.some((b) => b.name === msg.viewAs) ? brands.map((b) => ({ ...b, isOwn: b.name === msg.viewAs })) : brands, prompts, engineFilter: msg.engines || [] }),
+            ownBrand: (brands.find((b) => b.isOwn) || {}).name || null,
             runId: runId || "all",
             runs: runs.filter((r) => !live.has(r.id)).map((r) => ({ id: r.id, startedAt: r.startedAt, status: r.status, captured: r.captured || 0, expected: r.expected || 0, hasAnswers: all.some((x) => x.geo && x.geo.runId === r.id) })),
             brands: brands.map((b) => ({ name: b.name, isOwn: !!b.isOwn, auto: !!b.auto })),
@@ -3203,7 +3207,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const profile = await db.get("profiles", msg.profileId);
           if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
           const records = await db.getAll("derived");
-          const all = selectTracked(records, { profileId: msg.profileId, engines: msg.engines, tags: msg.tags });
+          const all = selectTracked(records, { profileId: msg.profileId, engines: msg.engines, tags: msg.tags, tagMode: msg.tagMode });
           const runs = (await db.getAll("geoRuns")).filter((r) => r.profileId === msg.profileId)
             .sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
           const latest = [...runs].reverse().find((r) => all.some((x) => x.geo && x.geo.runId === r.id));
@@ -3266,6 +3270,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             runId: msg.runId || undefined,
             engines: msg.engines,
             tags: msg.tags,
+            tagMode: msg.tagMode,
             since: msg.since,
             until: msg.until,
           });
@@ -3344,6 +3349,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             runId: msg.runId || undefined,
             engines: msg.engines,
             tags: msg.tags,
+            tagMode: msg.tagMode,
             since: msg.since,
             until: msg.until,
           });
@@ -3413,6 +3419,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             runId: msg.runId || undefined,
             engines: msg.engines,
             tags: msg.tags,
+            tagMode: msg.tagMode,
             since: msg.since,
             until: msg.until,
           });
@@ -3513,6 +3520,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             runId: msg.runId || undefined,
             engines: msg.engines,
             tags: msg.tags,
+            tagMode: msg.tagMode,
             since: msg.since,
             until: msg.until,
           });

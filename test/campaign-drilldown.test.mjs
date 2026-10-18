@@ -200,13 +200,15 @@ try {
 
   // One row per brand in the board's brand table.
   // 0.64.0: the leaderboard in the Brands section.
-  const brandRows = () => page.evaluate(() => [...document.querySelectorAll("#cv-brands .cv-lead .cv-tr[data-brand]")].map((r) => ({
+  // 0.67.0: one section at a time, behind a row of tabs.
+  const tab = async (id) => { await page.evaluate((id) => document.querySelector(`.cv-tab[data-section="${id}"]`)?.click(), id); await page.waitForTimeout(400); };
+  const brandRows = async () => { await tab("cv-brands"); return page.evaluate(() => [...document.querySelectorAll("#cv-brands .cv-lead .cv-tr[data-brand]")].map((r) => ({
     name: r.getAttribute("data-brand") || "",
     own: r.classList.contains("own-brand"),
     auto: !!r.querySelector(".auto-tag"),
     sov: r.querySelectorAll('[role="cell"]')[2]?.textContent || "",
     removable: !!r.querySelector(".row-x"),
-  })));
+  }))); };
   const settle = (ms = 1600) => page.waitForTimeout(ms);
 
   console.log("\ncompetitors inferred from the captures");
@@ -259,6 +261,7 @@ try {
   {
     // An inferred brand: removing a typed competitor asks first, which a
     // headless run can't answer.
+    await tab("cv-brands");
     const victim = await page.evaluate(() => {
       const row = [...document.querySelectorAll("#cv-brands .cv-lead .cv-tr[data-brand]")].find((r) => r.querySelector(".auto-tag") && r.querySelector(".row-x"));
       if (!row) return null;
@@ -284,36 +287,40 @@ try {
     }
   }
 
-  // 0.64.0: the board is about your brand; any other brand is set beside it
-  // in "You vs rival" (the "Viewing as" picker is gone).
+  // 0.64.0: any other brand is set beside yours; 0.67.0: in Compare, which
+  // takes several at once.
   console.log("\nany brand can be set beside yours");
   {
-    const rivals = await page.evaluate(() => [...document.querySelectorAll("#cv-compare .cv-chips .cv-chip")].map((b) => b.textContent));
+    await tab("cv-compare");
+    const rivals = await page.evaluate(() => [...document.querySelectorAll("#cv-compare .cv-chips[aria-label='Brands to compare'] .cv-chip")].map((b) => b.textContent));
     const names = (await brandRows()).filter((r) => !r.own).map((r) => r.name);
     check("every other brand on the leaderboard can be picked", names.every((n) => rivals.some((r) => r.endsWith(n))), `${rivals.join(", ")} vs ${names.join(", ")}`);
     const target = names[names.length - 1];
     await page.evaluate((t) => [...document.querySelectorAll("#cv-brands .cv-lead .cv-tr[data-brand]")].find((r) => r.getAttribute("data-brand") === t)?.querySelector(".cb-brand-btn")?.click(), target);
     await settle(1200);
     const after = await page.evaluate(() => ({
-      picked: document.querySelector("#cv-compare .cv-chip.on")?.textContent || "",
-      them: document.querySelectorAll("#cv-compare .cv-vs-side b")[1]?.textContent || "",
-      cols: document.querySelector("#cv-compare .cv-pduel")?.closest(".cv-card")?.querySelector(".cv-sub")?.textContent || "",
+      open: document.querySelector(".cv-tab.on")?.dataset.section,
+      picked: [...document.querySelectorAll("#cv-compare .cv-chips[aria-label='Brands to compare'] .cv-chip.on")].map((b) => b.textContent),
+      measures: [...document.querySelectorAll("#cv-compare .cv-cmp[aria-label='Measures'] .cv-th [role=columnheader]")].map((x) => x.textContent),
+      prompts: [...document.querySelectorAll("#cv-compare .cv-cmp[aria-label='Prompt by prompt'] .cv-th [role=columnheader]")].map((x) => x.textContent),
     }));
-    check("a brand's name on the leaderboard puts it beside yours", after.picked.endsWith(target) && after.them === target, JSON.stringify(after));
-    check("the prompt-by-prompt comparison names it too", after.cols.includes(target), after.cols);
-    const said = await page.evaluate(() => [...document.querySelectorAll("#cv-compare .cv-vs-side")].map((x) => x.textContent));
-    check("and neither side calls the rival \"you\"", !/\byou\b/i.test(said[1] || ""), said.join(" | "));
+    check("a brand's name on the leaderboard puts it beside yours", after.open === "cv-compare" && after.picked.some((x) => x.endsWith(target)) && after.measures.some((x) => x.endsWith(target)), JSON.stringify(after));
+    check("the prompt-by-prompt comparison names it too", after.prompts.some((x) => x.endsWith(target)), after.prompts.join(" | "));
+    check("and no rival's column calls it \"you\"", after.measures.slice(2).every((x) => !/\byou\b/i.test(x)), after.measures.join(" | "));
   }
 
   console.log("\nthe headline numbers first");
   {
+    await tab("cv-overview");
     const k = await page.evaluate(() => ({
       labels: [...document.querySelectorAll("#cv-overview .cv-kpi-l")].map((x) => x.textContent),
       engines: document.querySelectorAll("#cv-overview .cv-eng-table .cv-tr:not(.cv-th)").length,
       split: [...document.querySelectorAll("#cv-overview .cv-kpi:nth-child(2) .cv-split-row")].map((r) => r.textContent),
-      source: document.getElementById("cv-sources")?.textContent || "",
-      quality: document.getElementById("cv-signals")?.textContent || "",
     }));
+    await tab("cv-sources");
+    k.source = await page.evaluate(() => document.getElementById("cv-sources")?.textContent || "");
+    await tab("cv-signals");
+    k.quality = await page.evaluate(() => document.getElementById("cv-signals")?.textContent || "");
     check("share of voice, visibility, position, mentions, responses", k.labels.join("|") === "Share of voice|Visibility|Average position|Mentions|Responses", k.labels.join(" | "));
     check("each split by engine", k.split.length >= 1 && k.split.every((r) => /\d+%|no answers/.test(r)), k.split.join(" | "));
     check("with a row per engine below", k.engines >= 1, String(k.engines));
@@ -328,13 +335,15 @@ try {
     // 0.50.0 a brand opens its own page in place of the board (it was a modal).
     // 0.64.0: the name puts it in "You vs rival"; "Full comparison" opens
     // the brand's own page, as a name did before.
+    await tab("cv-brands");
     const clicked = await page.evaluate(async () => {
       const row = [...document.querySelectorAll("#cv-brands .cv-lead .cv-tr[data-brand]")].find((r) => !r.classList.contains("own-brand"));
       if (!row) return null;
+      const name = row.getAttribute("data-brand");
       row.querySelector(".cb-brand-btn").click();
       await new Promise((r) => setTimeout(r, 400));
-      document.querySelector("#cv-compare .cv-more")?.click();
-      return row.getAttribute("data-brand");
+      [...document.querySelectorAll("#cv-compare .cv-more")].find((b) => b.textContent.includes(name))?.click();
+      return name;
     });
     check("a competitor's full comparison opens its detail", !!clicked, String(clicked));
     if (clicked) {
@@ -411,7 +420,7 @@ try {
       }
       await page.evaluate(() => document.querySelector(".cb-detail-head .analyze-context-back")?.click());
       await settle();
-      check("and the back button returns to the board", await page.evaluate(() => !!document.getElementById("cv-overview") && !document.getElementById("cb-detail-h")));
+      check("and the back button returns to the board", await page.evaluate(() => !!document.querySelector("#campaignResults .cv-tabs") && !document.getElementById("cb-detail-h")));
     }
   }
 
@@ -421,22 +430,21 @@ try {
     // change at all. Nothing changes." It didn't: the Dashboard's Model
     // select drove only the ad-hoc record list, while the campaign section
     // read a SEPARATE variable set by its own duplicate dropdown.
+    await tab("cv-overview");
     const before = await page.evaluate(() => ({
       kpis: [...document.querySelectorAll("#cv-overview .cv-kpi-v")].map((k) => k.textContent),
       // One engine control for the results, not two with the same word on
-      // them. Other selects (the run, the brand) are legitimately there.
+      // them (0.67.0: chips, so several engines can be picked).
       engineSelects: [...document.querySelectorAll("#loader select")]
         .filter((sel) => [...sel.options].some((o) => /all engines|all models|chatgpt|gemini/i.test(o.textContent)))
-        .length,
+        .length + document.querySelectorAll("#loader .cb-engs").length,
     }));
-    check("the results have exactly one engine filter", before.engineSelects === 1, `${before.engineSelects} engine select(s)`);
+    check("the results have exactly one engine filter", before.engineSelects === 1, `${before.engineSelects} engine filter(s)`);
 
     const switched = await page.evaluate(() => {
-      const sel = document.querySelector('#loader select[aria-label="Engine"]');
-      const opt = sel && [...sel.options].find((o) => o.value === "chatgpt");
-      if (!opt) return false;
-      sel.value = opt.value;
-      sel.dispatchEvent(new Event("change", { bubbles: true }));
+      const chip = document.querySelector('#loader .cb-engs .cb-eng[data-engine="chatgpt"]');
+      if (!chip) return false;
+      chip.click();
       return true;
     });
     check("ChatGPT can be selected", switched);
@@ -455,11 +463,7 @@ try {
       check("the per-engine split is down to that one engine", after.engineSplit <= 1, String(after.engineSplit));
 
       // Put it back so the sections after this measure the full data set.
-      await page.evaluate(() => {
-        const sel = document.querySelector('#loader select[aria-label="Engine"]');
-        sel.value = "";
-        sel.dispatchEvent(new Event("change", { bubbles: true }));
-      });
+      await page.evaluate(() => [...document.querySelectorAll("#loader .cb-engs .db-chip")].find((b) => b.textContent.trim() === "All")?.click());
       await settle(1800);
       const restored = await page.evaluate(() => [...document.querySelectorAll("#cv-overview .cv-kpi-v")].map((k) => k.textContent));
       check("and clearing the filter restores the full numbers",
@@ -470,14 +474,17 @@ try {
 
   console.log("\nmetric definitions are available wherever a metric is shown");
   {
-    const terms = await page.evaluate(() => {
+    const read = () => page.evaluate(() => {
       const nodes = [...document.querySelectorAll("[data-term]")];
-      return {
-        count: nodes.length,
-        keys: [...new Set(nodes.map((n) => n.getAttribute("data-term")))],
-        cursor: nodes[0] ? getComputedStyle(nodes[0]).cursor : "",
-      };
+      return { count: nodes.length, keys: nodes.map((n) => n.getAttribute("data-term")), cursor: nodes[0] ? getComputedStyle(nodes[0]).cursor : "" };
     });
+    // Overview's headline metrics and Sources' site metrics, a tab each.
+    await tab("cv-sources");
+    await settle(1200);
+    const src = await read();
+    await tab("cv-overview");
+    const ov = await read();
+    const terms = { count: src.count + ov.count, keys: [...new Set([...src.keys, ...ov.keys])], cursor: ov.cursor };
     check("metric labels are marked up for definitions",
       terms.count > 10, `${terms.count} elements, ${terms.keys.length} distinct terms`);
     check("headline metrics are among them",
@@ -518,6 +525,8 @@ try {
 
   console.log("\ndomains report reach and volume as separate numbers");
   {
+    await tab("cv-sources");
+    await settle(1200);
     const src = await page.evaluate(() => {
       const heads = [...document.querySelectorAll("#cb-sources .src-table th")].map((t) => t.textContent);
       const first = document.querySelector("#cb-sources .src-table tr:nth-child(2)");

@@ -7317,3 +7317,64 @@ html[data-density="compact"] .at-sec, html[data-density="compact"] .ap-card { pa
 :root[data-theme="dark"] .cap-toggle.paused { color: #fcd34d; background: rgba(217, 119, 6, 0.16); border-color: rgba(245, 158, 11, 0.55); }
 body.popup .cap-toggle { padding: 3px 7px; }
 body.popup .cap-toggle:not(.paused) .cap-label { display: none; }
+
+/* ---------- Campaign board as tabs (0.67.0) ------------------------------
+   One section at a time under a row of tabs, instead of one long page with
+   its links wrapped in the app bar. The tab row stays in sight while a long
+   section scrolls. */
+.cv-tabs {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; gap: 2px; overflow-x: auto; scrollbar-width: thin;
+  margin: 4px 0 14px; padding: 4px;
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.06);
+}
+.cv-tab {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px;
+  height: 34px; padding: 0 12px; border: 0; border-radius: 9px;
+  background: none; color: var(--fg-secondary); font: inherit; font-size: 13px; font-weight: 500;
+  cursor: pointer; white-space: nowrap;
+}
+.cv-tab:hover { background: var(--bg-subtle); color: var(--fg-primary); }
+.cv-tab.on { background: var(--accent-subtle); color: var(--accent); font-weight: 600; }
+.cv-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cv-panel > .cv-sec { margin-top: 0; }
+body.popup .cv-tab { height: 30px; padding: 0 9px; font-size: 12px; }
+
+/* A prompt anywhere on the board opens its answer. */
+.cv-plink { font: inherit; color: inherit; background: none; border: 0; padding: 0; text-align: left; cursor: pointer; max-width: 100%; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 30%, transparent); text-underline-offset: 3px; }
+.cv-plink:hover { color: var(--accent); text-decoration-color: currentColor; }
+.cv-plink:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+.cv-ptoggle { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border: 1px solid var(--border); border-radius: 6px; background: none; color: var(--fg-secondary); cursor: pointer; padding: 0; }
+.cv-ptoggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cv-ptext { min-width: 0; }
+
+/* Compare: a column per brand, the best in each row marked. */
+.cv-cmp .cv-tr { grid-template-columns: var(--cols); }
+.cv-cmp .cv-num { text-align: right; }
+.cv-cmp .cv-th .cv-who { justify-content: flex-end; }
+.cv-cmp .cv-th .cv-me { font-weight: 700; color: var(--fg-primary); }
+.cv-cmp .cv-best { font-weight: 700; color: var(--accent); }
+.cv-cmp .cv-best::after { content: " ●"; font-size: 8px; vertical-align: middle; color: var(--first, #d4a017); }
+.cv-cmp .cv-foot-row { border-top: 1px solid var(--border); font-size: 12px; }
+.cv-cmp .cv-span { grid-column: 2 / -1; }
+.cv-tog { display: grid; grid-template-columns: minmax(120px, 180px) 1fr; gap: 6px 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line-soft, var(--border)); }
+.cv-tog > .cv-muted { grid-column: 2; font-size: 12px; }
+.cv-cols[style*="--n"] { grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); }
+
+/* The campaign's filters: engines as chips. */
+.cb-engs { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.cb-eng { display: inline-flex; align-items: center; gap: 5px; }
+.cb-eng .llm-icon { width: 16px; height: 16px; }
+.cb-tagmode { margin-left: 6px; }
+.cb-tagmode button { height: 26px; font-size: 12px; }
+@media (max-width: 640px) {
+  .cv-tog { grid-template-columns: 1fr; }
+  .cv-tog > .cv-muted { grid-column: 1; }
+}
+@media (max-width: 640px) {
+  /* Narrow (the popup): brand columns tighten so up to five fit without a sideways scroll. */
+  .cv-table.cv-cmp { min-width: 0; }
+  .cv-cmp .cv-tr { grid-template-columns: minmax(92px, 1.2fr) repeat(var(--n, 2), minmax(52px, 1fr)); gap: 6px; font-size: 12px; }
+  .cv-cmp .cv-th .cv-who .cv-lg { display: none; }
+}

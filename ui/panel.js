@@ -395,6 +395,16 @@ let viewingId = (() => {
 // whatever filter/scroll state was on that screen — combined with
 // TAB_SCROLL below, showTab() restores it exactly as it was left.
 let returnTab = null;
+// Back from an answer opened elsewhere (0.67.0): the page it came from is
+// still built (a capture arriving meanwhile refreshes it in place), so it is
+// shown as it was left, not rebuilt.
+window.addEventListener("popstate", () => {
+  if (document.querySelector(".panel.active")?.id !== "analyze" || !returnTab) return;
+  const to = returnTab;
+  returnTab = null;
+  if (to === "loader" && !document.getElementById("cpHead")) loadGeo();
+  showTab(to);
+});
 const TAB_LABELS = { dashboard: "Dashboard", loader: "Campaigns", compare: "Compare", about: "About" };
 // Per-tab scroll position, keyed by panel id. All tabs share one physical
 // scroll container (see withScrollPreserved below), so switching tabs via
@@ -744,7 +754,11 @@ async function openCapture(captureId) {
   // so a chain of Analyze -> another link -> Analyze doesn't lose the
   // original tab you actually want "back" to return to).
   const current = document.querySelector(".panel.active")?.id;
-  if (current && current !== "analyze") returnTab = current;
+  if (current && current !== "analyze") {
+    returnTab = current;
+    // The browser's Back (or the mouse's back button) returns there too.
+    try { history.pushState({ cito: "analyze", from: current }, ""); } catch (_) { /* no history here */ }
+  }
   viewingId = captureId;
   // A different answer starts with its details sheet and menus closed.
   apSheet = null; apMenuOpen = false; apFanAll = false; apPromptOpen = false;
@@ -2025,7 +2039,10 @@ function renderAnalyzeTab(rec, root) {
   const backTo = returnTab || "dashboard";
   const backBtn = el("button", { className: "analyze-context-back", type: "button", title: `Back to ${TAB_LABELS[backTo] || backTo}` },
     el("span", { "aria-hidden": "true" }, "←"), el("span", { className: "analyze-context-back-label" }, TAB_LABELS[backTo] || backTo));
-  backBtn.onclick = () => { returnTab = null; showTab(backTo); };
+  backBtn.onclick = () => {
+    if (history.state && history.state.cito === "analyze") { history.back(); return; } // popstate goes back
+    returnTab = null; showTab(backTo);
+  };
   const eng = engineIconEl(rec.platform);
   eng.classList.add("ap-engine-icon");
   // Which campaign this answer came from, or that it was asked by hand, and
@@ -3845,7 +3862,10 @@ function renderAnalyzeLegacy(rec, root) {
       el("span", { "aria-hidden": "true" }, "←"),
       el("span", { className: "analyze-context-back-label" }, TAB_LABELS[backTo] || backTo)
     );
-    backBtn.onclick = () => { returnTab = null; showTab(backTo); };
+    backBtn.onclick = () => {
+    if (history.state && history.state.cito === "analyze") { history.back(); return; } // popstate goes back
+    returnTab = null; showTab(backTo);
+  };
 
     // Report-this-capture, in the corner of the one bar that stays on screen
     // at every scroll position. Small and unlabelled on purpose: it is a
@@ -6356,6 +6376,7 @@ let cbRun = null;            // null: the latest run with answers; "all"; or a r
 let cbViewAs = null;         // brand name; null: your own brand
 let cbFocus = "mentions";    // which KPI view
 let cbTags = [];
+let cbTagMode = "any";       // with several tags: "any" or "all" of them (0.67.0)
 let cbPromptFilter = "all";
 let cbOpenPrompts = new Set();
 let cbDetail = null;         // brand whose detail is open
@@ -6431,7 +6452,7 @@ function cbSourceMix(k) {
 }
 
 async function renderCampaignBoard(box, profile) {
-  const r = await send({ type: "campaign-board", profileId: profile.id, runId: cbRun || undefined, viewAs: cbViewAs || undefined, engines: geoEngineFilter, tags: cbTags });
+  const r = await send({ type: "campaign-board", profileId: profile.id, runId: cbRun || undefined, viewAs: cbViewAs || undefined, engines: geoEngineFilter, tags: cbTags, tagMode: cbTagMode });
   box.textContent = "";
   if (!r || !r.ok) { box.append(el("div", { className: "card" }, el("div", { className: "empty" }, (r && r.error) || "Couldn't load this campaign's results."))); return; }
   const b = r.board;
@@ -6456,13 +6477,18 @@ async function renderCampaignBoard(box, profile) {
   runSel.append(el("option", { value: "all" }, "All runs combined"));
   runSel.value = r.runId;
   runSel.onchange = () => { cbRun = runSel.value; rerender(); };
-  const engine = el("select", { className: "filter", "aria-label": "Engine", title: "Limit every number below to one engine" });
-  [{ id: "", label: "All engines" }, ...availableEngines()].forEach((e) => {
-    const o = el("option", { value: e.id }, e.label);
-    if ((geoEngineFilter[0] || "") === e.id) o.selected = true;
-    engine.append(o);
+  // Engines (0.67.0): one, several or all, asked for as "a single or more
+  // than 1 and all llms". Toggle chips; none on means every engine.
+  const engine = el("div", { className: "cb-engs", role: "group", "aria-label": "Engines" });
+  const engAll = el("button", { type: "button", className: `db-chip${geoEngineFilter.length ? "" : " on scope"}`, "aria-pressed": geoEngineFilter.length ? "false" : "true" }, "All");
+  engAll.onclick = () => { geoEngineFilter = []; rerender(); };
+  engine.append(engAll);
+  (profile.engines && profile.engines.length ? availableEngines().filter((e) => profile.engines.includes(e.id)) : availableEngines()).forEach((e) => {
+    const on = geoEngineFilter.includes(e.id);
+    const c = el("button", { type: "button", className: `db-chip cb-eng${on ? " on scope" : ""}`, "aria-pressed": on ? "true" : "false", "data-engine": e.id }, engineIconEl(e.id), e.label);
+    c.onclick = () => { geoEngineFilter = on ? geoEngineFilter.filter((x) => x !== e.id) : [...geoEngineFilter, e.id]; rerender(); };
+    engine.append(c);
   });
-  engine.onchange = () => { geoEngineFilter = engine.value ? [engine.value] : []; rerender(); };
   // A dropdown, not chips: a campaign can track twenty brands. Each option
   // carries its visibility so the list still reads as a ranking.
   const picker = el("select", { className: "filter brand-picker", "aria-label": "Viewing as", title: "Point the whole board at one brand" });
@@ -6482,15 +6508,16 @@ async function renderCampaignBoard(box, profile) {
     // Newest first, as the run picker lists them; the PDF reports on one.
     runList: runsWithAnswers.map((x) => ({ id: x.id, no: runNo(x.id), date: runDate(x.startedAt) })),
   });
-  // 0.64.0: the board is about your brand; any rival is one click away in
-  // "You vs rival", so the "Viewing as" picker is gone.
-  void picker;
+  // 0.67.0: back, asked for as "the entire data for not just my brand but
+  // other competition as well": the whole board, measured for the brand
+  // picked here.
   controls.append(
     el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Run"), runSel),
-    el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Engine"), engine));
+    el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Viewing"), picker),
+    el("div", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Engines"), engine));
   if (!wb.isConnected) controls.append(wb);
   head.append(controls);
-  if (geoEngineFilter.length) head.append(el("span", { className: "scope-note muted small" }, `${(availableEngines().find((e) => e.id === geoEngineFilter[0]) || {}).label || geoEngineFilter[0]} only`));
+  if (geoEngineFilter.length) head.append(el("span", { className: "scope-note muted small" }, `${geoEngineFilter.map((id) => (availableEngines().find((e) => e.id === id) || {}).label || id).join(" and ")} only`));
   if (r.tags.length) {
     const tw = el("div", { className: "cb-tags", role: "group", "aria-label": "Tags" }, el("span", { className: "muted small" }, "Tags"));
     r.tags.forEach((t) => {
@@ -6499,21 +6526,23 @@ async function renderCampaignBoard(box, profile) {
       c.onclick = () => { cbTags = on ? cbTags.filter((x) => x !== t) : [...cbTags, t]; rerender(); };
       tw.append(c);
     });
+    // With two or more tags: prompts carrying any of them, or all of them.
+    if (cbTags.length > 1) {
+      const mode = el("div", { className: "cv-seg cb-tagmode", role: "group", "aria-label": "Match" });
+      [["any", "Any of these"], ["all", "All of these"]].forEach(([v, l]) => {
+        const b = el("button", { type: "button", className: cbTagMode === v ? "on" : "", "aria-pressed": cbTagMode === v ? "true" : "false" }, l);
+        b.onclick = () => { cbTagMode = v; rerender(); };
+        mode.append(b);
+      });
+      tw.append(mode);
+    }
     if (cbTags.length) { const c = el("button", { className: "linkbtn", type: "button" }, "Clear"); c.onclick = () => { cbTags = []; rerender(); }; tw.append(c); }
     head.append(tw);
   }
-  // Jump links to the board's sections: in the app bar in the full tab, as
-  // on the canvas; under the filters in the popup, whose bar has no room.
-  const nav = el("nav", { className: "cb-nav", "aria-label": "Sections" });
-  const counts = r.view ? sectionCounts(r.view) : {};
-  CV_SECTIONS.forEach(([id, label]) => {
-    const a = el("button", { className: "cb-nav-btn", type: "button", "data-section": id }, label);
-    if (counts[id] != null) a.append(el("span", { className: "cv-cnt" }, String(counts[id])));
-    a.onclick = () => document.getElementById(id)?.scrollIntoView({ block: "start", behavior: "smooth" });
-    nav.append(a);
-  });
+  // The sections are tabs above the board itself now (ui/campaignView.js),
+  // not links in the app bar, where they wrapped onto two rows.
+  cbHeaderNav = null;
   if (slot) head.append(scope);
-  if (document.body.classList.contains("tab")) { cbHeaderNav = nav; setHeaderPage("loader", nav); } else head.append(nav);
   if (!slot) box.append(head);
 
   if (!r.answers) {
@@ -6580,7 +6609,7 @@ async function renderCampaignBoard(box, profile) {
   // The sources table with its drill-downs stays, at the foot of Sources.
   const srcBox = cbSection("cb-sources", "Every site, with its pages", "", el("div", { className: "muted small" }, "Loading sources…"));
   renderCampaignView(box, r.view, {
-    el, engineIcon: engineIconEl, openCapture,
+    el, engineIcon: engineIconEl, openCapture, realOwn: r.ownBrand,
     deltas: Object.fromEntries(((b.focus && b.focus.mentions) || []).map((k) => [k.label, k.delta])),
     openDomain: (d) => openCampaignDomain(profile, d),
     openFullCompare: (name) => { cbDetail = name; renderCampaigns(); },
@@ -8400,10 +8429,16 @@ document.querySelectorAll("[data-tab]").forEach((btn) =>
     // A direct nav click is the user choosing to go here themselves, not
     // "returning" from a link — any "← Back to X" context from an earlier
     // openCapture() no longer applies once they've navigated on their own.
+    // Back to the campaign an answer was opened from (0.67.0): the board is
+    // still there, as it was left (section, filters, open rows, scroll), so
+    // it is shown, not rebuilt. Asked for: "when they either press back or
+    // click campaign they should reach exactly at the screen with the same
+    // data where they were before going to analyze".
+    const backToBoard = btn.dataset.tab === "loader" && returnTab === "loader" && document.querySelector(".panel.active")?.id === "analyze" && document.getElementById("cpHead");
     returnTab = null;
     // clicking the Analyze tab directly returns to the latest capture
     if (btn.dataset.tab === "analyze") { viewingId = null; apSheet = null; apMenuOpen = false; apFanAll = false; apPromptOpen = false; apTab = "overview"; atResetState(); renderAnalyze(); }
-    if (btn.dataset.tab === "loader") loadGeo();
+    if (btn.dataset.tab === "loader" && !backToBoard) loadGeo();
     showTab(btn.dataset.tab);
   })
 );
