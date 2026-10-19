@@ -12,12 +12,18 @@ of its own**, except, if you turn on **Read the cited pages**, to the pages an a
 and, if you download the **built-in AI**, a one-time download of the model's files from
 Hugging Face. Nothing you capture ever leaves your device: the AI runs on your computer.
 
-> **v0.71.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.72.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **Any browser, any screen** (0.72.0). A Firefox version (`node scripts/build-firefox.mjs`,
+>   Firefox 128+, desktop and Android) and steps for Safari on a Mac (see "Other browsers"
+>   under Install). Edge, Brave, Opera, Vivaldi and Arc run the Chrome version as it is. About
+>   shows what works in the browser you're using. Every tab fits from a 360 px phone to a 2560 px
+>   screen and at 200% zoom; wide tables scroll inside their card; on touch screens buttons are
+>   at least 32 px high. The toolbar icons are drawn at their real sizes.
 > - **The interface in six languages** (0.71.0). About → Settings → **Language**: English,
 >   Spanish, Portuguese (Brazil), French, Hindi and Arabic, or "Same as the browser" (the
 >   default). Arabic lays the whole interface out right to left, while answers, prompts and

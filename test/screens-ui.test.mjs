@@ -56,9 +56,9 @@ try {
     const page = await context.newPage();
     const errors = [];
     page.on("pageerror", (e) => errors.push(String(e.message || e)));
-    // 200% zoom: Chrome lays the page out at half the width, twice the pixels.
-    const cdp = await context.newCDPSession(page);
-    await cdp.send("Emulation.setDeviceMetricsOverride", { width: w, height: h, deviceScaleFactor: dpr, mobile: false });
+    // 200% zoom lays the page out at half the width in CSS pixels: the 720
+    // case is a 1440 screen at 200%.
+    await page.setViewportSize({ width: w, height: h });
     await page.goto(`chrome-extension://${extId}/ui/panel.html?mode=tab&capture=${id}`);
     await page.waitForSelector("#at-glance", { timeout: 15000 }).catch(() => {});
     const bad = [];
@@ -76,6 +76,8 @@ try {
         }
         return { over, worst };
       });
+      const vw = await page.evaluate(() => document.documentElement.clientWidth);
+      if (Math.abs(vw - w) > 20) bad.push(`${t}: laid out ${vw}px wide, not ${w}`);
       if (r.over > 1) bad.push(`${t}: ${r.over}px (${r.worst && r.worst.c})`);
     }
     check(`${w}×${h}${dpr > 1 ? " at 200%" : ""}: every tab fits the width`, bad.length === 0, bad.join("; "));
