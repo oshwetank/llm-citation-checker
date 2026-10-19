@@ -114,7 +114,8 @@ try {
 
   console.log("\nTop menu: Compare is gone, reached from the answer instead");
   {
-    const tabs = await page.evaluate(() => [...document.querySelectorAll(".nav-tabs [data-tab]")].map((b) => b.dataset.tab));
+    // Shown tabs only: Ask (0.73.0) is in the markup but hidden in the popup.
+    const tabs = await page.evaluate(() => [...document.querySelectorAll(".nav-tabs [data-tab]")].filter((b) => b.getBoundingClientRect().width > 0).map((b) => b.dataset.tab));
     check("the menu is Analyze, Dashboard, Campaigns, About", tabs.join() === "analyze,dashboard,loader,about", tabs.join());
   }
 
@@ -249,7 +250,7 @@ try {
 
   console.log("\nA local answer: the map leads, places are named");
   {
-    const ids = await page.evaluate(() => [...document.querySelectorAll(".nav-tabs [data-tab]")].length);
+    const ids = await page.evaluate(() => [...document.querySelectorAll(".nav-tabs [data-tab]")].filter((b) => b.getBoundingClientRect().width > 0).length);
     // Page to the older capture (the local one sits between the two shopping ones).
     await page.evaluate(() => [...document.querySelectorAll(".ap-head .ap-icon-btn")].find((b) => b.getAttribute("aria-label") === "Older capture")?.click());
     await page.waitForTimeout(900);
