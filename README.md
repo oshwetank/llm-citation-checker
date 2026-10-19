@@ -12,12 +12,19 @@ of its own**, except, if you turn on **Read the cited pages**, to the pages an a
 and, if you download the **built-in AI**, a one-time download of the model's files from
 Hugging Face. Nothing you capture ever leaves your device: the AI runs on your computer.
 
-> **v0.72.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.73.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **Ask** (0.73.0). A new tab in the full-tab view: ask questions about your own campaigns
+>   and captured answers ("How visible is my brand in my latest campaign?", "Which sites are
+>   cited most?") and the built-in AI answers on your computer. It looks the numbers up with
+>   read-only tools that compute them the same way the boards do, says which lookups it made,
+>   and links the answers it used (they open in Analyze). The conversation stays in this
+>   browser; Clear removes it. Needs the built-in AI (About → Settings → Built-in AI); the
+>   Strong size answers best. Not in the popup, which is too small for a conversation.
 > - **Any browser, any screen** (0.72.0). A Firefox version (`node scripts/build-firefox.mjs`,
 >   Firefox 128+, desktop and Android) and steps for Safari on a Mac (see "Other browsers"
 >   under Install). Edge, Brave, Opera, Vivaldi and Arc run the Chrome version as it is. About
