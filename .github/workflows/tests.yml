@@ -85,7 +85,7 @@ jobs:
             };
             cap("description", m.description, 132);
             // 0.71.0: the name and description come from _locales; each
-            // language's description has the same cap.
+            // description in every language has the same cap.
             for (const d of (m.default_locale ? readdirSync("_locales") : [])) {
               const msgs = JSON.parse(readFileSync(`_locales/${d}/messages.json`, "utf8"));
               cap(`_locales/${d} appDesc`, msgs.appDesc && msgs.appDesc.message, 132);
