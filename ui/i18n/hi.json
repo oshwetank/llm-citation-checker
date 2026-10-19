@@ -527,5 +527,21 @@
  "Product cards in each answer": "हर जवाब में प्रोडक्ट कार्ड",
  "Searches each engine ran": "हर इंजन की खोजें",
  "What each engine cited": "हर इंजन ने क्या उद्धृत किया",
- "Which sites each engine used": "हर इंजन ने कौन सी साइटें इस्तेमाल कीं"
+ "Which sites each engine used": "हर इंजन ने कौन सी साइटें इस्तेमाल कीं",
+ "Ask": "पूछें",
+ "Ask about your captures": "अपने कैप्चर के बारे में पूछें",
+ "Questions about your campaigns and the answers you captured, answered by the built-in AI on this computer. It looks the numbers up rather than guessing, and links the answers it used. Nothing is sent anywhere.": "आपके अभियानों और कैप्चर किए गए उत्तरों के बारे में प्रश्न, इस कंप्यूटर पर बिल्ट-इन AI द्वारा उत्तर दिए गए। यह अनुमान लगाने के बजाय संख्याएँ देखता है और उपयोग किए गए उत्तरों से लिंक करता है। कुछ भी कहीं नहीं भेजा जाता।",
+ "Set up the built-in AI": "बिल्ट-इन AI सेट करें",
+ "Ask needs the built-in AI. Download it once in About → Settings → Built-in AI; the Strong size answers best.": "पूछने के लिए बिल्ट-इन AI चाहिए। इसे एक बार जानकारी → सेटिंग्स → बिल्ट-इन AI में डाउनलोड करें; मज़बूत आकार सबसे अच्छे उत्तर देता है।",
+ "Looked up": "देखा गया",
+ "From these answers": "इन उत्तरों से",
+ "Try one of these, or ask your own:": "इनमें से कोई आज़माएँ, या अपना प्रश्न पूछें:",
+ "How visible is my brand in my latest campaign?": "मेरे नवीनतम अभियान में मेरा ब्रांड कितना दिखाई देता है?",
+ "Which sites are cited most?": "किन साइटों का सबसे अधिक हवाला दिया गया है?",
+ "Compare my brand with its closest rival": "मेरे ब्रांड की उसके निकटतम प्रतिद्वंद्वी से तुलना करें",
+ "Which answers named a rival first this week?": "इस सप्ताह किन उत्तरों में किसी प्रतिद्वंद्वी का नाम पहले आया?",
+ "Ask about your campaigns, brands, sites or answers…": "अपने अभियानों, ब्रांडों, साइटों या उत्तरों के बारे में पूछें…",
+ "Clear the conversation": "बातचीत साफ़ करें",
+ "Looking it up…": "खोजा जा रहा है…",
+ "That didn't work": "यह काम नहीं किया"
 }

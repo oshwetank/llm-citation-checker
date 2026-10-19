@@ -17,6 +17,7 @@
 import { TIERS, pickTier, MODEL_FAMILY, MODEL_LICENCE } from "./lib/llmTiers.js";
 import { aiCheckRecord, applyAi, aiKey } from "./lib/aiCheck.js";
 import { textMatches } from "./lib/textMatch.js";
+import { ask as runAsk } from "./lib/assistant.js";
 import { isPlausibleProseName } from "./lib/brands.js";
 
 const STATE_KEY = "lcfcAi";
@@ -257,5 +258,27 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
     return { ...ai, wallMs: Date.now() - t0 };
   }
 
-  return { checkNow, getState, setState, status, hardware, download, remove, enqueue, kick, attach, saveNano, onProgress, specOf, llm };
+  /**
+   * Ask (0.73.0): a question about the user's own captures, answered by the
+   * built-in model with the read-only tools in lib/assistantTools.js.
+   * A test stand-in may carry a script of replies instead of a model.
+   */
+  async function askQuestion({ question, history = [], data }) {
+    const state = await getState();
+    const spec = specOf(state);
+    if (!state.downloadedAt || !spec) throw new Error("The built-in AI isn't downloaded.");
+    let generate;
+    if (state.custom && Array.isArray(state.custom.script)) {
+      const script = [...state.custom.script];
+      generate = async () => ({ text: script.length ? script.shift() : "" });
+    } else {
+      await llm("load", { repo: spec.repo, dtype: spec.dtype, device: state.device || "webgpu", host: spec.host || undefined }, 30 * 60 * 1000);
+      generate = (o) => llm("generate", o, 5 * 60 * 1000);
+    }
+    const t0 = Date.now();
+    const r = await runAsk({ question, history, generate, data });
+    return { ...r, ms: Date.now() - t0, model: `${MODEL_FAMILY} ${spec.params || spec.label}`.trim() };
+  }
+
+  return { askQuestion, checkNow, getState, setState, status, hardware, download, remove, enqueue, kick, attach, saveNano, onProgress, specOf, llm };
 }

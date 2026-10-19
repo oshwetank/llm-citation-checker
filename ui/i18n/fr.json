@@ -527,5 +527,21 @@
  "Product cards in each answer": "Fiches produit dans chaque réponse",
  "Searches each engine ran": "Recherches lancées par chaque moteur",
  "What each engine cited": "Ce que chaque moteur a cité",
- "Which sites each engine used": "Sites utilisés par chaque moteur"
+ "Which sites each engine used": "Sites utilisés par chaque moteur",
+ "Ask": "Demander",
+ "Ask about your captures": "Questions sur vos captures",
+ "Questions about your campaigns and the answers you captured, answered by the built-in AI on this computer. It looks the numbers up rather than guessing, and links the answers it used. Nothing is sent anywhere.": "Des questions sur vos campagnes et les réponses capturées, traitées par l’IA intégrée sur cet ordinateur. Elle consulte les chiffres au lieu de deviner et renvoie aux réponses utilisées. Rien n’est envoyé nulle part.",
+ "Set up the built-in AI": "Configurer l’IA intégrée",
+ "Ask needs the built-in AI. Download it once in About → Settings → Built-in AI; the Strong size answers best.": "Demander nécessite l’IA intégrée. Téléchargez-la une fois dans À propos → Paramètres → IA intégrée ; la taille Puissante répond le mieux.",
+ "Looked up": "Consulté",
+ "From these answers": "D’après ces réponses",
+ "Try one of these, or ask your own:": "Essayez l’une de celles-ci, ou posez la vôtre :",
+ "How visible is my brand in my latest campaign?": "Quelle est la visibilité de ma marque dans ma dernière campagne ?",
+ "Which sites are cited most?": "Quels sites sont les plus cités ?",
+ "Compare my brand with its closest rival": "Comparer ma marque à son concurrent le plus proche",
+ "Which answers named a rival first this week?": "Quelles réponses ont cité un concurrent en premier cette semaine ?",
+ "Ask about your campaigns, brands, sites or answers…": "Posez une question sur vos campagnes, marques, sites ou réponses…",
+ "Clear the conversation": "Effacer la conversation",
+ "Looking it up…": "Recherche en cours…",
+ "That didn't work": "Cela n’a pas fonctionné"
 }

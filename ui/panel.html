@@ -67,6 +67,12 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"></path><line x1="4" y1="22" x2="4" y2="3"></line></svg>
             <span>Campaigns</span>
           </button>
+          <!-- Ask (0.73.0): questions about your captures, answered by the
+               built-in AI. The full tab only; the popup is too small for it. -->
+          <button class="nav-tab tab" data-tab="ask">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+            <span>Ask</span>
+          </button>
           <button class="nav-tab tab" data-tab="about">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
             <span>About</span>
@@ -81,6 +87,7 @@
         <section id="analyze" class="panel active"></section>
         <section id="dashboard" class="panel"></section>
         <section id="loader" class="panel"></section>
+        <section id="ask" class="panel"></section>
 
         <!-- Compare left the top menu in 0.47.0: comparing answers to one prompt
              starts from the answer itself (Analyze → "All N answers to this

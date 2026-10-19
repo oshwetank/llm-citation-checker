@@ -3930,6 +3930,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse(r);
           break;
         }
+        // Ask (0.73.0): the model reads the user's own data through tools.
+        case "ask": {
+          try {
+            const [records, profiles, runs] = await Promise.all([db.getAll("derived"), db.getAll("profiles"), db.getAll("geoRuns")]);
+            sendResponse({ ok: true, ...(await aiSvc.askQuestion({ question: String(msg.question || ""), history: Array.isArray(msg.history) ? msg.history : [], data: { records, profiles, runs } })) });
+          } catch (e) { sendResponse({ ok: false, error: String(e && e.message || e) }); }
+          break;
+        }
         case "ai-check-now":
           try { sendResponse({ ok: true, ai: await aiSvc.checkNow(msg.record || {}) }); } catch (e) { sendResponse({ ok: false, error: String(e && e.message || e) }); }
           break;
@@ -3937,7 +3945,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "ai-test-model": {
           const host = String((msg.model || {}).host || "");
           if (!/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/$/.test(host)) { sendResponse({ ok: false, error: "local addresses only" }); break; }
-          await aiSvc.setState({ custom: { repo: String(msg.model.repo), host, dtype: msg.model.dtype || "fp32", label: "Test model" }, tier: null, downloadedAt: null });
+          await aiSvc.setState({ custom: { repo: String(msg.model.repo), host, dtype: msg.model.dtype || "fp32", label: "Test model", ...(Array.isArray(msg.model.script) ? { script: msg.model.script.map(String) } : {}) }, tier: null, downloadedAt: null });
           sendResponse({ ok: true });
           break;
         }

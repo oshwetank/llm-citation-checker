@@ -60,7 +60,8 @@ try {
 
   const measure = () => page.evaluate(() => {
     const box = (q) => { const n = document.querySelector(q); if (!n) return null; const r = n.getBoundingClientRect(); return r.width ? { l: Math.round(r.left), r: Math.round(r.right), t: Math.round(r.top), b: Math.round(r.bottom), w: Math.round(r.width), h: Math.round(r.height) } : null; };
-    const tabs = [...document.querySelectorAll(".nav-tabs .nav-tab")];
+    // Shown pages only: the popup hides Ask (0.73.0), which needs the full tab.
+    const tabs = [...document.querySelectorAll(".nav-tabs .nav-tab")].filter((t) => t.getBoundingClientRect().width > 0);
     return {
       header: box(".app-header"),
       logo: box(".brand-icon"),

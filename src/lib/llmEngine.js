@@ -136,11 +136,14 @@ export function generate(o) {
     touch();
     const { tok, model } = current;
     const t0 = performance.now();
-    const inputs = tok.apply_chat_template(o.messages, { add_generation_prompt: true, return_dict: true, enable_thinking: false });
+    // Tools (Ask, 0.73.0) go into Qwen's chat template, which lists them
+    // for the model and reads its <tool_call> replies.
+    const inputs = tok.apply_chat_template(o.messages, { add_generation_prompt: true, return_dict: true, enable_thinking: false, ...(o.tools ? { tools: o.tools } : {}) });
     const n = inputs.input_ids.dims[1];
     const out = await model.generate({ ...inputs, max_new_tokens: o.maxTokens || 384, do_sample: false, repetition_penalty: 1.05 });
     const ids = out.slice(null, [n, null]);
-    const text = tok.batch_decode(ids, { skip_special_tokens: true })[0] || "";
+    // Tool calls are written with special tokens; keep them when tools were offered.
+    const text = tok.batch_decode(ids, { skip_special_tokens: !o.tools })[0] || "";
     touch();
     return { text: stripThinking(text), ms: Math.round(performance.now() - t0), inTokens: n, outTokens: ids.dims[1] };
   });

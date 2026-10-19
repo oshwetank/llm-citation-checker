@@ -527,5 +527,21 @@
  "Product cards in each answer": "بطاقات المنتجات في كل إجابة",
  "Searches each engine ran": "عمليات البحث التي أجراها كل محرك",
  "What each engine cited": "ما استشهد به كل محرك",
- "Which sites each engine used": "المواقع التي استخدمها كل محرك"
+ "Which sites each engine used": "المواقع التي استخدمها كل محرك",
+ "Ask": "اسأل",
+ "Ask about your captures": "اسأل عن لقطاتك",
+ "Questions about your campaigns and the answers you captured, answered by the built-in AI on this computer. It looks the numbers up rather than guessing, and links the answers it used. Nothing is sent anywhere.": "أسئلة عن حملاتك والإجابات التي التقطتها، يجيب عنها الذكاء الاصطناعي المدمج على هذا الكمبيوتر. يبحث عن الأرقام بدلًا من التخمين ويربط الإجابات التي استخدمها. لا يُرسل أي شيء إلى أي مكان.",
+ "Set up the built-in AI": "إعداد الذكاء الاصطناعي المدمج",
+ "Ask needs the built-in AI. Download it once in About → Settings → Built-in AI; the Strong size answers best.": "تحتاج ميزة «اسأل» إلى الذكاء الاصطناعي المدمج. نزّله مرة واحدة من حول → الإعدادات → الذكاء الاصطناعي المدمج؛ الحجم القوي يجيب أفضل.",
+ "Looked up": "تم البحث في",
+ "From these answers": "من هذه الإجابات",
+ "Try one of these, or ask your own:": "جرّب أحد هذه الأسئلة أو اطرح سؤالك:",
+ "How visible is my brand in my latest campaign?": "ما مدى ظهور علامتي التجارية في أحدث حملة لي؟",
+ "Which sites are cited most?": "ما المواقع الأكثر استشهادًا؟",
+ "Compare my brand with its closest rival": "قارن علامتي التجارية بأقرب منافس لها",
+ "Which answers named a rival first this week?": "ما الإجابات التي ذكرت منافسًا أولًا هذا الأسبوع؟",
+ "Ask about your campaigns, brands, sites or answers…": "اسأل عن حملاتك أو علاماتك التجارية أو المواقع أو الإجابات…",
+ "Clear the conversation": "مسح المحادثة",
+ "Looking it up…": "جارٍ البحث…",
+ "That didn't work": "لم ينجح ذلك"
 }

@@ -7493,3 +7493,25 @@ body.popup .cv-tab { height: 30px; padding: 0 9px; font-size: 12px; }
 .ab-support { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 6px; font-size: 13px; }
 .ab-support li { display: flex; align-items: center; gap: 8px; }
 .ab-support li.off { color: var(--fg-secondary); }
+
+/* Ask (0.73.0, ui/askView.js) — the full tab only */
+body.popup .nav-tab[data-tab="ask"] { display: none; }
+.ask { display: grid; gap: 12px; max-width: 920px; margin: 0 auto; }
+.ask-title { margin: 0 0 4px; font-size: 18px; }
+.ask-sub { margin: 0; color: var(--fg-secondary); font-size: 13px; line-height: 1.5; }
+.ask-empty p { margin: 0 0 10px; }
+.ask-log { min-height: 220px; max-height: 58vh; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+.ask-hint { margin: 0; color: var(--fg-secondary); }
+.ask-msg { max-width: 82%; padding: 10px 12px; border-radius: 12px; font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ask-msg.you { align-self: flex-end; background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.ask-msg.ai { align-self: flex-start; border: 1px solid var(--border); }
+.ask-steps { margin-top: 6px; font-size: 11.5px; color: var(--fg-secondary); }
+.ask-refs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
+.ask-refs-l { font-size: 11.5px; color: var(--fg-secondary); }
+.ask-ref { border: 1px solid var(--border); background: transparent; border-radius: 999px; padding: 3px 10px; font: inherit; font-size: 12px; color: var(--fg-primary); cursor: pointer; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ask-ref:hover { border-color: var(--accent); }
+.ask-suggest { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.ask-row { display: flex; gap: 8px; align-items: flex-end; }
+.ask-input { flex: 1; min-width: 0; resize: vertical; min-height: 44px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; font: inherit; font-size: 14px; background: var(--surface-solid, transparent); color: var(--fg-primary); }
+.ask-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; gap: 8px; }
+.ask-status { font-size: 12px; color: var(--fg-secondary); }

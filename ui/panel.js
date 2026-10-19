@@ -32,6 +32,7 @@ import { siteKindOf } from "../src/lib/siteKind.js";
 import { renderCampaignView, CV_SECTIONS, sectionCounts, resetCampaignViewState } from "./campaignView.js";
 import { initDisplaySettings } from "./displaySettings.js";
 import { initAiSettings } from "./aiSettings.js";
+import { renderAsk } from "./askView.js";
 import { aggregateSources } from "../src/lib/sources.js";
 import { analyzeFanout, FANOUT_BENCHMARK, titleMatchesQueries } from "../src/lib/fanout.js";
 import { sanitizeText, trimLabel } from "../src/lib/text-sanitize.js";
@@ -724,6 +725,7 @@ function showTab(name) {
   // may have its answer panel hidden, 0.60.0).
   if (name === "analyze" && atHeaderNodes && document.querySelector("#analyze .at-grid")) setHeaderPage("analyze", ...atHeaderNodes);
   if (name === "about") aboutEnter();
+  if (name === "ask") renderAsk(document.getElementById("ask"), { openCapture, openSettings: () => { showTab("about"); abGo("settings"); setTimeout(() => document.getElementById("setAi")?.scrollIntoView({ block: "start" }), 50); } });
   if (name === "analyze") abNoteAnalyzed(ANALYZE_SHOWN);
 
   // Switching tabs changes the document's total scrollable height (each

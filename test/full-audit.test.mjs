@@ -249,7 +249,7 @@ try {
 
   // Compare left the top menu in 0.47.0 (it opens from an answer instead);
   // compare-tab.test.mjs renders it that way.
-  const TABS = ["analyze", "dashboard", "loader", "about"];
+  const TABS = ["analyze", "dashboard", "loader", "ask", "about"];
   /* The interactive surface each tab MUST have once data exists.
    *
    * Without this, a tab that silently rendered its empty state satisfied
@@ -264,6 +264,8 @@ try {
     dashboard: { buttons: 12, selects: 1 },
     loader: { buttons: 3, selects: 0 },
     compare: { buttons: 0, selects: 3 },
+    // Ask with the built-in AI off: the setup button (ask-ui covers the chat).
+    ask: { buttons: 1, selects: 0 },
     about: { buttons: 2, selects: 0 },
   };
   console.log("\nEvery tab renders with content and without throwing");
