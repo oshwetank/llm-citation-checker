@@ -45,7 +45,7 @@ export function rangeLabel(from, to, now = Date.now()) {
   const a = dayStart(from), b = dayStart(to);
   if (a == null && b == null) return "Custom…";
   const y = new Date(now).getFullYear();
-  const fmt = (t) => { const d = new Date(t); return `${d.getDate()} ${MON[d.getMonth()]}${d.getFullYear() !== y ? ` ${d.getFullYear()}` : ""}`; };
+  const fmt = (t) => { const d = new Date(t); return `${dayMon(d)}${d.getFullYear() !== y ? ` ${d.getFullYear()}` : ""}`; };
   if (a != null && b != null) return a === b ? fmt(a) : `${fmt(Math.min(a, b))} – ${fmt(Math.max(a, b))}`;
   return a != null ? `From ${fmt(a)}` : `Until ${fmt(b)}`;
 }
@@ -196,10 +196,19 @@ export function weekStart(t) {
   d.setDate(d.getDate() - dow);
   return d.getTime();
 }
-const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const MONTH = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-const DOW = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-export const shortDate = (t) => { const d = new Date(t); return `${d.getDate()} ${MON[d.getMonth()]}`; };
+// Month and day names in the interface's language (0.71.0). English keeps
+// the "12 Oct" order it always had; other languages take Intl's.
+let LOC = null;
+export function setDateLocale(l) { LOC = l && !/^en\b/i.test(l) ? l : null; }
+const intl = (opts) => (t) => new Intl.DateTimeFormat(LOC, opts).format(new Date(t));
+const MON_EN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTH_EN = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const DOW_EN = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const dayMon = (d) => (LOC ? intl({ day: "numeric", month: "short" })(d) : `${d.getDate()} ${MON_EN[d.getMonth()]}`);
+const dayMonth = (d) => (LOC ? intl({ day: "numeric", month: "long" })(d) : `${d.getDate()} ${MONTH_EN[d.getMonth()]}`);
+const monthName = (d) => (LOC ? intl({ month: "long" })(d) : MONTH_EN[d.getMonth()]);
+const dowName = (d) => (LOC ? intl({ weekday: "long" })(d) : DOW_EN[d.getDay()]);
+export const shortDate = (t) => dayMon(new Date(t));
 
 function inPeriod(period, now, t, range) {
   if (period === "custom") {
@@ -232,12 +241,12 @@ export function groupRows(rows, now) {
   for (const r of rows) {
     const dd = dayDiff(now, r.latestAt);
     const d = new Date(r.latestAt);
-    if (dd === 0) put("today", "Today", `${DOW[d.getDay()]}, ${d.getDate()} ${MONTH[d.getMonth()]}`, r);
-    else if (dd === 1) put("yesterday", "Yesterday", `${DOW[d.getDay()]}, ${d.getDate()} ${MONTH[d.getMonth()]}`, r);
+    if (dd === 0) put("today", "Today", `${dowName(d)}, ${dayMonth(d)}`, r);
+    else if (dd === 1) put("yesterday", "Yesterday", `${dowName(d)}, ${dayMonth(d)}`, r);
     else if (r.latestAt >= thisWeek) put("week", "Earlier this week", "", r);
     else {
       const id = `${d.getFullYear()}-${d.getMonth()}`;
-      put(id, MONTH[d.getMonth()] + (d.getFullYear() !== nowYear ? ` ${d.getFullYear()}` : ""), "", r);
+      put(id, monthName(d) + (d.getFullYear() !== nowYear ? ` ${d.getFullYear()}` : ""), "", r);
     }
   }
   return groups;
@@ -255,7 +264,7 @@ function campaignGroups(rows) {
   }
   return [...by.values()].sort((a, b) => b.latestAt - a.latestAt).map((g) => {
     const d = new Date(g.latestAt);
-    return { ...g, sub: `campaign · last asked ${d.getDate()} ${MONTH[d.getMonth()]}` };
+    return { ...g, sub: `campaign · last asked ${dayMonth(d)}` };
   });
 }
 

@@ -122,7 +122,7 @@ export function answerReport(rec, { previous = null, profiles = [], generatedAt 
     ["Captured", dateTime(rec.capturedAt)],
     ["Engine", `${engine}${rec.model ? ` · ${rec.model}` : ""}`],
     ["Kind of answer", kind.label],
-    ["Answer length", words ? `${words.toLocaleString("en-US")} words` : "not captured"],
+    ["Answer length", words ? `${words.toLocaleString(undefined)} words` : "not captured"],
     ["Searched the web", rec.searched || sources.length ? "yes" : "no"],
     ["Pages opened", `${sources.length} (${cited.length} cited)`],
     rec.geo && own && own.campaign ? ["Campaign", own.campaign] : null,
@@ -148,4 +148,4 @@ export function answerReport(rec, { previous = null, profiles = [], generatedAt 
   };
 }
 
-function dateTime(t) { const d = new Date(t); return `${dayLabel(t)}, ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}`; }
+function dateTime(t) { const d = new Date(t); return `${dayLabel(t)}, ${d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`; }

@@ -122,7 +122,7 @@ export function storageMeter({ stored = 0, keep = 0, usedBytes = null } = {}) {
   return {
     pct,
     warn: keep > 0 && stored / keep >= 0.9,
-    text: `${stored.toLocaleString("en-US")} of ${keep.toLocaleString("en-US")} kept`,
+    text: `${stored.toLocaleString(undefined)} of ${keep.toLocaleString(undefined)} kept`,
     sub: `${mb == null ? "" : `${mb} MB on disk. `}Past the limit, the oldest captures are dropped first.`,
   };
 }

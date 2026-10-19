@@ -25,7 +25,8 @@ import { rawBreakdown, SECTIONS as RAW_SECTIONS } from "../src/lib/rawBreakdown.
 import { isNanoAvailable, labelRawFieldsWithNano } from "../src/lib/nano.js";
 import { answersToPrompt, compareView } from "../src/lib/compareView.js";
 import { overTimeView } from "../src/lib/overTimeView.js";
-import { historyRows, historyView, highlightRuns, dayDiff, shortDate, PERIODS, KINDS, ENGINE_ORDER, rangeLabel } from "../src/lib/historyView.js";
+import { historyRows, historyView, highlightRuns, dayDiff, shortDate, PERIODS, KINDS, ENGINE_ORDER, rangeLabel, setDateLocale } from "../src/lib/historyView.js";
+import { loadLang, chosenLang, tr, translatePage, uiLang, LANGS, LANG_KEY } from "./i18n.js";
 import { extractBrandAspects } from "../src/lib/aspects.js";
 import { siteKindOf } from "../src/lib/siteKind.js";
 import { renderCampaignView, CV_SECTIONS, sectionCounts, resetCampaignViewState } from "./campaignView.js";
@@ -44,6 +45,11 @@ import {
   computeDomainExclusivity,
   computeSearchIntentGraph,
 } from "../src/lib/grounding-score.js";
+
+// The interface's language (0.71.0, ui/i18n.js), before anything is drawn.
+await loadLang(chosenLang());
+translatePage(document);
+setDateLocale(uiLang());
 
 // chrome.runtime.sendMessage throws SYNCHRONOUSLY — not via the callback —
 // when this page's connection to the extension is dead ("Extension context
@@ -223,10 +229,13 @@ const el = (tag, props = {}, ...kids) => {
     // stash them as plain JS properties on the element (no attribute, so
     // `[data-tip]` selectors and dataset reads never saw them). setAttribute
     // is what actually makes them queryable/CSS-selectable.
+    // Visible words go through the dictionary (0.71.0): an English label
+    // with a translation shows translated, anything else as it is.
+    if (k === "aria-label" || k === "title" || k === "placeholder") v = tr(v);
     if (k.startsWith("data-") || k.startsWith("aria-")) n.setAttribute(k, v);
-    else n[k] = v;
+    else n[k] = k === "textContent" ? tr(v) : v;
   }
-  for (const k of kids) n.append(k?.nodeType ? k : document.createTextNode(k ?? ""));
+  for (const k of kids) n.append(k?.nodeType ? k : document.createTextNode(tr(k ?? "")));
   return n;
 };
 const esc = (s) => (s == null ? "" : String(s));
@@ -6372,7 +6381,7 @@ function downloadDetailedFormat(records, format) {
     xml += `  </Table>\n </Worksheet>\n`;
   };
 
-  const stamp = (r) => new Date(r.capturedAt).toLocaleString("en-GB");
+  const stamp = (r) => new Date(r.capturedAt).toLocaleString(uiLang());
 
   // Full source detail — the Domain Data sheet only carries the domain, which
   // loses the actual page that was cited.
@@ -7208,7 +7217,7 @@ function openExportDialog(profile, ctx) {
   closeBtn.onclick = close;
   cancel.onclick = close;
 
-  const num = (v) => (v || 0).toLocaleString("en-US");
+  const num = (v) => (v || 0).toLocaleString(uiLang());
   const n = (k) => (st.counts ? num(st.counts[k]) : "…");
   const seg = (label, opts, cur, pick) => el("div", { className: "ex-seg", role: "radiogroup", "aria-label": label }, ...opts.map(([id, text]) => {
     const b = el("button", { type: "button", className: `ex-seg-btn${cur === id ? " on" : ""}`, role: "radio", "aria-checked": cur === id ? "true" : "false" }, text);
@@ -8827,11 +8836,23 @@ window.addEventListener("storage", (e) => {
   if (e.key === "cito-theme" && e.newValue) applyTheme(e.newValue);
   if (e.key === "cito-style" && e.newValue) applyStyle(e.newValue);
   if (e.key === "cito-detail" && e.newValue && applyDetail(e.newValue) && viewingRecord()) renderAnalyze();
+  // The other view (popup or tab) follows a language change.
+  if (e.key === "cito-lang") location.reload();
 });
 initTheme();
 initStyle();
 initDetail();
 initDisplaySettings(document.getElementById("setDisplay"));
+(() => {
+  const sel = document.getElementById("setLang");
+  if (!sel) return;
+  let pref = "auto";
+  try { pref = localStorage.getItem(LANG_KEY) || "auto"; } catch (_) { /* storage off */ }
+  sel.append(el("option", { value: "auto" }, `${tr("Same as the browser")} (${(LANGS.find(([c]) => c === chosenLang({ getItem: () => "auto" })) || LANGS[0])[1]})`));
+  LANGS.forEach(([code, name]) => sel.append(el("option", { value: code, lang: code }, name)));
+  sel.value = pref;
+  sel.onchange = () => { try { localStorage.setItem(LANG_KEY, sel.value); } catch (_) { /* this view only */ } location.reload(); };
+})();
 initAiSettings(document.getElementById("setAi"));
 
 $("#exportJson")?.addEventListener("click", () =>
@@ -8916,7 +8937,7 @@ async function buildDiagnosticReport() {
   ]);
 
   const lines = [];
-  lines.push(`${manifest.name} diagnostic report`);
+  lines.push(`${/^__MSG_/.test(manifest.name) ? (chrome.i18n.getMessage("appName") || "CitoSkeleton") : manifest.name} diagnostic report`);
   lines.push(`Generated: ${new Date().toISOString()}`);
   lines.push(`Extension version: ${manifest.version}`);
   // The manifest can say one version while older code actually runs — see
@@ -9263,8 +9284,8 @@ reprocessBtn?.addEventListener("click", withBusy(reprocessBtn, "Reprocessing…"
   const r = await send({ type: "reprocess-all" });
   if (st) {
     st.textContent = !r.ok ? "Reprocessing failed." : r.reprocessed === r.total
-      ? `Done. ${r.reprocessed.toLocaleString("en-US")} capture${r.reprocessed === 1 ? "" : "s"} re-read.`
-      : `Done. ${r.reprocessed.toLocaleString("en-US")} of ${r.total.toLocaleString("en-US")} captures re-read.`;
+      ? `Done. ${r.reprocessed.toLocaleString(uiLang())} capture${r.reprocessed === 1 ? "" : "s"} re-read.`
+      : `Done. ${r.reprocessed.toLocaleString(uiLang())} of ${r.total.toLocaleString(uiLang())} captures re-read.`;
     st.classList.toggle("bad", !r.ok);
   }
   FULL.clear(); // records were re-derived; drop stale hydrated copies

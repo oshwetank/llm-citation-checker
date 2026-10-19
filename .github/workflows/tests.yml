@@ -67,7 +67,7 @@ jobs:
       - name: Validate manifest.json
         run: |
           node --input-type=module -e '
-            import { readFileSync } from "node:fs";
+            import { readFileSync, readdirSync } from "node:fs";
             const m = JSON.parse(readFileSync("manifest.json", "utf8"));
             const problems = [];
             const cap = (field, value, limit) => {
@@ -76,6 +76,13 @@ jobs:
               }
             };
             cap("description", m.description, 132);
+            // 0.71.0: the name and description come from _locales; each
+            // language's description has the same cap.
+            for (const d of (m.default_locale ? readdirSync("_locales") : [])) {
+              const msgs = JSON.parse(readFileSync(`_locales/${d}/messages.json`, "utf8"));
+              cap(`_locales/${d} appDesc`, msgs.appDesc && msgs.appDesc.message, 132);
+              cap(`_locales/${d} appName`, msgs.appName && msgs.appName.message, 45);
+            }
             cap("name", m.name, 45);
             cap("action.default_title", m.action?.default_title, 75);
             if (m.manifest_version !== 3) problems.push("manifest_version must be 3");

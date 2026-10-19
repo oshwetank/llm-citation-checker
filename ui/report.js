@@ -36,7 +36,7 @@ function html(strings, ...vals) {
 /* ---------- numbers ---------- */
 const P = (x) => (x == null ? "—" : `${Math.round(x)}%`);
 const D1 = (x) => (x == null ? "—" : Number(x).toFixed(1));
-const N = (x) => (x == null ? "—" : Number(x).toLocaleString("en-US"));
+const N = (x) => (x == null ? "—" : Number(x).toLocaleString(undefined));
 // In the price's own currency, never assumed (money.js, 0.69.0).
 const money = (x, cur) => formatMoney(x == null ? null : Math.round(x), cur || null);
 
@@ -431,7 +431,7 @@ function paginate(page, header, foot, contTitle) {
   if (cont) paginate(cont, header, foot, contTitle);
 }
 
-const stamp = (t) => `${dayLabel(t)}, ${new Date(t).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}`;
+const stamp = (t) => `${dayLabel(t)}, ${new Date(t).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
 
 function render(model, root) {
   root.textContent = "";

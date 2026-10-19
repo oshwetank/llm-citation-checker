@@ -14,8 +14,8 @@ body { font-family: "IBM Plex Sans", "IBM Plex Sans Devanagari", "Segoe UI", Ari
 .run { display: flex; align-items: center; gap: 8px; padding-bottom: 3mm; border-bottom: 1px solid #d5dde8; font-size: 8pt; color: #475569; }
 .run .mark { width: 16px; height: 16px; border-radius: 4px; background: #0f172a; color: #ffffff; display: flex; align-items: center; justify-content: center; font-size: 8pt; font-weight: 700; }
 .run b { color: #0f172a; }
-.run .pg { margin-left: auto; font-variant-numeric: tabular-nums; }
-.foot { position: absolute; left: 14mm; right: 14mm; bottom: 8mm; display: flex; justify-content: space-between; font-size: 7.5pt; color: #64748b; border-top: 1px solid #e2e8f0; padding-top: 2mm; }
+.run .pg { margin-inline-start: auto; font-variant-numeric: tabular-nums; }
+.foot { position: absolute; inset-inline-start: 14mm; inset-inline-end: 14mm; bottom: 8mm; display: flex; justify-content: space-between; font-size: 7.5pt; color: #64748b; border-top: 1px solid #e2e8f0; padding-top: 2mm; }
 h1 { margin: 0; font-size: 26pt; line-height: 1.1; font-weight: 700; letter-spacing: -0.02em; }
 h2 { margin: 0; font-size: 13pt; font-weight: 700; letter-spacing: -0.01em; }
 h3 { margin: 0; font-size: 10pt; font-weight: 700; }
@@ -25,8 +25,8 @@ h3 { margin: 0; font-size: 10pt; font-weight: 700; }
 .meta { display: flex; flex-wrap: wrap; gap: 2mm 8mm; font-size: 8.6pt; color: #334155; }
 .meta b { color: #0f172a; }
 .kpis { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid #d5dde8; border-radius: 3mm; overflow: hidden; }
-.kpi { padding: 3mm 3.5mm; border-left: 1px solid #e2e8f0; border-top: 1px solid #e2e8f0; display: flex; flex-direction: column; gap: 0.5mm; }
-.kpi:nth-child(4n+1) { border-left: none; } .kpi:nth-child(-n+4) { border-top: none; }
+.kpi { padding: 3mm 3.5mm; border-inline-start: 1px solid #e2e8f0; border-top: 1px solid #e2e8f0; display: flex; flex-direction: column; gap: 0.5mm; }
+.kpi:nth-child(4n+1) { border-inline-start: none; } .kpi:nth-child(-n+4) { border-top: none; }
 .kpi .l { font-size: 7.8pt; font-weight: 600; color: #475569; }
 .kpi .v { font-size: 19pt; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .kpi .d { font-size: 7.8pt; font-weight: 600; } .up { color: #047857; } .down { color: #be123c; } .flat { color: #64748b; }
@@ -35,11 +35,11 @@ h3 { margin: 0; font-size: 10pt; font-weight: 700; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 4mm; }
 .grid32 { display: grid; grid-template-columns: 1.35fr 1fr; gap: 4mm; }
 table { width: 100%; border-collapse: collapse; font-size: 8.4pt; font-variant-numeric: tabular-nums; }
-th { text-align: left; font-size: 7.4pt; font-weight: 700; color: #475569; padding: 1.4mm 1.6mm; border-bottom: 1px solid #cbd5e1; background: #f8fafc; }
+th { text-align: start; font-size: 7.4pt; font-weight: 700; color: #475569; padding: 1.4mm 1.6mm; border-bottom: 1px solid #cbd5e1; background: #f8fafc; }
 td { padding: 1.3mm 1.6mm; border-bottom: 1px solid #eef2f7; vertical-align: middle; }
-td.n, th.n { text-align: right; } td.c, th.c { text-align: center; }
+td.n, th.n { text-align: end; } td.c, th.c { text-align: center; }
 tr.you td { background: #f5f9ff; } tr.you td:first-child { font-weight: 700; color: #1b5fb4; }
-.sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: 0; }
+.sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-inline-end: 5px; vertical-align: 0; }
 .bar { height: 6px; border-radius: 3px; background: #eef2f7; overflow: hidden; } .bar > i { display: block; height: 100%; border-radius: 3px; }
 .pill { display: inline-block; font-size: 7.4pt; font-weight: 600; border-radius: 999px; padding: 0.3mm 2mm; }
 .good { color: #047857; background: #ecfdf5; } .bad { color: #be123c; background: #fff1f2; } .warn { color: #92400e; background: #fffbeb; } .neutral { color: #334155; background: #eef2f7; }
@@ -53,7 +53,7 @@ ul.find li b.k { color: #0062cc; }
 .answer { font-family: "IBM Plex Sans", "IBM Plex Sans Devanagari", "Segoe UI", Arial, sans-serif; font-size: 9.6pt; line-height: 1.6; color: #1f2937; }
 .answer h4 { margin: 2mm 0 0.5mm; font-size: 10.4pt; } .answer p { margin: 0 0 1.4mm; } .answer ul { margin: 0 0 1.4mm 4mm; padding: 0; }
 .answer mark { background: #fef3c7; box-shadow: inset 0 -1.5px 0 #f59e0b; padding: 0 1px; border-radius: 2px; color: inherit; }
-.cite { display: inline-block; font-size: 7pt; font-weight: 600; color: #1f2937; background: #e8edf2; border-radius: 1.2mm; padding: 0 1.4mm; margin-left: 1mm; vertical-align: 1px; }
+.cite { display: inline-block; font-size: 7pt; font-weight: 600; color: #1f2937; background: #e8edf2; border-radius: 1.2mm; padding: 0 1.4mm; margin-inline-start: 1mm; vertical-align: 1px; }
 .strip { display: flex; flex-wrap: wrap; gap: 1.5mm; }
 .chip { display: inline-flex; align-items: center; gap: 1.2mm; font-size: 7.8pt; font-weight: 600; border-radius: 999px; padding: 0.6mm 2.6mm; border: 1px solid #c9daf2; background: #f5f9ff; }
 .chip.off { color: #94a3b8; border: 1px dashed #d5dde8; background: #ffffff; font-weight: 500; }
@@ -70,11 +70,11 @@ td.nw { white-space: nowrap; }
   body { padding: 64px 0 32px; }
   .page { margin: 0 auto 8mm; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.35); }
 }
-.toolbar { position: fixed; top: 0; left: 0; right: 0; z-index: 10; display: flex; align-items: center; gap: 12px; padding: 10px 20px; background: #0f172a; color: #e2e8f0; font-size: 13px; }
+.toolbar { position: fixed; top: 0; inset-inline-start: 0; inset-inline-end: 0; z-index: 10; display: flex; align-items: center; gap: 12px; padding: 10px 20px; background: #0f172a; color: #e2e8f0; font-size: 13px; }
 .toolbar[hidden] { display: none; }
 .toolbar b { color: #ffffff; }
 .toolbar .tb-note { color: #94a3b8; }
-.toolbar button { margin-left: auto; height: 34px; padding: 0 16px; border: 1px solid #0062cc; border-radius: 8px; background: #0062cc; color: #ffffff; font: inherit; font-weight: 600; cursor: pointer; }
+.toolbar button { margin-inline-start: auto; height: 34px; padding: 0 16px; border: 1px solid #0062cc; border-radius: 8px; background: #0062cc; color: #ffffff; font: inherit; font-weight: 600; cursor: pointer; }
 .toolbar button:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
 .state { margin: 15vh auto 0; max-width: 520px; padding: 24px 28px; border-radius: 12px; background: #ffffff; color: #0f172a; font-size: 14px; line-height: 1.5; }
 .state h1 { font-size: 18pt; margin-bottom: 8px; }

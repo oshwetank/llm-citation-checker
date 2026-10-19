@@ -6,6 +6,7 @@
  * change at once, like Light / Dark. The other view (popup or tab) follows
  * through the storage event.
  */
+import { tr } from "./i18n.js";
 const CD = globalThis.CitoDisplay;
 let googleList = null; // [[family, category, weights]], loaded on first search
 
@@ -19,7 +20,7 @@ function h(tag, props = {}, ...kids) {
     if (k.startsWith("data-") || k.startsWith("aria-") || k === "for" || k === "role") n.setAttribute(k, v);
     else n[k] = v;
   }
-  for (const c of kids) if (c != null && c !== false) n.append(c.nodeType ? c : document.createTextNode(String(c)));
+  for (const c of kids) if (c != null && c !== false) n.append(c.nodeType ? c : document.createTextNode(tr(String(c))));
   return n;
 }
 

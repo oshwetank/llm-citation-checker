@@ -6,6 +6,7 @@
  * checks. Every switch saves at once, outside Save / Undo, like Display.
  * The model and its queue live in the background (src/aiService.js).
  */
+import { tr } from "./i18n.js";
 import { TIERS, TIER_ORDER, sizeLabel } from "../src/lib/llmTiers.js";
 import { importFiles } from "../src/lib/llmEngine.js";
 
@@ -16,7 +17,7 @@ function h(tag, props = {}, ...kids) {
     if (k.startsWith("data-") || k.startsWith("aria-") || k === "for" || k === "role") n.setAttribute(k, v);
     else n[k] = v;
   }
-  for (const c of kids) if (c != null && c !== false) n.append(c.nodeType ? c : document.createTextNode(String(c)));
+  for (const c of kids) if (c != null && c !== false) n.append(c.nodeType ? c : document.createTextNode(tr(String(c))));
   return n;
 }
 const send = (m) => new Promise((r) => { try { chrome.runtime.sendMessage(m, (x) => { void chrome.runtime.lastError; r(x || null); }); } catch (_) { r(null); } });

@@ -18,4 +18,11 @@
   document.documentElement.setAttribute("data-style", style);
   document.documentElement.setAttribute("data-theme", theme);
   document.documentElement.setAttribute("data-detail", detail);
+  // Right-to-left before the first paint (0.71.0); ui/i18n.js settles the
+  // language itself a moment later. Only languages with a dictionary count.
+  try {
+    var pref = localStorage.getItem("cito-lang") || "auto";
+    var lang = pref === "auto" ? ((navigator.languages && navigator.languages[0]) || navigator.language || "en") : pref;
+    if (/^ar\b/i.test(lang)) document.documentElement.setAttribute("dir", "rtl");
+  } catch (_) { /* storage blocked: left to right */ }
 })();
