@@ -521,5 +521,11 @@
  "Check with built-in AI": "Verificar com a IA integrada",
  "What it asks": "O que pergunta",
  "What it is": "O que é",
- "How the answer treats it": "Como a resposta o trata"
+ "How the answer treats it": "Como a resposta o trata",
+ "At a glance": "Visão geral",
+ "Kinds of site each engine cited": "Tipos de site que cada mecanismo citou",
+ "Product cards in each answer": "Cards de produto em cada resposta",
+ "Searches each engine ran": "Pesquisas feitas por cada mecanismo",
+ "What each engine cited": "O que cada mecanismo citou",
+ "Which sites each engine used": "Quais sites cada mecanismo usou"
 }

@@ -224,7 +224,7 @@ window.addEventListener("resize", applyMode);
 const $ = (sel, root = document) => root.querySelector(sel);
 const el = (tag, props = {}, ...kids) => {
   const n = document.createElement(tag);
-  for (const [k, v] of Object.entries(props)) {
+  for (let [k, v] of Object.entries(props)) {
     // data-*/aria-* aren't real IDL properties — Object.assign used to just
     // stash them as plain JS properties on the element (no attribute, so
     // `[data-tip]` selectors and dataset reads never saw them). setAttribute
@@ -2394,7 +2394,8 @@ function atRenderAnswer(rec, { loading, tabs, currentId, brandNames, own }) {
   hl.append(clear);
   aside.append(hl);
 
-  const body = el("div", { className: "at-answer-body" });
+  // The answer reads in its own direction, whatever the interface's (0.71.0).
+  const body = el("div", { className: "at-answer-body", dir: "auto" });
   aside.append(body);
   if (loading) {
     body.append(el("p", { className: "ap-note" }, "Loading this answer…"));

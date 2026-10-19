@@ -12,12 +12,20 @@ of its own**, except, if you turn on **Read the cited pages**, to the pages an a
 and, if you download the **built-in AI**, a one-time download of the model's files from
 Hugging Face. Nothing you capture ever leaves your device: the AI runs on your computer.
 
-> **v0.70.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.71.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **The interface in six languages** (0.71.0). About → Settings → **Language**: English,
+>   Spanish, Portuguese (Brazil), French, Hindi and Arabic, or "Same as the browser" (the
+>   default). Arabic lays the whole interface out right to left, while answers, prompts and
+>   searches keep the direction of their own language. Dates and numbers follow the chosen
+>   language. About 530 labels, headings, buttons and settings are translated; longer
+>   sentences built from numbers and names are still English for now. The translations are
+>   drafts and need a native speaker's review. The Chrome Web Store name and description come
+>   in all six.
 > - **A built-in AI model, on your computer** (0.70.0). About → Settings → **Built-in AI**
 >   downloads an open-source model once (Qwen3.5 from Alibaba, Apache-2.0, 201 languages:
 >   Light 0.5 GB, Standard 1.4 GB, Strong 2.8 GB; the extension checks the computer and

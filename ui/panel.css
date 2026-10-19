@@ -7464,3 +7464,11 @@ body.popup .cv-tab { height: 30px; padding: 0 9px; font-size: 12px; }
 /* Right to left (0.71.0): numbers, URLs and code read left to right inside it. */
 :root[dir="rtl"] code, :root[dir="rtl"] .mono, :root[dir="rtl"] input[type="url"], :root[dir="rtl"] input[type="number"] { direction: ltr; unicode-bidi: isolate; }
 :root[dir="rtl"] .db-weeks { direction: ltr; }
+/* Text from the engines (prompts, answers, searches) reads in its own
+ * direction whatever the interface's: an English answer stays left to
+ * right inside the Arabic interface, an Arabic answer right to left inside
+ * the English one (0.71.0). */
+.at-prompt, .ap-prompt, .at-answer-body, .at-ans-cards, .db-text, .at-ai-q, .at-backer, .fan-q, .at-q {
+  unicode-bidi: plaintext;
+  text-align: start;
+}

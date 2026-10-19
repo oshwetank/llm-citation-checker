@@ -521,5 +521,11 @@
  "Check with built-in AI": "बिल्ट-इन AI से जाँचें",
  "What it asks": "यह क्या पूछता है",
  "What it is": "यह क्या है",
- "How the answer treats it": "जवाब इसे कैसे देखता है"
+ "How the answer treats it": "जवाब इसे कैसे देखता है",
+ "At a glance": "एक नज़र में",
+ "Kinds of site each engine cited": "हर इंजन ने किस तरह की साइटें उद्धृत कीं",
+ "Product cards in each answer": "हर जवाब में प्रोडक्ट कार्ड",
+ "Searches each engine ran": "हर इंजन की खोजें",
+ "What each engine cited": "हर इंजन ने क्या उद्धृत किया",
+ "Which sites each engine used": "हर इंजन ने कौन सी साइटें इस्तेमाल कीं"
 }

@@ -521,5 +521,11 @@
  "Check with built-in AI": "افحص بالذكاء الاصطناعي المدمج",
  "What it asks": "ما الذي يسأل عنه",
  "What it is": "ما هو",
- "How the answer treats it": "كيف تتعامل معه الإجابة"
+ "How the answer treats it": "كيف تتعامل معه الإجابة",
+ "At a glance": "لمحة سريعة",
+ "Kinds of site each engine cited": "أنواع المواقع التي استشهد بها كل محرك",
+ "Product cards in each answer": "بطاقات المنتجات في كل إجابة",
+ "Searches each engine ran": "عمليات البحث التي أجراها كل محرك",
+ "What each engine cited": "ما استشهد به كل محرك",
+ "Which sites each engine used": "المواقع التي استخدمها كل محرك"
 }
