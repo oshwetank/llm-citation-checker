@@ -9885,8 +9885,46 @@ function renderAbout() {
   if (sec === "glossary") renderAboutGlossary();
   if (sec === "term") renderAboutTerm();
   if (sec === "settings") { renderStorageMeter(); updateSettingsStatus(); }
-  if (sec === "diagnostics") renderDiagRows();
+  if (sec === "diagnostics") { renderDiagRows(); renderCaptureCheck(); }
 }
+
+// The capture check (0.73.1): one row per engine with what to do, and a
+// "Refresh" button for a tab cut off from the extension.
+const CAP_ENGINE = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok" };
+let capReport = "";
+async function renderCaptureCheck() {
+  const rows = $("#capCheckRows");
+  if (!rows) return;
+  const r = await send({ type: "capture-check" }).catch(() => null);
+  rows.textContent = "";
+  if (!r || !r.ok) { rows.append(el("p", { className: "cap-line bad" }, "The extension's background didn't answer. Open chrome://extensions, check CitoSkeleton has no error, and press reload ↻.")); return; }
+  capReport = r.report || "";
+  for (const v of r.engines || []) {
+    const row = el("div", { className: `cap-row ${v.status}`, "data-engine": v.engine },
+      el("span", { className: "cap-dot", "aria-hidden": "true" }),
+      el("b", { className: "cap-eng" }, CAP_ENGINE[v.engine] || v.engine),
+      el("span", { className: "cap-line" }, v.line));
+    for (const t of (r.tabs || []).filter((x) => x.engine === v.engine && !x.alive)) {
+      const b = el("button", { type: "button", className: "btn sm cap-refresh" }, "Refresh the tab");
+      b.onclick = async () => { b.disabled = true; await send({ type: "capture-refresh-tab", tabId: t.tabId }).catch(() => {}); setTimeout(renderCaptureCheck, 2500); };
+      row.append(b);
+    }
+    rows.append(row);
+  }
+}
+document.addEventListener("click", (e) => {
+  const id = e.target && e.target.id;
+  if (id === "capCheckRun") renderCaptureCheck();
+  if (id === "capCheckCopy") {
+    const note = $("#capCheckNote");
+    const done = (ok) => { if (note) note.textContent = ok ? "Copied. Paste it in a message to us." : "Couldn't copy — select the text below instead."; };
+    renderCaptureCheck().then(() => navigator.clipboard.writeText(capReport)).then(() => done(true), () => {
+      done(false);
+      const pre = el("pre", { className: "cap-pre" }, capReport);
+      $("#capCheckRows")?.append(pre);
+    });
+  }
+});
 
 function renderAboutNav(sec) {
   const nav = $("#abNav");

@@ -127,9 +127,14 @@ const ENGINES = {
       "https://chatgpt.com/backend-anon/f/conversation",
       // Signed out, the lighter app (0.69.0): the answer as ndjson.
       "https://chatgpt.com/unauth-mweb/conversation/updates?lightweight_authenticated=1&operationId=abc",
+      // 0.73.1: an answer carried on after a hand-off.
+      "https://chatgpt.com/backend-api/f/conversation/resume",
+      "https://chatgpt.com/backend-api/conversation/updates?x=1",
+      "https://chatgpt.com/backend-api/f/conversation/stream",
     ],
     ignore: [
       "https://chatgpt.com/backend-api/conversations?offset=0", // history list, not a turn
+      "https://chatgpt.com/backend-api/conversation/0a1b2c3d-0000-5000-8000-000000000001", // loading an old chat
       "https://chatgpt.com/backend-anon/conversations?offset=0",
       "https://chatgpt.com/unauth-mweb/conversation/prepare?lightweight_authenticated=1",
       "https://chatgpt.com/unauth-mweb/events/business",

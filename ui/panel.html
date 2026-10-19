@@ -338,6 +338,22 @@
 
               <div class="ab-sec" data-sec="diagnostics">
                 <div class="ab-buildline" id="abBuildFull" role="status"></div>
+                <!-- The capture check (0.73.1): is each engine being captured,
+                     and if not, which step failed. Built by renderCaptureCheck(). -->
+                <div class="card ab-card" id="capCheck">
+                  <div class="ab-head">
+                    <div>
+                      <h2 class="ab-title">Capture check</h2>
+                      <p class="ab-sub">Is each engine being captured, and if not, where it stops. Ask a question on the engine first, then check.</p>
+                    </div>
+                    <button type="button" class="btn sm" id="capCheckRun">Check again</button>
+                  </div>
+                  <div class="cap-rows" id="capCheckRows" role="status"></div>
+                  <div class="cap-foot">
+                    <button type="button" class="btn sm" id="capCheckCopy">Copy capture report</button>
+                    <span class="cap-note" id="capCheckNote">Addresses, counts and reasons only — no prompts or answers.</span>
+                  </div>
+                </div>
                 <div class="card ab-card">
                   <div class="ab-head">
                     <div>

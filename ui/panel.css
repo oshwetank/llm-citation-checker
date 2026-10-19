@@ -7515,3 +7515,16 @@ body.popup .nav-tab[data-tab="ask"] { display: none; }
 .ask-input { flex: 1; min-width: 0; resize: vertical; min-height: 44px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; font: inherit; font-size: 14px; background: var(--surface-solid, transparent); color: var(--fg-primary); }
 .ask-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; gap: 8px; }
 .ask-status { font-size: 12px; color: var(--fg-secondary); }
+
+/* The capture check (0.73.1) */
+.cap-rows { display: grid; gap: 8px; margin-block: 10px; }
+.cap-row { display: grid; grid-template-columns: 10px 96px 1fr auto; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line-soft, var(--border)); border-radius: 8px; }
+.cap-dot { inline-size: 10px; block-size: 10px; border-radius: 50%; background: var(--fg-muted); }
+.cap-row.ok .cap-dot { background: #1f9d55; }
+.cap-row.warn .cap-dot { background: #d69e2e; }
+.cap-row.bad .cap-dot { background: #d64545; }
+.cap-line { min-inline-size: 0; overflow-wrap: anywhere; }
+.cap-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.cap-note { color: var(--fg-muted); font-size: 12px; }
+.cap-pre { white-space: pre-wrap; font-size: 11px; max-block-size: 240px; overflow: auto; }
+@media (max-width: 560px) { .cap-row { grid-template-columns: 10px 1fr; } .cap-line, .cap-refresh { grid-column: 2; } }

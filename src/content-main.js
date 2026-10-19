@@ -47,7 +47,10 @@
   // fixed at the adapter level instead, where the current query's title is
   // actually known and can be matched against.
   const isBackgroundSubscription = (str) => {
-    if (typeof str !== "string") return false;
+    // These are Perplexity's GraphQL subscriptions and socket keep-alives. On
+    // ChatGPT a whole answer stream was thrown away for containing a ping
+    // frame (0.73.1), so the check never applies there.
+    if (typeof str !== "string" || IS_CHATGPT) return false;
     return str.includes("SidebarRecentThreads") ||
            str.includes("SidebarPinnedThreads") ||
            str.includes("SpaceUpdatesSubscription") ||
@@ -61,7 +64,16 @@
   // backend-anon is the same stream for someone not signed in (0.66.0).
   // unauth-mweb: signed out, the answer comes from conversation/updates as
   // ndjson (0.69.0; lib/chatgptSource.js reads it).
-  const CHATGPT_RE = /\/backend-(?:api|anon)\/(?:f\/)?conversation(?:\?|$)|\/unauth-mweb\/conversation\/updates(?:\?|$)/i;
+  // 0.73.1: also a conversation's resume/updates/stream follow-up, where an
+  // answer handed off from its first request carries on (read as a GET too).
+  const CHATGPT_RE = /\/backend-(?:api|anon)\/(?:f\/)?conversation(?:\/(?:resume|updates|stream))?(?:\?|$)|\/unauth-mweb\/conversation\/updates(?:\?|$)/i;
+  const CHATGPT_SUBMIT_RE = /\/backend-(?:api|anon)\/(?:f\/)?conversation(?:\?|$)|\/unauth-mweb\/conversation\/updates(?:\?|$)/i;
+  const CHATGPT_FOLLOW_RE = /\/conversation\/(?:resume|updates|stream)(?:\?|$)/i;
+  // Any other event stream from ChatGPT's own API is still taken (0.73.1):
+  // when ChatGPT moves its answer to a new address, the capture keeps
+  // working instead of silently stopping, and the capture check names the
+  // address. Card panels (PANEL_PATHS) are read as interactions instead.
+  const CHATGPT_STREAM_PATH = /^\/(?:backend-api|backend-anon|unauth-mweb)\//;
   const GEMINI_RE = /assistant\.lamda\.BardFrontendService\/StreamGenerate|\/StreamGenerate\b/i;
   // NOTE: `sse` is in the /rest/ alternation deliberately. The previous
   // pattern had `\/api\/sse\/` and `\/rest\/(threads|queries|answers|
@@ -108,11 +120,33 @@
   const IS_TARGET = IS_GEMINI || IS_CHATGPT || IS_PERPLEXITY || IS_GROK;
 
   const CHANNEL = (crypto.randomUUID && crypto.randomUUID()) || String(Math.random()).slice(2);
+  // The marker content-iso.js reads to know these messages are ours. A page
+  // that rebuilds <html> (a React app re-rendering the whole document drops
+  // attributes it didn't set) took it away, and from then on every capture
+  // was thrown away unseen (0.73.1). So it is put back whenever it goes, and
+  // on a new <html>, a bounded number of times.
+  let markRestores = 0;
+  const keepMark = () => {
+    try {
+      const el = document.documentElement;
+      if (el && el.getAttribute("data-lcfc-ch") !== CHANNEL && markRestores++ < 200) el.setAttribute("data-lcfc-ch", CHANNEL);
+    } catch (_) { /* ignore */ }
+  };
+  keepMark();
   try {
-    document.documentElement.setAttribute("data-lcfc-ch", CHANNEL);
-  } catch (_) {
-    /* ignore */
-  }
+    let watched = null;
+    const attrObs = new MutationObserver(keepMark);
+    const watch = () => {
+      const el = document.documentElement;
+      if (!el || el === watched) return;
+      watched = el;
+      attrObs.disconnect();
+      attrObs.observe(el, { attributes: true, attributeFilter: ["data-lcfc-ch"] });
+      keepMark();
+    };
+    watch();
+    new MutationObserver(watch).observe(document, { childList: true });
+  } catch (_) { /* no observer: the marker is set once, as before */ }
 
   /* The engine's own "answer this prompt" request, as it leaves the page:
    * proof a prompt went out that doesn't depend on page markup. The content
@@ -122,7 +156,7 @@
    * Stricter than CONV_RE, which also matches Perplexity's GraphQL sidebar
    * calls: only the request that starts an answer. Grok's gateway sends its
    * prompt over a WebSocket instead — see the WebSocket patch. */
-  const SUBMIT_RE = IS_CHATGPT ? CHATGPT_RE
+  const SUBMIT_RE = IS_CHATGPT ? CHATGPT_SUBMIT_RE
     : IS_GEMINI ? GEMINI_RE
     : IS_PERPLEXITY ? /\/rest\/sse\/perplexity_ask(?:\?|$)/i
     : IS_GROK ? /\/rest\/app-chat\/conversations\/(?:new|[^/?]+\/responses)(?:\?|$)/i
@@ -178,12 +212,40 @@
     }
   }
 
+  // Once on, stays on for this page: a page rebuilding <html> drops the flag.
+  let debugSeen = false;
   function debugOn() {
+    if (debugSeen) return true;
     try {
-      return document.documentElement.getAttribute("data-lcfc-dbg") === "1";
-    } catch (_) {
-      return false;
-    }
+      debugSeen = document.documentElement.getAttribute("data-lcfc-dbg") === "1";
+    } catch (_) { /* ignore */ }
+    return debugSeen;
+  }
+
+  // The capture check (0.73.1), always on: which conversation requests this
+  // page saw and which event streams it didn't recognise — the method, the
+  // address with ids masked, and the content type. Never a body, never a
+  // query value. A few dozen per page at most.
+  let healthSent = 0;
+  function health(ev, url, extra) {
+    if (!IS_TARGET || healthSent >= 40) return;
+    try {
+      const u = new URL(url, location.href);
+      healthSent++;
+      window.postMessage({ __LCFC__: CHANNEL, type: "health", ev, host: u.host, path: netMask(u.pathname), at: Date.now(), ...extra }, location.origin);
+    } catch (_) { /* never in the page's way */ }
+  }
+  // The request body as text, whatever the page sent it as.
+  async function bodyText(body) {
+    try {
+      if (body == null) return null;
+      if (typeof body === "string") return body;
+      if (typeof Blob !== "undefined" && body instanceof Blob) return await body.text();
+      if (body instanceof ArrayBuffer) return new TextDecoder().decode(body);
+      if (ArrayBuffer.isView(body)) return new TextDecoder().decode(body);
+      if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams) return body.toString();
+    } catch (_) { /* unreadable */ }
+    return null;
   }
   function dbg(kind, data) {
     if (!IS_TARGET || !debugOn()) return;
@@ -340,13 +402,15 @@
     }
 
     if (method === "POST" && SUBMIT_RE && SUBMIT_RE.test(url || "")) signalSubmit("fetch");
-    const isConv = (method === "POST" || (IS_PERPLEXITY && /socket\.io|sse/i.test(url))) && CONV_RE.test(url || "");
+    const isConv = (method === "POST" || (IS_PERPLEXITY && /socket\.io|sse/i.test(url)) || (IS_CHATGPT && CHATGPT_FOLLOW_RE.test(url || ""))) && CONV_RE.test(url || "");
     let reqBody = null;
     if (isConv) {
       try {
         if (init && typeof init.body === "string") {
           if (isBackgroundSubscription(init.body)) return origFetch.apply(this, args);
           reqBody = init.body;
+        } else if (init && init.body != null) {
+          reqBody = await bodyText(init.body);
         } else if (input instanceof Request) {
           reqBody = await input.clone().text();
           if (isBackgroundSubscription(reqBody)) return origFetch.apply(this, args);
@@ -371,11 +435,29 @@
     if (IS_GEMINI && !isConv && resp && GEMINI_PROBE_RE.test(url || "") && debugOn()) {
       resp.clone().text().then((body) => { if (body && body.length >= 2000) probe(url, method, init && typeof init.body === "string" ? init.body : "", body); }).catch(() => {});
     }
-    if (isConv && resp) {
+    // An event stream we don't know (0.73.1): on ChatGPT, from its own API,
+    // it is taken as an answer anyway; everywhere it is named in the check.
+    let unknownStream = false;
+    if (!isConv && resp && IS_TARGET) {
+      try {
+        const type = (resp.headers && resp.headers.get("content-type")) || "";
+        const u = new URL(url, location.href);
+        if (/event-stream|ndjson/i.test(type) && !isThirdParty(url) && !NOISE_RE.test(url)) {
+          unknownStream = IS_CHATGPT && u.origin === location.origin && CHATGPT_STREAM_PATH.test(u.pathname) && !PANEL_PATHS.test(u.pathname + u.search);
+          health(unknownStream ? "stream-taken" : "stream-unknown", url, { method, ctype: type.slice(0, 60) });
+        }
+      } catch (_) { /* ignore */ }
+    }
+    if (isConv) health("conv", url, { method, status: resp ? resp.status : 0 });
+    if ((isConv || unknownStream) && resp) {
       try {
         const cloned = resp.clone();
         if (cloned.body) {
-          drain(cloned.body, { url, reqBody, transport: "fetch" }, { quietMs: /\/unauth-mweb\//.test(url || "") ? 3000 : 0 });
+          // A stream may stay open after its answer (signed-out ChatGPT's
+          // updates stream did, 0.69.0): on ChatGPT the answer is also handed
+          // over once the stream has been quiet for 30 s — long past any
+          // pause inside an answer — and the copies fold into one answer.
+          drain(cloned.body, { url, reqBody, transport: unknownStream ? "fetch-stream" : "fetch" }, { quietMs: /\/unauth-mweb\//.test(url || "") ? 3000 : IS_CHATGPT ? 30000 : 0 });
         } else if (typeof cloned.text === "function") {
           cloned.text().then((raw) => {
             if (raw && !isBackgroundSubscription(raw)) {

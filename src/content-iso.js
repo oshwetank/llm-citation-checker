@@ -14,15 +14,43 @@
   // accidental/broad `message` listeners (third-party analytics) from ingesting
   // conversations and raises the bar on forged captures. The real protections are
   // the origin-scoped postMessage and keeping this channel narrow.
+  //
+  // 0.73.1: also taken the moment it appears (an observer from
+  // document_start), and left in place. Removing it here, then reading it
+  // only when the first capture arrived, meant a page that rebuilt <html> in
+  // between (React does) left us with no marker, and every capture was
+  // thrown away unseen. content-main.js now also puts it back if it goes.
   let CHANNEL = null;
   function channel() {
     if (CHANNEL) return CHANNEL;
     try {
       CHANNEL = document.documentElement.getAttribute("data-lcfc-ch");
-      if (CHANNEL) document.documentElement.removeAttribute("data-lcfc-ch");
     } catch (_) {}
     return CHANNEL;
   }
+  if (!channel()) {
+    try {
+      const obs = new MutationObserver(() => { if (channel()) obs.disconnect(); });
+      obs.observe(document, { attributes: true, subtree: true, attributeFilter: ["data-lcfc-ch"], childList: true });
+      setTimeout(() => obs.disconnect(), 30000);
+    } catch (_) { /* read lazily, as before */ }
+  }
+
+  // The capture check (0.73.1): this page's own record of what it saw, for
+  // the worker to ask about (cs-ping) and for reasons a capture went nowhere.
+  const pageHealth = { loadedAt: Date.now(), conv: 0, lastConv: null, unknown: [], forwarded: 0, sendFailed: 0, mismatched: 0, lastError: "" };
+  const tellWorker = (msg) => {
+    try {
+      chrome.runtime.sendMessage(msg, () => { if (chrome.runtime.lastError) { pageHealth.sendFailed++; pageHealth.lastError = String(chrome.runtime.lastError.message || "").slice(0, 120); } });
+      return true;
+    } catch (e) {
+      // The extension was reloaded or turned off and on: this page's script
+      // is cut off from it, and only reloading the page reconnects it.
+      pageHealth.sendFailed++;
+      pageHealth.lastError = String((e && e.message) || e).slice(0, 120);
+      return false;
+    }
+  };
 
   /* A clock that survives Chrome throttling this tab.
    *
@@ -103,7 +131,24 @@
     if (event.origin !== location.origin) return;
     const data = event.data;
     const ch = channel();
-    if (!data || !ch || data.__LCFC__ !== ch) return;
+    if (!data || !ch || data.__LCFC__ !== ch) {
+      // Ours by shape, but no marker or a different one: reported, not lost
+      // silently (0.73.1).
+      if (data && typeof data === "object" && typeof data.__LCFC__ === "string" && data.type === "raw-conversation") {
+        pageHealth.mismatched++;
+        tellWorker({ type: "capture-drop", reason: ch ? "marker-mismatch" : "no-marker", pageUrl: location.origin });
+      }
+      return;
+    }
+
+    // The capture check (0.73.1; content-main.js's health()).
+    if (data.type === "health") {
+      const row = { ev: String(data.ev || "").slice(0, 20), host: String(data.host || "").slice(0, 80), path: String(data.path || "").slice(0, 200), method: String(data.method || "").slice(0, 8), ctype: String(data.ctype || "").slice(0, 60), status: Number(data.status) || 0, at: data.at || Date.now() };
+      if (row.ev === "conv") { pageHealth.conv++; pageHealth.lastConv = row; }
+      else if (pageHealth.unknown.length < 10) pageHealth.unknown.push(row);
+      tellWorker({ type: "capture-health", row, pageUrl: location.origin });
+      return;
+    }
 
     if (data.type === "debug") {
       try {
@@ -156,26 +201,28 @@
 
     if (data.type !== "raw-conversation") return;
 
-    try {
-      chrome.runtime.sendMessage(
-        {
-          type: "raw-conversation",
-          payload: {
-            url: data.url || "",
-            reqBody: data.reqBody || null,
-            transport: data.transport || "fetch",
-            raw: data.raw || "",
-            capturedAt: data.capturedAt || Date.now(),
-            pageUrl: location.href,
-          },
-        },
-        () => void chrome.runtime.lastError
-      );
-    } catch (_) {
-      // Service worker asleep or context invalidated after an extension reload;
-      // the tab reloads itself on update, so the next capture will land.
-    }
+    pageHealth.forwarded++;
+    tellWorker({
+      type: "raw-conversation",
+      payload: {
+        url: data.url || "",
+        reqBody: data.reqBody || null,
+        transport: data.transport || "fetch",
+        raw: data.raw || "",
+        capturedAt: data.capturedAt || Date.now(),
+        pageUrl: location.href,
+      },
+    });
   });
+
+  // The worker asks each engine tab how capture stands here (0.73.1). A tab
+  // that doesn't answer has a script cut off from the extension.
+  try {
+    chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
+      if (!msg || msg.type !== "cs-ping") return;
+      reply({ ok: true, marker: !!channel(), ...pageHealth, ageMs: Date.now() - pageHealth.loadedAt, url: location.origin + location.pathname.replace(/\/[^/]{12,}/g, "/:id") });
+    });
+  } catch (_) { /* no extension context */ }
 
   /* ---------- Loader auto-submit ----------
    * The Loader navigates its own tab to ?q=…&lcfc=1&lcfctok=<token>. We only type

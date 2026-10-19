@@ -22,6 +22,7 @@ import {
 } from "./lib/pacing.js";
 import { createErrorLog } from "./lib/errorlog.js";
 import { BUILD } from "./lib/build.js";
+import { noteHealth, emptyHealth, healthReport, verdict, ENGINES as HEALTH_ENGINES } from "./lib/captureHealth.js";
 import { checkEnginesAuth, checkEngineAuth, AUTH_COOKIES } from "./lib/auth-check.js";
 import { buildDemoRecords, isDemoRecord } from "./lib/demo-data.js";
 import { buildCampaignXlsx, campaignCsvFiles, campaignExportCounts } from "./lib/campaignXlsx.js";
@@ -212,6 +213,40 @@ chrome.runtime.onInstalled.addListener((details) => {
   });
   ensureHeartbeatAlarm();
 });
+
+/* ---------- The capture check (0.73.1) ----------
+ * What happened on the way from an engine page to the store, per engine
+ * (lib/captureHealth.js). Updates are chained so two arriving together
+ * don't overwrite each other. */
+const HEALTH_KEY = "lcfcCaptureHealth";
+let healthChain = Promise.resolve();
+function noteCapture(engine, e) {
+  healthChain = healthChain.then(async () => {
+    const got = await chrome.storage.local.get(HEALTH_KEY);
+    await chrome.storage.local.set({ [HEALTH_KEY]: noteHealth(got[HEALTH_KEY], engine, e) });
+  }).catch(() => {});
+  if (e && e.kind === "drop" && e.reason !== "paused") logEvent(`capture:drop:${engine}`, "capture", `capture not saved: ${e.reason}`, { platform: engine, reason: e.reason, path: e.path || "" });
+  return healthChain;
+}
+const ENGINE_TAB_URLS = ["https://chatgpt.com/*", "https://chat.openai.com/*", "https://gemini.google.com/*", "https://www.perplexity.ai/*", "https://perplexity.ai/*", "https://grok.com/*"];
+// Each open engine tab, asked how capture stands there. No answer within
+// 1.5 s means its script is cut off from the extension.
+async function engineTabsHealth() {
+  let tabs = [];
+  try { tabs = await chrome.tabs.query({ url: ENGINE_TAB_URLS }); } catch (_) { return []; }
+  return Promise.all(tabs.map(async (t) => {
+    const engine = platformFromUrl(t.url);
+    const base = { tabId: t.id, engine, url: (() => { try { const u = new URL(t.url); return u.origin + u.pathname.replace(/\/[^/]{12,}/g, "/:id"); } catch (_) { return ""; } })(), discarded: !!t.discarded };
+    if (t.discarded || t.status === "unloaded") return { ...base, alive: false, asleep: true };
+    const reply = await new Promise((res) => {
+      const timer = setTimeout(() => res(null), 1500);
+      try {
+        chrome.tabs.sendMessage(t.id, { type: "cs-ping" }, { frameId: 0 }, (r) => { clearTimeout(timer); void chrome.runtime.lastError; res(r || null); });
+      } catch (_) { clearTimeout(timer); res(null); }
+    });
+    return reply && reply.ok ? { ...base, alive: true, ...reply, url: base.url } : { ...base, alive: false };
+  }));
+}
 
 function platformFromUrl(url) {
   const u = String(url || "");
@@ -457,6 +492,11 @@ async function detectAnswerLang(record) {
   return null;
 }
 
+const withTimeout = (p, ms, fallback) => new Promise((resolve) => {
+  const t = setTimeout(() => resolve(fallback), ms);
+  Promise.resolve(p).then((v) => { clearTimeout(t); resolve(v); }, () => { clearTimeout(t); resolve(fallback); });
+});
+
 async function deriveAndStore(rawRow, rawText, settings, { settle = true } = {}) {
   const raw = rawText ?? (await gunzipToString(rawRow.gz));
   const cfg = settings || (await getSettings());
@@ -491,11 +531,13 @@ async function deriveAndStore(rawRow, rawText, settings, { settle = true } = {})
 
   await attachPages(record);
   await attachInteractions(record);
-  const lang = await detectAnswerLang(record);
+  // Neither may hold the record back (0.73.1): each gets 3 s, then the
+  // record is saved without it.
+  const lang = await withTimeout(detectAnswerLang(record), 3000, null);
   if (lang) record.answerLang = lang;
   // The built-in AI's stored check, put back on every derive and Reprocess
   // without running the model (0.70.0).
-  await aiSvc.attach(record).catch(() => {});
+  await withTimeout(aiSvc.attach(record).catch(() => {}), 3000, null);
   await db.put("derived", record);
   return settle ? settleSameAnswer(record) : record;
 }
@@ -2688,9 +2730,45 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     try {
       switch (msg?.type) {
+        // The capture check (0.73.1): what each engine page saw, and why a
+        // capture went nowhere.
+        case "capture-health": {
+          const row = msg.row || {};
+          const engine = platformFromUrl(msg.pageUrl || (sender && sender.tab && sender.tab.url));
+          noteCapture(engine, row.ev === "conv" ? { kind: "conv", path: row.path, method: row.method, status: row.status, at: row.at } : { kind: "unknown", ev: row.ev, path: row.path, method: row.method, ctype: row.ctype, at: row.at });
+          sendResponse({ ok: true });
+          break;
+        }
+        case "capture-drop": {
+          const engine = platformFromUrl(msg.pageUrl || (sender && sender.tab && sender.tab.url));
+          noteCapture(engine, { kind: "drop", reason: String(msg.reason || "unknown").slice(0, 40) });
+          sendResponse({ ok: true });
+          break;
+        }
+        case "capture-check": {
+          const [got, tabs, settings] = await Promise.all([chrome.storage.local.get(HEALTH_KEY), engineTabsHealth(), getSettings()]);
+          const health = got[HEALTH_KEY] || emptyHealth();
+          const paused = !!settings.capturePaused;
+          let derived = null, manual = null;
+          try {
+            const recs = await db.getAll("derived");
+            derived = recs.length;
+            manual = recs.filter((r) => !r.geo).length;
+          } catch (_) { /* counts unknown */ }
+          const counts = { derived, manual };
+          const engines = HEALTH_ENGINES.map((e) => verdict(e, health[e], tabs, { paused }));
+          sendResponse({ ok: true, version: BUILD, paused, tabs, health, engines, counts, retentionMax: settings.retentionMax, report: healthReport({ version: BUILD, health, tabs, paused, counts, retentionMax: settings.retentionMax }) });
+          break;
+        }
+        case "capture-refresh-tab": {
+          try { await chrome.tabs.reload(Number(msg.tabId)); sendResponse({ ok: true }); } catch (e) { sendResponse({ ok: false, error: String(e && e.message || e) }); }
+          break;
+        }
+
         case "raw-conversation": {
           const tabId = sender?.tab?.id;
-          if (await capturePausedFor(sender)) { sendResponse({ ok: true, captureId: null, skipped: "paused" }); break; }
+          const capEngine = platformFromUrl((msg.payload || {}).pageUrl || (msg.payload || {}).url);
+          if (await capturePausedFor(sender)) { noteCapture(capEngine, { kind: "drop", reason: "paused" }); sendResponse({ ok: true, captureId: null, skipped: "paused" }); break; }
           let meta = null;
           if (loader.running) {
             const found = legForTab(tabId);
@@ -2728,7 +2806,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             }
           }
           meta = { ...(meta || {}), session: await sessionOf(sender, platformFromUrl((msg.payload || {}).pageUrl || (msg.payload || {}).url), (msg.payload || {}).url) };
-          const res = await storeCapture(msg.payload, meta);
+          let res;
+          try {
+            res = await storeCapture(msg.payload, meta);
+          } catch (e) {
+            noteCapture(capEngine, { kind: "drop", reason: "error" });
+            throw e;
+          }
+          // The capture check: saved, or why not (0.73.1).
+          if (res && res.skipped) noteCapture(capEngine, { kind: "drop", reason: res.skipped });
+          else if (res && res.captureId && !res.record) noteCapture(capEngine, { kind: "drop", reason: "empty", path: endpointShape((msg.payload || {}).url, (msg.payload || {}).pageUrl) });
+          else if (res && res.record) noteCapture(capEngine, { kind: "stored", captureId: res.captureId });
           if (res && res.captureId) {
             loaderOnCapture(tabId, res.record);
             // Notify the popup if it's open. Use a callback so a missing receiver
