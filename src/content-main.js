@@ -621,6 +621,9 @@
           netlog("ws", "WS", wsUrl, { status: 101, matched: isTargetWs, frames: inFrames + outFrames, size: bytes, ms: Date.now() - opened, shape });
         };
         netlog("ws-open", "WS", wsUrl, { matched: isTargetWs });
+        // The capture check (0.73.1): a live socket the capture doesn't read
+        // is named, in case an engine moves its answers onto one.
+        if (!isTargetWs && !isThirdParty(wsUrl)) health("socket", wsUrl, { method: "WS" });
         ws.addEventListener("message", (ev) => {
           inFrames++;
           const d = typeof ev.data === "string" ? ev.data : "";

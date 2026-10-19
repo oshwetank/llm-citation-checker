@@ -97,7 +97,7 @@ export function healthReport({ version, health, tabs = [], paused = false, count
     lines.push(`last conversation request: ${h.conv ? `${h.conv.method} ${h.conv.path} (${h.conv.status || "?"}) at ${t(h.conv.at)}` : "none"}`);
     lines.push(`last answer saved: ${h.stored ? t(h.stored.at) : "none"}`);
     for (const d of h.drops || []) lines.push(`dropped: ${d.reason}${d.path ? ` ${d.path}` : ""} at ${t(d.at)}`);
-    for (const u of h.unknown || []) lines.push(`${u.ev === "stream-taken" ? "stream taken (unfamiliar address)" : "stream not recognised"}: ${u.method} ${u.path} [${u.ctype}] at ${t(u.at)}`);
+    for (const u of h.unknown || []) lines.push(`${u.ev === "stream-taken" ? "stream taken (unfamiliar address)" : u.ev === "socket" ? "live socket not read" : "stream not recognised"}: ${u.method} ${u.path}${u.ctype ? ` [${u.ctype}]` : ""} at ${t(u.at)}`);
   }
   return lines.join("\n");
 }

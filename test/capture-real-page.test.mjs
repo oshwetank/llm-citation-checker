@@ -56,6 +56,7 @@ const page = (endpoint, method, { wipe = true } = {}) => `<!doctype html><html l
     await new Promise((r) => setTimeout(r, 300));
     ${wipe ? `for (const a of [...document.documentElement.attributes]) document.documentElement.removeAttribute(a.name);` : ""}
     await new Promise((r) => setTimeout(r, 200));
+    try { new WebSocket("wss://chatgpt.com/backend-api/live/ws"); } catch (_) {}
     const res = await fetch(${JSON.stringify(endpoint)}, ${method === "GET" ? `{ method: "GET" }` : `{ method: "POST", headers: { "content-type": "application/json" }, body: new Blob([${JSON.stringify(REQ)}], { type: "application/json" }) }`});
     await res.text();
     document.title = "done";
@@ -125,6 +126,7 @@ try {
   const t = (c.tabs || []).find((x) => x.engine === "chatgpt");
   check("the open ChatGPT tab is connected, with its marker, and saw the request", t && t.alive && t.marker && t.conv >= 1, JSON.stringify(t));
   check("the unfamiliar address is named in the report", /stream taken \(unfamiliar address\): POST \/backend-api\/lightning\/turn\/stream/.test(c.report || ""), (c.report || "").slice(0, 600));
+  check("a live socket the capture doesn't read is named", /live socket not read: WS \/backend-api\/live\/ws/.test(c.report || ""), (c.report || "").slice(0, 900));
   check("the report has no prompt or answer text", !/Zento|Kovo|Lumora/.test(c.report || ""));
   check("counts: answers asked by hand", c.counts && c.counts.manual >= 4, JSON.stringify(c.counts));
 
