@@ -316,11 +316,14 @@ try {
     const selects = await page.evaluate((t) => {
       const root = document.getElementById(t);
       return [...root.querySelectorAll("select")].map((s, i) => ({
-        i, id: s.id || `(select ${i})`, options: s.options.length,
+        i, id: s.id || `(select ${i})`, options: s.options.length, reloads: s.dataset.reloads === "1",
       }));
     }, tab);
     for (const s of selects) {
       if (s.options < 2) continue;
+      // The interface language reloads the page by design (0.71.0); it has
+      // its own test (i18n-ui).
+      if (s.reloads) continue;
       const res = await page.evaluate(async ({ t, i }) => {
         const root = document.getElementById(t);
         const sel = [...root.querySelectorAll("select")][i];
