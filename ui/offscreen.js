@@ -56,26 +56,38 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 let engine = null;
 const getEngine = () => (engine = engine || import("../src/lib/llmEngine.js"));
 let lastProgress = 0;
+const sendProgress = (p) => {
+  const progress = { status: p.status, file: p.file || null, loaded: p.loaded || 0, total: p.total || 0, pct: p.progress ?? null };
+  // In a browser without offscreen documents this runs in the background
+  // page itself, which can't message itself: it is told directly.
+  if (globalThis.citoOffscreen && typeof globalThis.citoOffscreen.onProgress === "function") { globalThis.citoOffscreen.onProgress(progress); return; }
+  try { chrome.runtime.sendMessage({ type: "ai-progress", progress }, () => void chrome.runtime.lastError); } catch (_) { /* nobody listening */ }
+};
+async function llmOp(op, args = {}) {
+  const e = await getEngine();
+  switch (op) {
+    case "hardware": return e.hardware();
+    case "status": return e.status();
+    case "load": return e.load({ ...args, onProgress: (p) => {
+      // Throttled: a 1.4 GB download reports thousands of steps.
+      const now = Date.now();
+      if (p && p.status === "progress_total" && now - lastProgress < 300 && p.progress < 100) return;
+      lastProgress = now;
+      sendProgress(p || {});
+    } });
+    case "generate": return e.generate(args);
+    case "unload": await e.unload(); return { ok: true };
+    case "cached": return e.cachedBytes(args.repo, args.host);
+    case "remove": return e.removeCached(args.repo, args.host);
+    default: throw new Error(`unknown op ${op}`);
+  }
+}
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg || msg.target !== "llm") return;
-  (async () => {
-    const e = await getEngine();
-    switch (msg.op) {
-      case "hardware": return e.hardware();
-      case "status": return e.status();
-      case "load": return e.load({ ...msg.args, onProgress: (p) => {
-        // Throttled: a 1.4 GB download reports thousands of steps.
-        const now = Date.now();
-        if (p && p.status === "progress_total" && now - lastProgress < 300 && p.progress < 100) return;
-        lastProgress = now;
-        try { chrome.runtime.sendMessage({ type: "ai-progress", progress: { status: p.status, file: p.file || null, loaded: p.loaded || 0, total: p.total || 0, pct: p.progress ?? null } }, () => void chrome.runtime.lastError); } catch (_) { /* nobody listening */ }
-      } });
-      case "generate": return e.generate(msg.args);
-      case "unload": await e.unload(); return { ok: true };
-      case "cached": return e.cachedBytes(msg.args.repo, msg.args.host);
-      case "remove": return e.removeCached(msg.args.repo, msg.args.host);
-      default: throw new Error(`unknown op ${msg.op}`);
-    }
-  })().then((r) => sendResponse({ ok: true, result: r }), (err) => sendResponse({ ok: false, error: String(err && err.message || err) }));
+  llmOp(msg.op, msg.args).then((r) => sendResponse({ ok: true, result: r }), (err) => sendResponse({ ok: false, error: String(err && err.message || err) }));
   return true;
 });
+
+// For browsers without offscreen documents (Firefox, Safari: 0.72.0) the
+// background is a page and loads this file itself; it calls these directly.
+globalThis.citoOffscreen = { extract, llmOp, onProgress: null };

@@ -7472,3 +7472,24 @@ body.popup .cv-tab { height: 30px; padding: 0 9px; font-size: 12px; }
   unicode-bidi: plaintext;
   text-align: start;
 }
+
+/* Touch screens (0.72.0): controls at least 32px high, so a finger can hit
+ * them; nothing changes with a mouse. */
+@media (pointer: coarse) {
+  button, .btn, .db-chip, .db-seg-btn, .ab-seg-btn, .at-rail-item, .nav-tab, select, input[type="checkbox"] + .ab-switch-track,
+  .cb-nav-btn, .db-view, .db-kindbtn, .at-btn, .ap-pill[role="button"] { min-height: 32px; }
+  .ab-switch-track { min-width: 46px; }
+  input[type="range"] { min-height: 32px; }
+}
+
+/* Wide tables scroll inside their card instead of pushing the page sideways
+ * on a narrow screen (0.72.0). */
+.cmp-run-table, .cmp-matrix, .src-table, .prompt-perf-table, .drill-table, .summary-table, .prompt-table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+/* About → This browser (0.72.0) */
+.ab-support { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 6px; font-size: 13px; }
+.ab-support li { display: flex; align-items: center; gap: 8px; }
+.ab-support li.off { color: var(--fg-secondary); }

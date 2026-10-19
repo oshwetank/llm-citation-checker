@@ -14,7 +14,7 @@ import { makeZip } from "../src/lib/zipWrite.js";
 import { BUNDLE_PARTS, buildFeedbackFiles, bundleFilename } from "../src/lib/feedbackBundle.js";
 import { computeSearchFunnel, computeBrandMatrix } from "../src/lib/funnel-omitted.js";
 import { GLOSSARY, glossaryEntries } from "../src/lib/glossary.js";
-import { ABOUT_STEPS, ABOUT_NEWS, glossaryView, pickedTerm, startProgress, settingsState, settingValue, SETTING_LIMITS, storageMeter, logView, buildStatus } from "../src/lib/aboutView.js";
+import { ABOUT_STEPS, ABOUT_NEWS, glossaryView, pickedTerm, startProgress, settingsState, settingValue, SETTING_LIMITS, storageMeter, logView, buildStatus, browserSupport } from "../src/lib/aboutView.js";
 import { normalizeMentions } from "../src/lib/mention-list.js";
 import {
   answerKind, searchesView, brandsView, pagesView, domainsView, ownBrandFor, yourBrandView, findPrevious, changesView, knownVendors, adsView,
@@ -10043,6 +10043,17 @@ function renderAboutOverview() {
     steps,
     el("p", { className: "ab-sub" }, "Brand detection is automatic for every industry. Your brand, competitors, prompts and engines are set per campaign, in Campaigns.")));
   box.append(abNewsCard(true));
+  // What works in this browser (0.72.0): the same build runs in Chrome,
+  // Edge, Brave, Opera, Firefox and Safari, with a few parts missing in some.
+  const sup = browserSupport({
+    offscreen: !!(chrome.offscreen), tabGroups: !!(chrome.tabGroups), notifications: !!(chrome.notifications),
+    nano: typeof globalThis.LanguageModel !== "undefined", webgpu: !!navigator.gpu, incognito: !!(chrome.windows && chrome.windows.create), ua: navigator.userAgent,
+  });
+  const list = el("ul", { className: "ab-support", id: "abSupport" });
+  sup.rows.forEach((r) => list.append(el("li", { className: r.on ? "on" : "off" }, glyphEl(r.on ? "check" : "info", 13), el("span", {}, r.label), r.note ? el("span", { className: "muted" }, ` · ${r.note}`) : "")));
+  box.append(el("div", { className: "card ab-card" },
+    el("div", { className: "ab-head" }, el("div", {}, el("h2", { className: "ab-title" }, `This browser: ${sup.name}`), el("p", { className: "ab-sub" }, "The same extension runs in Chrome, Edge, Brave, Opera, Firefox and Safari; a few parts depend on the browser."))),
+    list));
 }
 
 /* The glossary: the same entries the hover definitions come from

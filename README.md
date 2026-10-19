@@ -493,6 +493,16 @@ visible gap — so the UI reports it as "not measured" and says why.
 4. Pin it, then open ChatGPT, Gemini, Perplexity or Grok in a **new** tab — the network patch has to install
    before the page loads — and run a prompt.
 
+### Other browsers (0.72.0)
+
+| Browser | How | What differs |
+|---|---|---|
+| **Chrome, Edge, Brave, Opera, Vivaldi, Arc** (Windows, macOS, Linux, ChromeOS) | Load this folder unpacked, as above (Edge: `edge://extensions`, Brave: `brave://extensions`, Opera: `opera://extensions`) | Nothing. Gemini Nano exists only in Chrome; the built-in AI works in all of them. |
+| **Firefox 128+** (Windows, macOS, Linux; Firefox for Android) | `node scripts/build-firefox.mjs`, then `about:debugging` → This Firefox → **Load Temporary Add-on** → `dist/firefox/manifest.json` | Runs as a background page: reading cited pages and the built-in AI run there. No tab groups for campaign tabs; site icons are letter badges. The built-in AI uses the graphics chip on Firefox 141+ (Windows) and 145+ (macOS); on Linux it runs on the processor (Light size). |
+| **Safari 18+** (macOS; iOS/iPadOS) | On a Mac with Xcode: `node scripts/build-firefox.mjs`, then `xcrun safari-web-extension-converter dist/firefox --app-name CitoSkeleton`, open the generated project in Xcode, run it, and enable the extension in Safari → Settings → Extensions (allow unsigned extensions in the Develop menu while testing). Publishing needs an Apple developer account. | No notifications (the run's end shows in the panel instead), no tab groups, no private-window runs. Safari 26 has WebGPU for the built-in AI. Safari may clear storage of sites not visited for weeks, so export campaigns you want to keep. |
+
+Chrome on Android and Safari before 18 don't run extensions like this one.
+
 ## Running a campaign
 
 1. **Campaigns** tab → create a campaign (up to 3).

@@ -663,7 +663,12 @@ async function resetOffscreen() {
   offscreenReady = null;
   await ensureOffscreen();
 }
+// Firefox and Safari have no offscreen documents; there the background is a
+// page (scripts/build-firefox.mjs) that loads ui/offscreen.js itself, and
+// its functions are called directly (0.72.0).
+const inPage = () => !chrome.offscreen && globalThis.citoOffscreen;
 async function extractPage(html, url) {
+  if (inPage()) return { ok: true, ...globalThis.citoOffscreen.extract(html, url) };
   await ensureOffscreen();
   const r = await chrome.runtime.sendMessage({ target: "offscreen", type: "extract-page", html, url });
   if (!r || !r.ok) throw new Error((r && r.error) || "no reply from the page reader");

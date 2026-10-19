@@ -16,3 +16,4 @@ desktop.ini
 # Scratch/temp files this project's assistant sessions sometimes leave behind
 _*.mjs
 _*.html
+dist/

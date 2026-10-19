@@ -155,3 +155,22 @@ export function buildStatus(reply, build) {
   return { known: true, stale: false, title: "Up to date", sub: `Version ${build}`,
     line: `Up to date. These screens and the part that runs campaigns are both version ${build}.` };
 }
+
+/**
+ * What works in this browser (0.72.0, About → Overview → "This browser").
+ * @param {{offscreen?: boolean, tabGroups?: boolean, notifications?: boolean, nano?: boolean, webgpu?: boolean, incognito?: boolean, ua?: string}} env
+ */
+export function browserSupport(env = {}) {
+  const ua = String(env.ua || "");
+  const name = /Firefox\//.test(ua) ? "Firefox" : /Edg\//.test(ua) ? "Edge" : /OPR\//.test(ua) ? "Opera" : /Safari\//.test(ua) && !/Chrome\//.test(ua) ? "Safari" : /Chrome\//.test(ua) ? "Chrome" : "This browser";
+  const rows = [
+    { id: "capture", label: "Capturing ChatGPT, Gemini, Perplexity and Grok", on: true },
+    { id: "pages", label: "Reading the cited pages", on: true, note: env.offscreen ? "" : "in the background page" },
+    { id: "ai", label: "Built-in AI", on: true, note: env.webgpu ? "on the graphics chip" : "on the processor (Light size suggested)" },
+    { id: "nano", label: "Gemini Nano", on: !!env.nano, note: env.nano ? "" : "Chrome only" },
+    { id: "groups", label: "Campaign tabs grouped", on: !!env.tabGroups, note: env.tabGroups ? "" : "not in this browser" },
+    { id: "notify", label: "A notification when a run ends", on: !!env.notifications, note: env.notifications ? "" : "shown in the panel instead" },
+    { id: "private", label: "Runs signed out, in a private window", on: env.incognito !== false, note: env.incognito === false ? "not in this browser" : "" },
+  ];
+  return { name, rows, all: rows.every((r) => r.on) };
+}

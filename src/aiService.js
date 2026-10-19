@@ -42,10 +42,14 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
   const modelIdOf = (spec) => (spec ? spec.repo : null);
 
   async function llm(op, args = {}, timeoutMs = 10 * 60 * 1000) {
-    await ensureOffscreen();
     let timer;
+    // Firefox and Safari: the model runs in this background page (0.72.0).
+    const direct = !chrome.offscreen && globalThis.citoOffscreen;
+    if (direct) globalThis.citoOffscreen.onProgress = onProgress;
+    else await ensureOffscreen();
     const reply = await Promise.race([
-      chrome.runtime.sendMessage({ target: "llm", op, args }),
+      direct ? globalThis.citoOffscreen.llmOp(op, args).then((result) => ({ ok: true, result }), (e) => ({ ok: false, error: String(e && e.message || e) }))
+        : chrome.runtime.sendMessage({ target: "llm", op, args }),
       new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`the AI model took too long (${op})`)), timeoutMs); }),
     ]).finally(() => clearTimeout(timer));
     if (!reply) throw new Error("no reply from the AI page");
