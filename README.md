@@ -12,12 +12,23 @@ of its own**, except, if you turn on **Read the cited pages**, to the pages an a
 and, if you download the **built-in AI**, a one-time download of the model's files from
 Hugging Face. Nothing you capture ever leaves your device: the AI runs on your computer.
 
-> **v0.73.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.73.1** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **Capture first** (0.73.1). Questions asked by hand were not being saved, in two ways:
+>   - on a page that rebuilds itself after loading (ChatGPT does), the link between the page
+>     and the extension was lost, so every answer was thrown away unseen;
+>   - once campaigns filled the storage limit, each new hand-asked answer was deleted the
+>     moment it arrived.
+>
+>   Both are fixed. ChatGPT answers are now also caught when they come on a follow-up or
+>   unfamiliar stream. **About → Diagnostics → Capture check** shows, for each engine, whether
+>   answers are being saved, and if not, where it stops: paused, tab needs a refresh, a reply
+>   it couldn't read. **Copy capture report** gives addresses, counts and reasons, never your
+>   prompts.
 > - **Ask** (0.73.0). A new tab in the full-tab view: ask questions about your own campaigns
 >   and captured answers ("How visible is my brand in my latest campaign?", "Which sites are
 >   cited most?") and the built-in AI answers on your computer. It looks the numbers up with
