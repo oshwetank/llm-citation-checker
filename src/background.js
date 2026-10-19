@@ -45,7 +45,7 @@ import {
   MAX_PROFILES, TRASH_RETENTION_DAYS, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
   selectTracked, computeMetrics, computeSeries, brandPresence, normName,
   effectiveTrackedBrands, headToHead, brandSourceDomains, availableEngines,
-  hasSignal, turnAnswered, usageLimitOf, countCompletedForRun, countCompletedForLeg, isPrunableCapture,
+  hasSignal, turnAnswered, usageLimitOf, countCompletedForRun, countCompletedForLeg, isPrunableCapture, retentionVictims,
 } from "./lib/geo.js";
 export { hasSignal };
 
@@ -377,7 +377,7 @@ async function storeCapture(payload, meta) {
 
   if (record) record = await settleSameAnswer(record);
 
-  await enforceRetention(settings);
+  await enforceRetention(settings, record ? record.captureId : captureId);
   // A copy of an answer already stored is merged into that record, which
   // keeps its id; that is the capture the panel should show.
   return { captureId: record ? record.captureId : captureId, record };
@@ -808,13 +808,14 @@ async function dropCapture(captureId) {
 // isPrunableCapture() in lib/geo.js for why (short version: pruning by age
 // alone made a large campaign run delete its own earlier results once the
 // store filled, so prompts went missing and it looked like a capture bug).
-async function enforceRetention(settings) {
+async function enforceRetention(settings, keepId) {
   const cfg = settings || (await getSettings());
   const limit = Math.max(50, cfg.retentionMax || DEFAULT_SETTINGS.retentionMax);
   const count = await db.count("derived");
   if (count <= limit) return;
-  const keys = await db.getOldestPrunableKeys("derived", count - limit, isPrunableCapture);
-  for (const id of keys) await dropCapture(id);
+  // The cap counts manual captures only (retentionVictims, 0.73.1).
+  const prunable = await db.getOldestPrunableKeys("derived", Number.MAX_SAFE_INTEGER, isPrunableCapture);
+  for (const id of retentionVictims(prunable, limit, keepId)) await dropCapture(id);
 }
 
 // Re-derive every stored capture. Uses a cursor + chunking so a large store

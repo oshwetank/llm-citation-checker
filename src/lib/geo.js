@@ -614,6 +614,23 @@ export function isPrunableCapture(rec) {
   return !rec.geo;
 }
 
+/**
+ * Which manual captures to delete (0.73.1). The cap counts manual captures
+ * only: counting campaign captures too meant that once campaigns filled the
+ * cap, the one manual capture just stored was the whole excess and was
+ * deleted the moment it arrived, so a question asked by hand never appeared.
+ * The capture just stored is never chosen.
+ * @param {string[]} prunableOldestFirst  ids of manual captures, oldest first
+ * @param {number} limit  how many manual captures to keep
+ * @param {string} [keepId]  the capture just stored
+ */
+export function retentionVictims(prunableOldestFirst, limit, keepId) {
+  const ids = prunableOldestFirst || [];
+  const excess = ids.length - Math.max(1, limit || 0);
+  if (excess <= 0) return [];
+  return ids.filter((id) => id !== keepId).slice(0, excess);
+}
+
 /** Submissions a run will make — surfaced in the UI before the user commits. */
 export function runVolume(prompts, engines) {
   const active = (prompts || []).filter((p) => p.active !== false).length;
