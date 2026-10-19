@@ -87,6 +87,7 @@ try {
   {
     const s = await msg({ type: "ai-status" });
     check("off, nothing downloaded", s && s.ok && !s.ready && !s.downloading, JSON.stringify(s));
+    check("no hardware check while Settings isn't shown (it opens the AI page)", s && s.hardware == null, JSON.stringify(s && s.hardware));
     check("the default settings: campaigns and everyday on, counts off", s.settings.onCampaigns && s.settings.onEveryday && !s.settings.inCounts, JSON.stringify(s.settings));
     const { raw, reqBody } = fixture("chatgpt-genui-cards.txt");
     const res = await msg({ type: "raw-conversation", payload: { raw, reqBody, pageUrl: "https://chatgpt.com/", capturedAt: Date.now() } });

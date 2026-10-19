@@ -90,8 +90,9 @@ try {
     });
     check("picking Inter sets the page's typeface", /^"?Inter"?,/.test(f.family), f.family);
     check("from the bundled file", f.loaded, JSON.stringify(f));
-    await tab.focus("#dsSize");
-    for (let i = 0; i < 3; i++) await tab.keyboard.press("ArrowRight");
+    // Focused before each press: the Settings page draws other cards as their
+    // data arrives, and a key sent while the page moved focus would be lost.
+    for (let i = 0; i < 3; i++) { await tab.focus("#dsSize"); await tab.keyboard.press("ArrowRight"); }
     await tab.waitForTimeout(300);
     const z = await tab.evaluate(() => ({ v: document.getElementById("dsSize").value, out: document.querySelector('output[for="dsSize"]').textContent, zoom: getComputedStyle(document.querySelector(".app-content")).zoom }));
     check("the size slider moves from the keyboard and says its value", z.v === "115" && z.out === "115%", JSON.stringify(z));

@@ -118,10 +118,24 @@ export function initAiSettings(slot) {
   const refresh = async () => {
     st = await send({ type: "ai-status" });
     draw();
-    if (!hwAsked) { hwAsked = true; const r = await send({ type: "ai-hardware" }); if (r && r.ok) { st = await send({ type: "ai-status" }); draw(); } }
     if (st && st.downloading) { if (!poll) poll = setInterval(refresh, 1000); }
     else if (poll) { clearInterval(poll); poll = null; }
   };
+  // The hardware check opens the AI page and asks Chrome for a graphics
+  // adapter, so it waits until the card is on screen: never on a popup or
+  // tab that doesn't show Settings (0.70.0).
+  const askHardware = async () => {
+    if (hwAsked) return;
+    hwAsked = true;
+    const r = await send({ type: "ai-hardware" });
+    if (r && r.ok) { st = await send({ type: "ai-status" }); draw(); }
+  };
+  if (typeof IntersectionObserver === "function") {
+    // A huge margin: what counts is that Settings is shown (a hidden page
+    // never intersects), not that the card is scrolled into view.
+    const io = new IntersectionObserver((entries) => { if (entries.some((e) => e.isIntersecting)) { io.disconnect(); askHardware(); } }, { rootMargin: "100000px 0px" });
+    io.observe(slot);
+  } else askHardware();
   try {
     chrome.runtime.onMessage.addListener((m) => { if (m && (m.type === "ai-state")) refresh(); });
   } catch (_) { /* not in the extension */ }
