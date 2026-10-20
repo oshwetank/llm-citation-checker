@@ -76,7 +76,7 @@ try {
   const head = () => page.evaluate(() => {
     const h = document.getElementById("cpHead");
     if (!h) return null;
-    const shown = [...h.querySelectorAll(".cp-actions button")].filter((b) => getComputedStyle(b).display !== "none").map((b) => b.textContent);
+    const shown = [...h.querySelectorAll(".cp-actions button:not(.ho-wrap button)")].filter((b) => getComputedStyle(b).display !== "none").map((b) => b.textContent);
     return { live: h.classList.contains("live"), paused: h.classList.contains("paused"), shown, status: document.getElementById("loaderStatus")?.innerText || "" };
   });
 
@@ -204,7 +204,7 @@ try {
     const r = await pop.evaluate(() => {
       const h = document.getElementById("cpHead");
       const c = document.querySelector(".app-content");
-      return { run: !!h?.querySelector(".cp-run"), shown: h ? [...h.querySelectorAll(".cp-actions button")].filter((b) => getComputedStyle(b).display !== "none").map((b) => b.textContent) : [], wide: c.scrollWidth - c.clientWidth };
+      return { run: !!h?.querySelector(".cp-run"), shown: h ? [...h.querySelectorAll(".cp-actions button:not(.ho-wrap button)")].filter((b) => getComputedStyle(b).display !== "none").map((b) => b.textContent) : [], wide: c.scrollWidth - c.clientWidth };
     });
     check("the header and its actions are there", r.run && r.shown.join("|") === "Edit setup|Export…|Run again|Run signed out", r.shown.join("|"));
     check("and fit the popup", r.wide <= 0, `${r.wide}px too wide`);
