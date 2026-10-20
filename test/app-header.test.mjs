@@ -117,7 +117,7 @@ try {
     await page.evaluate(() => document.querySelector('[data-tab="dashboard"]').click());
     await page.waitForTimeout(800);
     const d = await measure();
-    check("the Dashboard says what it holds, at the right of the bar", /stored on this computer/.test(d.pageText) && d.page && d.page.r > d.header.r - 40, d.pageText);
+    check("the Dashboard adds no \"stored on this computer\" note (0.78.0)", !/stored on this computer/.test(d.pageText), d.pageText);
     await page.evaluate(() => document.querySelector('[data-tab="about"]').click());
     await page.waitForTimeout(800);
     check("and it goes again on the next page", !(await measure()).page);

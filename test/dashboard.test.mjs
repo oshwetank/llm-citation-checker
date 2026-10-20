@@ -141,9 +141,23 @@ try {
     check("no campaign picker on the Dashboard", !r.campaignPicker);
     // Once, in the app bar (0.68.1: the card repeated it).
     const where = await page.evaluate(() => ({ bar: document.getElementById("headerPage")?.innerText || "", inCard: /stored on this computer/.test(document.querySelector("#dashboard .db-top")?.innerText || "") }));
-    check("it says where the data lives, once, in the app bar", /stored on this computer/.test(where.bar) && !where.inCard, JSON.stringify(where));
+    check("no \"stored on this computer\" line on the Dashboard (0.78.0)", !/stored on this computer/.test(where.bar) && !where.inCard, JSON.stringify(where));
     const rows = await page.evaluate(() => [...document.querySelectorAll("#dashboard .db-fgrid .db-flabel")].map((x) => x.textContent));
     check("the filters are labelled rows: Look in, Engines, When, Show", rows.join("|") === "Look in|Engines|When|Show", rows.join("|"));
+    // 0.78.0, asked: the history started 60–70% down the page.
+    const lay = await page.evaluate(() => ({
+      list: Math.round(document.querySelector("#dashboard .db-list")?.getBoundingClientRect().top || 9999),
+      open: !document.getElementById("dbFilters")?.hidden,
+      btn: !!document.getElementById("dbFiltersBtn"),
+      recentShown: [...document.querySelectorAll("#dashboard .db-recent")].some((x) => x.offsetParent !== null),
+    }));
+    check("the history starts near the top: under 320px down", lay.list < 320, String(lay.list));
+    check("the filters sit behind a Filters button, closed", lay.btn && !lay.open, JSON.stringify(lay));
+    await page.click("#dbFiltersBtn");
+    await page.waitForTimeout(250);
+    check("which opens them", await page.evaluate(() => !document.getElementById("dbFilters").hidden && document.getElementById("dbFiltersBtn").getAttribute("aria-expanded") === "true"));
+    await page.click("#dbFiltersBtn");
+    await page.waitForTimeout(250);
   }
 
   console.log("\nOne row per prompt");

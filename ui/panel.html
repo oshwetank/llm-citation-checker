@@ -30,11 +30,12 @@
       <header class="app-header">
         <div class="header-brand">
           <div class="brand-logo-group">
-            <div class="brand-icon">
-              <img src="../icons/icon48.png" width="24" height="24" style="object-fit: contain; display: block;" alt="Logo" />
-            </div>
+            <!-- 0.78.0: the logo opens the web page, the name the Dashboard. -->
+            <button type="button" class="brand-icon" id="brandIcon" aria-label="CitoSkeleton on the web (opens a new tab)">
+              <img src="../icons/icon48.png" width="24" height="24" style="object-fit: contain; display: block;" alt="" />
+            </button>
             <div class="brand-text">
-              <span class="brand-title">CitoSkeleton</span>
+              <button type="button" class="brand-title" id="brandTitle">CitoSkeleton</button>
               <span class="version-badge">v0.77.0</span>
               <span class="brand-sub">ChatGPT, Gemini, Perplexity &amp; Grok</span>
             </div>

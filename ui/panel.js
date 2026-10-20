@@ -5,6 +5,7 @@
 // calls of its own — see src/lib/exportDoc.js header. Data still only ever
 // arrives here via send()/hydrate() through the service worker.
 import { handoffButton } from "./handoff.js";
+import { applyDefs } from "./defs.js";
 import { campaignParts, answerParts } from "../src/lib/contextPack.js";
 import { buildExportModel, renderStandaloneHtml } from "../src/lib/exportDoc.js";
 import {
@@ -543,7 +544,9 @@ function beginSwap(node) {
  * render's full DOM teardown) rather than per-node handlers that would need
  * re-wiring on every re-render.
  */
-const TOOLTIP_DELAY = 1500;
+// 2.5 s (0.78.0, asked for): long enough not to pop up while moving the
+// pointer across the page, short enough to find when you pause on something.
+const TOOLTIP_DELAY = 2500;
 let tipTimer = null;
 let tipEl = null;
 function ensureTipEl() {
@@ -593,12 +596,54 @@ function hideTooltip() {
   tipTimer = null;
   if (tipEl) { tipEl.classList.remove("show"); tipEl.style.display = "none"; }
 }
+// A native title becomes our tooltip (0.78.0): the same look and delay
+// everywhere, and never two tooltips at once. Moved the moment the pointer
+// or focus arrives, before the browser's own tooltip could show. A control
+// with no other label keeps the text as its accessible name.
+function adoptTitle(n) {
+  if (!n || !n.hasAttribute || !n.hasAttribute("title")) return;
+  const t = n.getAttribute("title");
+  n.removeAttribute("title");
+  if (!t) return;
+  if (!n.hasAttribute("data-tip") && !n.hasAttribute("data-term")) n.setAttribute("data-tip", t);
+  if (!n.hasAttribute("aria-label") && !n.textContent.trim()) n.setAttribute("aria-label", t);
+}
+const TIP_SEL = "[data-tip],[data-term],[title]";
+function tipTarget(ev) {
+  const t = ev.target.closest?.(TIP_SEL);
+  if (t) adoptTitle(t);
+  return t && (t.hasAttribute("data-tip") || t.hasAttribute("data-term")) ? t : null;
+}
 document.addEventListener("mouseover", (ev) => {
-  const target = ev.target.closest?.("[data-tip],[data-term]");
+  const target = tipTarget(ev);
   if (!target) return;
   clearTimeout(tipTimer);
   tipTimer = setTimeout(() => showTooltip(target), TOOLTIP_DELAY);
 });
+// Keyboard users get the same definitions, after the same pause.
+document.addEventListener("focusin", (ev) => {
+  const target = tipTarget(ev);
+  if (!target || !target.matches(":focus-visible")) return;
+  clearTimeout(tipTimer);
+  tipTimer = setTimeout(() => { if (document.activeElement === target) showTooltip(target); }, TOOLTIP_DELAY);
+});
+document.addEventListener("focusout", hideTooltip);
+document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") hideTooltip(); });
+// The logo and the name (0.78.0, asked: the icon lands on the web page,
+// the name on the Dashboard).
+const SITE_URL = "https://www.oshwetank.com/tools/citoskeleton";
+document.getElementById("brandIcon")?.addEventListener("click", () => {
+  try { chrome.tabs.create({ url: SITE_URL }); } catch (_) { window.open(SITE_URL, "_blank", "noopener"); }
+});
+document.getElementById("brandTitle")?.addEventListener("click", () => document.querySelector('.nav-tab[data-tab="dashboard"]')?.click());
+// Definitions for the controls that have none of their own (ui/defs.js).
+let defsQueued = false;
+new MutationObserver(() => {
+  if (defsQueued) return;
+  defsQueued = true;
+  requestAnimationFrame(() => { defsQueued = false; applyDefs(document); });
+}).observe(document.documentElement, { childList: true, subtree: true });
+applyDefs(document);
 document.addEventListener("mouseout", (ev) => {
   const target = ev.target.closest?.("[data-tip],[data-term]");
   if (!target || (ev.relatedTarget && target.contains(ev.relatedTarget))) return;
@@ -724,7 +769,9 @@ function showTab(name) {
   if (panel) panel.classList.add("active");
   const slot = document.getElementById("headerPage");
   if (slot) slot.textContent = "";
-  if (name === "dashboard") setHeaderPage("dashboard", el("span", { className: "header-note" }, "Everything you’ve captured · stored on this computer"));
+  // The Dashboard's "Everything you've captured · stored on this computer"
+  // note went in 0.78.0 (asked: "Don't add this everywhere"); where the data
+  // lives is said once, in About.
   if (name === "loader" && cbHeaderNav) setHeaderPage("loader", cbHeaderNav);
   // The full tab's tools, whenever the full-tab Analyze is what's showing (it
   // may have its answer panel hidden, 0.60.0).
@@ -5438,6 +5485,7 @@ let currentFilteredRecs = [];
 // The canvas's line glyphs (Glyph.dc.html): 24×24, stroked in currentColor.
 // Static markup, never built from data.
 const GLYPH_PATHS = {
+  filter: '<path d="M3 5h18l-7 8v6l-4 2v-8z"/>',
   globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18"/><path d="M12 3a14 14 0 0 0 0 18"/>',
   noglobe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18"/><path d="M12 3a14 14 0 0 0 0 18"/><path d="M4 4l16 16" stroke-width="2.6"/>',
   pages: '<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5"/><path d="M10 13h6"/><path d="M10 17h6"/>',
@@ -5477,6 +5525,7 @@ const AK_GLYPH = { shopping: "cart", info: "book", local: "pin", images: "image"
 
 let dbQuery = "";
 let dbScope = { prompts: true, answers: true, fan: true };
+let dbFiltersOpen = false; // the full tab's Filters panel (0.78.0), closed by default
 let dbEngines = { chatgpt: true, gemini: true, perplexity: true, grok: true };
 let dbPeriod = null;         // null until picked: the view's default, widened if that would show nothing
 let dbRange = null;          // { from, to } as "YYYY-MM-DD" when the period is "custom"
@@ -5788,7 +5837,26 @@ function renderDashboardImpl() {
   const top = el("section", { className: "db-card db-top", "aria-label": "Search and filters" });
   wrap.append(top);
   // The app bar already says what this is (0.68.1: it was said twice).
-  top.append(search);
+  // 0.78.0, asked: the search and filters took so much room that the history
+  // started 60–70% down the page. In the tab they're one row now: the search,
+  // and a Filters button that opens the filters and counts the ones on.
+  let fpanel = null;
+  if (popup) top.append(search);
+  else {
+    const on = [
+      ["prompts", "answers", "fan"].some((k) => !dbScope[k]),
+      ENGINE_ORDER.some((id) => dbEngines[id] === false),
+      !!dbPeriod && dbPeriod !== dbDefaultPeriod(all, popup),
+      dbRepeat, dbCampaigns !== "group", !!dbLang, !!dbMarket,
+      Object.values(dbKinds || {}).some(Boolean), !!dbWeek,
+    ].filter(Boolean).length;
+    const fbtn = el("button", { type: "button", className: `db-fbtn${on ? " on" : ""}`, id: "dbFiltersBtn", "aria-expanded": String(dbFiltersOpen), "aria-controls": "dbFilters", "data-tip": "Where to look, which engines, when, and what to show" },
+      glyphEl("filter", 14), "Filters", on ? el("span", { className: "db-n" }, String(on)) : "");
+    fbtn.onclick = () => { dbFiltersOpen = !dbFiltersOpen; renderDashboard(); };
+    top.append(el("div", { className: "db-toprow" }, search, fbtn));
+    fpanel = el("div", { className: "db-fpanel", id: "dbFilters", hidden: !dbFiltersOpen });
+    top.append(fpanel);
+  }
 
   /* --- filters --- */
   const ymd = (t) => { const d = new Date(t); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
@@ -5872,12 +5940,13 @@ function renderDashboardImpl() {
     };
     if (v.langCounts.length > 1 || dbLang) line("Language", pickRow(v.langCounts, dbLang, "language", (c) => { dbLang = c; }));
     if (v.marketCounts.length > 1 || dbMarket) line("Market", pickRow(v.marketCounts, dbMarket, "region", (c) => { dbMarket = c; }));
-    top.append(row);
+    fpanel.append(row);
   }
   if (recent.length && !dbQuery) {
     const rr = el("div", { className: "db-recent" }, el("span", { className: "db-label" }, popup ? "Recent" : "Your recent searches"));
-    recent.forEach((q) => rr.append(dbChip(q, false, () => { dbSetQuery(q); renderDashboard(); }, { cls: "recent", pressed: false })));
-    if (!popup) rr.append(el("span", { className: "db-muted" }, "· kept automatically, nothing to set up"));
+    // Shown only while the search box has focus (0.78.0); a press keeps focus
+    // in the box so the click lands.
+    recent.forEach((q) => { const c = dbChip(q, false, () => { dbSetQuery(q); renderDashboard(); }, { cls: "recent", pressed: false }); c.onmousedown = (e) => e.preventDefault(); rr.append(c); });
     top.append(rr);
   }
 
@@ -5889,7 +5958,7 @@ function renderDashboardImpl() {
     const b = el("button", { className: `db-week${on ? " on" : ""}${dbWeek && !on ? " dim" : ""}`, type: "button", "aria-pressed": on ? "true" : "false",
       title: `${w.n} prompt${w.n === 1 ? "" : "s"} in the week of ${shortDate(w.start)}`, "aria-label": `${w.label}: ${w.n} prompt${w.n === 1 ? "" : "s"}` });
     if (!popup) b.append(el("span", { className: "db-week-n" }, w.n ? String(w.n) : ""));
-    b.append(el("span", { className: "db-week-bar", style: `height:${Math.round((w.n / maxW) * (popup ? 30 : 58))}px` }));
+    b.append(el("span", { className: "db-week-bar", style: `height:${Math.max(w.n ? 2 : 0, Math.round((w.n / maxW) * (popup ? 30 : 26)))}px` }));
     if (!popup) b.append(el("span", { className: "db-week-l" }, w.label));
     b.onclick = () => { dbWeek = on ? null : w.start; renderDashboard(); };
     bars.append(b);
@@ -5926,7 +5995,8 @@ function renderDashboardImpl() {
       kl.append(b);
     });
     kindBox.append(stack, kl);
-    wrap.append(el("section", { className: "db-summary", "aria-label": "Summary" }, el("div", { className: "db-card" }, total), el("div", { className: "db-card" }, when), el("div", { className: "db-card" }, kindBox)));
+    // One strip, not three tall cards (0.78.0).
+    wrap.append(el("section", { className: "db-summary db-strip db-card", "aria-label": "Summary" }, total, when, kindBox));
   }
 
   /* --- the list --- */

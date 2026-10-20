@@ -832,7 +832,10 @@ body::before {
 }
 
 .brand-sub { display: none; }
-body.popup .brand-text { display: none; }
+/* The name shows in the popup too (0.78.0): it's the way to the Dashboard. */
+body.popup .brand-text { display: flex; }
+body.popup .brand-text .version-badge, body.popup .brand-sub { display: none; }
+body.popup .brand-title { font-size: 13px; font-weight: 600; }
 body.popup .brand-icon { width: 24px; height: 24px; padding: 2px; border-radius: 6px; box-shadow: none; }
 body.tab .brand-icon { width: 28px; height: 28px; padding: 2px; border-radius: 7px; box-shadow: none; }
 body.tab .brand-title { font-size: 15px; font-weight: 600; }
@@ -7607,3 +7610,37 @@ body.popup .nav-tab[data-tab="ask"] { display: none; }
 .tag-label:hover { text-decoration: underline; }
 .tag-sidebar-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .tag-role { font: inherit; font-size: 11px; padding: 1px 4px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-solid); color: var(--fg-primary); }
+
+/* The logo and the name are buttons (0.78.0). */
+button.brand-icon { cursor: pointer; font: inherit; color: inherit; }
+button.brand-icon:hover { border-color: var(--accent); }
+button.brand-title { background: none; border: 0; padding: 0; font-family: inherit; cursor: pointer; }
+button.brand-title:hover { color: var(--accent); }
+button.brand-icon:focus-visible, button.brand-title:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- A compact Dashboard header (0.78.0) ----------
+   The owner: the search and filters pushed the history 60–70% down the page.
+   One row (search + Filters), the filters behind the button, recent searches
+   only while the box has focus, and the three summary cards as one strip. */
+.db-toprow { display: flex; align-items: center; gap: 8px; }
+.db-toprow .db-search { flex: 1 1 auto; min-width: 0; }
+.db-fbtn { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; height: 36px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-solid); color: var(--fg-primary); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; }
+.db-fbtn:hover, .db-fbtn[aria-expanded="true"] { border-color: var(--accent); }
+.db-fbtn.on { color: var(--accent); }
+.db-fbtn .db-n { min-width: 18px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: var(--accent-contrast, #fff); font-size: 11px; text-align: center; }
+.db-fpanel { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.db-fpanel[hidden] { display: none; }
+body.tab .db-top:not(:focus-within) .db-recent { display: none; }
+body.tab .db-top .db-recent { margin-top: 8px; }
+.db-strip { display: grid; grid-template-columns: auto minmax(0, 1.4fr) minmax(0, 1fr); gap: 18px; align-items: center; padding: 10px 14px; }
+.db-strip .db-total { flex-direction: row; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; }
+.db-strip .db-total-n { font-size: 24px; }
+.db-strip .db-total .db-muted { display: none; }
+.db-strip .db-box-head { margin: 0 0 4px; }
+.db-strip .db-h { font-size: 12px; }
+.db-strip .db-week-n, .db-strip .db-week-l { display: none; }
+.db-strip .db-weeks { min-height: 26px; }
+.db-strip .db-kindlist { display: flex; flex-wrap: wrap; gap: 4px; }
+.db-strip .db-kindbtn { padding: 1px 6px; }
+.db-strip .db-kind-l { font-size: 11px; }
+@media (max-width: 900px) { .db-strip { grid-template-columns: minmax(0, 1fr); gap: 8px; } }
