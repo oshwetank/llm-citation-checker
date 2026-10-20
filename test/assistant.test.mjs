@@ -32,7 +32,7 @@ const records = [
 const data = { records, profiles: [P], runs, now: NOW };
 
 console.log("the tools");
-check("seven tools, each with a schema", TOOLS.length === 7 && TOOL_NAMES.includes("campaign_metrics") && TOOLS.every((t) => t.function.parameters.type === "object"));
+check("twenty-two tools, each with a schema", TOOLS.length === 22 && TOOL_NAMES.includes("campaign_metrics") && TOOL_NAMES.includes("source_gaps") && TOOLS.every((t) => t.function.parameters.type === "object"));
 {
   const r = runTool("list_campaigns", {}, data);
   check("list_campaigns", r.ok && r.result[0].name === "Headphones India" && r.result[0].runs === 2 && r.result[0].competitors.join() === "Kovo,Lumi", JSON.stringify(r));
@@ -82,7 +82,7 @@ console.log("\nthe loop");
   const gen = async (o) => { seen.push(o); return { text: script.shift() }; };
   const r = await ask({ question: "How visible is Zento?", generate: gen, data });
   check("one tool call, then the answer", r.steps.length === 1 && r.steps[0].tool === "campaign_metrics" && r.steps[0].ok && /50%/.test(r.answer), JSON.stringify(r));
-  check("the tools are offered to the model", seen[0].tools && seen[0].tools.length === 7);
+  check("only the tools this kind of question needs are offered (8 at most)", seen[0].tools && seen[0].tools.length <= 8 && seen[0].tools.some((t) => t.function.name === "campaign_overview"), seen[0].tools && seen[0].tools.map((t) => t.function.name).join());
   const toolMsg = seen[1].messages.find((x) => x.role === "tool");
   check("the tool's result goes back to the model", toolMsg && JSON.parse(toolMsg.content).answers === 2, toolMsg && toolMsg.content.slice(0, 120));
   check("the answer links the captures it used", r.refs.length === 2 && r.refs.every((x) => x.id && x.engine));

@@ -7534,3 +7534,5 @@ body.popup .nav-tab[data-tab="ask"] { display: none; }
 .ai-bench { inline-size: 100%; border-collapse: collapse; font-size: 12px; margin-block: 4px 10px; }
 .ai-bench th, .ai-bench td { text-align: start; padding: 4px 8px; border-block-end: 1px solid var(--line-soft, var(--border)); }
 .ai-bench th { color: var(--fg-muted); font-weight: 500; }
+
+.ask-unverified { margin-block-start: 6px; font-size: 12px; color: var(--amber-fg, #92400e); background: var(--amber-bg, #fef3c7); border-radius: 6px; padding: 4px 8px; }

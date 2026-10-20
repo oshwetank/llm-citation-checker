@@ -7,10 +7,18 @@
  * (computeMetrics in geo.js), so the assistant can't make one up. Each
  * result carries the captures it came from, so an answer can link to them.
  * Nothing here writes or fetches.
+ *
+ * 0.75.0: twenty tools, most built on lib/insights.js — the same findings
+ * the board and the hand-off use — so Ask can answer about gaps, rivals,
+ * sources, topics, cards, searches, ads and data quality, not just the
+ * headline numbers. A campaign may be left out when there is only one (or
+ * the latest is meant): small models often forget to name it.
  */
 import { computeMetrics, trackedBrandsOf, normName } from "./geo.js";
 import { siteKindOf, normDomain } from "./siteKind.js";
 import { textHas } from "./textMatch.js";
+import { campaignInsights, brandTrend } from "./insights.js";
+import { GLOSSARY } from "./glossary.js";
 
 const DAY = 24 * 60 * 60 * 1000;
 const ENGINES = ["chatgpt", "gemini", "perplexity", "grok"];
@@ -26,6 +34,29 @@ export const TOOLS = [
   { type: "function", function: { name: "compare_brands", description: "Compare brands across captured answers (optionally one campaign): answers naming each, mentions, and how often each is named first, per engine.", parameters: { type: "object", properties: { brands: { type: "array", items: { type: "string" } }, campaign: { type: "string" } }, required: ["brands"] } } },
   { type: "function", function: { name: "top_sources", description: "The sites cited most, with their kind (review site, retailer, forum, public…), optionally for one campaign or only answers naming a brand.", parameters: { type: "object", properties: { campaign: { type: "string" }, brand: { type: "string" }, limit: { type: "integer" } } } } },
   { type: "function", function: { name: "brand_trend", description: "A brand's visibility and share of voice in each run of a campaign, oldest first.", parameters: { type: "object", properties: { brand: { type: "string" }, campaign: { type: "string" } }, required: ["brand", "campaign"] } } },
+  // 0.75.0, built on lib/insights.js. `campaign` may be left out: the only
+  // campaign, or the one run most recently.
+  ...[
+    ["campaign_overview", "A campaign's latest run in one view: every brand's visibility, share of voice, average position and mentions, overall and per engine, and how each changed since the previous run."],
+    ["prompts_where_absent", "Prompts where your brand is never named but two or more rivals are, in the latest run: the coverage gaps."],
+    ["prompts_behind", "Prompts where your brand is named but a rival comes first on at least one engine."],
+    ["rival_wins", "For each rival (or one, with `brand`): how many answers it is named first in, appears in without you, and comes before you."],
+    ["source_gaps", "Sites the engines cited in answers that name rivals but never in an answer that names you; the sites worth getting onto."],
+    ["own_site_share", "How many of all citations went to your own website, in the latest run."],
+    ["topic_breakdown", "Your visibility per topic (the prompts' primary tag, or their wording) and which brand is most often named first in each."],
+    ["engine_compare", "Each engine side by side: answers, and every brand's visibility, share of voice and position on it."],
+    ["engine_disagreement", "Prompts where the engines name a different brand first."],
+    ["products_named", "Product cards shown in answers: how many answers had cards, and each brand's cards and first cards, with its products."],
+    ["fanout_searches", "The web searches the engines ran to answer: how many, how many per answer, which named you or rivals, and examples."],
+    ["ads_seen", "Ads ChatGPT showed next to the answers, by advertiser."],
+    ["data_quality", "Per engine: answers captured, with an answer, and stopped by a usage limit, in the latest run."],
+  ].map(([name, description]) => ({ type: "function", function: { name, description, parameters: { type: "object", properties: {
+    campaign: { type: "string", description: "Campaign name (optional if there is one)" },
+    ...(name === "rival_wins" ? { brand: { type: "string", description: "One rival" } } : {}),
+    ...(name === "campaign_overview" || name === "topic_breakdown" || name === "prompts_where_absent" ? { engine: { type: "string", enum: ENGINES, description: "Only this engine" } } : {}),
+  } } } })),
+  { type: "function", function: { name: "prompt_detail", description: "One prompt of a campaign: on each engine, whether you are named, at what rank, who comes first, and the answers to open.", parameters: { type: "object", properties: { campaign: { type: "string" }, prompt: { type: "string", description: "Words from the prompt" } }, required: ["prompt"] } } },
+  { type: "function", function: { name: "glossary", description: "What one of CitoSkeleton's measures means and how it is counted (e.g. visibility, share of voice, average position, citations).", parameters: { type: "object", properties: { term: { type: "string" } }, required: ["term"] } } },
 ];
 export const TOOL_NAMES = TOOLS.map((t) => t.function.name);
 
@@ -33,6 +64,12 @@ function findCampaign(profiles, name) {
   const n = normName(name);
   if (!n) return null;
   return profiles.find((p) => normName(p.name) === n) || profiles.find((p) => normName(p.name).includes(n) || n.includes(normName(p.name))) || null;
+}
+// The campaign meant when none is named: the only one, or the one run last.
+function latestCampaign(profiles, runs) {
+  if (profiles.length <= 1) return profiles[0] || null;
+  const last = (p) => runs.filter((g) => g.profileId === p.id).reduce((m, g) => Math.max(m, g.startedAt || 0), 0);
+  return [...profiles].sort((x, y) => last(y) - last(x))[0];
 }
 const recsOf = (records, profile) => records.filter((r) => r.geo && r.geo.profileId === profile.id);
 const answered = (r) => String(r.answerText || "").trim().length > 0;
@@ -58,10 +95,20 @@ export function runTool(name, args = {}, data = {}) {
   const now = data.now || Date.now();
   const a = args && typeof args === "object" ? args : {};
   const needCampaign = () => {
-    const p = findCampaign(profiles, a.campaign);
+    let p = a.campaign ? findCampaign(profiles, a.campaign) : null;
+    if (!p && !a.campaign) p = latestCampaign(profiles, runs);
     if (!p) throw new Error(`No campaign called "${a.campaign || ""}". Campaigns: ${profiles.map((x) => x.name).join(", ") || "none"}.`);
     return p;
   };
+  // One worked-out view per campaign (and engine) for this question.
+  const cache = data._insights || (data._insights = new Map());
+  const insightsOf = (p, engine) => {
+    const k = `${p.id}|${engine || ""}`;
+    if (!cache.has(k)) cache.set(k, campaignInsights({ records, profile: p, runs, engines: engine ? [engine] : null }));
+    return cache.get(k);
+  };
+  const withRefs = (I, ids) => [...new Set(ids)].slice(0, 8).map((id) => I.refs.get(id)).filter(Boolean);
+  const head = (I) => ({ campaign: I.campaign.name, yourBrand: I.campaign.brand, run: I.run.date, answers: I.run.answers, engines: I.run.engines });
   try {
     switch (name) {
       case "list_campaigns": {
@@ -126,6 +173,76 @@ export function runTool(name, args = {}, data = {}) {
         const brands = trackedBrandsOf(p).some((b) => normName(b.name) === normName(a.brand)) ? trackedBrandsOf(p) : [...trackedBrandsOf(p), { name: a.brand }];
         const result = rs.map((g) => { const sub = mine.filter((r) => r.runId === g.id || (r.geo && r.geo.runId === g.id)); if (!sub.length) return null; const m = computeMetrics(sub, p, brands); const b = m.brands.find((x) => normName(x.name) === normName(a.brand)); return { run: new Date(g.startedAt).toISOString().slice(0, 10), answers: sub.length, visibility: r1(b && b.visibility), shareOfVoice: r1(b && b.shareOfVoice), avgPosition: r1(b && b.avgPosition) }; }).filter(Boolean);
         return { ok: true, result: { campaign: p.name, brand: a.brand, runs: result } };
+      }
+      case "campaign_overview": {
+        const p = needCampaign();
+        const I = insightsOf(p, a.engine);
+        return { ok: true, refs: withRefs(I, I.prompts.flatMap((x) => x.ids)), result: { ...head(I), previousRun: I.previousRun && I.previousRun.date,
+          brands: I.overview.slice(0, 10), changeSincePrevious: I.changes.slice(0, 10), byEngine: I.byEngine.map((e) => ({ engine: e.engine, answers: e.answers, brands: e.brands.slice(0, 6).map((b) => ({ brand: b.brand, visibility: b.visibility, shareOfVoice: b.shareOfVoice, avgPosition: b.avgPosition })) })) } };
+      }
+      case "prompts_where_absent": {
+        const I = insightsOf(needCampaign(), a.engine);
+        return { ok: true, refs: withRefs(I, I.absent.flatMap((x) => x.ids)), result: { ...head(I), count: I.absent.length, of: I.prompts.length, prompts: I.absent.slice(0, 10).map((x) => ({ prompt: x.prompt, tags: x.tags, rivalsNamed: x.rivalsNamed, first: x.engines })) } };
+      }
+      case "prompts_behind": {
+        const I = insightsOf(needCampaign());
+        return { ok: true, refs: withRefs(I, I.behind.flatMap((x) => x.ids)), result: { ...head(I), count: I.behind.length, prompts: I.behind.slice(0, 10).map((x) => ({ prompt: x.prompt, engines: x.engines })) } };
+      }
+      case "rival_wins": {
+        const I = insightsOf(needCampaign());
+        const rows = a.brand ? I.rivalWins.filter((x) => normName(x.brand) === normName(a.brand)) : I.rivalWins;
+        return { ok: true, refs: withRefs(I, rows.flatMap((x) => x.ids)), result: { ...head(I), rivals: rows.slice(0, 8).map(({ ids, ...x }) => x) } };
+      }
+      case "source_gaps": {
+        const I = insightsOf(needCampaign());
+        return { ok: true, refs: withRefs(I, I.sources.gaps.flatMap((x) => x.ids)), result: { ...head(I), sites: I.sources.gaps.slice(0, 12).map((x) => ({ site: x.site, kind: x.kind, answersCitingWithRivalsOnly: x.withRivalsOnly, engines: x.engines })) } };
+      }
+      case "own_site_share": {
+        const I = insightsOf(needCampaign());
+        return { ok: true, result: { ...head(I), site: I.campaign.site, citations: I.sources.citations, yourSiteCitations: I.sources.ownSiteCitations, yourSiteShare: I.sources.ownSiteShare, kindsOfSitesCited: I.sources.kinds } };
+      }
+      case "topic_breakdown": {
+        const I = insightsOf(needCampaign(), a.engine);
+        return { ok: true, result: { ...head(I), topics: I.topics.slice(0, 12) } };
+      }
+      case "engine_compare": {
+        const I = insightsOf(needCampaign());
+        return { ok: true, result: { ...head(I), engines: I.byEngine.map((e) => ({ engine: e.engine, answers: e.answers, brands: e.brands.slice(0, 8) })) } };
+      }
+      case "engine_disagreement": {
+        const I = insightsOf(needCampaign());
+        return { ok: true, refs: withRefs(I, I.disagreements.flatMap((x) => x.ids)), result: { ...head(I), count: I.disagreements.length, of: I.prompts.length, prompts: I.disagreements.slice(0, 10).map(({ ids, ...x }) => x) } };
+      }
+      case "products_named": {
+        const I = insightsOf(needCampaign());
+        return { ok: true, result: { ...head(I), ...I.products } };
+      }
+      case "fanout_searches": {
+        const I = insightsOf(needCampaign());
+        return { ok: true, result: { ...head(I), ...I.searches } };
+      }
+      case "ads_seen": {
+        const I = insightsOf(needCampaign());
+        return { ok: true, result: { ...head(I), ...I.ads, note: "Only ChatGPT shows this ad format; clicks, impressions and spend are not captured." } };
+      }
+      case "data_quality": {
+        const I = insightsOf(needCampaign());
+        return { ok: true, result: { ...head(I), engines: I.quality } };
+      }
+      case "prompt_detail": {
+        const I = insightsOf(needCampaign());
+        const words = String(a.prompt || "").toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+        const scored = I.prompts.map((x) => ({ x, n: words.filter((w) => x.prompt.toLowerCase().includes(w)).length })).filter((y) => y.n).sort((u, v) => v.n - u.n);
+        if (!scored.length) throw new Error(`No prompt in "${I.campaign.name}" matches "${a.prompt}".`);
+        const x = scored[0].x;
+        return { ok: true, refs: withRefs(I, x.ids), result: { ...head(I), prompt: x.prompt, tags: x.tags, yourBrandNamedIn: `${x.yoursIn} of ${x.answers} engines`, rivalsNamed: x.rivalsNamed, engines: x.engines } };
+      }
+      case "glossary": {
+        const q = normName(a.term);
+        const hit = Object.entries(GLOSSARY).find(([k, g]) => normName(k) === q || normName(g.term) === q) || Object.entries(GLOSSARY).find(([k, g]) => normName(g.term).includes(q) || q.includes(normName(g.term)));
+        if (!hit) throw new Error(`No measure called "${a.term}". Some are: visibility, share of voice, average position, mentions, citations.`);
+        const [, g] = hit;
+        return { ok: true, result: { term: g.term, what: g.what, formula: g.formula || null, note: g.note || null } };
       }
       default: throw new Error(`Unknown tool ${name}. Tools: ${TOOL_NAMES.join(", ")}.`);
     }

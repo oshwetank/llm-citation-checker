@@ -13,6 +13,7 @@
  * in tests.
  */
 import { TOOLS, TOOL_NAMES, runTool } from "./assistantTools.js";
+import { systemFor, toolsFor, checkNumbers } from "./askKnowledge.js";
 
 export const MAX_STEPS = 4;
 export const SYSTEM = [
@@ -58,24 +59,36 @@ export function finalText(text) {
  * @returns {Promise<{answer: string, steps: {tool: string, args: object, ok: boolean, error?: string}[], refs: object[]}>}
  */
 export async function ask({ question, history = [], generate, data, maxSteps = MAX_STEPS }) {
-  const messages = [{ role: "system", content: SYSTEM }, ...history.slice(-8), { role: "user", content: String(question || "").slice(0, 2000) }];
+  // 0.75.0: the instructions and tools fit the question (lib/askKnowledge.js):
+  // what the tool measures and doesn't, the definitions it touches, how a
+  // complete answer of that kind reads, and only the tools it needs.
+  const campaigns = ((data && data.profiles) || []).map((p) => p.name).filter(Boolean);
+  const system = systemFor(question, { campaigns });
+  const tools = toolsFor(question);
+  const messages = [{ role: "system", content: system }, ...history.slice(-6), { role: "user", content: String(question || "").slice(0, 2000) }];
   const steps = [];
   const refs = new Map();
+  const results = [];
+  const done = (text) => {
+    const answer = finalText(text) || "I couldn't work that out from your captures.";
+    return { answer, steps, refs: [...refs.values()], ...checkNumbers(answer, results) };
+  };
   for (let i = 0; i < maxSteps; i++) {
-    const r = await generate({ messages, tools: TOOLS, maxTokens: 500 });
+    const r = await generate({ messages, tools, maxTokens: 600 });
     const calls = parseToolCalls(r && r.text);
-    if (!calls.length) return { answer: finalText(r && r.text) || "I couldn't work that out from your captures.", steps, refs: [...refs.values()] };
+    if (!calls.length) return done(r && r.text);
     messages.push({ role: "assistant", content: String(r.text) });
     for (const c of calls.slice(0, 3)) {
       const known = TOOL_NAMES.includes(c.name);
       const res = known ? runTool(c.name, c.args, data) : { ok: false, error: `Unknown tool ${c.name}. Tools: ${TOOL_NAMES.join(", ")}.` };
       steps.push({ tool: c.name, args: c.args, ok: !!res.ok, ...(res.error ? { error: res.error } : {}) });
       for (const x of res.refs || []) refs.set(x.id, x);
+      if (res.ok) results.push(res.result);
       messages.push({ role: "tool", content: JSON.stringify(res.ok ? res.result : { error: res.error }).slice(0, 6000) });
     }
   }
   // Out of steps: answer from what was found.
   messages.push({ role: "user", content: "Answer now from the tool results above, without calling more tools." });
-  const r = await generate({ messages, maxTokens: 500 });
-  return { answer: finalText(r && r.text) || "I couldn't work that out from your captures.", steps, refs: [...refs.values()] };
+  const r = await generate({ messages, maxTokens: 600 });
+  return done(r && r.text);
 }

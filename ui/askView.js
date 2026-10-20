@@ -59,6 +59,8 @@ export async function renderAsk(root, hooks = {}) {
   const drawMsg = (m) => {
     if (m.role === "user") return h("div", { className: "ask-msg you", dir: "auto" }, m.content);
     const box = h("div", { className: "ask-msg ai" }, h("div", { className: "ask-text", dir: "auto" }, m.content));
+    // Numbers in the reply that no lookup returned (0.75.0): flagged, not trusted.
+    if (m.unverified && m.unverified.length) box.append(h("div", { className: "ask-unverified", role: "note" }, `${tr("Not in your data — check these numbers")}: `, m.unverified.join(", ")));
     if (m.steps && m.steps.length) box.append(h("div", { className: "ask-steps x-only" }, `${tr("Looked up")}: `, m.steps.map((s) => `${s.tool}${s.ok ? "" : " ✗"}`).join(", ")));
     if (m.refs && m.refs.length) {
       const refs = h("div", { className: "ask-refs" }, h("span", { className: "ask-refs-l" }, "From these answers"));
@@ -93,7 +95,7 @@ export async function renderAsk(root, hooks = {}) {
     const r = await send({ type: "ask", question: q, history });
     btn.disabled = false;
     status.textContent = r && r.ok ? (r.ms ? `${(r.ms / 1000).toFixed(1)} s` : "") : "";
-    msgs.push(r && r.ok ? { role: "assistant", content: r.answer, steps: r.steps, refs: r.refs } : { role: "assistant", content: `${tr("That didn't work")}: ${(r && r.error) || "no reply"}` });
+    msgs.push(r && r.ok ? { role: "assistant", content: r.answer, steps: r.steps, refs: r.refs, unverified: r.unverified || [] } : { role: "assistant", content: `${tr("That didn't work")}: ${(r && r.error) || "no reply"}` });
     await save(msgs);
     redraw();
   };
