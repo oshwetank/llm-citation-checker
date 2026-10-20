@@ -149,6 +149,7 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
       ok: true,
       family: MODEL_FAMILY, licence: MODEL_LICENCE,
       tier: state.tier || null, model: spec ? { id: spec.id, label: spec.label, params: spec.params, repo: spec.repo } : null,
+      custom: state.custom && state.custom.repo ? { repo: state.custom.repo } : null,
       ready: !!eng, engine: eng ? { id: eng.id, label: eng.label } : null, engineChoice: state.engine || "auto",
       nano: await nanoAvailability(), nanoFetching: !!nanoFetching, nanoError: state.nanoError || null, bench: state.bench || null, paused: !!isBusy(),
       qwenReady: qwenReady(state), downloadedAt: state.downloadedAt || null,

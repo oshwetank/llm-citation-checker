@@ -152,6 +152,9 @@ const toQwenCalls = (calls) => calls.map(([name, args]) => ({ type: "function", 
 
 /** One example, or null when it can't be made complete and checked. */
 export function makeExample(r, camp, { kind = pickKind(r), lang = pickLang(r), campaigns = [camp.profile.name] } = {}) {
+  // The glossary's definitions exist in English only so far: a definition
+  // question in another language would teach a mixed-language answer.
+  if (kind === "glossary") lang = "en";
   const qs = QUESTIONS[kind][lang] || QUESTIONS[kind].en;
   const term = r.pick(TERMS[lang] || TERMS.en);
   const what = r.pick(NOT_CAPTURED_WHAT[lang] || NOT_CAPTURED_WHAT.en);
@@ -182,8 +185,10 @@ export function makeExample(r, camp, { kind = pickKind(r), lang = pickLang(r), c
     for (const x of res) messages.push({ role: "tool", name: x.name, content: JSON.stringify(x.result).slice(0, 6000) });
   }
   messages.push({ role: "assistant", content: answer });
-  return { messages, tools, meta: { kind, lang, vertical: camp.vertical.id, calls: calls.map(([n, a]) => ({ name: n, args: a })) } };
+  return { messages, tools, meta: { kind, lang, vertical: camp.vertical.id, campaign: camp.seed || null, calls: calls.map(([n, a]) => ({ name: n, args: a })) } };
 }
+
+export const campSeed = (seed, ci) => (seed * 100003 + ci * 7919) >>> 0;
 
 /** Make n examples from a seed; `exclude`/`only` choose kinds of business. */
 export function* examples(seed, n, { exclude = [], only = null } = {}) {
@@ -193,7 +198,8 @@ export function* examples(seed, n, { exclude = [], only = null } = {}) {
   while (made < n && tries < n * 5) {
     tries++;
     if (!camp || r.chance(0.12)) {
-      do { camp = makeCampaign(r, ci++); } while ((only && camp.vertical.id !== only) || exclude.includes(camp.vertical.id));
+      // Each campaign from its own seed, so an evaluation can rebuild it.
+      do { camp = makeCampaign(rng(campSeed(seed, ci)), ci); camp.seed = [seed, ci]; ci++; } while ((only && camp.vertical.id !== only) || exclude.includes(camp.vertical.id));
     }
     const ex = makeExample(r, camp);
     if (ex) { made++; yield ex; }

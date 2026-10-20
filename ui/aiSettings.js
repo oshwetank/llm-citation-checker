@@ -95,9 +95,22 @@ export function initAiSettings(slot) {
     const folder = h("button", { type: "button", className: "btn sm ghost", id: "aiFolderBtn", disabled: !!s.downloading, title: `A folder with ${TIERS[tier].repo}'s files, downloaded elsewhere` }, "Load from a folder");
     folder.onclick = () => pickDir.click();
     const folderNote = h("span", { className: "ai-hw", id: "aiFolderNote", role: "status" }, "");
+    // A model trained for CitoSkeleton (training/README.md), from the user's
+    // own Hugging Face repository.
+    const own = h("input", { type: "text", id: "aiOwnRepo", className: "ai-own", placeholder: "owner/model-name", value: s.custom && s.custom.repo && s.custom.repo.includes("/") ? s.custom.repo : "", "aria-label": "Your trained model on Hugging Face" });
+    const ownBtn = h("button", { type: "button", className: "btn sm ghost", id: "aiOwnUse", disabled: !!s.downloading }, "Use my trained model");
+    ownBtn.onclick = async () => {
+      const r = await send({ type: "ai-custom-model", repo: own.value });
+      if (!r || !r.ok) { folderNote.textContent = (r && r.error) || "Couldn't use it."; return; }
+      await send({ type: "ai-download", device: pick ? pick.device : undefined });
+      refresh();
+    };
     slot.append(h("div", { className: "ab-row ai-actions" },
       h("div", { className: "ab-row-text" }, h("b", {}, "Model size"), h("span", {}, `${TIERS[tier].label}: Qwen3.5 ${TIERS[tier].params}, about ${sizeLabel(tier)} once. ${TIERS[tier].for}.`)),
       seg, h("div", { className: "ai-btns" }, dl, folder, rm, pickDir), folderNote));
+    slot.append(h("div", { className: "ab-row ai-row" },
+      h("div", { className: "ab-row-text" }, h("b", {}, "Your trained model"), h("span", {}, "A model fine-tuned on CitoSkeleton's data (training/ in the source code), from your own Hugging Face repository.")),
+      h("div", { className: "ai-btns" }, own, ownBtn)));
 
     if (s.downloading) {
       const pct = s.progress && s.progress.pct != null ? Math.max(0, Math.min(100, s.progress.pct)) : null;

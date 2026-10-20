@@ -7536,3 +7536,5 @@ body.popup .nav-tab[data-tab="ask"] { display: none; }
 .ai-bench th { color: var(--fg-muted); font-weight: 500; }
 
 .ask-unverified { margin-block-start: 6px; font-size: 12px; color: var(--amber-fg, #92400e); background: var(--amber-bg, #fef3c7); border-radius: 6px; padding: 4px 8px; }
+
+.ai-own { inline-size: 220px; max-inline-size: 100%; padding: 4px 8px; border: 1px solid var(--line-soft, var(--border)); border-radius: var(--r-ctl, 6px); background: transparent; color: inherit; }

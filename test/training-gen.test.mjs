@@ -45,6 +45,23 @@ check("every language has every answer phrase", LANGS.every((l) => Object.keys(S
 const holdout = [...examples(9, 200, { exclude: ["coffee"] })];
 check("a kind of business can be held out of training", holdout.every((e) => e.meta.vertical !== "coffee"));
 
+console.log("\nthe scorer (training/eval.mjs)");
+{
+  const { runOne, score, oracle, langOf, summarize } = await import("../training/eval.mjs");
+  const sample = ex.slice(0, 40);
+  const good = [];
+  for (const e of sample) good.push({ kind: e.meta.kind, lang: e.meta.lang, score: score(e, await runOne(e, oracle())) });
+  const g = summarize(good).all;
+  check("the reference answers, replayed, score 100%", g.overall === 100 && g.tools === 100 && g.faithful === 100, JSON.stringify(g));
+  // A lazy model: never looks anything up, makes a number up, answers in English.
+  const lazy = async () => ({ text: "Your brand has 73.4% visibility and is doing great." });
+  const bad = [];
+  for (const e of sample) bad.push({ kind: e.meta.kind, lang: e.meta.lang, score: score(e, await runOne(e, lazy)) });
+  const b = summarize(bad).all;
+  check("a model that skips the tools and invents a number scores low", b.tools < 20 && b.faithful < 20 && b.overall < 60, JSON.stringify(b));
+  check("languages are told apart", langOf("La visibilidad de la marca en las respuestas fue de 40%.") === "es" && langOf("A marca não apareceu nas respostas.") === "pt" && langOf("La marque est citée dans les réponses.") === "fr" && langOf("ब्रांड का नाम आया।") === "hi" && langOf("ذُكر في الإجابات") === "ar" && langOf("The brand was named in the answers.") === "en");
+}
+
 console.log("\ngold calls");
 check("a rival question compares with that rival", JSON.stringify(goldCalls("rival", { rival: "Kovo", nameCampaign: false })) === JSON.stringify([["rival_wins", { brand: "Kovo" }], ["prompts_behind", {}]]));
 check("the campaign is named when there's more than one", goldCalls("visibility", { campaign: "X", nameCampaign: true })[0][1].campaign === "X");

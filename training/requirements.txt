@@ -1,0 +1,10 @@
+# For training/train.py and training/export.py (0.75.0). A CUDA GPU for the
+# real run; the processor is enough for --tiny.
+torch>=2.4
+transformers>=4.57
+peft>=0.17
+accelerate>=1.0
+datasets>=3.0
+optimum[onnxruntime]>=1.27
+onnx>=1.17
+huggingface_hub>=0.34

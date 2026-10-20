@@ -4057,6 +4057,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "ai-check-now":
           try { sendResponse({ ok: true, ai: await aiSvc.checkNow(msg.record || {}) }); } catch (e) { sendResponse({ ok: false, error: String(e && e.message || e) }); }
           break;
+        // 0.75.0: a model the user trained (training/), from their own
+        // Hugging Face repository. Only huggingface.co, only "owner/name".
+        case "ai-custom-model": {
+          if (msg.clear) { await aiSvc.setState({ custom: null, downloadedAt: null }); sendResponse({ ok: true }); break; }
+          const repo = String(msg.repo || "").trim();
+          if (!/^[\w.-]{1,96}\/[\w.-]{1,96}$/.test(repo)) { sendResponse({ ok: false, error: "Give the repository as owner/name." }); break; }
+          await aiSvc.setState({ custom: { repo, host: null, dtype: { webgpu: "q4f16", wasm: "q4" }, label: `Your model (${repo})`, params: "" }, tier: null, downloadedAt: null });
+          sendResponse({ ok: true });
+          break;
+        }
         // Tests only: a stand-in model served from this computer.
         case "ai-test-offscreen-idle": {
           await ensureOffscreen();

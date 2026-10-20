@@ -17,3 +17,5 @@ desktop.ini
 _*.mjs
 _*.html
 dist/
+training/data/
+runs/
