@@ -7538,3 +7538,26 @@ body.popup .nav-tab[data-tab="ask"] { display: none; }
 .ask-unverified { margin-block-start: 6px; font-size: 12px; color: var(--amber-fg, #92400e); background: var(--amber-bg, #fef3c7); border-radius: 6px; padding: 4px 8px; }
 
 .ai-own { inline-size: 220px; max-inline-size: 100%; padding: 4px 8px; border: 1px solid var(--line-soft, var(--border)); border-radius: var(--r-ctl, 6px); background: transparent; color: inherit; }
+
+/* "Continue in…" (0.76.0) */
+.ho-wrap { position: relative; display: inline-flex; }
+.ho-menu { position: absolute; inset-block-start: calc(100% + 4px); inset-inline-end: 0; z-index: 60; min-inline-size: 190px; display: grid; padding: 4px; border: 1px solid var(--line-soft, var(--border)); border-radius: var(--r-ctl, 8px); background: var(--surface-solid, var(--bg)); box-shadow: 0 8px 24px rgba(0,0,0,.14); }
+.ho-menu[hidden] { display: none; }
+.ho-item { text-align: start; padding: 7px 10px; border: 0; background: transparent; color: inherit; border-radius: 6px; cursor: pointer; font: inherit; }
+.ho-item:hover, .ho-item:focus-visible { background: var(--tile-bg, rgba(127,127,127,.12)); }
+.ho-sep { block-size: 1px; background: var(--line-soft, var(--border)); margin: 4px 2px; }
+.ho-body { display: grid; gap: 10px; }
+.ho-sub { margin: 0; color: var(--fg-muted); font-size: 13px; }
+.ho-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ho-select, .ho-q { padding: 6px 8px; border: 1px solid var(--line-soft, var(--border)); border-radius: var(--r-ctl, 6px); background: transparent; color: inherit; font: inherit; }
+.ho-q { flex: 1 1 280px; }
+.ho-text { inline-size: 100%; min-block-size: 280px; font-family: var(--font-mono); font-size: 12px; line-height: 1.45; padding: 10px; border: 1px solid var(--line-soft, var(--border)); border-radius: var(--r-ctl, 6px); background: var(--surface-solid, transparent); color: inherit; resize: vertical; }
+.ho-size { font-size: 12px; color: var(--fg-muted); }
+.ho-size.over { color: var(--amber-fg); }
+.ho-msg { color: var(--red-fg, #b91c1c); font-size: 13px; }
+.ho-msg:empty { display: none; }
+.ho-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
+.ho-check { font-size: 13px; display: inline-flex; align-items: center; gap: 4px; }
+.ho-btns { margin-inline-start: auto; display: inline-flex; gap: 8px; }
+.ask-ho { margin-block-start: 6px; }
+.ask-or { margin-block: 12px 6px; color: var(--fg-muted); font-size: 13px; }

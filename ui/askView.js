@@ -7,6 +7,8 @@
  * and links the captures it used; they open in Analyze.
  */
 import { tr } from "./i18n.js";
+import { handoffButton } from "./handoff.js";
+import { askParts, campaignParts } from "../src/lib/contextPack.js";
 
 const KEY = "lcfcAsk";
 const MAX = 40;
@@ -47,11 +49,21 @@ export async function renderAsk(root, hooks = {}) {
     h("h2", { className: "ask-title" }, "Ask about your captures"),
     h("p", { className: "ask-sub" }, "Questions about your campaigns and the answers you captured, answered by the built-in AI on this computer. It looks the numbers up rather than guessing, and links the answers it used. Nothing is sent anywhere.")));
 
+  // Another AI, with this campaign's data and the question (0.76.0): works
+  // with or without the built-in AI.
+  const campaignPack = async () => {
+    const r = await send({ type: "campaign-insights" });
+    return r && r.ok ? campaignParts(r.insights) : [];
+  };
+
   if (!st || !st.ready) {
     const b = h("button", { type: "button", className: "btn sm primary", id: "askSetup" }, "Set up the built-in AI");
     b.onclick = () => hooks.openSettings && hooks.openSettings();
+    const q = h("input", { type: "text", id: "askOffQ", className: "ask-input", placeholder: tr("Ask about your campaigns, brands, sites or answers…"), dir: "auto" });
     wrap.append(h("div", { className: "card ask-empty", id: "askOff" },
-      h("p", {}, "Ask needs the built-in AI. Download it once in About → Settings → Built-in AI; the Strong size answers best."), b));
+      h("p", {}, "Ask needs the built-in AI. Download it once in About → Settings → Built-in AI; the Strong size answers best."), b,
+      h("p", { className: "ask-or" }, "Or take your latest campaign's data and your question to another AI:"),
+      h("div", { className: "ask-row" }, q, handoffButton({ id: "askOffHandoff", getParts: campaignPack, question: () => q.value, file: "citoskeleton-campaign.md" }))));
     return;
   }
 
@@ -61,6 +73,12 @@ export async function renderAsk(root, hooks = {}) {
     const box = h("div", { className: "ask-msg ai" }, h("div", { className: "ask-text", dir: "auto" }, m.content));
     // Numbers in the reply that no lookup returned (0.75.0): flagged, not trusted.
     if (m.unverified && m.unverified.length) box.append(h("div", { className: "ask-unverified", role: "note" }, `${tr("Not in your data — check these numbers")}: `, m.unverified.join(", ")));
+    // Take this reply, what it looked up and the question to another AI.
+    if (m.lookups || m.steps) {
+      const at = msgs.indexOf(m);
+      const question = at > 0 && msgs[at - 1].role === "user" ? msgs[at - 1].content : "";
+      box.append(h("div", { className: "ask-ho" }, handoffButton({ getParts: () => askParts({ question, answer: m.content, steps: m.steps || [], results: (m.lookups || []).map((x) => { try { return JSON.parse(x); } catch (_) { return x; } }) }), question: () => question, task: "custom", file: "citoskeleton-ask.md" })));
+    }
     if (m.steps && m.steps.length) box.append(h("div", { className: "ask-steps x-only" }, `${tr("Looked up")}: `, m.steps.map((s) => `${s.tool}${s.ok ? "" : " ✗"}`).join(", ")));
     if (m.refs && m.refs.length) {
       const refs = h("div", { className: "ask-refs" }, h("span", { className: "ask-refs-l" }, "From these answers"));
@@ -95,13 +113,15 @@ export async function renderAsk(root, hooks = {}) {
     const r = await send({ type: "ask", question: q, history });
     btn.disabled = false;
     status.textContent = r && r.ok ? (r.ms ? `${(r.ms / 1000).toFixed(1)} s` : "") : "";
-    msgs.push(r && r.ok ? { role: "assistant", content: r.answer, steps: r.steps, refs: r.refs, unverified: r.unverified || [] } : { role: "assistant", content: `${tr("That didn't work")}: ${(r && r.error) || "no reply"}` });
+    msgs.push(r && r.ok ? { role: "assistant", content: r.answer, steps: r.steps, refs: r.refs, unverified: r.unverified || [], lookups: r.lookups || [] } : { role: "assistant", content: `${tr("That didn't work")}: ${(r && r.error) || "no reply"}` });
     await save(msgs);
     redraw();
   };
   btn.onclick = go;
   input.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); go(); } };
   clear.onclick = async () => { msgs = []; await save(msgs); redraw(); };
-  wrap.append(log, h("div", { className: "card ask-form" }, sug, h("div", { className: "ask-row" }, input, btn), h("div", { className: "ask-foot" }, status, clear)));
+  // The question being typed, with the campaign's data, to another AI.
+  const ho = handoffButton({ id: "askHandoff", getParts: campaignPack, question: () => input.value, file: "citoskeleton-campaign.md" });
+  wrap.append(log, h("div", { className: "card ask-form" }, sug, h("div", { className: "ask-row" }, input, btn), h("div", { className: "ask-foot" }, status, ho, clear)));
   redraw();
 }

@@ -4,6 +4,8 @@
 // pure rendering module (record[] -> HTML string), no chrome.* / storage
 // calls of its own — see src/lib/exportDoc.js header. Data still only ever
 // arrives here via send()/hydrate() through the service worker.
+import { handoffButton } from "./handoff.js";
+import { campaignParts, answerParts } from "../src/lib/contextPack.js";
 import { buildExportModel, renderStandaloneHtml } from "../src/lib/exportDoc.js";
 import {
   ENGINES, availableEngines, MAX_PROFILES, SENTIMENT_NOTE, TRASH_RETENTION_DAYS,
@@ -2345,7 +2347,9 @@ function atHeaderTools(rec) {
   const sw = el("button", { className: `at-detail-switch${on ? " on" : ""}`, type: "button", role: "switch", "aria-checked": String(on), "data-detail-switch": "", title: "Expert adds raw ids, listing feeds, a grounding figure and the raw payload" },
     el("span", { className: "at-switch-track", "aria-hidden": "true" }, el("span", { className: "at-switch-dot" })), el("span", { className: "at-switch-label" }, "Expert"));
   sw.onclick = () => setDetail(document.documentElement.getAttribute("data-detail") === "expert" ? "simple" : "expert");
-  const nodes = [sw];
+  // This answer, a task and a question, to another AI (0.76.0).
+  const ho = handoffButton({ id: "atHandoff", getParts: async () => answerParts(await hydrate(rec.captureId) || rec, { ownBrand: (ownBrandFor(rec, GEO_PROFILES) || {}).name || null }), file: "citoskeleton-answer.md" });
+  const nodes = [ho, sw];
   const idx = RECORDS.findIndex((r) => r.captureId === rec.captureId);
   if (idx >= 0 && RECORDS.length > 1) {
     const go = (j) => { const t = RECORDS[j]; if (t) { atResetState(); openCapture(t.captureId); } };
@@ -8410,7 +8414,9 @@ function renderCampaignHead(profile) {
     const r = await send({ type: "loader-stop" });
     withScrollPreserved(() => renderLoaderStatus(r));
   };
-  const actions = el("div", { className: "cp-actions" }, edit, exp, runBtn, privBtn, pauseBtn, resumeBtn, stopBtn);
+  // The campaign's findings, a task and a question, to another AI (0.76.0).
+  const ho = handoffButton({ id: "cpHandoff", getParts: async () => { const r = await send({ type: "campaign-insights", profileId: profile.id }); return r && r.ok ? campaignParts(r.insights) : []; }, file: `${String(profile.name || "campaign").replace(/[^\p{L}\p{N}]+/gu, "-")}-citoskeleton.md` });
+  const actions = el("div", { className: "cp-actions" }, edit, exp, ho, runBtn, privBtn, pauseBtn, resumeBtn, stopBtn);
   if (campaignManageOpen) {
     const del = el("button", { className: "btn ghost danger cp-btn", type: "button" }, "Delete campaign");
     del.onclick = trashCampaign(profile);

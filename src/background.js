@@ -37,6 +37,8 @@ import { searchAnswers } from "./lib/answerSearch.js";
 import { answerKey, sameAnswer, mergeAnswers, SAME_ANSWER_WINDOW_MS, SAME_REPLY_WINDOW_MS } from "./lib/sameAnswer.js";
 import { campaignBoard, brandDetail } from "./lib/campaignBoard.js";
 import { campaignView } from "./lib/campaignView.js";
+import { campaignInsights } from "./lib/insights.js";
+import { ENGINES as HANDOFF_ENGINES } from "./lib/contextPack.js";
 import { adapt as adaptChatGpt, cleanPassage } from "./adapters/chatgpt.js";
 import { enrichBrandsWithAI, enrichBrandStance } from "./lib/ai-brands.js";
 import { adapt as adaptGemini } from "./adapters/gemini.js";
@@ -90,6 +92,7 @@ const DEFAULT_SETTINGS = {
   // after-answer requests, no probes, no network log. A campaign run's own
   // tabs still record, since starting a run asks for exactly that.
   capturePaused: false,
+  keepHandoffCaptures: false, // 0.76.0: capture the "Continue in…" chats too
   // Read the cited pages (0.62.0): off until asked for, since it is the one
   // thing that makes requests beyond the engines' own pages.
   readCitedPages: false, // diagnostic channel is OFF by default (it is chatty)
@@ -147,10 +150,46 @@ async function idleBadge() {
   } catch (_) { /* no action API in some test contexts */ }
 }
 
+/* ---------- "Continue in…" (0.76.0) ----------
+ * A tab opened to take CitoSkeleton's data to another AI. Its message waits
+ * here until the page script (src/handoff.js) claims it; the tab is
+ * remembered (also across a worker restart) so the conversation there — the
+ * user talking about their own data — isn't captured as an engine answer. */
+const handoffJobs = new Map(); // tabId -> {text, engine, autoSend, at}
+const HANDOFF_TABS_KEY = "lcfcHandoffTabs";
+async function handoffTabs() {
+  try { return new Set((await chrome.storage.session.get(HANDOFF_TABS_KEY))[HANDOFF_TABS_KEY] || []); } catch (_) { return new Set(); }
+}
+async function setHandoffTab(tabId, on) {
+  const s = await handoffTabs();
+  if (on) s.add(tabId); else s.delete(tabId);
+  try { await chrome.storage.session.set({ [HANDOFF_TABS_KEY]: [...s] }); } catch (_) { /* best effort */ }
+}
+async function handoffOpen({ engine, text, autoSend = true }) {
+  const e = HANDOFF_ENGINES[engine];
+  if (!e) return { ok: false, error: `No engine ${engine}.` };
+  if (!text || typeof text !== "string") return { ok: false, error: "Nothing to send." };
+  const origin = new URL(e.url).origin + "/*";
+  if (!(await chrome.permissions.contains({ origins: [origin] }).catch(() => false))) return { ok: false, error: `CitoSkeleton needs permission for ${new URL(e.url).hostname} first.`, needsPermission: origin };
+  const tab = await chrome.tabs.create({ url: e.url, active: true });
+  handoffJobs.set(tab.id, { text: text.slice(0, 200000), engine, autoSend: autoSend !== false, at: Date.now() });
+  await setHandoffTab(tab.id, true);
+  return { ok: true, tabId: tab.id };
+}
+chrome.tabs.onUpdated.addListener((tabId, info) => {
+  if (info.status !== "complete" || !handoffJobs.has(tabId)) return;
+  chrome.scripting.executeScript({ target: { tabId }, files: ["src/handoff.js"] }).catch((e) => logErr("handoff:inject", e));
+});
+chrome.tabs.onRemoved.addListener((tabId) => { handoffJobs.delete(tabId); setHandoffTab(tabId, false); });
+
 // Whether a message from an engine page is dropped because capture is
-// paused. A campaign run's tab is exempt.
+// paused. A campaign run's tab is exempt. A "Continue in…" tab is never
+// captured (0.76.0), unless the user chose to keep those.
 async function capturePausedFor(sender) {
-  if (!(await getSettings()).capturePaused) return false;
+  const settings = await getSettings();
+  const tid = sender && sender.tab && sender.tab.id;
+  if (tid != null && !settings.keepHandoffCaptures && (await handoffTabs()).has(tid)) return true;
+  if (!settings.capturePaused) return false;
   const tabId = sender && sender.tab && sender.tab.id;
   return !(loader && loader.running && tabId != null && legForTab(tabId));
 }
@@ -2740,6 +2779,36 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     try {
       switch (msg?.type) {
+        // "Continue in…" (0.76.0).
+        case "handoff-open":
+          try { sendResponse(await handoffOpen(msg)); } catch (e) { sendResponse({ ok: false, error: String(e && e.message || e) }); }
+          break;
+        case "handoff-claim": {
+          const tid = sender && sender.tab && sender.tab.id;
+          const job = tid != null ? handoffJobs.get(tid) : null;
+          if (job) handoffJobs.delete(tid);
+          sendResponse(job ? { ok: true, text: job.text, autoSend: job.autoSend, engine: job.engine } : { ok: false });
+          break;
+        }
+        case "handoff-result": {
+          const r = { ok: !!msg.ok, sent: !!msg.sent, how: String(msg.how || ""), error: msg.error ? String(msg.error).slice(0, 200) : null, at: Date.now() };
+          if (!r.ok) logEvent("handoff:failed", "capture", r.error || "hand-off failed", {});
+          try { await chrome.storage.session.set({ lcfcHandoffLast: r }); } catch (_) { /* best effort */ }
+          broadcast({ type: "handoff-result", ...r });
+          sendResponse({ ok: true });
+          break;
+        }
+        // A campaign's findings (lib/insights.js), for the hand-off pack.
+        case "campaign-insights": {
+          const [records, profiles, runs] = await Promise.all([db.getAll("derived"), db.getAll("profiles"), db.getAll("geoRuns")]);
+          // The campaign asked for, else the one run most recently.
+          const lastRun = (p) => runs.filter((g) => g.profileId === p.id).reduce((m, g) => Math.max(m, g.startedAt || 0), 0);
+          const profile = profiles.find((p) => p.id === msg.profileId) || [...profiles].sort((a, b) => lastRun(b) - lastRun(a))[0];
+          const I = profile ? campaignInsights({ records, profile, runs, runId: msg.runId || null, engines: msg.engines || null }) : null;
+          sendResponse({ ok: !!I, insights: I ? { ...I, refs: undefined } : null });
+          break;
+        }
+
         // The capture check (0.73.1): what each engine page saw, and why a
         // capture went nowhere.
         case "capture-health": {

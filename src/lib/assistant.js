@@ -71,7 +71,9 @@ export async function ask({ question, history = [], generate, data, maxSteps = M
   const results = [];
   const done = (text) => {
     const answer = finalText(text) || "I couldn't work that out from your captures.";
-    return { answer, steps, refs: [...refs.values()], ...checkNumbers(answer, results) };
+    // What was looked up goes back too (0.76.0): "Continue in…" sends it
+    // to another AI with the question.
+    return { answer, steps, refs: [...refs.values()], lookups: results.map((x) => JSON.stringify(x).slice(0, 4000)), ...checkNumbers(answer, results) };
   };
   for (let i = 0; i < maxSteps; i++) {
     const r = await generate({ messages, tools, maxTokens: 600 });
