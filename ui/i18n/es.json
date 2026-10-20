@@ -543,5 +543,21 @@
  "Ask about your campaigns, brands, sites or answers…": "Pregunta sobre tus campañas, marcas, sitios o respuestas…",
  "Clear the conversation": "Borrar la conversación",
  "Looking it up…": "Buscando…",
- "That didn't work": "No funcionó"
+ "That didn't work": "No funcionó",
+ "Chrome's built-in AI": "IA integrada de Chrome",
+ "Use Chrome's built-in AI": "Usar la IA integrada de Chrome",
+ "Answered by": "Responde",
+ "Automatic": "Automático",
+ "Downloaded model": "Modelo descargado",
+ "Test this computer": "Probar este ordenador",
+ "Testing…": "Probando…",
+ "One answer": "Una respuesta",
+ "Quality": "Calidad",
+ "Runs on": "Se ejecuta en",
+ "Capture check": "Comprobación de captura",
+ "Check again": "Comprobar de nuevo",
+ "Copy capture report": "Copiar informe de captura",
+ "Refresh the tab": "Recargar la pestaña",
+ "Is each engine being captured, and if not, where it stops. Ask a question on the engine first, then check.": "Si se captura cada motor y, si no, dónde se detiene. Primero haz una pregunta en el motor y luego comprueba.",
+ "Addresses, counts and reasons only — no prompts or answers.": "Solo direcciones, recuentos y motivos; sin prompts ni respuestas."
 }

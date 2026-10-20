@@ -1260,6 +1260,37 @@ function refreshFromBroadcast() {
   }, 400);
 }
 
+const patchIds = new Set();
+let patchTimer = null;
+function patchFromBroadcast(captureId) {
+  patchIds.add(captureId);
+  if (patchTimer) return;
+  patchTimer = setTimeout(async () => {
+    patchTimer = null;
+    const ids = [...patchIds];
+    patchIds.clear();
+    if (refreshPending) { ids.forEach((id) => FULL.delete(id)); return; } // a full refresh is already coming
+    for (const id of ids) {
+      FULL.delete(id);
+      const r = await send({ type: "get-record-light", captureId: id });
+      const i = ALL_RECORDS.findIndex((x) => x.captureId === id);
+      if (!r.ok || !r.record || i < 0) { refreshFromBroadcast(); return; } // new or gone: the whole list
+      ALL_RECORDS[i] = r.record;
+    }
+    RECORDS = includeTrackedInAdhoc ? ALL_RECORDS : partitionRecords(ALL_RECORDS).adhoc;
+    const active = document.querySelector(".panel.active")?.id;
+    const scroller = activeScroller();
+    const y = scroller ? scroller.scrollTop : 0;
+    if (active === "analyze") {
+      const showing = viewingId || defaultRecordId();
+      if (!ids.includes(showing)) return; // the answer on screen didn't change
+      await hydrate(showing);
+      renderAnalyze();
+    } else if (active === "dashboard") renderDashboard();
+    if (scroller && scroller.scrollTop !== y) scroller.scrollTop = y;
+  }, 400);
+}
+
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type === "new-capture") {
     refreshFromBroadcast();
@@ -1268,8 +1299,12 @@ chrome.runtime.onMessage.addListener((msg) => {
   // The optional on-device AI pass finished and improved a record that is
   // already on screen. Refresh silently: the capture was announced moments
   // ago, and a second toast for the same prompt reads like a second capture.
+  // 0.74.0: only that record is fetched and patched in, and only the tab on
+  // screen is redrawn (the AI queue sends several of these per capture; each
+  // used to refetch every capture and rebuild three tabs).
   if (msg?.type === "capture-updated") {
-    refreshFromBroadcast();
+    if (msg.captureId) patchFromBroadcast(msg.captureId);
+    else refreshFromBroadcast();
   }
 });
 

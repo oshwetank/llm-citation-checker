@@ -543,5 +543,21 @@
  "Ask about your campaigns, brands, sites or answers…": "अपने अभियानों, ब्रांडों, साइटों या उत्तरों के बारे में पूछें…",
  "Clear the conversation": "बातचीत साफ़ करें",
  "Looking it up…": "खोजा जा रहा है…",
- "That didn't work": "यह काम नहीं किया"
+ "That didn't work": "यह काम नहीं किया",
+ "Chrome's built-in AI": "Chrome का बिल्ट-इन AI",
+ "Use Chrome's built-in AI": "Chrome का बिल्ट-इन AI इस्तेमाल करें",
+ "Answered by": "उत्तर देता है",
+ "Automatic": "स्वचालित",
+ "Downloaded model": "डाउनलोड किया गया मॉडल",
+ "Test this computer": "इस कंप्यूटर का परीक्षण करें",
+ "Testing…": "परीक्षण हो रहा है…",
+ "One answer": "एक उत्तर",
+ "Quality": "गुणवत्ता",
+ "Runs on": "यहाँ चलता है",
+ "Capture check": "कैप्चर जाँच",
+ "Check again": "फिर से जाँचें",
+ "Copy capture report": "कैप्चर रिपोर्ट कॉपी करें",
+ "Refresh the tab": "टैब रीफ़्रेश करें",
+ "Is each engine being captured, and if not, where it stops. Ask a question on the engine first, then check.": "क्या हर इंजन कैप्चर हो रहा है, और नहीं तो कहाँ रुकता है। पहले इंजन पर एक प्रश्न पूछें, फिर जाँचें।",
+ "Addresses, counts and reasons only — no prompts or answers.": "केवल पते, गिनती और कारण — कोई प्रॉम्प्ट या उत्तर नहीं।"
 }

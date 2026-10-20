@@ -3924,6 +3924,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, records: records.map(toLight) });
           break;
         }
+        // 0.74.0: one record as the list holds it, so the panel can patch the
+        // record a broadcast names instead of refetching every capture.
+        case "get-record-light": {
+          const rec = await db.get("derived", msg.captureId);
+          sendResponse({ ok: true, record: rec ? toLight(rec) : null });
+          break;
+        }
         case "get-record": {
           const rec = await db.get("derived", msg.captureId);
           sendResponse({ ok: true, record: rec || null });

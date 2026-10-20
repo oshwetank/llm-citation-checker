@@ -12,12 +12,20 @@ of its own**, except, if you turn on **Read the cited pages**, to the pages an a
 and, if you download the **built-in AI**, a one-time download of the model's files from
 Hugging Face. Nothing you capture ever leaves your device: the AI runs on your computer.
 
-> **v0.73.1** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.74.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **A faster, lighter built-in AI** (0.74.0). Chrome's own AI where Chrome has it (on the
+>   graphics chip; Chrome downloads and updates it: About → Settings → Built-in AI → **Use
+>   Chrome's built-in AI**). The downloaded model now uses several processor cores at once
+>   instead of one, and reads each answer in one go instead of three. **Test this computer**
+>   times each engine on the same made-up answer and scores how well it read it; Automatic then
+>   uses the fastest one that read it correctly, and you can pick one yourself. The AI waits while a
+>   campaign runs, gives its memory back after a couple of minutes idle, and the panel no longer
+>   reloads every capture each time an answer is checked.
 > - **Capture first** (0.73.1). Questions asked by hand were not being saved, in two ways:
 >   - on a page that rebuilds itself after loading (ChatGPT does), the link between the page
 >     and the extension was lost, so every answer was thrown away unseen;

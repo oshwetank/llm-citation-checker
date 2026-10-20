@@ -543,5 +543,21 @@
  "Ask about your campaigns, brands, sites or answers…": "اسأل عن حملاتك أو علاماتك التجارية أو المواقع أو الإجابات…",
  "Clear the conversation": "مسح المحادثة",
  "Looking it up…": "جارٍ البحث…",
- "That didn't work": "لم ينجح ذلك"
+ "That didn't work": "لم ينجح ذلك",
+ "Chrome's built-in AI": "الذكاء الاصطناعي المدمج في Chrome",
+ "Use Chrome's built-in AI": "استخدام الذكاء الاصطناعي المدمج في Chrome",
+ "Answered by": "يجيب",
+ "Automatic": "تلقائي",
+ "Downloaded model": "النموذج المنزَّل",
+ "Test this computer": "اختبار هذا الكمبيوتر",
+ "Testing…": "جارٍ الاختبار…",
+ "One answer": "إجابة واحدة",
+ "Quality": "الجودة",
+ "Runs on": "يعمل على",
+ "Capture check": "فحص الالتقاط",
+ "Check again": "افحص مرة أخرى",
+ "Copy capture report": "نسخ تقرير الالتقاط",
+ "Refresh the tab": "تحديث علامة التبويب",
+ "Is each engine being captured, and if not, where it stops. Ask a question on the engine first, then check.": "هل يُلتقط كل محرك، وإن لم يكن فأين يتوقف. اطرح سؤالًا على المحرك أولًا ثم افحص.",
+ "Addresses, counts and reasons only — no prompts or answers.": "العناوين والأعداد والأسباب فقط — بلا مطالبات أو إجابات."
 }
