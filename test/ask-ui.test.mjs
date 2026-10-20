@@ -96,11 +96,18 @@ try {
     check("the box to type in is at the bottom of the page, the conversation above it", lay.formBottom > lay.vh - 140 && lay.formBottom <= lay.vh && lay.logAbove, JSON.stringify(lay));
     check("suggestions sit in the empty chat; New chat starts over", lay.sugInLog && lay.newChat === "New chat", JSON.stringify(lay));
     await page.fill("#askInput", "Where was Zento named?");
+    // The stand-in model can answer within a frame, so the bubble is caught
+    // as it appears rather than looked for afterwards.
+    await page.evaluate(() => {
+      window.__typingShown = false;
+      const t = document.getElementById("askTyping");
+      new MutationObserver(() => { if (!t.hidden) window.__typingShown = true; }).observe(t, { attributes: true, attributeFilter: ["hidden"] });
+    });
     await page.click("#askSend");
-    check("a bubble says it's working", await page.evaluate(() => !document.getElementById("askTyping").hidden));
     await page.waitForFunction(() => document.querySelectorAll(".ask-msg.ai").length > 0, null, { timeout: 30000 }).catch(() => {});
     const r = await page.evaluate(() => ({ you: [...document.querySelectorAll(".ask-msg.you .ask-text")].map((x) => x.textContent), ai: [...document.querySelectorAll(".ask-msg.ai .ask-text")].map((x) => x.textContent), refs: [...document.querySelectorAll(".ask-ref")].map((x) => x.textContent) }));
     check("the question, then the answer", r.you[0] === "Where was Zento named?" && /Zento was named/.test(r.ai[0] || ""), JSON.stringify(r));
+    check("a bubble said it was working", await page.evaluate(() => window.__typingShown === true));
     const chat = await page.evaluate(() => ({ who: [...document.querySelectorAll(".ask-msg .ask-meta b")].map((b) => b.textContent), typing: document.getElementById("askTyping").hidden, sug: !!document.querySelector("#askLog .ask-chip") }));
     check("each bubble says who; the working bubble has gone; no suggestions once chatting", chat.who.join("|") === "You|CitoSkeleton" && chat.typing && !chat.sug, JSON.stringify(chat));
     const flag = await page.evaluate(() => document.querySelector(".ask-msg.ai .ask-unverified")?.textContent || "");
