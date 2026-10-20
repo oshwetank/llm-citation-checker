@@ -12,12 +12,20 @@ of its own**, except, if you turn on **Read the cited pages**, to the pages an a
 and, if you download the **built-in AI**, a one-time download of the model's files from
 Hugging Face. Nothing you capture ever leaves your device: the AI runs on your computer.
 
-> **v0.77.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.78.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **Smoother, tighter, clearer** (0.78.0).
+>   - **Definitions.** Pause on any button, tab or setting for 2.5 seconds (or reach it with the keyboard) and its definition appears, the same way everywhere.
+>   - **Logo and name.** The logo opens the CitoSkeleton web page; the name opens the Dashboard, in the popup too.
+>   - **Dashboard.** It starts with the history: search and a **Filters** button on one row (with the number of filters on), recent searches while you search, and the totals in one strip. The "stored on this computer" line is gone.
+>   - **Settings in groups.** Display (theme, light or dark, typeface, sizes, density and the new **Motion** on/off) is closed until you open it.
+>   - **Motion and spacing.** Soft transitions when a page opens. Tighter gaps between boxes.
+>   - **Ask is a chat.** The box stays at the bottom, there are bubbles with who said what and when, and it shows what it's looking up while it works. Replies are formatted, and New chat starts over.
+>   - **Raw breakdown.** Fields no rule recognises open by default, with their count, and it says what wasn't listed.
 > - **Campaigns without the friction** (0.77.0).
 >   - **One-click competitors.** The brands the answers name that aren't on your list are offered on the board, each with **+ Add**, plus Add all. They're on the leaderboard too. No unlocking.
 >   - **Edit in place.** A set-up campaign is edited in place: prompts, tags, competitors, engines and what the board measures save as you change them. Only the brand and its website ask first, because they change every number.

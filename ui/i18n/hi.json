@@ -606,5 +606,20 @@
  "Changes save as you make them": "बदलाव करते ही सहेजे जाते हैं",
  "Edit anything below; it's saved and logged.": "नीचे कुछ भी बदलें; यह सहेजा और दर्ज किया जाता है।",
  "Saved": "सहेजा गया",
- "Saving…": "सहेजा जा रहा है…"
+ "Saving…": "सहेजा जा रहा है…",
+ "Filters": "फ़िल्टर",
+ "Theme, light or dark, typeface, sizes, density and motion": "थीम, लाइट या डार्क, फ़ॉन्ट, आकार, घनत्व और मोशन",
+ "Language and detail": "भाषा और विवरण",
+ "Data and capture": "डेटा और कैप्चर",
+ "Reading and capture": "पढ़ना और कैप्चर",
+ "Motion": "मोशन",
+ "Smooth transitions and small animations. Off keeps everything still.": "स्मूद ट्रांज़िशन और छोटे एनिमेशन। बंद करने पर सब स्थिर रहता है।",
+ "On": "चालू",
+ "New chat": "नई चैट",
+ "Thinking…": "सोच रहा है…",
+ "Send": "भेजें",
+ "Your question": "आपका प्रश्न",
+ "Ask about your campaigns, brands, sites or answers. Try one of these:": "अपने कैंपेन, ब्रांड, साइट या जवाबों के बारे में पूछें। इनमें से कोई आज़माएँ:",
+ "Also named in the answers, not on your list:": "जवाबों में भी नाम आए, आपकी सूची में नहीं:",
+ "Save these as competitors": "इन्हें प्रतिस्पर्धी के रूप में सहेजें"
 }

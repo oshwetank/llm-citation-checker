@@ -606,5 +606,20 @@
  "Changes save as you make them": "تُحفظ التغييرات فور إجرائها",
  "Edit anything below; it's saved and logged.": "عدّل أي شيء أدناه؛ يُحفظ ويُسجَّل.",
  "Saved": "تم الحفظ",
- "Saving…": "جارٍ الحفظ…"
+ "Saving…": "جارٍ الحفظ…",
+ "Filters": "عوامل التصفية",
+ "Theme, light or dark, typeface, sizes, density and motion": "السمة، فاتح أو داكن، الخط، الأحجام، الكثافة والحركة",
+ "Language and detail": "اللغة والتفاصيل",
+ "Data and capture": "البيانات والالتقاط",
+ "Reading and capture": "القراءة والالتقاط",
+ "Motion": "الحركة",
+ "Smooth transitions and small animations. Off keeps everything still.": "انتقالات سلسة ورسوم متحركة صغيرة. الإيقاف يُبقي كل شيء ثابتًا.",
+ "On": "تشغيل",
+ "New chat": "محادثة جديدة",
+ "Thinking…": "يفكر…",
+ "Send": "إرسال",
+ "Your question": "سؤالك",
+ "Ask about your campaigns, brands, sites or answers. Try one of these:": "اسأل عن حملاتك وعلاماتك ومواقعك أو الإجابات. جرّب أحد هذه:",
+ "Also named in the answers, not on your list:": "مذكورة أيضًا في الإجابات، وليست في قائمتك:",
+ "Save these as competitors": "حفظها كمنافسين"
 }

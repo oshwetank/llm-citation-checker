@@ -606,5 +606,20 @@
  "Changes save as you make them": "As alterações são salvas na hora",
  "Edit anything below; it's saved and logged.": "Edite o que quiser abaixo; é salvo e registrado.",
  "Saved": "Salvo",
- "Saving…": "Salvando…"
+ "Saving…": "Salvando…",
+ "Filters": "Filtros",
+ "Theme, light or dark, typeface, sizes, density and motion": "Tema, claro ou escuro, fonte, tamanhos, densidade e movimento",
+ "Language and detail": "Idioma e detalhe",
+ "Data and capture": "Dados e captura",
+ "Reading and capture": "Leitura e captura",
+ "Motion": "Movimento",
+ "Smooth transitions and small animations. Off keeps everything still.": "Transições suaves e pequenas animações. Desligado deixa tudo parado.",
+ "On": "Ligado",
+ "New chat": "Nova conversa",
+ "Thinking…": "Pensando…",
+ "Send": "Enviar",
+ "Your question": "Sua pergunta",
+ "Ask about your campaigns, brands, sites or answers. Try one of these:": "Pergunte sobre suas campanhas, marcas, sites ou respostas. Experimente uma destas:",
+ "Also named in the answers, not on your list:": "Também citadas nas respostas, fora da sua lista:",
+ "Save these as competitors": "Salvar como concorrentes"
 }
