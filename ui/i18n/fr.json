@@ -591,5 +591,20 @@
  "My own question": "Ma propre question",
  "Or take your latest campaign's data and your question to another AI:": "Ou envoyez les données de votre dernière campagne et votre question à une autre IA :",
  "Capture \"Continue in…\" chats": "Capturer les discussions « Continuer dans… »",
- "Chats opened with Continue in… are you talking about your own data, so they aren't kept as engine answers. Turn this on to keep them too.": "Les discussions ouvertes avec Continuer dans… portent sur vos propres données ; elles ne sont donc pas gardées comme réponses des moteurs. Activez ceci pour les garder aussi."
+ "Chats opened with Continue in… are you talking about your own data, so they aren't kept as engine answers. Turn this on to keep them too.": "Les discussions ouvertes avec Continuer dans… portent sur vos propres données ; elles ne sont donc pas gardées comme réponses des moteurs. Activez ceci pour les garder aussi.",
+ "+ Add": "+ Ajouter",
+ "Also named often, but not on your competitor list. ": "Souvent citées aussi, mais absentes de votre liste de concurrents. ",
+ "Add any that are competitors; they're counted from then on.": "Ajoutez celles qui sont des concurrentes ; elles sont comptées ensuite.",
+ "Add as a competitor": "Ajouter comme concurrent",
+ "Primary tag": "Étiquette principale",
+ "Secondary tag": "Étiquette secondaire",
+ "Secondary tags": "Étiquettes secondaires",
+ "Any tag": "Toute étiquette",
+ "Download the Excel template": "Télécharger le modèle Excel",
+ "or CSV": "ou CSV",
+ "Change brand or website…": "Changer de marque ou de site…",
+ "Changes save as you make them": "Les modifications s'enregistrent au fur et à mesure",
+ "Edit anything below; it's saved and logged.": "Modifiez ce que vous voulez ci-dessous ; c'est enregistré et consigné.",
+ "Saved": "Enregistré",
+ "Saving…": "Enregistrement…"
 }

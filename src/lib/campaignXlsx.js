@@ -113,7 +113,9 @@ export function campaignFacts({ profile = {}, prompts = [], runs = [], records =
       answerText === "none" ? "" : answerText === "full" ? text.slice(0, 32000) : text.replace(/\s+/g, " ").slice(0, 300),
       rec.pageUrl || rec.conversationUrl || "",
       // 0.64.0: the ad shown after the answer, if any (ChatGPT only).
-      (rec.ads || []).length ? 1 : 0, (rec.ads || []).map((a) => a.advertiser || a.targetDomain || "").filter(Boolean).join(", ")]);
+      (rec.ads || []).length ? 1 : 0, (rec.ads || []).map((a) => a.advertiser || a.targetDomain || "").filter(Boolean).join(", "),
+      // 0.77.0: a prompt's first tag is its primary one.
+      (rec.geo.tags || [])[0] || "", (rec.geo.tags || []).slice(1).join(", ")]);
 
     // One row per tracked brand the answer named (or showed on a card).
     pres.filter((p) => p.present).forEach((p) => {
@@ -189,7 +191,7 @@ export function campaignFacts({ profile = {}, prompts = [], runs = [], records =
 /* The raw tables' columns. The prefix names every column in the workbook
    (A_Run, M_Brand, …), so formulas read clearly and survive sorting. */
 export const RAW = [
-  { key: "A", sheet: "Answers", table: "tAnswers", what: "One row per prompt × engine × run", cols: ["Answer ID", "Run", "Run date", "Prompt ID", "Prompt", "Tags", "Kind of answer", "Engine", "Captured at", "Searched web", "Searches", "Web searches", "Shopping searches", "Image searches", "Pages read", "Pages cited", "Brands named", "You named", "Your position", "Your mentions", "Named first", "Cites your site", "Product cards", "Your cards", "Images", "Your images", "Words", "Answer text", "Conversation URL", "Ad shown", "Advertisers"] },
+  { key: "A", sheet: "Answers", table: "tAnswers", what: "One row per prompt × engine × run", cols: ["Answer ID", "Run", "Run date", "Prompt ID", "Prompt", "Tags", "Kind of answer", "Engine", "Captured at", "Searched web", "Searches", "Web searches", "Shopping searches", "Image searches", "Pages read", "Pages cited", "Brands named", "You named", "Your position", "Your mentions", "Named first", "Cites your site", "Product cards", "Your cards", "Images", "Your images", "Words", "Answer text", "Conversation URL", "Ad shown", "Advertisers", "Primary tag", "Secondary tags"] },
   { key: "M", sheet: "Mentions", table: "tMentions", what: "One row per tracked brand an answer named", cols: ["Answer ID", "Run", "Prompt ID", "Engine", "Kind of answer", "Brand", "Brand type", "Position", "Mentions", "Named first", "Tracked", "Picked for", "Cited pages naming it", "Its site cited"] },
   { key: "S", sheet: "Sources data", table: "tSources", what: "One row per page an engine opened", cols: ["Answer ID", "Run", "Prompt ID", "Engine", "Domain", "URL", "Page title", "Kind of site", "Outcome", "Cited", "Names you", "Names a rival", "Brands on page", "Site of brand", "Your site", "Kind of page", "Place among citations", "Search result", "Found through", "Published"] },
   { key: "Q", sheet: "Engine searches", table: "tSearches", what: "One row per search an engine ran", cols: ["Answer ID", "Run", "Prompt ID", "Engine", "Kind of search", "Search text", "Words", "Names a brand", "Names you", "Has a year", "Asks Reddit", "Uses site:", "site: sites", "Sites left out"] },

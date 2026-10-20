@@ -9,9 +9,10 @@ import { campaignParts, answerParts } from "../src/lib/contextPack.js";
 import { buildExportModel, renderStandaloneHtml } from "../src/lib/exportDoc.js";
 import {
   ENGINES, availableEngines, MAX_PROFILES, SENTIMENT_NOTE, TRASH_RETENTION_DAYS,
-  partitionRecords, allTags, runDue, runVolume, makeProfile,
+  partitionRecords, allTags, runDue, runVolume, makeProfile, changeText,
 } from "../src/lib/geo.js";
 import { parseCsv, parseXlsx, rowsToPrompts } from "../src/lib/xlsxLite.js";
+import { promptTemplateWorkbook, promptTemplateCsv } from "../src/lib/promptTemplate.js";
 import { makeZip } from "../src/lib/zipWrite.js";
 import { BUNDLE_PARTS, buildFeedbackFiles, bundleFilename } from "../src/lib/feedbackBundle.js";
 import { computeSearchFunnel, computeBrandMatrix } from "../src/lib/funnel-omitted.js";
@@ -442,7 +443,9 @@ let geoEngineFilter = [];
 let promptTagFilter = []; // tag chips selected in the prompt table sidebar
 let promptOnlyUnassigned = false;
 let promptSearch = "";
+let promptTagRole = "any"; // the prompt list's tag filter matches primary, secondary or either (0.77.0)
 let campaignManageOpen = false; // collapsible setup/prompts panel once a campaign is locked
+let cbNeedsReload = false; // the open setup saved a change the board hasn't loaded yet
 let selectedPromptIds = new Set(); // checked rows in the prompt table, for bulk pause/enable/remove
 // Campaign setup state that has to outlive a re-render — every add, filter
 // click and search keystroke in this tab rebuilds it from the database:
@@ -6632,7 +6635,7 @@ function renderCampaignsImpl() {
     const detail = cbDetail && cbProfileId === profile.id;
     if (!detail && TRASHED_PROFILES.length) root.append(renderTrashedCampaigns());
     if (!detail) root.append(renderCampaignHead(profile));
-    if (!detail && campaignManageOpen) root.append(renderCampaignSetup(profile, true));
+    if (!detail && campaignManageOpen) root.append(renderCampaignSetup(profile, false));
     if (profile.lastRunAt || ALL_RECORDS.some((r) => r.geo && r.geo.profileId === profile.id)) root.append(renderCampaignResults(profile));
     return;
   }
@@ -6873,16 +6876,34 @@ async function renderCampaignBoard(box, profile) {
   }
 
   /* --- competitors inferred from the answers, stated, never applied silently --- */
-  const auto = r.brands.filter((x) => x.auto).map((x) => x.name);
-  if (auto.length || r.excludedBrands.length) {
-    const banner = el("div", { className: "card auto-comp-banner" });
-    if (auto.length) {
+  // One click adds one (0.77.0, asked: adding the competition found by a run
+  // shouldn't need the campaign opened and unlocked). The suggestions stay
+  // after one is added: the rest are still named in the answers.
+  const counted = new Set(r.brands.filter((x) => x.auto).map((x) => x.name));
+  const suggested = (r.suggested || []).map((x) => x.name);
+  const addCompetitors = async (names, btn) => {
+    if (btn) btn.disabled = true;
+    const res = await send({ type: "geo-competitor-add", profileId: profile.id, names });
+    if (!res || !res.ok) { if (btn) btn.disabled = false; showToast((res && res.error) || "Couldn't add that competitor", "error"); return; }
+    const n = (res.added || []).length;
+    showToast(n ? `Added ${n === 1 ? res.added[0] : `${n} competitors`} to ${profile.name || "this campaign"}` : "Already on the list");
+    loadGeo();
+  };
+  if (suggested.length || r.excludedBrands.length) {
+    const banner = el("div", { className: "card auto-comp-banner", id: "cbSuggest" });
+    if (suggested.length) {
+      const allCounted = suggested.every((n) => counted.has(n));
       banner.append(el("div", { className: "small" },
         el("strong", { "data-term": "autoCompetitor" }, "Also named often, but not on your competitor list. "),
-        el("span", { className: "muted" }, `These ${auto.length} brand${auto.length === 1 ? " is" : "s are"} counted as competitors because the answers named ${auto.length === 1 ? "it" : "them"} most. Nothing has been saved to the campaign.`)));
+        el("span", { className: "muted" }, allCounted
+          ? `Counted as competitors for now, because the answers named ${suggested.length === 1 ? "it" : "them"} most. Add the ones that are, leave out the rest.`
+          : "Add any that are competitors; they're counted from then on.")));
       const chips = el("div", { className: "tagline" });
-      auto.forEach((n) => {
-        const chip = el("span", { className: "tag tag-removable" }, n);
+      suggested.forEach((n) => {
+        const chip = el("span", { className: "tag tag-removable cb-sugg" }, n);
+        chip.dataset.name = n;
+        const add = el("button", { className: "tag-add", type: "button", title: `Add ${n} as a competitor`, "aria-label": `Add ${n} as a competitor` }, "+ Add");
+        add.onclick = () => addCompetitors([n], add);
         const x = el("button", { className: "tag-x", type: "button", title: `Leave out ${n}`, "aria-label": `Leave out ${n}` }, "×");
         x.onclick = async () => {
           x.disabled = true;
@@ -6892,19 +6913,12 @@ async function renderCampaignBoard(box, profile) {
           showToast(`${n} is no longer counted as a competitor`);
           loadGeo();
         };
-        chip.append(x);
+        chip.append(add, x);
         chips.append(chip);
       });
-      const save = el("button", { className: "btn sm ghost", type: "button" }, "Save these as competitors");
-      save.onclick = async () => {
-        save.disabled = true;
-        const res = await send({ type: "geo-profile-save", profile: { ...profile, competitors: [...(profile.competitors || []), ...auto.map((n) => ({ name: n, url: "" }))] } });
-        save.disabled = false;
-        if (!res.ok) { showToast(res.error || "Couldn't save competitors", "error"); return; }
-        showToast(`Saved ${auto.length} competitor${auto.length === 1 ? "" : "s"} to ${profile.name || "this campaign"}`);
-        loadGeo();
-      };
-      banner.append(chips, save);
+      const all = el("button", { className: "btn sm ghost", type: "button", id: "cbAddAll" }, suggested.length === 1 ? "Add as a competitor" : `Add all ${suggested.length}`);
+      all.onclick = () => addCompetitors(suggested, all);
+      banner.append(chips, all);
     }
     if (r.excludedBrands.length) {
       const row = el("div", { className: "excluded-row muted small" }, el("span", {}, "Left out:"));
@@ -6925,6 +6939,19 @@ async function renderCampaignBoard(box, profile) {
     box.append(banner);
   }
 
+  /* --- what changed since the campaign was locked (0.77.0) --- */
+  if ((r.changes || []).length) {
+    const list = el("ul", { className: "cb-changes-list" });
+    [...r.changes].reverse().slice(0, 50).forEach((c) => list.append(el("li", {},
+      el("span", { className: "muted" }, new Date(c.at).toLocaleDateString([], { day: "numeric", month: "short" })), " ", changeText(c))));
+    const firstAt = r.changes[0].at;
+    const runsAfter = (r.runs || []).filter((x) => x.startedAt > firstAt).length;
+    box.append(el("details", { className: "card cb-changes", id: "cbChanges" },
+      el("summary", {}, el("b", {}, `Changed since it was set up: ${r.changes.length} change${r.changes.length === 1 ? "" : "s"}`),
+        el("span", { className: "muted small" }, ` · runs before ${new Date(firstAt).toLocaleDateString([], { day: "numeric", month: "short" })} were measured against the earlier setup${runsAfter ? "" : "; no run since"}`)),
+      list));
+  }
+
   /* --- the board (0.64.0): src/lib/campaignView.js, drawn by ui/campaignView.js --- */
   // The sources table with its drill-downs stays, at the foot of Sources.
   const srcBox = cbSection("cb-sources", "Every site, with its pages", "", el("div", { className: "muted small" }, "Loading sources…"));
@@ -6933,6 +6960,7 @@ async function renderCampaignBoard(box, profile) {
     deltas: Object.fromEntries(((b.focus && b.focus.mentions) || []).map((k) => [k.label, k.delta])),
     openDomain: (d) => openCampaignDomain(profile, d),
     openFullCompare: (name) => { cbDetail = name; renderCampaigns(); },
+    addCompetitor: (name, btn) => addCompetitors([name], btn),
     excludeBrand: async (name, btn) => {
       btn.disabled = true;
       const res = await send({ type: "geo-brand-exclude", profileId: profile.id, name });
@@ -7543,9 +7571,6 @@ const setupIcon = (name, size = 16, weight = 2) => el("span", {
   innerHTML: `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${weight}" stroke-linecap="round" stroke-linejoin="round">${SETUP_ICON[name]}</svg>`,
 });
 
-// What "Download a template" saves: the header row rowsToPrompts() looks for
-// and two example rows, one with tags.
-const PROMPT_TEMPLATE_CSV = 'Prompt,Tags\n"best running shoes for flat feet","footwear, comparison"\n"which running shoe brands last the longest",\n';
 
 function setupCardHead(id, title, help, { pill, count } = {}) {
   const titleRow = el("div", { className: "cs-title-row" }, el("h3", { id, className: "cs-h" }, title));
@@ -7591,6 +7616,10 @@ function setupField({ id, label, value, placeholder, req, msg, disabled, optiona
  *  Save & start tracking is pressed with gaps. Competitors are compact chips
  *  in their own card, after the required things. */
 function renderCampaignSetup(profile, dis) {
+  // A locked campaign is edited in place (0.77.0): every change saves at
+  // once and goes in its change log; only the brand and website ask first.
+  const locked = !!profile.locked && !dis;
+  let brandOpen = false;
   const draft = !dis && setupDraft && setupDraft.id === profile.id ? setupDraft : null;
   const start = draft ? { ...profile, ...draft } : profile;
   const root = el("section", { className: `cs${dis ? " cs-readonly" : ""}`, "aria-label": dis ? "Campaign setup" : "Set up your campaign" });
@@ -7610,18 +7639,39 @@ function renderCampaignSetup(profile, dis) {
   // Every prompt add, filter click and search keystroke in this tab rebuilds
   // it from the database, which used to wipe whatever was typed here but not
   // saved yet. The draft carries it across those re-renders.
+  let saveTimer = null;
+  let savedNote = null;
+  const autoSave = () => {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(async () => {
+      const v = collectFormValues();
+      if (!v.name || !v.engines.length || !v.brand.name || !v.brand.url) { if (savedNote) savedNote.textContent = "Not saved: a name, the brand, its website and one engine are needed."; return; }
+      if (savedNote) savedNote.textContent = "Saving…";
+      const r = await send({ type: "geo-profile-save", profile: { ...profile, ...v, locked: true }, unlockOverride: brandOpen });
+      if (!r || !r.ok) { if (savedNote) savedNote.textContent = (r && r.error) || "Couldn't save."; return; }
+      setupDraft = null;
+      const i = GEO_PROFILES.findIndex((x) => x.id === profile.id);
+      if (i !== -1) GEO_PROFILES[i] = r.profile;
+      Object.assign(profile, r.profile);
+      if (savedNote) savedNote.textContent = "Saved";
+      cbNeedsReload = true;
+    }, 500);
+  };
   const changed = () => {
     if (!dis) setupDraft = { id: profile.id, ...collectFormValues(true) };
     refresh();
+    if (locked) autoSave();
   };
 
   /* ---- the bar ---- */
   const bar = el("div", { className: "cs-bar" });
   const titleText = el("h2", { className: "cs-bar-name" });
+  savedNote = locked ? el("span", { className: "cs-saved", role: "status", id: "csSaved" }, "Changes save as you make them") : null;
   bar.append(el("div", { className: "cs-bar-title" }, titleText,
-    el("p", { className: "cs-bar-sub" }, dis
-      ? "Locked, so every run is measured the same way. Unlocking lets you change it, but results from before and after won't be directly comparable."
-      : "Save & start tracking locks the setup, so every run is measured the same way. You can unlock it later.")));
+    el("p", { className: "cs-bar-sub", "data-tip": locked ? "Each change is listed on the campaign's board, so you can see which runs were measured before it. The brand and its website ask first, because they change every number." : "Locking keeps every run measured the same way. You can still edit prompts, tags, competitors and engines afterwards." }, dis
+      ? "Locked, so every run is measured the same way."
+      : locked ? "Edit anything below; it's saved and logged." : "Save & start tracking locks it, so every run is measured the same way."),
+    savedNote || ""));
 
   const reqButtons = {};
   const segs = el("div", { className: "cs-segs", "aria-hidden": "true" });
@@ -7631,7 +7681,9 @@ function renderCampaignSetup(profile, dis) {
   let saveBtn = null;
   let draftBtn = null;
   let saveLabel = null;
-  if (!dis) {
+  if (locked) {
+    // Nothing to press: changes are saved as they're made.
+  } else if (!dis) {
     const delBtn = el("button", { type: "button", className: "cs-delete", "aria-label": "Delete campaign", title: "Delete campaign" },
       setupIcon("trash"), el("span", { className: "cs-delete-label" }, "Delete"));
     delBtn.onclick = trashCampaign(profile);
@@ -7671,22 +7723,36 @@ function renderCampaignSetup(profile, dis) {
 
   /* ---- campaign details ---- */
   const details = el("section", { className: "card cs-card cs-card-details", "aria-labelledby": "cs-details-h" });
-  details.append(setupCardHead("cs-details-h", "Campaign details", dis ? null : "Everything here is needed before you can start tracking."));
+  details.append(setupCardHead("cs-details-h", "Campaign details", null));
   const nameF = setupField({ id: "cs-name", label: "Campaign name", value: start.name, placeholder: "e.g. Running shoes — Q4", req: "name", msg: "Give the campaign a name so you can find it later.", disabled: dis });
-  const brandF = setupField({ id: "cs-brand", label: "Brand name", value: start.brand?.name, placeholder: "e.g. Northwind", req: "brand", msg: "Add your brand name.", disabled: dis });
-  const siteF = setupField({ id: "cs-site", label: "Website", value: start.brand?.url, placeholder: "e.g. northwind.com", req: "site", msg: "Add your website, e.g. northwind.com.", disabled: dis });
-  details.append(nameF.wrap, el("div", { className: "cs-block" },
+  const brandF = setupField({ id: "cs-brand", label: "Brand name", value: start.brand?.name, placeholder: "e.g. Northwind", req: "brand", msg: "Add your brand name.", disabled: dis || locked });
+  const siteF = setupField({ id: "cs-site", label: "Website", value: start.brand?.url, placeholder: "e.g. northwind.com", req: "site", msg: "Add your website, e.g. northwind.com.", disabled: dis || locked });
+  const brandBlock = el("div", { className: "cs-block" },
     el("div", { className: "cs-block-head" },
-      el("span", { className: "cs-label cs-label-lg" }, "Your brand"),
-      el("p", { className: "cs-help" }, "Answers are scanned for this name, and cited pages are matched to this website.")),
-    el("div", { className: "cs-pair" }, brandF.wrap, siteF.wrap)));
+      el("span", { className: "cs-label cs-label-lg", "data-tip": "Answers are scanned for this name, and cited pages are matched to this website." }, "Your brand")),
+    el("div", { className: "cs-pair" }, brandF.wrap, siteF.wrap));
+  if (locked) {
+    const change = el("button", { type: "button", className: "linkbtn cs-brand-change", id: "csBrandChange" }, "Change brand or website…");
+    change.onclick = () => {
+      if (!confirm("Change the brand or its website?\n\nEvery number is measured against them, so runs before and after this change are not directly comparable. The change is listed on the board.")) return;
+      brandOpen = true;
+      brandF.input.disabled = false;
+      siteF.input.disabled = false;
+      change.remove();
+      brandF.input.focus();
+    };
+    brandBlock.append(change);
+  }
+  details.append(nameF.wrap, brandBlock);
 
   const engCount = el("span", {});
   const engMsg = el("p", { className: "cs-msg", id: "cs-engines-msg", hidden: true }, "Pick at least one AI engine to track.");
   const engLabelRow = el("div", { className: "cs-label-row" }, el("span", { className: "cs-label cs-label-lg", id: "cs-eng-label" }, "AI engines to track"));
   if (!dis) engLabelRow.append(setupPill("engine"));
+  engLabelRow.firstChild.dataset.tip = "Every prompt is sent to each engine you pick.";
+  engLabelRow.append(el("span", { className: "cs-count-inline" }, engCount));
   const engGroup = el("div", { className: "cs-group", id: "cs-engines", role: "group", "aria-labelledby": "cs-eng-label" },
-    el("div", { className: "cs-block-head" }, engLabelRow, el("p", { className: "cs-help" }, "Every prompt is sent to each engine you pick. ", engCount)));
+    el("div", { className: "cs-block-head" }, engLabelRow));
   const engGrid = el("div", { className: "cs-engine-grid" });
   const startEngines = new Set(start.engines || []);
   ENGINES.forEach((e) => {
@@ -7720,15 +7786,14 @@ function renderCampaignSetup(profile, dis) {
   const startMeasure = start.measure || (profile.locked ? { citations: true, products: true, images: true, local: true } : { citations: true });
   const msGroup = el("div", { className: "cs-group", id: "cs-measure", role: "group", "aria-labelledby": "cs-ms-label" },
     el("div", { className: "cs-block-head" },
-      el("div", { className: "cs-label-row" }, el("span", { className: "cs-label cs-label-lg", id: "cs-ms-label" }, "What this campaign should measure"), el("span", { className: "cs-pill" }, "Optional")),
-      el("p", { className: "cs-help" }, "Sets the headline numbers on the campaign’s board. Every answer is still captured in full, and you can switch later.")));
+      el("div", { className: "cs-label-row" }, el("span", { className: "cs-label cs-label-lg", id: "cs-ms-label", "data-tip": "Sets the headline numbers on the campaign’s board. Every answer is still captured in full, and you can switch later." }, "What this campaign should measure"), el("span", { className: "cs-pill" }, "Optional"))));
   const msGrid = el("div", { className: "cs-measure-grid" });
   CB_FOCUS.forEach(([id, , glyph]) => {
     const fixed = id === "mentions";
     const on = fixed || !!startMeasure[id];
     const [label, sub] = CS_MEASURE[id];
     const tag = el("span", { className: "cs-measure-tag" }, fixed ? "Always on" : on ? "On" : "Off");
-    const b = el("button", { type: "button", className: "cs-measure", disabled: dis || fixed, "aria-pressed": String(on) },
+    const b = el("button", { type: "button", className: "cs-measure", disabled: dis || fixed, "aria-pressed": String(on), "data-tip": sub },
       el("span", { className: "cs-measure-icon" }, glyphEl(glyph, 18)),
       el("span", { className: "cs-measure-text" }, el("span", { className: "cs-measure-name" }, label), el("span", { className: "cs-measure-sub" }, sub)), tag);
     b.dataset.value = id;
@@ -7745,10 +7810,11 @@ function renderCampaignSetup(profile, dis) {
   /* ---- competitors ---- */
   let comps = (start.competitors || []).map((c) => ({ name: c.name, url: c.url || "" }));
   const compCount = el("span", { className: "cs-count" });
-  const compsCard = el("section", { className: "card cs-card cs-card-comps", "aria-labelledby": "cs-comps-h" });
-  compsCard.append(setupCardHead("cs-comps-h", "Competitors",
-    dis ? null : "Compared with your brand in every answer. Optional, add as many as you like.",
-    { pill: dis ? null : el("span", { className: "cs-pill cs-pill-soft" }, "Recommended"), count: compCount }));
+  const compsCard = el("div", { className: "cs-block cs-card-comps", role: "group", "aria-labelledby": "cs-comps-h" });
+  const compHead = el("div", { className: "cs-block-head" }, el("div", { className: "cs-label-row" },
+    el("span", { className: "cs-label cs-label-lg", id: "cs-comps-h", "data-tip": "Compared with your brand in every answer. Optional; add as many as you like." }, "Competitors"),
+    dis ? "" : el("span", { className: "cs-pill cs-pill-soft" }, "Recommended"), compCount));
+  compsCard.append(compHead);
   const compList = el("ul", { className: "cs-comp-list", "aria-label": "Competitors" });
   const compEmpty = el("p", { className: "cs-empty-line" }, dis ? "No competitors added." : "No competitors yet. Your brand is still tracked without them.");
   let compNameF = null;
@@ -7806,8 +7872,10 @@ function renderCampaignSetup(profile, dis) {
   compsCard.append(compList, compEmpty);
   drawComps();
 
-  // DOM order is the one-column order: required things first.
-  grid.append(details, promptsCard, compsCard);
+  // Competitors sit right after the brand (0.77.0: "the competition adding
+  // option is so down that people may miss it"), then engines and measures.
+  brandBlock.after(compsCard);
+  grid.append(details, promptsCard);
 
   /* ---- reading and checking the form ---- */
   collectFormValues = (raw = false) => ({
@@ -7853,7 +7921,7 @@ function renderCampaignSetup(profile, dis) {
     const missing = SETUP_REQUIRED.filter((r) => !ok[r.key]);
     titleText.textContent = v.name.trim() || "New campaign";
     engCount.textContent = `${v.engines.length} of ${ENGINES.length} selected.`;
-    if (dis) return missing;
+    if (dis || locked) return missing;
 
     const attempted = setupAttemptedFor === profile.id;
     SETUP_REQUIRED.forEach((r, i) => {
@@ -7904,7 +7972,7 @@ function renderCampaignSetup(profile, dis) {
     return missing;
   };
 
-  if (!dis) {
+  if (!dis && !locked) {
     saveBtn.onclick = async () => {
       if (saveBtn.disabled) return;
       setupAttemptedFor = profile.id;
@@ -8088,12 +8156,21 @@ function renderPromptManager(profile, dis, persistDetails) {
       fileInput.onchange = () => importFile(fileInput.files[0]);
       const choose = el("button", { type: "button", className: "btn primary" }, "Choose file");
       choose.onclick = () => fileInput.click();
-      const template = el("button", { type: "button", className: "linkbtn" }, "Download a template");
-      template.onclick = () => download("prompts-template.csv", PROMPT_TEMPLATE_CSV, "text/csv");
+      // The template (0.77.0): Excel, with Primary and Secondary tag columns
+      // and the campaign's tags as a dropdown; or the same as CSV.
+      const template = el("button", { type: "button", className: "linkbtn", id: "csTemplateXlsx", "data-tip": "Prompt, Primary tag and Secondary tag columns, with example rows and this campaign's tags to pick from" }, "Download the Excel template");
+      template.onclick = async () => {
+        const wb = promptTemplateWorkbook({ tags: [...new Set(GEO_PROMPTS.flatMap((p) => p.tags || []))] });
+        const a = el("a", { href: URL.createObjectURL(await wb.toBlob()), download: "prompts-template.xlsx" });
+        document.body.append(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      };
+      const templateCsv = el("button", { type: "button", className: "linkbtn", id: "csTemplateCsv" }, "or CSV");
+      templateCsv.onclick = () => download("prompts-template.csv", promptTemplateCsv(), "text/csv");
       const drop = el("div", { className: "cs-drop" },
         setupIcon("file", 26, 1.6),
         el("p", { className: "cs-drop-title" }, "Drop a .csv, .tsv or .xlsx file here"),
-        el("div", { className: "cs-drop-actions" }, choose, template),
+        el("div", { className: "cs-drop-actions" }, choose, template, templateCsv),
         fileInput);
       drop.ondragover = (ev) => { ev.preventDefault(); drop.classList.add("is-over"); };
       drop.ondragleave = () => drop.classList.remove("is-over");
@@ -8207,14 +8284,19 @@ function renderPromptManager(profile, dis, persistDetails) {
   const filtered = GEO_PROMPTS.filter((p) => {
     if (!matchesSearch(p.text, promptSearch)) return false;
     if (promptOnlyUnassigned && (p.tags || []).length) return false;
-    if (promptTagFilter.length && !promptTagFilter.some((t) => (p.tags || []).includes(t))) return false;
+    // Primary is tags[0] (0.77.0); the filter can look at either role.
+    const pool = promptTagRole === "primary" ? (p.tags || []).slice(0, 1) : promptTagRole === "secondary" ? (p.tags || []).slice(1) : (p.tags || []);
+    if (promptTagFilter.length && !promptTagFilter.some((t) => pool.includes(t))) return false;
     return true;
   });
 
   const body = el("div", { className: "prompt-table-layout" });
   if (tags.length) {
     const sidebar = el("div", { className: "tag-sidebar" });
-    sidebar.append(el("div", { className: "muted small", style: "margin-bottom:6px" }, "Tags"));
+    const role = el("select", { className: "tag-role", id: "csTagRole", "aria-label": "Match the tag as", title: "Match a tag as the prompt's primary tag, a secondary one, or either" },
+      ...[["any", "Any tag"], ["primary", "Primary tag"], ["secondary", "Secondary tag"]].map(([v, l]) => el("option", { value: v, selected: v === promptTagRole }, l)));
+    role.onchange = () => { promptTagRole = role.value; renderCampaigns(); };
+    sidebar.append(el("div", { className: "muted small tag-sidebar-head", style: "margin-bottom:6px" }, "Tags", role));
     const allChip = el("button", { className: `tag clickable${promptTagFilter.length ? "" : " on"}` }, "All");
     allChip.onclick = () => { promptTagFilter = []; renderCampaigns(); };
     sidebar.append(allChip);
@@ -8293,7 +8375,7 @@ function renderPromptManager(profile, dis, persistDetails) {
 
   const headerCells = [];
   if (!dis) headerCells.push(el("th", { style: "width:24px" }, ""));
-  headerCells.push(el("th", {}, "Prompt"), el("th", {}, "Tags"));
+  headerCells.push(el("th", {}, "Prompt"), el("th", { "data-tip": "The prompt's main topic; the campaign board groups prompts by it" }, "Primary tag"), el("th", {}, "Secondary tags"));
   const table = el("table", { className: "prompt-table" }, el("tr", {}, ...headerCells));
 
   filtered.forEach((p) => {
@@ -8310,19 +8392,40 @@ function renderPromptManager(profile, dis, persistDetails) {
     if (p.active === false) promptCell.append(el("span", { className: "tag fetched", style: "margin-right:6px" }, "⏸ paused"));
     promptCell.append(highlightMatch(p.text, promptSearch));
     cells.push(promptCell);
-    const tagWrap = el("div", { className: "tagline" });
-    (p.tags || []).forEach((t) => tagWrap.append(el("span", { className: "tag" }, t)));
-    if (!dis) {
-      const ti = el("input", { type: "text", className: "taginput", placeholder: "+ tag" });
+    // Primary (tags[0]) and secondary tags apart (0.77.0); any one tag can
+    // be taken off this prompt, and a secondary one made primary.
+    const saveTags = async (tags) => { await send({ type: "geo-prompt-save", prompt: { ...p, tags: [...new Set(tags)] } }); loadGeo(); };
+    const chip = (t, i) => {
+      const c = el("span", { className: `tag tag-removable${i === 0 ? " tag-primary" : ""}` });
+      if (!dis && i > 0) {
+        const up = el("button", { type: "button", className: "tag-label", title: `Make "${t}" the primary tag` }, t);
+        up.onclick = () => saveTags([t, ...(p.tags || []).filter((x) => x !== t)]);
+        c.append(up);
+      } else c.append(t);
+      if (!dis) {
+        const x = el("button", { type: "button", className: "tag-x", title: `Take "${t}" off this prompt`, "aria-label": `Remove the tag ${t} from this prompt` }, "×");
+        x.onclick = () => saveTags((p.tags || []).filter((y) => y !== t));
+        c.append(x);
+      }
+      return c;
+    };
+    const tagInput = (placeholder, primary) => {
+      const ti = el("input", { type: "text", className: "taginput", placeholder });
       ti.onkeydown = async (ev) => {
         if (ev.key !== "Enter" || !ti.value.trim()) return;
-        const newTags = [...new Set([...(p.tags || []), ...ti.value.split(",").map((s) => s.trim()).filter(Boolean)])];
-        await send({ type: "geo-prompt-save", prompt: { ...p, tags: newTags } });
-        loadGeo();
+        const typed = ti.value.split(",").map((s) => s.trim()).filter(Boolean);
+        await saveTags(primary ? [...typed.slice(0, 1), ...(p.tags || []), ...typed.slice(1)] : [...(p.tags || []), ...typed]);
       };
-      tagWrap.append(ti);
-    }
-    cells.push(el("td", {}, tagWrap));
+      return ti;
+    };
+    const tags0 = p.tags || [];
+    const priWrap = el("div", { className: "tagline" });
+    if (tags0.length) priWrap.append(chip(tags0[0], 0));
+    else if (!dis) priWrap.append(tagInput("+ primary", true));
+    const secWrap = el("div", { className: "tagline" });
+    tags0.slice(1).forEach((t, j) => secWrap.append(chip(t, j + 1)));
+    if (!dis && tags0.length) secWrap.append(tagInput("+ tag", false));
+    cells.push(el("td", { className: "prompt-pri" }, priWrap), el("td", { className: "prompt-sec" }, secWrap));
     table.append(el("tr", { className: p.active === false ? "inactive-row" : "" }, ...cells));
   });
 
@@ -8361,7 +8464,10 @@ function renderCampaignHead(profile) {
   ].filter(Boolean).join(" · ");
 
   const edit = el("button", { className: "btn ghost cp-btn", type: "button", "aria-expanded": campaignManageOpen ? "true" : "false" }, campaignManageOpen ? "Close setup" : "Edit setup");
-  edit.onclick = () => { campaignManageOpen = !campaignManageOpen; renderCampaigns(); };
+  edit.onclick = () => {
+    campaignManageOpen = !campaignManageOpen;
+    if (!campaignManageOpen && cbNeedsReload) { cbNeedsReload = false; loadGeo(); } else renderCampaigns();
+  };
   // Filled with the board's figures once it loads (renderCampaignBoard).
   const exp = el("button", { className: "btn ghost cp-btn", type: "button", id: "cbExport", disabled: true, title: "The campaign as an Excel workbook, CSV tables or a PDF report" }, "Export…");
   const runBtn = el("button", { className: "btn primary cp-btn cp-run", type: "button" }, profile.lastRunAt ? "Run again" : "Start run");

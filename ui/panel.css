@@ -4559,7 +4559,7 @@ body.tab .cs-bar { top: var(--analyze-bar-top, 60px); }
   gap: 14px;
   align-items: start;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-areas: "details" "prompts" "comps";
+  grid-template-areas: "details" "prompts";
 }
 .cs-grid > .card { margin: 0; }
 /* A form card that lifts under the cursor jitters while you type in it. */
@@ -4567,7 +4567,7 @@ body.tab .cs-bar { top: var(--analyze-bar-top, 60px); }
 .cs-card { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
 .cs-card-details { grid-area: details; }
 .cs-card-prompts { grid-area: prompts; }
-.cs-card-comps { grid-area: comps; }
+.cs-card-comps { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .cs-card > .prompt-manager { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
 .cs-card > .prompt-manager > .prompt-table-layout { margin-top: 0; }
 
@@ -4880,13 +4880,11 @@ body.popup .cs-measure-grid { grid-template-columns: minmax(0, 1fr); }
     grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
     /* The second row soaks up the height a long prompt list adds, so it
        never opens a gap between the two left-hand cards. */
-    grid-template-rows: auto 1fr;
-    grid-template-areas: "details prompts" "comps prompts";
+    grid-template-areas: "details prompts";
   }
   .cs-card { padding: 20px; }
   .cs-pair { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .cs-engine-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-  .cs-engine { min-height: 52px; }
+
   .cs-comp-form { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; }
   .cs-comp-add { grid-column: auto; }
   .cs-mode { flex-direction: row; justify-content: flex-start; gap: 12px; min-height: 72px; padding: 12px 14px; text-align: start; }
@@ -7561,3 +7559,51 @@ body.popup .nav-tab[data-tab="ask"] { display: none; }
 .ho-btns { margin-inline-start: auto; display: inline-flex; gap: 8px; }
 .ask-ho { margin-block-start: 6px; }
 .ask-or { margin-block: 12px 6px; color: var(--fg-muted); font-size: 13px; }
+
+/* ---------- Campaigns without friction (0.77.0) ---------- */
+/* "+ Add" on a suggested competitor: in the banner and on the leaderboard. */
+.tag-add,
+.row-add {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 3px 6px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tag-add:hover,
+.row-add:hover { background: var(--accent); color: var(--accent-contrast, #fff); }
+.tag-add:focus-visible,
+.row-add:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.tag-add:disabled,
+.row-add:disabled { opacity: 0.5; cursor: default; }
+.row-add { margin-inline-start: 8px; }
+.cb-changes { padding: 10px 14px; }
+.cb-changes summary { cursor: pointer; display: flex; flex-wrap: wrap; gap: 4px; align-items: baseline; }
+.cb-changes-list { margin: 8px 0 0; padding-inline-start: 18px; display: grid; gap: 3px; font-size: 12.5px; }
+
+/* A shorter setup (0.77.0): explainers moved into tooltips, the engines and
+   the measures as one row of chips each, competitors under the brand. */
+.cs-engine-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+.cs-engine { min-height: 36px; padding: 4px 10px 4px 6px; gap: 8px; border-radius: 999px; flex: 0 0 auto; }
+.cs-engine-mark { width: 24px; height: 24px; border-radius: 999px; }
+.cs-engine-host { display: none; }
+.cs-engine-check { width: 16px; height: 16px; }
+.cs-measure-grid, body.popup .cs-measure-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+.cs-measure { padding: 6px 12px 6px 8px; border-radius: 999px; gap: 8px; }
+.cs-measure-sub { display: none; }
+.cs-count-inline { margin-inline-start: auto; font-size: 12px; color: var(--fg-muted); }
+.cs-card-details { gap: 14px; }
+.cs-brand-change { align-self: flex-start; font-size: 12px; padding: 0; }
+.cs-saved { display: block; font-size: 12px; color: var(--fg-muted); margin-top: 2px; }
+[data-tip].cs-label, .cs-bar-sub[data-tip] { text-decoration: underline dotted var(--fg-muted); text-underline-offset: 3px; cursor: help; }
+.tag-primary { font-weight: 600; box-shadow: inset 0 0 0 1px var(--accent); }
+.tag-label { font: inherit; background: none; border: 0; padding: 0; color: inherit; cursor: pointer; }
+.tag-label:hover { text-decoration: underline; }
+.tag-sidebar-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.tag-role { font: inherit; font-size: 11px; padding: 1px 4px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-solid); color: var(--fg-primary); }

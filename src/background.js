@@ -46,6 +46,7 @@ import { adapt as adaptPerplexity } from "./adapters/perplexity.js";
 import { adapt as adaptGrok } from "./adapters/grok.js";
 import {
   MAX_PROFILES, TRASH_RETENTION_DAYS, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
+  needsUnlock, profileChanges, addCompetitor, autoCompetitorsFrom,
   selectTracked, computeMetrics, computeSeries, brandPresence, normName,
   effectiveTrackedBrands, headToHead, brandSourceDomains, availableEngines,
   hasSignal, turnAnswered, usageLimitOf, countCompletedForRun, countCompletedForLeg, isPrunableCapture, retentionVictims,
@@ -164,6 +165,12 @@ async function setHandoffTab(tabId, on) {
   const s = await handoffTabs();
   if (on) s.add(tabId); else s.delete(tabId);
   try { await chrome.storage.session.set({ [HANDOFF_TABS_KEY]: [...s] }); } catch (_) { /* best effort */ }
+}
+// A change to a locked campaign's prompts goes in its change log (0.77.0).
+async function logCampaignChange(profileId, entry) {
+  const p = profileId ? await db.get("profiles", profileId) : null;
+  if (!p || !p.locked) return;
+  await db.put("profiles", makeProfile({ ...p, changes: [...(p.changes || []), { at: Date.now(), ...entry }] }));
 }
 async function handoffOpen({ engine, text, autoSend = true }) {
   const e = HANDOFF_ENGINES[engine];
@@ -3100,11 +3107,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             sendResponse({ ok: false, error: `You can track at most ${MAX_PROFILES} brand profiles.` });
             break;
           }
-          if (existing && existing.locked && !msg.unlockOverride) {
-            sendResponse({ ok: false, error: "This profile is locked. Unlock it before editing." });
+          // A locked campaign is edited in place (0.77.0): only a new brand
+          // or website still needs the explicit unlock. What changed is logged.
+          if (existing && needsUnlock(existing, msg.profile) && !msg.unlockOverride) {
+            sendResponse({ ok: false, error: "Changing the brand or website needs the campaign unlocked first.", needsUnlock: true });
             break;
           }
-          const profile = makeProfile({ ...(existing || {}), ...msg.profile });
+          const merged = { ...(existing || {}), ...msg.profile };
+          const logged = existing && existing.locked && merged.locked !== false ? profileChanges(existing, makeProfile(merged)) : [];
+          const profile = makeProfile({ ...merged, changes: [...(existing?.changes || []), ...logged] });
           await db.put("profiles", profile);
           sendResponse({ ok: true, profile });
           break;
@@ -3117,6 +3128,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // a locked profile: the locked definition is "own brand + configured
         // competitors", and an inferred brand was never part of it. It only
         // ever touches excludedBrands.
+        // One click from the board (0.77.0): a brand the answers named becomes
+        // a competitor, on a locked campaign too, logged in its changes.
+        case "geo-competitor-add": {
+          const profile = await db.get("profiles", msg.profileId);
+          if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
+          const names = Array.isArray(msg.names) ? msg.names : [msg.name];
+          let cur = profile, added = [];
+          for (const n of names) {
+            const r = addCompetitor(cur, { name: n, url: msg.url || "" });
+            if (r.error) { if (names.length === 1) { sendResponse({ ok: false, error: r.error }); cur = null; } break; }
+            if (r.added) added.push(String(n).trim());
+            cur = r.profile;
+          }
+          if (!cur) break;
+          if (added.length) await db.put("profiles", cur);
+          sendResponse({ ok: true, profile: cur, added });
+          break;
+        }
         case "geo-brand-exclude": {
           const profile = await db.get("profiles", msg.profileId);
           if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
@@ -3175,6 +3204,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const prompt = makeTrackedPrompt({ ...(existing || {}), ...msg.prompt });
           if (!prompt.text) { sendResponse({ ok: false, error: "Prompt text is required." }); break; }
           await db.put("trackedPrompts", prompt);
+          if (existing && existing.text !== prompt.text) await logCampaignChange(prompt.profileId, { kind: "prompt-edited", name: existing.text.slice(0, 120) });
+          else if (existing && (existing.tags || []).join("\u0001") !== (prompt.tags || []).join("\u0001")) await logCampaignChange(prompt.profileId, { kind: "tags", name: prompt.text.slice(0, 120) });
+          else if (!existing) await logCampaignChange(prompt.profileId, { kind: "prompts-added", count: 1 });
           sendResponse({ ok: true, prompt });
           break;
         }
@@ -3215,13 +3247,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             await db.put("trackedPrompts", p);
             added.push(p);
           }
+          if (added.length) await logCampaignChange(msg.profileId, { kind: "prompts-added", count: added.length });
           sendResponse({ ok: true, added: added.length, duplicates });
           break;
         }
-        case "geo-prompt-delete":
+        case "geo-prompt-delete": {
+          const gone = await db.get("trackedPrompts", msg.id);
           await db.delete("trackedPrompts", msg.id);
+          if (gone) await logCampaignChange(gone.profileId, { kind: "prompt-removed", name: String(gone.text || "").slice(0, 120) });
           sendResponse({ ok: true });
           break;
+        }
         case "geo-tag-delete": {
           // Removes the tag from every prompt that carries it — the prompts
           // themselves are untouched. Distinct from deleting prompts by tag.
@@ -3445,6 +3481,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             runs: runs.filter((r) => !live.has(r.id)).map((r) => ({ id: r.id, startedAt: r.startedAt, status: r.status, captured: r.captured || 0, expected: r.expected || 0, hasAnswers: all.some((x) => x.geo && x.geo.runId === r.id) })),
             brands: brands.map((b) => ({ name: b.name, isOwn: !!b.isOwn, auto: !!b.auto })),
             excludedBrands: profile.excludedBrands || [],
+            // Named in the answers and not on the list (0.77.0): offered to
+            // add even once the campaign has competitors of its own.
+            suggested: autoCompetitorsFrom(recs, profile).map((b) => ({ name: b.name, responses: b.responses })),
+            changes: profile.changes || [],
             tags: [...new Set(prompts.flatMap((p) => p.tags || []))],
             answers: recs.length,
           });

@@ -591,5 +591,20 @@
  "My own question": "मेरा अपना प्रश्न",
  "Or take your latest campaign's data and your question to another AI:": "या अपने पिछले कैंपेन का डेटा और अपना प्रश्न किसी दूसरे AI तक ले जाएँ:",
  "Capture \"Continue in…\" chats": "\"इसमें जारी रखें…\" वाली चैट कैप्चर करें",
- "Chats opened with Continue in… are you talking about your own data, so they aren't kept as engine answers. Turn this on to keep them too.": "\"इसमें जारी रखें…\" से खुली चैट में आप अपने ही डेटा की बात करते हैं, इसलिए वे इंजन के जवाबों की तरह नहीं रखी जातीं। उन्हें भी रखने के लिए इसे चालू करें।"
+ "Chats opened with Continue in… are you talking about your own data, so they aren't kept as engine answers. Turn this on to keep them too.": "\"इसमें जारी रखें…\" से खुली चैट में आप अपने ही डेटा की बात करते हैं, इसलिए वे इंजन के जवाबों की तरह नहीं रखी जातीं। उन्हें भी रखने के लिए इसे चालू करें।",
+ "+ Add": "+ जोड़ें",
+ "Also named often, but not on your competitor list. ": "अक्सर नाम आते हैं, पर आपकी प्रतिस्पर्धी सूची में नहीं। ",
+ "Add any that are competitors; they're counted from then on.": "जो प्रतिस्पर्धी हैं उन्हें जोड़ें; तब से उनकी गिनती होगी।",
+ "Add as a competitor": "प्रतिस्पर्धी के रूप में जोड़ें",
+ "Primary tag": "मुख्य टैग",
+ "Secondary tag": "द्वितीयक टैग",
+ "Secondary tags": "द्वितीयक टैग",
+ "Any tag": "कोई भी टैग",
+ "Download the Excel template": "Excel टेम्पलेट डाउनलोड करें",
+ "or CSV": "या CSV",
+ "Change brand or website…": "ब्रांड या वेबसाइट बदलें…",
+ "Changes save as you make them": "बदलाव करते ही सहेजे जाते हैं",
+ "Edit anything below; it's saved and logged.": "नीचे कुछ भी बदलें; यह सहेजा और दर्ज किया जाता है।",
+ "Saved": "सहेजा गया",
+ "Saving…": "सहेजा जा रहा है…"
 }

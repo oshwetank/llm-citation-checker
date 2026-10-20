@@ -236,6 +236,12 @@ function brandsSec() {
     // can be left out (geo-brand-exclude), as on the board before 0.64.0.
     const who = h("span", { role: "cell", className: "cv-who" }, name, r.isOwn ? youBadge() : "",
       r.auto ? h("span", { className: "cv-badge auto-tag", "data-term": "autoCompetitor" }, "found in answers") : "");
+    // One click makes it a competitor (0.77.0), locked campaign or not.
+    if (r.auto && D.addCompetitor) {
+      const add = h("button", { type: "button", className: "row-add", title: `Add ${r.name} as a competitor`, "aria-label": `Add ${r.name} as a competitor` }, "+ Add");
+      add.onclick = () => D.addCompetitor(r.name, add);
+      who.append(add);
+    }
     if (r.auto && D.excludeBrand) {
       const x = h("button", { type: "button", className: "row-x", title: `Leave out ${r.name}`, "aria-label": `Leave out ${r.name}` }, "×");
       x.onclick = () => D.excludeBrand(r.name, x);

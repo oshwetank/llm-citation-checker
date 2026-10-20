@@ -591,5 +591,20 @@
  "My own question": "سؤالي الخاص",
  "Or take your latest campaign's data and your question to another AI:": "أو انقل بيانات حملتك الأخيرة وسؤالك إلى ذكاء اصطناعي آخر:",
  "Capture \"Continue in…\" chats": "التقاط محادثات \"المتابعة في…\"",
- "Chats opened with Continue in… are you talking about your own data, so they aren't kept as engine answers. Turn this on to keep them too.": "المحادثات المفتوحة عبر \"المتابعة في…\" هي حديثك عن بياناتك، لذا لا تُحفظ كإجابات للمحركات. فعّل هذا لحفظها أيضًا."
+ "Chats opened with Continue in… are you talking about your own data, so they aren't kept as engine answers. Turn this on to keep them too.": "المحادثات المفتوحة عبر \"المتابعة في…\" هي حديثك عن بياناتك، لذا لا تُحفظ كإجابات للمحركات. فعّل هذا لحفظها أيضًا.",
+ "+ Add": "+ إضافة",
+ "Also named often, but not on your competitor list. ": "تُذكر كثيرًا أيضًا، لكنها ليست في قائمة منافسيك. ",
+ "Add any that are competitors; they're counted from then on.": "أضف ما كان منها منافسًا؛ ستُحسب من حينها.",
+ "Add as a competitor": "إضافة كمنافس",
+ "Primary tag": "الوسم الرئيسي",
+ "Secondary tag": "الوسم الثانوي",
+ "Secondary tags": "الوسوم الثانوية",
+ "Any tag": "أي وسم",
+ "Download the Excel template": "تنزيل قالب Excel",
+ "or CSV": "أو CSV",
+ "Change brand or website…": "تغيير العلامة أو الموقع…",
+ "Changes save as you make them": "تُحفظ التغييرات فور إجرائها",
+ "Edit anything below; it's saved and logged.": "عدّل أي شيء أدناه؛ يُحفظ ويُسجَّل.",
+ "Saved": "تم الحفظ",
+ "Saving…": "جارٍ الحفظ…"
 }

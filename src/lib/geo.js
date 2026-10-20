@@ -136,7 +136,78 @@ export function makeProfile(base = {}) {
     measure: base.measure && typeof base.measure === "object"
       ? { citations: !!base.measure.citations, products: !!base.measure.products, images: !!base.measure.images, local: !!base.measure.local }
       : null,
+    // What was changed after the campaign was locked (0.77.0), newest last:
+    // {at, kind, name?, detail?}. A locked campaign can be edited without
+    // unlocking it; this is how the board marks where numbers stop being
+    // directly comparable.
+    changes: Array.isArray(base.changes) ? base.changes.filter((c) => c && c.kind).slice(-MAX_CHANGES) : [],
   };
+}
+
+const MAX_CHANGES = 300;
+
+/* ---------------- editing a locked campaign (0.77.0) ----------------
+ * The owner: "I don't want to open and enable the editing of the campaign …
+ * the process to make changes in the campaign is tedious". Only the brand
+ * and its website still need an explicit unlock, because they change every
+ * number; prompts, tags, competitors, engines and what the board measures
+ * are edited in place, and each change is logged. */
+
+/** Whether saving `next` over a locked `existing` needs the explicit unlock. */
+export function needsUnlock(existing, next) {
+  if (!existing || !existing.locked) return false;
+  const a = existing.brand || {}, b = (next && next.brand) || a;
+  return normName(a.name || "") !== normName(b.name || "") || String(a.url || "").trim().toLowerCase() !== String(b.url || "").trim().toLowerCase();
+}
+
+/** The change-log entries between two versions of a campaign. */
+export function profileChanges(before, after, at = Date.now()) {
+  if (!before) return [];
+  const out = [];
+  const names = (p) => new Map((p.competitors || []).map((c) => [normName(c.name), c.name]));
+  const was = names(before), now = names(after);
+  for (const [k, n] of now) if (!was.has(k)) out.push({ at, kind: "competitor-added", name: n });
+  for (const [k, n] of was) if (!now.has(k)) out.push({ at, kind: "competitor-removed", name: n });
+  const e1 = [...(before.engines || [])].sort().join(), e2 = [...(after.engines || [])].sort().join();
+  if (e1 !== e2) out.push({ at, kind: "engines", detail: `${(before.engines || []).join(", ")} → ${(after.engines || []).join(", ")}` });
+  const m = (p) => JSON.stringify(p.measure || null);
+  if (m(before) !== m(after)) out.push({ at, kind: "measure" });
+  const b1 = before.brand || {}, b2 = after.brand || {};
+  if ((b1.name || "") !== (b2.name || "") || (b1.url || "") !== (b2.url || "")) out.push({ at, kind: "brand", detail: `${b1.name || ""} (${b1.url || ""}) → ${b2.name || ""} (${b2.url || ""})` });
+  return out;
+}
+
+/** Adds one competitor; never the own brand, never twice. */
+export function addCompetitor(profile, { name, url = "" } = {}, at = Date.now()) {
+  const n = String(name || "").trim();
+  if (!n) return { error: "No brand given." };
+  const key = normName(n);
+  if (key === normName(profile?.brand?.name || "")) return { error: "That's your own brand — it's tracked already." };
+  if ((profile.competitors || []).some((c) => normName(c.name) === key)) return { profile, added: false };
+  const next = makeProfile({
+    ...profile,
+    competitors: [...(profile.competitors || []), { name: n, url: String(url || "").trim() }],
+    // Adding a brand undoes leaving it out.
+    excludedBrands: (profile.excludedBrands || []).filter((x) => normName(x) !== key),
+    changes: profile.locked ? [...(profile.changes || []), { at, kind: "competitor-added", name: n }] : profile.changes,
+  });
+  return { profile: next, added: true };
+}
+
+/** Human words for a change-log entry. */
+export function changeText(c) {
+  switch (c.kind) {
+    case "competitor-added": return `Added competitor ${c.name}`;
+    case "competitor-removed": return `Removed competitor ${c.name}`;
+    case "engines": return `Engines changed: ${c.detail}`;
+    case "measure": return "Changed what the board measures";
+    case "brand": return `Brand changed: ${c.detail}`;
+    case "prompts-added": return `Added ${c.count} prompt${c.count === 1 ? "" : "s"}`;
+    case "prompt-removed": return `Removed a prompt: "${c.name}"`;
+    case "prompt-edited": return `Edited a prompt: "${c.name}"`;
+    case "tags": return `Changed tags on "${c.name}"`;
+    default: return c.kind;
+  }
 }
 
 export function makeTrackedPrompt(base = {}) {

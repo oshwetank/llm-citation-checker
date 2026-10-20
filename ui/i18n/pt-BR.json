@@ -591,5 +591,20 @@
  "My own question": "Minha própria pergunta",
  "Or take your latest campaign's data and your question to another AI:": "Ou leve os dados da sua última campanha e sua pergunta para outra IA:",
  "Capture \"Continue in…\" chats": "Capturar os chats de \"Continuar no…\"",
- "Chats opened with Continue in… are you talking about your own data, so they aren't kept as engine answers. Turn this on to keep them too.": "Os chats abertos com Continuar no… são você falando dos seus próprios dados, então não são guardados como respostas dos mecanismos. Ative para guardá-los também."
+ "Chats opened with Continue in… are you talking about your own data, so they aren't kept as engine answers. Turn this on to keep them too.": "Os chats abertos com Continuar no… são você falando dos seus próprios dados, então não são guardados como respostas dos mecanismos. Ative para guardá-los também.",
+ "+ Add": "+ Adicionar",
+ "Also named often, but not on your competitor list. ": "Também citadas com frequência, mas fora da sua lista de concorrentes. ",
+ "Add any that are competitors; they're counted from then on.": "Adicione as que forem concorrentes; passam a ser contadas.",
+ "Add as a competitor": "Adicionar como concorrente",
+ "Primary tag": "Tag principal",
+ "Secondary tag": "Tag secundária",
+ "Secondary tags": "Tags secundárias",
+ "Any tag": "Qualquer tag",
+ "Download the Excel template": "Baixar o modelo do Excel",
+ "or CSV": "ou CSV",
+ "Change brand or website…": "Mudar marca ou site…",
+ "Changes save as you make them": "As alterações são salvas na hora",
+ "Edit anything below; it's saved and logged.": "Edite o que quiser abaixo; é salvo e registrado.",
+ "Saved": "Salvo",
+ "Saving…": "Salvando…"
 }
