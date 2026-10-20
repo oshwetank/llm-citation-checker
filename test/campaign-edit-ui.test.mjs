@@ -70,19 +70,23 @@ try {
   await openBoard();
 
   console.log("\n1. suggested competitors, one click each");
+  // With competitors of its own, the campaign's board opens on its numbers;
+  // the other brands the answers name are offered in the Brands tab.
+  const brandsTab = async () => { await page.evaluate(() => document.querySelector('.cv-tab[data-section="cv-brands"]')?.click()); await page.waitForTimeout(500); };
+  check("no banner pushing the board down", await page.evaluate(() => !document.querySelector(".auto-comp-banner")));
+  await brandsTab();
   const sugg = await page.evaluate(() => [...document.querySelectorAll("#cbSuggest .cb-sugg")].map((c) => c.dataset.name));
   check("brands named in the answers but not on the list are offered", sugg.length >= 2 && !sugg.includes(undefined), sugg.join(", "));
   const first = sugg[0];
-  await page.click(`#cbSuggest .cb-sugg[data-name="${first}"] .tag-add`);
+  await page.click(`#cbSuggest .cb-sugg[data-name="${first}"]`);
   await page.waitForTimeout(2500);
+  await brandsTab();
   let p = await profile();
   check("one click adds it", p.competitors.some((c) => c.name === first), p.competitors.map((c) => c.name).join(", "));
   check("the campaign stays locked", p.locked === true);
   check("logged", (p.changes || []).some((c) => c.kind === "competitor-added" && c.name === first));
   const sugg2 = await page.evaluate(() => [...document.querySelectorAll("#cbSuggest .cb-sugg")].map((c) => c.dataset.name));
   check("the other suggestions stay, without the one added", sugg2.length >= 1 && !sugg2.includes(first) && sugg.slice(1).every((n) => sugg2.includes(n)), sugg2.join(", "));
-  await page.evaluate(() => document.querySelector('.cv-tab[data-section="cv-brands"]')?.click());
-  await page.waitForTimeout(500);
   check("the leaderboard now lists it as a competitor", await page.evaluate((n) => [...document.querySelectorAll(".cv-lead .cv-tr")].some((r) => r.dataset.brand === n && !r.querySelector(".auto-tag")), first));
 
   console.log("\n3. the board says what changed");

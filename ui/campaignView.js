@@ -257,7 +257,25 @@ function brandsSec() {
   const gpg = paged("grid", V.brands.grid, 15, () => replace("cv-brands", brandsSec));
   gpg.rows.forEach((r) => grid.append(h("div", { className: "cv-tr", role: "row" }, h("span", { role: "cell", className: "cv-who" }, brandMark(r.name, "s"), r.name),
     ...[r.all, ...r.cells].map((x) => h("span", { role: "cell", className: `cv-cell${x == null ? " na" : ""}`, style: x == null ? "" : `--a:${(0.08 + x / 100 * 0.72).toFixed(2)}` }, x == null ? "—" : pct(x))))));
-  return section("cv-brands", "Brands", `${rows.length} brands over ${answers} answers`, tools,
+  // Brands the answers name that aren't on the campaign's list (0.77.0): one
+  // click adds one. Here, beside the leaderboard, so the board's first screen
+  // stays the numbers.
+  let sugg = "";
+  if ((D.suggested || []).length && D.addCompetitor) {
+    sugg = h("div", { className: "cv-sugg", id: "cbSuggest", role: "group", "aria-label": "Also named in the answers" },
+      h("span", { className: "cv-muted", "data-term": "autoCompetitor" }, "Also named in the answers, not on your list:"));
+    D.suggested.forEach((n) => {
+      const add = h("button", { type: "button", className: "tag-add cb-sugg", "data-name": n, title: `Add ${n} as a competitor` }, `+ ${n}`);
+      add.onclick = () => D.addCompetitor(n, add);
+      sugg.append(add);
+    });
+    if (D.suggested.length > 1 && D.addAll) {
+      const all = h("button", { type: "button", className: "linkbtn", id: "cbAddAll" }, `Add all ${D.suggested.length}`);
+      all.onclick = () => D.addAll(all);
+      sugg.append(all);
+    }
+  }
+  return section("cv-brands", "Brands", `${rows.length} brands over ${answers} answers`, tools, sugg,
     list ? card("", h("div", { className: "cv-scroll" }, t), pg.pager) : empty("No answers from this engine."),
     card("", h("h4", { className: "cv-h4" }, "Visibility, brand by engine"), h("div", { className: "cv-scroll" }, grid), gpg.pager));
 }
