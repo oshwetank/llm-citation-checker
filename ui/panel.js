@@ -6889,17 +6889,18 @@ async function renderCampaignBoard(box, profile) {
     showToast(n ? `Added ${n === 1 ? res.added[0] : `${n} competitors`} to ${profile.name || "this campaign"}` : "Already on the list");
     loadGeo();
   };
-  if (suggested.length || r.excludedBrands.length) {
-    const banner = el("div", { className: "card auto-comp-banner", id: "cbSuggest" });
-    if (suggested.length) {
-      const allCounted = suggested.every((n) => counted.has(n));
+  // The banner only while the found brands are being counted (no competitors
+  // of the campaign's own): it says so, and offers to save them. Once the
+  // campaign has competitors the rest are offered in the Brands tab.
+  const countedNames = suggested.filter((n) => counted.has(n));
+  if (countedNames.length || r.excludedBrands.length) {
+    const banner = el("div", { className: "card auto-comp-banner" });
+    if (countedNames.length) {
       banner.append(el("div", { className: "small" },
         el("strong", { "data-term": "autoCompetitor" }, "Also named often, but not on your competitor list. "),
-        el("span", { className: "muted" }, allCounted
-          ? `Counted as competitors for now, because the answers named ${suggested.length === 1 ? "it" : "them"} most. Add the ones that are, leave out the rest.`
-          : "Add any that are competitors; they're counted from then on.")));
+        el("span", { className: "muted" }, `These ${countedNames.length} brand${countedNames.length === 1 ? " is" : "s are"} counted as competitors because the answers named ${countedNames.length === 1 ? "it" : "them"} most. Nothing has been saved to the campaign.`)));
       const chips = el("div", { className: "tagline" });
-      suggested.forEach((n) => {
+      countedNames.forEach((n) => {
         const chip = el("span", { className: "tag tag-removable cb-sugg" }, n);
         chip.dataset.name = n;
         const add = el("button", { className: "tag-add", type: "button", title: `Add ${n} as a competitor`, "aria-label": `Add ${n} as a competitor` }, "+ Add");
@@ -6916,9 +6917,10 @@ async function renderCampaignBoard(box, profile) {
         chip.append(add, x);
         chips.append(chip);
       });
-      const all = el("button", { className: "btn sm ghost", type: "button", id: "cbAddAll" }, suggested.length === 1 ? "Add as a competitor" : `Add all ${suggested.length}`);
-      all.onclick = () => addCompetitors(suggested, all);
-      banner.append(chips, all);
+      // One click, on a locked campaign too (0.77.0: this used to fail there).
+      const save = el("button", { className: "btn sm ghost", type: "button", id: "cbAddAll" }, "Save these as competitors");
+      save.onclick = () => addCompetitors(countedNames, save);
+      banner.append(chips, save);
     }
     if (r.excludedBrands.length) {
       const row = el("div", { className: "excluded-row muted small" }, el("span", {}, "Left out:"));
@@ -6961,6 +6963,9 @@ async function renderCampaignBoard(box, profile) {
     openDomain: (d) => openCampaignDomain(profile, d),
     openFullCompare: (name) => { cbDetail = name; renderCampaigns(); },
     addCompetitor: (name, btn) => addCompetitors([name], btn),
+    // Offered in the Brands tab once the campaign has competitors of its own.
+    suggested: suggested.filter((n) => !counted.has(n)),
+    addAll: (btn) => addCompetitors(suggested.filter((n) => !counted.has(n)), btn),
     excludeBrand: async (name, btn) => {
       btn.disabled = true;
       const res = await send({ type: "geo-brand-exclude", profileId: profile.id, name });
