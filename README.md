@@ -12,12 +12,19 @@ of its own**, except, if you turn on **Read the cited pages**, to the pages an a
 and, if you download the **built-in AI**, a one-time download of the model's files from
 Hugging Face. Nothing you capture ever leaves your device: the AI runs on your computer.
 
-> **v0.76.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.77.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **Campaigns without the friction** (0.77.0).
+>   - **One-click competitors.** The brands the answers name that aren't on your list are offered on the board, each with **+ Add**, plus Add all. They're on the leaderboard too. No unlocking.
+>   - **Edit in place.** A set-up campaign is edited in place: prompts, tags, competitors, engines and what the board measures save as you change them. Only the brand and its website ask first, because they change every number.
+>   - **Change log.** Every change is listed on the board, so you can see which runs came before it.
+>   - **Shorter setup.** Competitors come right after your brand, engines and measures are one row each, and the one-line explanations became hover tips.
+>   - **Excel template.** It has **Primary tag** and **Secondary tag** columns, and the Primary column offers your campaign's tags as a dropdown. CSV still works.
+>   - **Tags.** The prompt list shows primary and secondary tags apart. You can take one tag off one prompt or make a secondary one primary, and filter by either. Exports get both columns.
 > - **Continue in another AI, in one click** (0.76.0). When a question is bigger than the
 >   built-in AI, **Continue in…** takes the data, your question and the request to ChatGPT,
 >   Claude, Gemini, Perplexity or Grok. It's on each Ask reply, Ask's question box (even with the
