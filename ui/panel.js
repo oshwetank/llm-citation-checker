@@ -10200,6 +10200,7 @@ function abDraft() {
     maxCaptureMB: settingValue("maxCaptureMB", $("#setMaxMB").value),
     debugCapture: !!$("#setDebug").checked,
     readCitedPages: !!$("#setPages")?.checked,
+    keepHandoffCaptures: !!$("#setHandoffKeep")?.checked,
   };
 }
 function abFillSettings(s) {
@@ -10207,6 +10208,7 @@ function abFillSettings(s) {
   $("#setMaxMB").value = s.maxCaptureMB;
   $("#setDebug").checked = !!s.debugCapture;
   if ($("#setPages")) $("#setPages").checked = !!s.readCitedPages;
+  if ($("#setHandoffKeep")) $("#setHandoffKeep").checked = !!s.keepHandoffCaptures;
 }
 function updateSettingsStatus() {
   const status = $("#setStatus");
@@ -10218,6 +10220,7 @@ function updateSettingsStatus() {
   $("#setSave").disabled = !st.dirty;
   $("#setDebugText").textContent = $("#setDebug").checked ? "On" : "Off";
   if ($("#setPagesText")) $("#setPagesText").textContent = $("#setPages").checked ? "On" : "Off";
+  if ($("#setHandoffKeepText")) $("#setHandoffKeepText").textContent = $("#setHandoffKeep").checked ? "On" : "Off";
 }
 async function loadSettings() {
   const r = await send({ type: "settings-get" });
@@ -10227,12 +10230,12 @@ async function loadSettings() {
   // rejection rather than a visible failure.
   if (!r || !r.ok || !r.settings || !$("#setRetention")) return;
   const s = r.settings;
-  abSaved = { retentionMax: s.retentionMax, maxCaptureMB: s.maxCaptureMB, debugCapture: !!s.debugCapture, readCitedPages: !!s.readCitedPages };
+  abSaved = { retentionMax: s.retentionMax, maxCaptureMB: s.maxCaptureMB, debugCapture: !!s.debugCapture, readCitedPages: !!s.readCitedPages, keepHandoffCaptures: !!s.keepHandoffCaptures };
   abFillSettings(abSaved);
   updateSettingsStatus();
   renderStorageMeter();
 }
-["#setRetention", "#setMaxMB", "#setDebug"].forEach((id) => $(id)?.addEventListener(id === "#setDebug" ? "change" : "input", () => { abJustSaved = false; updateSettingsStatus(); }));
+["#setRetention", "#setMaxMB", "#setDebug", "#setHandoffKeep"].forEach((id) => $(id)?.addEventListener(id === "#setDebug" || id === "#setHandoffKeep" ? "change" : "input", () => { abJustSaved = false; updateSettingsStatus(); }));
 // Turning on "Read the cited pages" asks Chrome for access to any site,
 // from this click (Chrome only shows its prompt in answer to a click). If
 // it's refused the switch goes back off and says why (0.62.0).

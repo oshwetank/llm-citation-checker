@@ -12,12 +12,28 @@ of its own**, except, if you turn on **Read the cited pages**, to the pages an a
 and, if you download the **built-in AI**, a one-time download of the model's files from
 Hugging Face. Nothing you capture ever leaves your device: the AI runs on your computer.
 
-> **v0.75.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.76.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **Continue in another AI, in one click** (0.76.0). When a question is bigger than the
+>   built-in AI, **Continue in…** takes the data, your question and the request to ChatGPT,
+>   Claude, Gemini, Perplexity or Grok. It's on each Ask reply, Ask's question box (even with the
+>   built-in AI off), Analyze and the campaign board. It opens the AI in a new tab and puts the
+>   message in its chat box and sends it. The message holds:
+>   - what CitoSkeleton measured and how, with the definitions of the measures used;
+>   - the data: headline numbers, prompts, sites, rivals, quotes from the answers;
+>   - a task (explain, why it changed, a content brief, a competitor teardown, an outreach list,
+>     an executive summary, a 30-day plan) or your own question.
+>
+>   A preview shows exactly what will be sent, with its size against that AI's limit, and can be
+>   edited; "Skip this preview next time" sends straight away. What doesn't fit is left out from
+>   the least important end, and the message says what. **Copy for any AI** and **Download as .md**
+>   are there for anything else. Claude asks for permission for claude.ai the first time. Those
+>   chats are you talking about your own data, so they aren't captured as engine answers
+>   (About → Settings can keep them). The text is handed over inside the browser, never in an address.
 > - **Ask, trained on the tool** (0.75.0). Ask now looks up 22 things, not 7:
 >   - prompts you're missing from, and those where a rival comes first;
 >   - where each rival wins;
