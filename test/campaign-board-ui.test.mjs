@@ -178,7 +178,7 @@ try {
     const h = await page.evaluate(() => {
       const head = document.getElementById("cpHead");
       const cards = [...document.querySelectorAll("#loader > *")].map((x) => x.id || x.className);
-      const btns = head ? [...head.querySelectorAll(".cp-actions button")].filter((b) => getComputedStyle(b).display !== "none").map((b) => b.textContent) : [];
+      const btns = head ? [...head.querySelectorAll(".cp-actions button:not(.ho-wrap button)")].filter((b) => getComputedStyle(b).display !== "none").map((b) => b.textContent) : [];
       const name = head?.querySelector("h1")?.getBoundingClientRect();
       const acts = head?.querySelector(".cp-actions")?.getBoundingClientRect();
       return {
