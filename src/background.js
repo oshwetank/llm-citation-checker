@@ -4159,7 +4159,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "ask": {
           try {
             const [records, profiles, runs] = await Promise.all([db.getAll("derived"), db.getAll("profiles"), db.getAll("geoRuns")]);
-            sendResponse({ ok: true, ...(await aiSvc.askQuestion({ question: String(msg.question || ""), history: Array.isArray(msg.history) ? msg.history : [], data: { records, profiles, runs } })) });
+            // Each lookup is broadcast as it starts (0.78.0): Ask shows it.
+            const onStep = (st) => broadcast({ type: "ask-step", askId: msg.askId || null, tool: st.tool });
+            sendResponse({ ok: true, ...(await aiSvc.askQuestion({ question: String(msg.question || ""), history: Array.isArray(msg.history) ? msg.history : [], data: { records, profiles, runs }, onStep })) });
           } catch (e) { sendResponse({ ok: false, error: String(e && e.message || e) }); }
           break;
         }

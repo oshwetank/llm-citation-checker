@@ -58,7 +58,7 @@ export function finalText(text) {
  * @param {{question: string, history?: {role: string, content: string}[], generate: Function, data: object, maxSteps?: number}} o
  * @returns {Promise<{answer: string, steps: {tool: string, args: object, ok: boolean, error?: string}[], refs: object[]}>}
  */
-export async function ask({ question, history = [], generate, data, maxSteps = MAX_STEPS }) {
+export async function ask({ question, history = [], generate, data, maxSteps = MAX_STEPS, onStep = null }) {
   // 0.75.0: the instructions and tools fit the question (lib/askKnowledge.js):
   // what the tool measures and doesn't, the definitions it touches, how a
   // complete answer of that kind reads, and only the tools it needs.
@@ -82,6 +82,8 @@ export async function ask({ question, history = [], generate, data, maxSteps = M
     messages.push({ role: "assistant", content: String(r.text) });
     for (const c of calls.slice(0, 3)) {
       const known = TOOL_NAMES.includes(c.name);
+      // Each lookup is told as it starts (0.78.0), so Ask can say what it's doing.
+      if (onStep) { try { onStep({ tool: c.name, args: c.args }); } catch (_) { /* a listener's problem */ } }
       const res = known ? runTool(c.name, c.args, data) : { ok: false, error: `Unknown tool ${c.name}. Tools: ${TOOL_NAMES.join(", ")}.` };
       steps.push({ tool: c.name, args: c.args, ok: !!res.ok, ...(res.error ? { error: res.error } : {}) });
       for (const x of res.refs || []) refs.set(x.id, x);

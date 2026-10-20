@@ -340,7 +340,7 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
    * built-in model with the read-only tools in lib/assistantTools.js.
    * A test stand-in may carry a script of replies instead of a model.
    */
-  async function askQuestion({ question, history = [], data }) {
+  async function askQuestion({ question, history = [], data, onStep = null }) {
     const state = await getState();
     const eng = await engine(state);
     if (!eng) throw new Error("The built-in AI isn't set up.");
@@ -353,7 +353,7 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
       generate = eng.generate;
     }
     const t0 = Date.now();
-    const r = await runAsk({ question, history, generate, data });
+    const r = await runAsk({ question, history, generate, data, onStep });
     return { ...r, ms: Date.now() - t0, model: eng.label, engine: eng.id };
   }
 

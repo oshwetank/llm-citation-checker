@@ -88,11 +88,21 @@ try {
     for (let i = 0; i < 120; i++) { const s = await msg({ type: "ai-status" }); if (s.ready || s.error) break; await page.waitForTimeout(500); }
     await openAsk();
     check("suggested questions are offered", (await page.$$(".ask-chip")).length === 4);
+    // A chat (0.78.0): the box at the bottom, the conversation above it.
+    const lay = await page.evaluate(() => {
+      const f = document.querySelector(".ask-form").getBoundingClientRect(), l = document.getElementById("askLog").getBoundingClientRect();
+      return { formBottom: Math.round(f.bottom), vh: innerHeight, logAbove: l.bottom <= f.top + 1, sugInLog: !!document.querySelector("#askLog .ask-chip"), newChat: document.getElementById("askClear")?.textContent };
+    });
+    check("the box to type in is at the bottom of the page, the conversation above it", lay.formBottom > lay.vh - 140 && lay.formBottom <= lay.vh && lay.logAbove, JSON.stringify(lay));
+    check("suggestions sit in the empty chat; New chat starts over", lay.sugInLog && lay.newChat === "New chat", JSON.stringify(lay));
     await page.fill("#askInput", "Where was Zento named?");
     await page.click("#askSend");
+    check("a bubble says it's working", await page.evaluate(() => !document.getElementById("askTyping").hidden));
     await page.waitForFunction(() => document.querySelectorAll(".ask-msg.ai").length > 0, null, { timeout: 30000 }).catch(() => {});
-    const r = await page.evaluate(() => ({ you: [...document.querySelectorAll(".ask-msg.you")].map((x) => x.textContent), ai: [...document.querySelectorAll(".ask-msg.ai .ask-text")].map((x) => x.textContent), refs: [...document.querySelectorAll(".ask-ref")].map((x) => x.textContent) }));
+    const r = await page.evaluate(() => ({ you: [...document.querySelectorAll(".ask-msg.you .ask-text")].map((x) => x.textContent), ai: [...document.querySelectorAll(".ask-msg.ai .ask-text")].map((x) => x.textContent), refs: [...document.querySelectorAll(".ask-ref")].map((x) => x.textContent) }));
     check("the question, then the answer", r.you[0] === "Where was Zento named?" && /Zento was named/.test(r.ai[0] || ""), JSON.stringify(r));
+    const chat = await page.evaluate(() => ({ who: [...document.querySelectorAll(".ask-msg .ask-meta b")].map((b) => b.textContent), typing: document.getElementById("askTyping").hidden, sug: !!document.querySelector("#askLog .ask-chip") }));
+    check("each bubble says who; the working bubble has gone; no suggestions once chatting", chat.who.join("|") === "You|CitoSkeleton" && chat.typing && !chat.sug, JSON.stringify(chat));
     const flag = await page.evaluate(() => document.querySelector(".ask-msg.ai .ask-unverified")?.textContent || "");
     check("a number no lookup returned is flagged under the answer", /87/.test(flag) && /check these numbers/i.test(flag), flag);
     check("links to the answers the tool found", r.refs.length >= 1 && r.refs.every((x) => /^ChatGPT · /.test(x)), JSON.stringify(r.refs));

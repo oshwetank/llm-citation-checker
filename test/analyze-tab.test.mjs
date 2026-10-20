@@ -706,11 +706,14 @@ try {
     const rx1 = await page.evaluate(() => ({
       meta: document.querySelector("#at-rawx .at-rawx-meta")?.textContent || "",
       secs: [...document.querySelectorAll("#at-rawx .at-rawx-sec")].map((s) => s.dataset.section),
-      drawn: document.querySelectorAll("#at-rawx .at-rawx-field").length,
+      drawn: document.querySelectorAll('#at-rawx .at-rawx-sec:not([data-section="other"]) .at-rawx-field').length,
       types: document.querySelectorAll("#at-rawx .at-rawx-types .at-page-chip").length,
+      // 0.78.0: fields no rule knows are open from the start, with their count.
+      other: (() => { const o = document.querySelector('#at-rawx .at-rawx-sec[data-section="other"]'); return o ? { open: o.open, n: Number(o.querySelector("summary .n")?.textContent || 0), rows: o.querySelectorAll(".at-rawx-field").length } : null; })(),
     }));
+    check("\"Not recognised\" (when there is any) is open, with its count and its fields", !rx1.other || (rx1.other.open && rx1.other.n > 0 && rx1.other.rows > 0), JSON.stringify(rx1.other));
     check("opening it reads the stored response into sections", /^sse · .* fields in \d+ sections$/.test(rx1.meta) && ["answer", "sources", "searches", "request"].every((s) => rx1.secs.includes(s)), JSON.stringify(rx1));
-    check("sections stay closed and undrawn until opened", rx1.drawn === 0 && rx1.types > 0, JSON.stringify(rx1));
+    check("the other sections stay closed and undrawn until opened", rx1.drawn === 0 && rx1.types > 0, JSON.stringify(rx1));
     await page.evaluate(() => document.querySelector('#at-rawx .at-rawx-sec[data-section="sources"] > summary').click());
     await page.waitForTimeout(300);
     const rx2 = await page.evaluate(() => {

@@ -3356,6 +3356,15 @@ function atRawBody(b, rec, engineLabel) {
 function atRawSection(sec, b, rec, engineLabel) {
   const d = el("details", { className: `at-rawx-sec sec-${sec.id}`, "data-section": sec.id });
   d.append(el("summary", {}, el("b", {}, sec.label), el("span", { className: "n" }, String(sec.fields.length)), el("span", { className: "ap-muted" }, sec.note)));
+  // Fields no rule knows (0.78.0, asked: "will the tool ignore it and not
+  // include it in the raw data breakdown?"). Nothing is dropped: they're
+  // here, open by default, and the section says what wasn't listed and why.
+  if (sec.id === "other") {
+    const notes = [];
+    if (sec.emptyFields) notes.push(`${plural(sec.emptyFields, "empty field")} not listed`);
+    if (b.truncated) notes.push(`fields past the first ${b.fieldCount.toLocaleString()} weren’t listed here; Download the raw stream has everything`);
+    if (notes.length) d.append(el("p", { className: "at-rawx-note ap-muted", role: "note" }, `${notes.join(" · ")}.`));
+  }
   let drawn = false;
   d.addEventListener("toggle", () => {
     if (!d.open || drawn) return;
@@ -3419,6 +3428,7 @@ function atRawSection(sec, b, rec, engineLabel) {
     copy.onclick = async () => { try { await navigator.clipboard.writeText(JSON.stringify(sec, null, 2)); showToast("Copied"); } catch (_) { showToast("Couldn't copy", "error"); } };
     d.append(el("div", { className: "at-raw-actions" }, copy));
   });
+  if (sec.id === "other" && sec.fields.length) d.open = true;
   return d;
 }
 // Names for what no rule knows, from the on-device model when Chrome has it.
