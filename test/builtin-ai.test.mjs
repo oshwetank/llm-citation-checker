@@ -119,7 +119,7 @@ try {
     await openSettings();
     await page.waitForFunction(() => /This computer:/.test(document.getElementById("aiHw")?.textContent || ""), null, { timeout: 15000 }).catch(() => {});
     const c = await card();
-    check("Built-in AI is there, off, and says nothing leaves the computer", /Built-in AI/.test(c.text) && /Off/.test(c.text) && /nothing you capture is ever sent anywhere/.test(c.text), c.text.slice(0, 300));
+    check("Built-in AI is there, off, and says nothing leaves the computer", /Built-in AI/.test(c.text) && /Off/.test(c.text) && /nothing you capture is ever sent anywhere/i.test(c.text), c.text.slice(0, 300));
     check("the hardware check and a suggested size, with why", /This computer:/.test(c.text) && /Suggested:/.test(c.text), c.text);
     check("three sizes, one picked", c.tiers.length === 3 && c.tiers.filter(([, v]) => v === "true").length === 1, JSON.stringify(c.tiers));
     check("a Download button; no switches yet", c.download === "Download AI model" && c.switches.length === 0, JSON.stringify(c));
