@@ -7644,3 +7644,63 @@ body.tab .db-top .db-recent { margin-top: 8px; }
 .db-strip .db-kindbtn { padding: 1px 6px; }
 .db-strip .db-kind-l { font-size: 11px; }
 @media (max-width: 900px) { .db-strip { grid-template-columns: minmax(0, 1fr); gap: 8px; } }
+
+/* ---------- Spacing tokens (0.78.0) ----------
+   The owner: "why do we have such big gaps between rectangle boxes". One set
+   of gaps, tighter but not cramped; Compact density redefines the tokens. */
+:root {
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px;
+  --card-pad: 14px; --card-gap: 12px; --sec-gap: 16px;
+}
+html[data-density="compact"] { --card-pad: 10px; --card-gap: 8px; --sec-gap: 12px; }
+.card { padding: var(--card-pad); margin-bottom: var(--card-gap); }
+.cv-sec { margin-top: var(--sec-gap); gap: var(--card-gap); }
+html[data-density="compact"] .cv-sec { gap: var(--card-gap); margin-top: var(--sec-gap); }
+.db { gap: 10px; }
+.db-card { padding: var(--card-pad); }
+
+/* ---------- Motion (0.78.0) ----------
+   Asked for: subtle, smooth transitions so it isn't jerky, and small
+   animations that make it feel alive, with an On/Off switch (Display →
+   Motion). All of it lives under data-motion="on"; "off" (or the system's
+   reduced-motion setting, display-boot.js) leaves everything still. */
+:root {
+  --motion-fast: 120ms; --motion-base: 180ms; --motion-slow: 260ms;
+  --motion-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+@keyframes cito-rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes cito-fade { from { opacity: 0; } to { opacity: 1; } }
+/* Only when a page is opened (.panel-enter, set by switchTab for one
+   animation), never on the re-renders that follow each keystroke. */
+html[data-motion="on"] .panel.panel-enter { animation: cito-fade var(--motion-base) var(--motion-ease) both; }
+html[data-motion="on"] .panel.panel-enter .card,
+html[data-motion="on"] .panel.panel-enter .db-row,
+html[data-motion="on"] .panel.panel-enter .cv-kpi { animation: cito-rise var(--motion-slow) var(--motion-ease) both; }
+html[data-motion="on"] .panel.panel-enter .db-row:nth-child(2) { animation-delay: 20ms; }
+html[data-motion="on"] .panel.panel-enter .db-row:nth-child(3) { animation-delay: 40ms; }
+html[data-motion="on"] .panel.panel-enter .db-row:nth-child(4) { animation-delay: 60ms; }
+html[data-motion="on"] .panel.panel-enter .db-row:nth-child(n+5) { animation-delay: 80ms; }
+html[data-motion="on"] button,
+html[data-motion="on"] .tag,
+html[data-motion="on"] .db-chip,
+html[data-motion="on"] .nav-tab,
+html[data-motion="on"] .ab-seg-btn,
+html[data-motion="on"] .cs-engine,
+html[data-motion="on"] .cs-measure {
+  transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease, color var(--motion-fast) ease, box-shadow var(--motion-base) ease, transform var(--motion-base) var(--motion-ease);
+}
+html[data-motion="on"] .app-tooltip.show { animation: cito-fade var(--motion-fast) ease both; }
+html[data-motion="on"] .toast { animation: cito-rise var(--motion-base) var(--motion-ease) both; }
+html[data-motion="on"] details[open] > *:not(summary) { animation: cito-fade var(--motion-base) ease both; }
+html[data-motion="off"] *, html[data-motion="off"] *::before, html[data-motion="off"] *::after {
+  animation: none !important; transition: none !important; scroll-behavior: auto !important;
+}
+
+/* ---------- Settings in groups (0.78.0) ---------- */
+.ab-group { border: 1px solid var(--border); border-radius: 12px; padding: 0 12px; margin: 0 0 var(--space-2); background: var(--surface-solid); }
+.ab-group > summary { list-style: none; cursor: pointer; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 10px 0; }
+.ab-group > summary::-webkit-details-marker { display: none; }
+.ab-group > summary::before { content: "▸"; color: var(--fg-muted); transition: transform var(--motion-fast) ease; }
+.ab-group[open] > summary::before { transform: rotate(90deg); }
+.ab-group > summary span { font-size: 12px; color: var(--fg-muted); }
+.ab-group[open] > summary { border-bottom: 1px solid var(--border); margin-bottom: 4px; }

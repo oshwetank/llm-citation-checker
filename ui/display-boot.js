@@ -107,6 +107,18 @@
     return s;
   }
 
-  g.CitoDisplay = { KEY: KEY, FONTS: FONTS, MONO: MONO, DEFAULTS: DEFAULTS, LIMITS: LIMITS, normalize: normalize, read: read, isDefault: isDefault, fontStack: fontStack, googleUrl: googleUrl, apply: apply };
+  // Motion (0.78.0): "on" or "off", and off whenever the system asks for
+  // reduced motion. On <html> as data-motion before the first paint.
+  var MOTION_KEY = "cito-motion";
+  function readMotion(store) { try { return store.getItem(MOTION_KEY) === "off" ? "off" : "on"; } catch (_) { return "on"; } }
+  function applyMotion(doc, m) {
+    var reduce = false;
+    try { reduce = !!(g.matchMedia && g.matchMedia("(prefers-reduced-motion: reduce)").matches); } catch (_) {}
+    doc.documentElement.setAttribute("data-motion", m === "off" || reduce ? "off" : "on");
+    return m;
+  }
+  try { if (g.document && g.localStorage) applyMotion(g.document, readMotion(g.localStorage)); } catch (_) { /* storage blocked: on */ }
+
+  g.CitoDisplay = { MOTION_KEY: MOTION_KEY, readMotion: readMotion, applyMotion: applyMotion, KEY: KEY, FONTS: FONTS, MONO: MONO, DEFAULTS: DEFAULTS, LIMITS: LIMITS, normalize: normalize, read: read, isDefault: isDefault, fontStack: fontStack, googleUrl: googleUrl, apply: apply };
   try { if (g.document && g.localStorage) apply(g.document, read(g.localStorage)); } catch (_) { /* storage blocked: defaults */ }
 })(globalThis);

@@ -766,7 +766,15 @@ function showTab(name) {
   const btn = document.querySelector(`[data-tab="${name}"]`);
   if (btn) btn.classList.add("active");
   const panel = document.getElementById(name);
-  if (panel) panel.classList.add("active");
+  if (panel) {
+    panel.classList.add("active");
+    // One entrance animation per page opened (0.78.0; nothing when Motion is off).
+    panel.classList.remove("panel-enter");
+    void panel.offsetWidth;
+    panel.classList.add("panel-enter");
+    clearTimeout(panel._enterT);
+    panel._enterT = setTimeout(() => panel.classList.remove("panel-enter"), 500);
+  }
   const slot = document.getElementById("headerPage");
   if (slot) slot.textContent = "";
   // The Dashboard's "Everything you've captured · stored on this computer"
@@ -9056,9 +9064,36 @@ function initDetail() {
   applyDetail(current);
 }
 document.querySelectorAll("#setDetail [data-detail-pick]").forEach((b) => b.addEventListener("click", () => setDetail(b.dataset.detailPick)));
+// Motion on or off (0.78.0), applied at once in both views (display-boot.js).
+function showMotion() {
+  let m = "on";
+  try { m = localStorage.getItem("cito-motion") === "off" ? "off" : "on"; } catch (_) {}
+  document.querySelectorAll("#setMotion [data-motion-pick]").forEach((b) => { const on = b.dataset.motionPick === m; b.setAttribute("aria-checked", String(on)); b.classList.toggle("on", on); });
+  return m;
+}
+function setMotion(m) {
+  try { localStorage.setItem("cito-motion", m); } catch (_) { /* this view only */ }
+  globalThis.CitoDisplay?.applyMotion(document, m);
+  showMotion();
+}
+document.querySelectorAll("#setMotion [data-motion-pick]").forEach((b) => b.addEventListener("click", () => setMotion(b.dataset.motionPick)));
+showMotion();
+// The settings groups remember whether they were open (0.78.0).
+(() => {
+  let open = {};
+  try { open = JSON.parse(localStorage.getItem("cito-settings-open") || "{}") || {}; } catch (_) {}
+  document.querySelectorAll("details.ab-group[data-group]").forEach((d) => {
+    if (typeof open[d.dataset.group] === "boolean") d.open = open[d.dataset.group];
+    d.addEventListener("toggle", () => {
+      open[d.dataset.group] = d.open;
+      try { localStorage.setItem("cito-settings-open", JSON.stringify(open)); } catch (_) { /* per view */ }
+    });
+  });
+})();
 // The other view (popup or tab) follows a change made here.
 window.addEventListener("storage", (e) => {
   if (e.key === "cito-theme" && e.newValue) applyTheme(e.newValue);
+  if (e.key === "cito-motion") { globalThis.CitoDisplay?.applyMotion(document, e.newValue || "on"); showMotion(); }
   if (e.key === "cito-style" && e.newValue) applyStyle(e.newValue);
   if (e.key === "cito-detail" && e.newValue && applyDetail(e.newValue) && viewingRecord()) renderAnalyze();
   // The other view (popup or tab) follows a language change.

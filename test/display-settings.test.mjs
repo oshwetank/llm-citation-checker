@@ -60,8 +60,45 @@ try {
     await p.waitForTimeout(500);
     await p.evaluate(() => [...document.querySelectorAll(".ab-nav-btn, .ab-more-row")].find((b) => b.textContent.includes("Settings"))?.click());
     await p.waitForTimeout(500);
+    // Display is a group that starts closed (0.78.0).
+    await p.evaluate(() => { const d = document.getElementById("setGroupDisplay"); if (d && !d.open) d.querySelector("summary").click(); });
+    await p.waitForTimeout(200);
   };
   await openSettings(tab);
+
+  // 0.78.0, asked: theme, font and the like grouped under Display settings.
+  console.log("\nsettings in groups");
+  {
+    const g = await tab.evaluate(() => [...document.querySelectorAll("details.ab-group")].map((d) => d.querySelector("summary b").textContent));
+    check("Display, Language and detail, Data and capture, Built-in AI, Reading and capture", g.join("|") === "Display|Language and detail|Data and capture|Built-in AI|Reading and capture", g.join("|"));
+    check("theme, light/dark, motion and the typeface are all in Display", await tab.evaluate(() => ["#setStyle", "#setTheme", "#setMotion", "#setDisplay"].every((q) => document.querySelector(`#setGroupDisplay ${q}`))));
+  }
+  console.log("\nmotion on or off");
+  {
+    check("on by default", await tab.evaluate(() => document.documentElement.getAttribute("data-motion") === "on" && document.querySelector('#setMotion [data-motion-pick="on"]').getAttribute("aria-checked") === "true"));
+    await tab.click('#setMotion [data-motion-pick="off"]');
+    await tab.waitForTimeout(150);
+    const off = await tab.evaluate(() => {
+      document.querySelector('[data-tab="dashboard"]').click();
+      const p = document.getElementById("dashboard");
+      return { attr: document.documentElement.getAttribute("data-motion"), anim: getComputedStyle(p).animationName, saved: localStorage.getItem("cito-motion") };
+    });
+    check("Off stills every animation, and is kept", off.attr === "off" && off.anim === "none" && off.saved === "off", JSON.stringify(off));
+    await tab.reload();
+    await tab.waitForTimeout(800);
+    check("and is in place before the panel's script runs, after a reload", await tab.evaluate(() => document.documentElement.getAttribute("data-motion") === "off"));
+    await openSettings(tab);
+    await tab.click('#setMotion [data-motion-pick="on"]');
+    await tab.waitForTimeout(150);
+    const on = await tab.evaluate(() => {
+      document.querySelector('[data-tab="dashboard"]').click();
+      return getComputedStyle(document.getElementById("dashboard")).animationName;
+    });
+    check("On: opening a page fades it in", on === "cito-fade", on);
+    await openSettings(tab);
+    const kept = await tab.evaluate(() => document.getElementById("setGroupDisplay").open);
+    check("the Display group stays open once opened", kept);
+  }
 
   console.log("\nthe Display block");
   {

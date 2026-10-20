@@ -183,6 +183,11 @@
                   </div>
                   <div class="ab-meter" id="storageInfo"></div>
                   <div class="ab-rows">
+                    <!-- Settings in groups (0.78.0, asked: "group and hide them under
+                         a thing like display settings"). Display starts closed;
+                         each group remembers whether it was open (cito-settings-open). -->
+                    <details class="ab-group" id="setGroupDisplay" data-group="display">
+                    <summary class="ab-group-h"><b>Display</b><span>Theme, light or dark, typeface, sizes, density and motion</span></summary>
                     <!-- Appearance (0.56.0): moved here from the top bar, which the
                          canvas keeps to the logo, the pages and pop-out. It applies
                          at once, so it sits outside Save / Undo. -->
@@ -217,6 +222,24 @@
                         <button type="button" role="radio" class="ab-seg-btn" data-theme-pick="dark" aria-checked="false">Dark</button>
                       </div>
                     </div>
+                    <!-- Motion (0.78.0): the transitions and the small animations that
+                         make the interface feel alive, on or off. Off also when the
+                         system asks for reduced motion. Applied before paint by
+                         display-boot.js (cito-motion → data-motion on <html>). -->
+                    <div class="ab-row">
+                      <div class="ab-row-text" id="setMotionLabel">
+                        <b>Motion</b>
+                        <span>Smooth transitions and small animations. Off keeps everything still.</span>
+                      </div>
+                      <div class="ab-seg" role="radiogroup" aria-labelledby="setMotionLabel" id="setMotion">
+                        <button type="button" role="radio" class="ab-seg-btn" data-motion-pick="on" aria-checked="false">On</button>
+                        <button type="button" role="radio" class="ab-seg-btn" data-motion-pick="off" aria-checked="false">Off</button>
+                      </div>
+                    </div>
+                    <div class="ds" id="setDisplay" aria-labelledby="setDisplayLabel"></div>
+                    </details>
+                    <details class="ab-group" id="setGroupLang" data-group="lang" open>
+                    <summary class="ab-group-h"><b>Language and detail</b><span>The interface's language, and how much technical detail it shows</span></summary>
                     <!-- Level of detail (0.60.0): Expert adds the engine's raw ids,
                          indexes and refs, and a Raw tab in Analyze's Details.
                          Applies at once, outside Save / Undo, like the theme. -->
@@ -243,7 +266,9 @@
                     <!-- Display (0.63.0): typeface, text size, brightness, contrast,
                          line spacing and density. Applies at once, outside Save /
                          Undo, in both views (ui/display-boot.js; drawn by panel.js). -->
-                    <div class="ds" id="setDisplay" aria-labelledby="setDisplayLabel"></div>
+                    </details>
+                    <details class="ab-group" id="setGroupData" data-group="data" open>
+                    <summary class="ab-group-h"><b>Data and capture</b><span>What's kept on this computer, and what's read</span></summary>
                     <div class="ab-row">
                       <label class="ab-row-text" for="setRetention">
                         <b>Captures to keep</b>
@@ -271,7 +296,13 @@
                     <!-- Built-in AI (0.70.0): an open-source model run on this
                          computer. Applies at once, outside Save / Undo
                          (ui/aiSettings.js; the model lives in src/aiService.js). -->
+                    </details>
+                    <details class="ab-group" id="setGroupAi" data-group="ai" open>
+                    <summary class="ab-group-h"><b>Built-in AI</b><span>The AI that runs on this computer</span></summary>
                     <div class="ai-card" id="setAi"></div>
+                    </details>
+                    <details class="ab-group" id="setGroupCapture" data-group="capture" open>
+                    <summary class="ab-group-h"><b>Reading and capture</b><span>Cited pages, Continue in… chats, the capture debugger</span></summary>
                     <div class="ab-row">
                       <label class="ab-row-text" for="setPages">
                         <b>Read the cited pages</b>
@@ -306,6 +337,7 @@
                         <span class="ab-switch-text" id="setDebugText">Off</span>
                       </label>
                     </div>
+                    </details>
                   </div>
                   <div class="ab-savebar">
                     <span id="setStatus" class="ab-status" role="status"></span>

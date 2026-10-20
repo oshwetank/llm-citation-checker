@@ -92,7 +92,8 @@ try {
     check("in that order", m.logo && m.nav && m.openTab && m.logo.r <= m.nav.l && m.nav.r <= m.openTab.l);
     check("the pages are words, no icons", m.tabIcons === 0 && m.labels.join("|") === "Analyze|Dashboard|Campaigns|About", `${m.tabIcons} icons; ${m.labels.join("|")}`);
     check("each page gets an equal share of the pill", Math.max(...m.tabWidths) - Math.min(...m.tabWidths) <= 1, m.tabWidths.join(", "));
-    check("the name is left to the full tab", !m.title);
+    // 0.78.0: the name shows in the popup too, as the way to the Dashboard.
+    check("the name shows, beside the logo", !!m.title && m.logo && m.title.l >= m.logo.r - 1, JSON.stringify(m.title));
     check("pop-out is an icon that still says what it does", m.openLabel === "none" && /full tab/i.test(m.openAria), `${m.openLabel} · ${m.openAria}`);
     // 0.56.0: the canvas's bar has no theme button; Appearance is in Settings.
     check("nothing else in the bar: no theme button", await page.evaluate(() => !document.getElementById("themeToggle") && document.querySelectorAll(".header-actions button").length === 1));
@@ -129,6 +130,7 @@ try {
     await page.waitForTimeout(500);
     await page.evaluate(() => [...document.querySelectorAll(".ab-nav-btn, .ab-more-row")].find((b) => b.textContent.includes("Settings"))?.click());
     await page.waitForTimeout(500);
+    await page.evaluate(() => { const d = document.getElementById("setGroupDisplay"); if (d) d.open = true; });
     const seg = await page.evaluate(() => [...document.querySelectorAll("#setTheme [role=radio]")].map((b) => `${b.textContent}:${b.getAttribute("aria-checked")}`));
     check("Settings has Appearance: Light or Dark, Light picked", seg.join("|") === "Light:true|Dark:false", seg.join("|"));
     await page.click('#setTheme [data-theme-pick="dark"]');
@@ -140,6 +142,23 @@ try {
     await page.waitForTimeout(800);
     check("the popup opens dark too", await page.evaluate(() => document.documentElement.getAttribute("data-theme") === "dark"));
     await page.evaluate(() => localStorage.setItem("cito-theme", "light"));
+  }
+
+  // 0.78.0, asked: the icon lands on the web page, the name on the Dashboard.
+  {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(`chrome-extension://${extId}/ui/panel.html?mode=tab`);
+    await page.waitForTimeout(800);
+    await page.evaluate(() => document.querySelector('[data-tab="about"]').click());
+    await page.click("#brandTitle");
+    await page.waitForTimeout(200);
+    check("the name opens the Dashboard", await page.evaluate(() => document.querySelector('[data-tab="dashboard"]').classList.contains("active")));
+    await page.click("#brandIcon");
+    await page.waitForTimeout(800);
+    // The site isn't reachable from a test browser, so the tab's address is
+    // read back from the tabs API (pendingUrl while it fails to load).
+    const urls = await page.evaluate(() => new Promise((r) => chrome.tabs.query({}, (ts) => r(ts.map((t) => t.pendingUrl || t.url)))));
+    check("the logo opens the CitoSkeleton web page in a new tab", urls.some((u) => /^https:\/\/www\.oshwetank\.com\/tools\/citoskeleton/.test(u)), urls.join(" | "));
   }
 
   check("no page error anywhere above", pageErrors.length === 0, pageErrors.join(" | "));
