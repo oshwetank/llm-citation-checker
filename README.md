@@ -12,12 +12,25 @@ of its own**, except, if you turn on **Read the cited pages**, to the pages an a
 and, if you download the **built-in AI**, a one-time download of the model's files from
 Hugging Face. Nothing you capture ever leaves your device: the AI runs on your computer.
 
-> **v0.74.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.75.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **Ask, trained on the tool** (0.75.0). Ask now looks up 22 things, not 7:
+>   - prompts you're missing from, and those where a rival comes first;
+>   - where each rival wins;
+>   - sites cited for rivals but never for you, and your own site's share;
+>   - topics, engines compared and where they disagree;
+>   - product cards, the engines' own searches and ads;
+>   - data gaps such as usage limits.
+>
+>   Every model is given what the tool does and doesn't capture, the definitions of its
+>   measures, and how a complete answer of each kind reads, in six languages. A number in a reply
+>   that no lookup returned is flagged under the answer. `training/` fine-tunes the model on
+>   made-up campaigns to answer this way (Colab notebook included). Then **About → Settings → Built-in
+>   AI → Your trained model** loads it from your Hugging Face account.
 > - **A faster, lighter built-in AI** (0.74.0). Chrome's own AI where Chrome has it (on the
 >   graphics chip; Chrome downloads and updates it: About → Settings → Built-in AI → **Use
 >   Chrome's built-in AI**). The downloaded model now uses several processor cores at once

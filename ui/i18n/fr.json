@@ -559,5 +559,9 @@
  "Copy capture report": "Copier le rapport de capture",
  "Refresh the tab": "Actualiser l’onglet",
  "Is each engine being captured, and if not, where it stops. Ask a question on the engine first, then check.": "Chaque moteur est-il capturé, et sinon, où cela s’arrête. Posez d’abord une question sur le moteur, puis vérifiez.",
- "Addresses, counts and reasons only — no prompts or answers.": "Adresses, comptes et raisons uniquement — ni prompts ni réponses."
+ "Addresses, counts and reasons only — no prompts or answers.": "Adresses, comptes et raisons uniquement — ni prompts ni réponses.",
+ "Not in your data — check these numbers": "Absent de vos données — vérifiez ces chiffres",
+ "Your trained model": "Votre modèle entraîné",
+ "Use my trained model": "Utiliser mon modèle entraîné",
+ "A model fine-tuned on CitoSkeleton's data (training/ in the source code), from your own Hugging Face repository.": "Un modèle affiné sur les données de CitoSkeleton (training/ dans le code), depuis votre propre dépôt Hugging Face."
 }

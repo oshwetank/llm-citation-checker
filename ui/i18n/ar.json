@@ -559,5 +559,9 @@
  "Copy capture report": "نسخ تقرير الالتقاط",
  "Refresh the tab": "تحديث علامة التبويب",
  "Is each engine being captured, and if not, where it stops. Ask a question on the engine first, then check.": "هل يُلتقط كل محرك، وإن لم يكن فأين يتوقف. اطرح سؤالًا على المحرك أولًا ثم افحص.",
- "Addresses, counts and reasons only — no prompts or answers.": "العناوين والأعداد والأسباب فقط — بلا مطالبات أو إجابات."
+ "Addresses, counts and reasons only — no prompts or answers.": "العناوين والأعداد والأسباب فقط — بلا مطالبات أو إجابات.",
+ "Not in your data — check these numbers": "ليست في بياناتك — تحقق من هذه الأرقام",
+ "Your trained model": "نموذجك المدرَّب",
+ "Use my trained model": "استخدام نموذجي المدرَّب",
+ "A model fine-tuned on CitoSkeleton's data (training/ in the source code), from your own Hugging Face repository.": "نموذج مضبوط على بيانات CitoSkeleton (training/ في الشيفرة) من مستودعك على Hugging Face."
 }

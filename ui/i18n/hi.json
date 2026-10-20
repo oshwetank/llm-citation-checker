@@ -559,5 +559,9 @@
  "Copy capture report": "कैप्चर रिपोर्ट कॉपी करें",
  "Refresh the tab": "टैब रीफ़्रेश करें",
  "Is each engine being captured, and if not, where it stops. Ask a question on the engine first, then check.": "क्या हर इंजन कैप्चर हो रहा है, और नहीं तो कहाँ रुकता है। पहले इंजन पर एक प्रश्न पूछें, फिर जाँचें।",
- "Addresses, counts and reasons only — no prompts or answers.": "केवल पते, गिनती और कारण — कोई प्रॉम्प्ट या उत्तर नहीं।"
+ "Addresses, counts and reasons only — no prompts or answers.": "केवल पते, गिनती और कारण — कोई प्रॉम्प्ट या उत्तर नहीं।",
+ "Not in your data — check these numbers": "आपके डेटा में नहीं — इन संख्याओं की जाँच करें",
+ "Your trained model": "आपका प्रशिक्षित मॉडल",
+ "Use my trained model": "मेरा प्रशिक्षित मॉडल इस्तेमाल करें",
+ "A model fine-tuned on CitoSkeleton's data (training/ in the source code), from your own Hugging Face repository.": "CitoSkeleton के डेटा पर फ़ाइन-ट्यून किया गया मॉडल (स्रोत कोड में training/), आपकी अपनी Hugging Face रिपॉज़िटरी से।"
 }

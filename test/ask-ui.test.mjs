@@ -45,7 +45,8 @@ const fixture = (name) => {
 };
 const SCRIPT = [
   "<tool_call>\n<function=query_answers>\n<parameter=brand>\nZento\n</parameter>\n</function>\n</tool_call>",
-  "Zento was named in the answers below, first in each.",
+  // 87% is made up: no lookup returned it, so the reply is flagged (0.75.0).
+  "Zento was named in the answers below, first in each, with 87% visibility.",
 ];
 
 const context = await chromium.launchPersistentContext(`${PROFILE_BASE}-${Date.now()}`, {
@@ -92,6 +93,8 @@ try {
     await page.waitForFunction(() => document.querySelectorAll(".ask-msg.ai").length > 0, null, { timeout: 30000 }).catch(() => {});
     const r = await page.evaluate(() => ({ you: [...document.querySelectorAll(".ask-msg.you")].map((x) => x.textContent), ai: [...document.querySelectorAll(".ask-msg.ai .ask-text")].map((x) => x.textContent), refs: [...document.querySelectorAll(".ask-ref")].map((x) => x.textContent) }));
     check("the question, then the answer", r.you[0] === "Where was Zento named?" && /Zento was named/.test(r.ai[0] || ""), JSON.stringify(r));
+    const flag = await page.evaluate(() => document.querySelector(".ask-msg.ai .ask-unverified")?.textContent || "");
+    check("a number no lookup returned is flagged under the answer", /87/.test(flag) && /check these numbers/i.test(flag), flag);
     check("links to the answers the tool found", r.refs.length >= 1 && r.refs.every((x) => /^ChatGPT · /.test(x)), JSON.stringify(r.refs));
     await page.click(".ask-ref");
     await page.waitForSelector("#at-glance", { timeout: 10000 }).catch(() => {});
