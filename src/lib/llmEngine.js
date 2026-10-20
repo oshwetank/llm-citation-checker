@@ -34,9 +34,20 @@ async function lib(host) {
   env.remoteHost = host || "https://huggingface.co/";
   env.remotePathTemplate = "{model}/resolve/{revision}/";
   env.backends.onnx.wasm.wasmPaths = { mjs: url("ort-wasm-simd-threaded.asyncify.mjs"), wasm: url("ort-wasm-simd-threaded.asyncify.wasm") };
-  // Threads need cross-origin isolation, which extension pages don't have.
-  env.backends.onnx.wasm.numThreads = 1;
+  // Threads need cross-origin isolation. Since 0.74.0 the manifest makes
+  // every extension page isolated (COOP same-origin + COEP credentialless),
+  // so the processor path uses several cores instead of one: the biggest
+  // speed-up there is for computers without a graphics chip. One core is
+  // left for the browser.
+  env.backends.onnx.wasm.numThreads = threadCount();
   return tf;
+}
+
+/** Processor threads for the model: one when the page isn't isolated. */
+export function threadCount(g = globalThis) {
+  if (!g.crossOriginIsolated) return 1;
+  const cores = Number(g.navigator && g.navigator.hardwareConcurrency) || 2;
+  return Math.max(1, Math.min(8, cores - 1));
 }
 
 /** What this computer offers the model: graphics chip, memory, free space. */
@@ -104,7 +115,8 @@ export async function load(o) {
 }
 
 function info() {
-  return current ? { loaded: true, repo: current.repo, device: current.device, loadedAt: current.loadedAt } : { loaded: false };
+  const threads = threadCount();
+  return current ? { loaded: true, repo: current.repo, device: current.device, loadedAt: current.loadedAt, threads } : { loaded: false, threads };
 }
 export const status = () => ({ ...info(), loading: !!loading });
 

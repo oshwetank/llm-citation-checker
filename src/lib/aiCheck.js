@@ -1,12 +1,15 @@
 /*
  * aiCheck.js — what the built-in AI is asked about each answer (0.70.0).
  *
- * A 2B model is reliable on narrow questions and unreliable on a 40-field
- * form, so each answer gets three short prompts, each returning a small
- * JSON object:
- *   a. what the answer is: language, market, intent, audience, vertical, topics
- *   b. the brands the rules already found: type, owner, stance with a quote
- *   c. names the rules missed, each with a quote
+ * One prompt per piece of the answer (0.74.0; it was three per piece, so
+ * 3–7 runs of the model per answer, which made it slow). The first piece
+ * asks everything; later pieces only what can differ along the answer:
+ *   - what the answer is: language, market, intent, audience, vertical, topics
+ *     (first piece only)
+ *   - the brands the rules already found there: type, owner, stance with a quote
+ *   - names the rules missed, each with a quote
+ * Outputs are capped, and an engine that can hold a reply to a JSON schema
+ * (Chrome's built-in model) is given one, so nothing is spent on prose.
  * Every reply goes through aiValidate.js; what fails is dropped and listed.
  * The answer is data, never instructions: the system prompt says so, and
  * nothing the model returns is ever run.
@@ -17,9 +20,8 @@
 import { validateAnswerFacts, validateEntities, validateMissed, INTENTS, AUDIENCES, FUNNEL, SCOPES, ENTITY_TYPES, STANCES } from "./aiValidate.js";
 import { parsePrices } from "./money.js";
 
-export const PROMPT_VERSION = 1;
-const MAX_CHARS_A = 4000;
-const CHUNK = 3500;
+export const PROMPT_VERSION = 2;
+const CHUNK = 2500;
 const MAX_CANDIDATES = 25;
 
 const SYSTEM = [
@@ -68,50 +70,61 @@ export function parseJson(reply) {
 
 const block = (label, text) => `${label}:\n<<<\n${text}\n>>>`;
 
-export function answerPrompt(rec) {
-  const text = String(rec.answerText || "").slice(0, MAX_CHARS_A);
-  return [
-    { role: "system", content: SYSTEM },
-    { role: "user", content: [
-      block("PROMPT", String(rec.userPrompt || "").slice(0, 500)),
-      block("ANSWER", text),
-      "Return JSON with these keys:",
-      "\"lang\": the BCP-47 code of the ANSWER's language (\"en\", \"pt-BR\", \"hi\", \"ja\").",
-      "\"market\": {\"country\": ISO 3166 two-letter code or null, \"currency\": ISO 4217 code or null, \"scope\": one of " + SCOPES.join("|") + ", \"evidence\": up to 3 short words or phrases copied from the text that show the market}.",
-      "\"intent\": one of " + INTENTS.join("|") + ".",
-      "\"funnel\": one of " + FUNNEL.join("|") + ".",
-      "\"audience\": one of " + AUDIENCES.join("|") + ".",
-      "\"vertical\": the industry in 1-3 English words.",
-      "\"topics\": {\"en\": up to 4 short topics in English, \"orig\": the same topics in the ANSWER's language}.",
-    ].join("\n") },
-  ];
-}
+const FACT_KEYS = [
+  "\"lang\": the BCP-47 code of the ANSWER's language (\"en\", \"pt-BR\", \"hi\", \"ja\").",
+  "\"market\": {\"country\": ISO 3166 two-letter code or null, \"currency\": ISO 4217 code or null, \"scope\": one of " + SCOPES.join("|") + ", \"evidence\": up to 3 short words copied from the text that show the market}.",
+  "\"intent\": one of " + INTENTS.join("|") + ". \"funnel\": one of " + FUNNEL.join("|") + ". \"audience\": one of " + AUDIENCES.join("|") + ".",
+  "\"vertical\": the industry in 1-3 English words.",
+  "\"topics\": {\"en\": up to 4 short topics in English, \"orig\": the same in the ANSWER's language}.",
+];
 
-export function entitiesPrompt(rec, candidates, text) {
+/**
+ * The one prompt for a piece of the answer.
+ * @param {object} rec
+ * @param {string} text  this piece
+ * @param {string[]} here  names the rules found in this piece
+ * @param {string[]} known  every name already found, so it isn't repeated as missed
+ * @param {boolean} first  ask the whole-answer facts too
+ */
+export function checkPrompt(rec, text, here, known, first) {
+  const keys = [];
+  if (first) keys.push(...FACT_KEYS);
+  keys.push(
+    "\"entities\": for each NAME below, {\"name\": exactly as listed, \"type\": one of " + ENTITY_TYPES.join("|") + ", \"owner\": the parent company if plain, else null, \"stance\": one of " + STANCES.join("|") + ", \"quote\": the shortest part copied from the ANSWER that shows the stance}. [] if there are no NAMES.",
+    "\"missed\": brands, products, companies, institutions or services the ANSWER names that are not in KNOWN; not generic words, places, currencies or features. Each {\"name\": as written, \"type\": one of " + ENTITY_TYPES.join("|") + ", \"quote\": a short part copied from the ANSWER containing it}. [] if none.",
+  );
   return [
     { role: "system", content: SYSTEM },
     { role: "user", content: [
       block("PROMPT", String(rec.userPrompt || "").slice(0, 300)),
       block("ANSWER", text),
-      "NAMES found in the answer: " + JSON.stringify(candidates),
-      "For each NAME, say what it is and how the ANSWER treats it. Return JSON:",
-      "{\"entities\": [{\"name\": exactly as listed, \"type\": one of " + ENTITY_TYPES.join("|") + ", \"owner\": the parent company if the answer or common knowledge makes it plain, else null, \"stance\": one of " + STANCES.join("|") + ", \"quote\": the shortest sentence part copied from the ANSWER that shows the stance}]}",
+      "NAMES: " + JSON.stringify(here),
+      "KNOWN: " + JSON.stringify(known),
+      "Return one JSON object with these keys:",
+      ...keys,
     ].join("\n") },
   ];
 }
 
-export function missedPrompt(rec, candidates, text) {
-  return [
-    { role: "system", content: SYSTEM },
-    { role: "user", content: [
-      block("ANSWER", text),
-      "Already found: " + JSON.stringify(candidates),
-      "List brands, products, companies, institutions or services the ANSWER names that are NOT already found. Not generic words, places, currencies or features. Return JSON:",
-      "{\"missed\": [{\"name\": as written in the ANSWER, \"type\": one of " + ENTITY_TYPES.join("|") + ", \"quote\": a short part copied from the ANSWER that contains the name}]}",
-      "Return {\"missed\": []} if there are none.",
-    ].join("\n") },
-  ];
+const str = { type: "string" };
+const strOrNull = { type: ["string", "null"] };
+/** The reply's shape, for an engine that can hold to a JSON schema. */
+export function checkSchema(first) {
+  const props = {
+    entities: { type: "array", items: { type: "object", properties: { name: str, type: { type: "string", enum: ENTITY_TYPES }, owner: strOrNull, stance: { type: "string", enum: STANCES }, quote: str }, required: ["name", "type", "stance", "quote"] } },
+    missed: { type: "array", items: { type: "object", properties: { name: str, type: { type: "string", enum: ENTITY_TYPES }, quote: str }, required: ["name", "quote"] } },
+  };
+  if (first) Object.assign(props, {
+    lang: str,
+    market: { type: "object", properties: { country: strOrNull, currency: strOrNull, scope: { type: "string", enum: SCOPES }, evidence: { type: "array", items: str } } },
+    intent: { type: "string", enum: INTENTS }, funnel: { type: "string", enum: FUNNEL }, audience: { type: "string", enum: AUDIENCES },
+    vertical: str, topics: { type: "object", properties: { en: { type: "array", items: str }, orig: { type: "array", items: str } } },
+  });
+  return { type: "object", properties: props, required: first ? ["lang", "entities", "missed"] : ["entities", "missed"] };
 }
+
+/** How many new tokens a piece's reply may use: enough, and no more. */
+export const replyBudget = (first, names) => (first ? 140 : 0) + Math.min(320, 30 + 45 * names) + 110;
 
 // Long answers are read in pieces cut at paragraph ends.
 export function chunks(text, size = CHUNK) {
@@ -128,9 +141,9 @@ export function chunks(text, size = CHUNK) {
   return out;
 }
 
-async function ask(generate, messages, maxTokens, checks) {
+async function ask(generate, messages, maxTokens, checks, schema) {
   for (let attempt = 0; attempt < 2; attempt++) {
-    const r = await generate({ messages, maxTokens });
+    const r = await generate({ messages, maxTokens, schema });
     checks.calls++;
     checks.ms += r && r.ms || 0;
     const j = parseJson(r && r.text);
@@ -146,7 +159,7 @@ async function ask(generate, messages, maxTokens, checks) {
 /**
  * Check one answer.
  * @param {object} rec  a derived record
- * @param {(o: {messages, maxTokens}) => Promise<{text: string, ms?: number}>} generate
+ * @param {(o: {messages, maxTokens, schema}) => Promise<{text: string, ms?: number}>} generate
  * @param {{model: string, isPlausible?: Function}} opts
  */
 export async function aiCheckRecord(rec, generate, opts = {}) {
@@ -157,35 +170,32 @@ export async function aiCheckRecord(rec, generate, opts = {}) {
   const candidates = [...new Set((rec.brandMentions || []).map((m) => m && m.brand).filter(Boolean))].slice(0, MAX_CANDIDATES);
   const currencies = [...new Set(parsePrices(text).map((p) => p.currency).filter(Boolean))];
 
-  const a = await ask(generate, answerPrompt(rec), 220, checks);
-  if (a) {
-    const v = validateAnswerFacts(a, { text, prompt: rec.userPrompt, currencies });
-    Object.assign(out, v.value);
-    checks.dropped.push(...v.dropped);
-  }
-
   const parts = chunks(text);
   const entities = new Map();
   const missed = new Map();
-  for (const part of parts) {
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    const first = i === 0;
     const here = candidates.filter((c) => part.toLowerCase().includes(String(c).toLowerCase()));
-    if (here.length) {
-      const b = await ask(generate, entitiesPrompt(rec, here, part), 60 + here.length * 60, checks);
-      if (b) {
-        const v = validateEntities(b, { text, candidates: here });
-        for (const e of v.value) {
-          const prev = entities.get(e.name);
-          if (!prev || (prev.stance === "mentioned" && e.stance !== "mentioned")) entities.set(e.name, { ...(prev || {}), ...e });
-        }
-        checks.dropped.push(...v.dropped);
-      }
-    }
-    const c = await ask(generate, missedPrompt(rec, candidates, part), 260, checks);
-    if (c) {
-      const v = validateMissed(c, { text, known: [...candidates, ...missed.keys()], isPlausible: opts.isPlausible });
-      for (const e of v.value) if (!missed.has(e.name)) missed.set(e.name, e);
+    const known = [...candidates, ...missed.keys()];
+    const j = await ask(generate, checkPrompt(rec, part, here, known, first), replyBudget(first, here.length), checks, checkSchema(first));
+    if (!j) continue;
+    if (first) {
+      const v = validateAnswerFacts(j, { text, prompt: rec.userPrompt, currencies });
+      Object.assign(out, v.value);
       checks.dropped.push(...v.dropped);
     }
+    if (here.length) {
+      const v = validateEntities(j, { text, candidates: here });
+      for (const e of v.value) {
+        const prev = entities.get(e.name);
+        if (!prev || (prev.stance === "mentioned" && e.stance !== "mentioned")) entities.set(e.name, { ...(prev || {}), ...e });
+      }
+      checks.dropped.push(...v.dropped);
+    }
+    const m = validateMissed(j, { text, known, isPlausible: opts.isPlausible });
+    for (const e of m.value) if (!missed.has(e.name)) missed.set(e.name, e);
+    checks.dropped.push(...m.dropped);
   }
   out.entities = [...entities.values()];
   out.missed = [...missed.values()];

@@ -171,7 +171,8 @@ try {
     check("then checked", !!rec, rec ? "" : JSON.stringify((await record(id) || {}).aiStatus));
     check("the check is kept on the record, with the model named", rec && rec.ai && rec.ai.source === "builtin" && rec.ai.modelRepo === "tiny", JSON.stringify(rec && rec.ai && { s: rec.ai.source, m: rec.ai.modelRepo }));
     check("the stand-in's noise is unreadable, so nothing is claimed", rec && rec.ai && !rec.ai.lang && (rec.ai.entities || []).length === 0 && (rec.ai.missed || []).length === 0 && rec.ai.checks.unreadable >= 1, JSON.stringify(rec && rec.ai && rec.ai.checks));
-    check("the model ran: three questions asked, each retried once", rec && rec.ai && rec.ai.checks.calls >= 4, JSON.stringify(rec && rec.ai && rec.ai.checks));
+    // 0.74.0: one combined question per piece of the answer (was three).
+    check("the model ran: one question for the piece, retried once", rec && rec.ai && rec.ai.checks.calls === 2 && rec.ai.checks.retries === 2, JSON.stringify(rec && rec.ai && rec.ai.checks));
     check("no request went anywhere while checking (the model was already here)", hits.length === before, hits.slice(before).join(" "));
     const plain = await record(id);
     check("counts are the rules' alone: no row marked as added by the AI", plain && !(plain.brandMentions || []).some((m) => m.aiAdded));

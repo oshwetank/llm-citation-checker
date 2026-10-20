@@ -438,6 +438,11 @@ async function storeCapture(payload, meta) {
 async function enrichCaptureWithAI(record) {
   try {
     if (!record || !record.answerText) return;
+    // 0.74.0: one on-device model per capture. With the built-in AI set up
+    // (Chrome's model or Qwen) its queue reads the brands; and nothing runs
+    // beside a campaign's tabs.
+    if (loader && loader.running) return;
+    if (await aiSvc.engine(await aiSvc.getState())) return;
     // Each adapter counts mentions against its own cleaned text; match that
     // here so the AI merge verifies names against the same string.
     const plain = record.platform === "chatgpt"
@@ -690,6 +695,11 @@ async function onPageInteraction(p) {
 let offscreenReady = null;
 async function ensureOffscreen() {
   if (!chrome.offscreen) throw new Error("no offscreen API");
+  // The page closes itself when idle (0.74.0, ui/offscreen.js), which frees
+  // the AI model's memory; then it is opened again here on demand.
+  if (offscreenReady && chrome.runtime.getContexts) {
+    try { if (!(await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] })).length) offscreenReady = null; } catch (_) { /* keep */ }
+  }
   if (offscreenReady) return offscreenReady;
   offscreenReady = (async () => {
     const has = chrome.runtime.getContexts ? (await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] })).length > 0 : false;
@@ -953,7 +963,7 @@ const logErr = (where, err, ctx, trace) => { try { errorLog.record(where, err, c
 // The built-in AI (0.70.0, src/aiService.js): the model runs in the
 // offscreen document; this keeps its queue, results and state.
 const broadcast = (m) => { try { chrome.runtime.sendMessage(m, () => void chrome.runtime.lastError); } catch (_) { /* no page open */ } };
-const aiSvc = createAiService({ db, getSettings, ensureOffscreen, resetOffscreen, logErr: (w, e, c) => logErr(w, e, c), broadcast });
+const aiSvc = createAiService({ db, getSettings, ensureOffscreen, resetOffscreen, logErr: (w, e, c) => logErr(w, e, c), broadcast, isBusy: () => !!(loader && loader.running) });
 // The "capture" (network-trace breadcrumbs, replacing the old in-memory
 // DEBUG ring buffer) and "turn" (per-prompt outcome history, previously
 // only visible in the live progress view) categories of the same durable
@@ -4012,6 +4022,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "ai-remove":
           sendResponse(await aiSvc.remove());
           break;
+        // 0.74.0: which engine answers, Chrome's own model, and the speed test.
+        case "ai-set-engine":
+          sendResponse(await aiSvc.setEngine(msg.engine));
+          break;
+        case "ai-use-nano":
+          sendResponse(await aiSvc.useNano());
+          break;
+        case "ai-benchmark":
+          try { sendResponse(await aiSvc.benchmark()); } catch (e) { sendResponse({ ok: false, error: String(e && e.message || e) }); }
+          break;
         case "ai-check-capture": {
           const rec = await db.get("derived", msg.captureId);
           const r = await aiSvc.enqueue(rec, { force: true });
@@ -4031,6 +4051,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           try { sendResponse({ ok: true, ai: await aiSvc.checkNow(msg.record || {}) }); } catch (e) { sendResponse({ ok: false, error: String(e && e.message || e) }); }
           break;
         // Tests only: a stand-in model served from this computer.
+        case "ai-test-offscreen-idle": {
+          await ensureOffscreen();
+          sendResponse(await chrome.runtime.sendMessage({ target: "offscreen", type: "set-idle", ms: msg.ms }));
+          break;
+        }
         case "ai-test-model": {
           const host = String((msg.model || {}).host || "");
           if (!/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/$/.test(host)) { sendResponse({ ok: false, error: "local addresses only" }); break; }

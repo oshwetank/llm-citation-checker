@@ -43,8 +43,31 @@ export function extract(html, url) {
   return { title, text: text.slice(0, 200000), lang, method };
 }
 
+/* Freeing memory (0.74.0). Unloading the model inside this page can't give
+ * its memory back (a WebAssembly heap only grows), so when nothing has used
+ * this page for a while it closes itself, and the worker opens it again on
+ * the next job. Only the real offscreen document does this: in Firefox this
+ * file runs in the background page itself. */
+let IDLE_CLOSE_MS = 150 * 1000;
+let lastUse = Date.now();
+let busyOps = 0;
+const touchPage = () => { lastUse = Date.now(); };
+if (/\/offscreen\.html$/.test(location.pathname)) {
+  setInterval(() => {
+    if (busyOps === 0 && Date.now() - lastUse > IDLE_CLOSE_MS) window.close();
+  }, 1000);
+}
+
+// Tests only: a shorter idle time.
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (!msg || msg.target !== "offscreen" || msg.type !== "set-idle") return;
+  IDLE_CLOSE_MS = Math.max(1000, Number(msg.ms) || IDLE_CLOSE_MS);
+  sendResponse({ ok: true });
+});
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg || msg.target !== "offscreen" || msg.type !== "extract-page") return;
+  touchPage();
   try { sendResponse({ ok: true, ...extract(msg.html, msg.url) }); }
   catch (e) { sendResponse({ ok: false, error: String(e && e.message || e) }); }
   return true;
@@ -84,7 +107,10 @@ async function llmOp(op, args = {}) {
 }
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg || msg.target !== "llm") return;
-  llmOp(msg.op, msg.args).then((r) => sendResponse({ ok: true, result: r }), (err) => sendResponse({ ok: false, error: String(err && err.message || err) }));
+  touchPage();
+  busyOps++;
+  llmOp(msg.op, msg.args).then((r) => sendResponse({ ok: true, result: r }), (err) => sendResponse({ ok: false, error: String(err && err.message || err) }))
+    .finally(() => { busyOps--; touchPage(); });
   return true;
 });
 

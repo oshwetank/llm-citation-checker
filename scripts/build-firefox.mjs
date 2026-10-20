@@ -30,6 +30,9 @@ export function firefoxManifest(m) {
   const out = JSON.parse(JSON.stringify(m));
   out.background = { page: "background.html" };
   out.permissions = (out.permissions || []).filter((p) => !DROP_PERMS.has(p));
+  // Chrome-only keys (0.74.0: cross-origin isolation for the AI's threads).
+  delete out.cross_origin_embedder_policy;
+  delete out.cross_origin_opener_policy;
   out.browser_specific_settings = { gecko: { id: "citoskeleton@citoskeleton.app", strict_min_version: "128.0" } };
   // Firefox takes the same CSP key; WebAssembly needs 'wasm-unsafe-eval' there too.
   return out;

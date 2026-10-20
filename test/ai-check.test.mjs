@@ -8,7 +8,7 @@
  * isn't in the answer, codes that aren't codes. The checks must keep only
  * what the answer shows, and never change a count unless asked to.
  */
-import { aiCheckRecord, applyAi, parseJson, textHash, aiKey, chunks, PROMPT_VERSION } from "../src/lib/aiCheck.js";
+import { aiCheckRecord, applyAi, parseJson, textHash, aiKey, chunks, replyBudget, checkSchema, PROMPT_VERSION } from "../src/lib/aiCheck.js";
 import { quoteIn, validLang, validCountry, validCurrency, validateAnswerFacts, validateEntities, validateMissed } from "../src/lib/aiValidate.js";
 import { textMatches } from "../src/lib/textMatch.js";
 import { isPlausibleProseName } from "../src/lib/brands.js";
@@ -90,19 +90,18 @@ console.log("\ntask c: names the rules missed");
 
 console.log("\nthe whole check, against a fake model");
 {
+  // 0.74.0: one combined prompt per piece. A broken reply first, then good.
   const replies = [
-    // a: broken first, then good
     "{lang: es",
-    '```json\n{"lang":"es","market":{"country":"BR","currency":"BRL","scope":"local","evidence":["São Paulo"]},"intent":"for_use","funnel":"decision","audience":"consumer","vertical":"smartphones","topics":{"en":["family phones"],"orig":["celular para família"]}}\n```',
-    // b
-    '{"entities":[{"name":"Zento Nova","type":"product","stance":"recommended","quote":"recomiendo **Zento Nova**"},{"name":"Kovo Air","type":"product","stance":"advised_against","quote":"no la recomiendo para juegos"}]}',
-    // c
-    '<think></think>{"missed":[{"name":"Lumi Pro","type":"product","quote":"mirar Lumi Pro"},{"name":"Fakebrand","quote":"Fakebrand rocks"}]}',
+    '<think></think>```json\n{"lang":"es","market":{"country":"BR","currency":"BRL","scope":"local","evidence":["São Paulo"]},"intent":"for_use","funnel":"decision","audience":"consumer","vertical":"smartphones","topics":{"en":["family phones"],"orig":["celular para família"]},' +
+      '"entities":[{"name":"Zento Nova","type":"product","stance":"recommended","quote":"recomiendo **Zento Nova**"},{"name":"Kovo Air","type":"product","stance":"advised_against","quote":"no la recomiendo para juegos"}],' +
+      '"missed":[{"name":"Lumi Pro","type":"product","quote":"mirar Lumi Pro"},{"name":"Fakebrand","quote":"Fakebrand rocks"}]}\n```',
   ];
   const seen = [];
   const gen = async (o) => { seen.push(o); return { text: replies.shift() || "{}", ms: 5 }; };
   const ai = await aiCheckRecord(rec(), gen, { model: "test", isPlausible: isPlausibleProseName });
-  check("four calls: one retry for the broken JSON", ai.checks.calls === 4 && ai.checks.retries === 1, JSON.stringify(ai.checks));
+  check("one call for a short answer, plus one retry for the broken JSON (was four)", ai.checks.calls === 2 && ai.checks.retries === 1, JSON.stringify(ai.checks));
+  check("the reply is capped and given a JSON schema", seen[0].maxTokens === replyBudget(true, 2) && seen[0].maxTokens <= 400 && seen[0].schema && seen[0].schema.properties.entities && seen[0].schema.properties.lang);
   check("language and market", ai.lang === "es" && ai.market.country === "BR" && ai.market.currency === "BRL");
   check("stances, one of them advised against with a real quote", ai.entities.find((e) => e.name === "Kovo Air").stance === "advised_against" && ai.entities.find((e) => e.name === "Zento Nova").stance === "recommended", JSON.stringify(ai.entities));
   check("one missed name, the invented one dropped", ai.missed.length === 1 && ai.missed[0].name === "Lumi Pro" && ai.checks.dropped.some((d) => d.value === "Fakebrand"), JSON.stringify(ai.missed));
@@ -118,6 +117,20 @@ console.log("\nthe whole check, against a fake model");
   const lp = r2.brandMentions.find((m) => m.brand === "Lumi Pro");
   check("with it on, the missed name joins, counted from the text and marked", lp && lp.aiAdded && lp.count === 1 && r2.brandMentions.length === 3, JSON.stringify(r2.brandMentions));
   check("rows stay in the order they appear", r2.brandMentions.map((m) => m.brand).join() === "Zento Nova,Kovo Air,Lumi Pro");
+}
+
+console.log("\na long answer: one call per piece, facts only once");
+{
+  const para = (i) => `Paragraph ${i}: ${i % 3 === 0 ? "Zento Nova" : "Kovo Air"} is discussed here at length. `.repeat(6);
+  const long = Array.from({ length: 24 }, (_, i) => para(i)).join("\n");
+  const seen = [];
+  const gen = async (o) => { seen.push(o); return { text: '{"lang":"en","entities":[],"missed":[]}' }; };
+  const ai = await aiCheckRecord({ answerText: long, userPrompt: "x", brandMentions: [{ brand: "Zento Nova" }, { brand: "Kovo Air" }] }, gen, { model: "t" });
+  const pieces = chunks(long).length;
+  check("one model run per piece", ai.checks.calls === pieces && pieces >= 3, `${ai.checks.calls} calls for ${pieces} pieces`);
+  check("only the first asks what the answer is", /"lang"/.test(seen[0].messages[1].content) && seen.slice(1).every((o) => !/"lang"/.test(o.messages[1].content)));
+  check("later pieces' schema has no facts", !checkSchema(false).properties.lang && checkSchema(false).required.join() === "entities,missed");
+  check("every reply budget stays small", seen.every((o) => o.maxTokens <= 600), seen.map((o) => o.maxTokens).join());
 }
 
 console.log("\nan empty answer asks nothing");

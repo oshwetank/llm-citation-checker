@@ -13,17 +13,26 @@
  *     record on every derive.
  * Counts never change unless the user turned on "Use AI-checked brands in
  * counts" (applyAi in lib/aiCheck.js).
+ *
+ * Two engines since 0.74.0 (lib/aiBench.js chooses): Chrome's own built-in
+ * AI (Gemini Nano, lib/nanoEngine.js) where Chrome has it — the fastest, on
+ * the graphics chip, nothing for us to download — and Qwen3.5, downloaded
+ * once, on the graphics chip or on several processor cores. "Test this
+ * computer" times both on the same made-up answer. Nothing runs while a
+ * campaign is running (isBusy), so the AI never competes with its tabs.
  */
 import { TIERS, pickTier, MODEL_FAMILY, MODEL_LICENCE } from "./lib/llmTiers.js";
 import { aiCheckRecord, applyAi, aiKey } from "./lib/aiCheck.js";
 import { textMatches } from "./lib/textMatch.js";
 import { ask as runAsk } from "./lib/assistant.js";
 import { isPlausibleProseName } from "./lib/brands.js";
+import { nanoAvailability, nanoGenerate, nanoDownload } from "./lib/nanoEngine.js";
+import { BENCH_RECORD, benchVerdict, chooseEngine } from "./lib/aiBench.js";
 
 const STATE_KEY = "lcfcAi";
 const MAX_TRIES = 2;
 
-export function createAiService({ db, getSettings, ensureOffscreen, resetOffscreen = async () => {}, logErr = () => {}, broadcast = () => {} }) {
+export function createAiService({ db, getSettings, ensureOffscreen, resetOffscreen = async () => {}, logErr = () => {}, broadcast = () => {}, isBusy = () => false }) {
   async function getState() {
     try { return (await chrome.storage.local.get(STATE_KEY))[STATE_KEY] || {}; } catch (_) { return {}; }
   }
@@ -66,8 +75,67 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
   async function hardware() {
     const hw = await llm("hardware", {}, 30000);
     const pick = pickTier(hw);
-    await setState({ hardware: hw, pick, hardwareAt: Date.now() });
-    return { hardware: hw, pick };
+    const nano = await nanoAvailability();
+    await setState({ hardware: hw, pick, nano, hardwareAt: Date.now() });
+    return { hardware: hw, pick, nano };
+  }
+
+  /* ---- engines ---- */
+  const qwenReady = (state) => !!state.downloadedAt && !!specOf(state);
+  // The engine that answers now, or null: lib/aiBench.js chooseEngine().
+  async function engine(state) {
+    const nano = await nanoAvailability();
+    const id = chooseEngine({ choice: state.engine || "auto", nano, qwen: qwenReady(state), bench: state.bench || null });
+    if (id === "nano") {
+      return { id: "nano", modelId: "chrome-nano", label: "Gemini Nano (Chrome)", generate: (o) => nanoGenerate(o), prepare: async () => {} };
+    }
+    if (id === "qwen") {
+      const spec = specOf(state);
+      return {
+        id: "qwen", modelId: modelIdOf(spec), label: `${MODEL_FAMILY} ${spec.params || spec.label}`.trim(),
+        prepare: () => llm("load", { repo: spec.repo, dtype: spec.dtype, device: state.device || "webgpu", host: spec.host || undefined }, 30 * 60 * 1000),
+        generate: (o) => llm("generate", o, 5 * 60 * 1000),
+      };
+    }
+    return null;
+  }
+
+  /** "Test this computer": time each available engine on the same answer. */
+  async function benchmark() {
+    const state = await getState();
+    const out = { at: Date.now() };
+    const nano = await nanoAvailability();
+    const run = async (eng) => {
+      try {
+        await eng.prepare();
+        const t0 = Date.now();
+        const ai = await aiCheckRecord(BENCH_RECORD, eng.generate, { model: eng.label, isPlausible: isPlausibleProseName });
+        return benchVerdict(ai, Date.now() - t0);
+      } catch (e) { return { ok: false, error: String(e && e.message || e).slice(0, 160) }; }
+    };
+    if (nano === "available") out.nano = await run({ label: "Gemini Nano (Chrome)", prepare: async () => {}, generate: (o) => nanoGenerate(o) });
+    else out.nano = { ok: false, availability: nano };
+    if (qwenReady(state)) {
+      const spec = specOf(state);
+      out.qwen = await run({ label: spec.label, prepare: () => llm("load", { repo: spec.repo, dtype: spec.dtype, device: state.device || "webgpu", host: spec.host || undefined }, 30 * 60 * 1000), generate: (o) => llm("generate", o, 5 * 60 * 1000) });
+      out.qwen.device = state.device || null;
+      try { out.qwen.threads = (await llm("status", {}, 20000)).threads || null; } catch (_) { /* unknown */ }
+    } else out.qwen = { ok: false, notDownloaded: true };
+    await setState({ bench: out });
+    broadcast({ type: "ai-state" });
+    return { ok: true, bench: out };
+  }
+
+  /** Chrome fetches its own built-in model (shared with every site). */
+  let nanoFetching = null;
+  async function useNano() {
+    if (nanoFetching) return { ok: true, already: true };
+    await setState({ engine: "auto", nanoError: null });
+    nanoFetching = nanoDownload({ onProgress: (x) => { progress = { status: "nano", pct: Math.round(x * 100) }; } })
+      .then(() => { progress = null; return setState({ nano: "available" }); })
+      .catch((e) => setState({ nanoError: String(e && e.message || e) }))
+      .finally(() => { nanoFetching = null; broadcast({ type: "ai-state" }); kick(); });
+    return { ok: true, started: true };
   }
 
   async function status() {
@@ -76,11 +144,14 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
     const settings = await getSettings();
     let queued = 0;
     try { queued = await db.count("aiQueue"); } catch (_) { /* store missing */ }
+    const eng = await engine(state);
     return {
       ok: true,
       family: MODEL_FAMILY, licence: MODEL_LICENCE,
       tier: state.tier || null, model: spec ? { id: spec.id, label: spec.label, params: spec.params, repo: spec.repo } : null,
-      ready: !!state.downloadedAt && !!spec, downloadedAt: state.downloadedAt || null,
+      ready: !!eng, engine: eng ? { id: eng.id, label: eng.label } : null, engineChoice: state.engine || "auto",
+      nano: await nanoAvailability(), nanoFetching: !!nanoFetching, nanoError: state.nanoError || null, bench: state.bench || null, paused: !!isBusy(),
+      qwenReady: qwenReady(state), downloadedAt: state.downloadedAt || null,
       device: state.device || null, error: state.error || null,
       downloading: !!downloading, progress,
       hardware: state.hardware || null, pick: state.pick || null,
@@ -143,7 +214,7 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
   async function enqueue(rec, { force = false } = {}) {
     if (!rec || !rec.captureId || !String(rec.answerText || "").trim()) return { ok: false, reason: "no answer text" };
     const state = await getState();
-    if (!state.downloadedAt || !specOf(state)) return { ok: false, reason: "The built-in AI isn't downloaded." };
+    if (!(await engine(state))) return { ok: false, reason: "The built-in AI isn't set up." };
     if (!force) {
       const s = await getSettings();
       if (isCampaign(rec) ? s.aiOnCampaigns === false : s.aiOnEveryday === false) return { ok: false, reason: "off for this kind of answer" };
@@ -163,29 +234,33 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
     (async () => {
       try {
         for (;;) {
+          // A campaign's tabs come first; the queue waits and the heartbeat
+          // alarm starts it again when the run is over.
+          if (isBusy()) break;
           const items = (await db.getAll("aiQueue")).sort((a, b) => a.at - b.at);
           if (!items.length) break;
           const state = await getState();
-          if (!state.downloadedAt) break;
-          await processOne(items[0], state);
+          const eng = await engine(state);
+          if (!eng) break;
+          await processOne(items[0], eng);
         }
       } catch (e) { logErr("ai-queue", e); }
       finally { running = false; current = null; broadcast({ type: "ai-state" }); }
     })();
   }
 
-  async function processOne(item, state) {
-    const spec = specOf(state);
+  async function processOne(item, eng) {
     const rec = await db.get("derived", item.captureId);
-    if (!rec || !spec) { await db.delete("aiQueue", item.captureId); return; }
+    if (!rec) { await db.delete("aiQueue", item.captureId); return; }
     current = item.captureId;
     broadcast({ type: "ai-state" });
-    const key = aiKey(rec, modelIdOf(spec));
+    const key = aiKey(rec, eng.modelId);
     try {
       if (!(await db.get("ai", key))) {
-        await llm("load", { repo: spec.repo, dtype: spec.dtype, device: state.device || "webgpu", host: spec.host || undefined }, 30 * 60 * 1000);
-        const ai = await aiCheckRecord(rec, (o) => llm("generate", o, 5 * 60 * 1000), { model: `${MODEL_FAMILY} ${spec.params || spec.label}`.trim(), isPlausible: isPlausibleProseName });
-        ai.modelRepo = spec.repo;
+        await eng.prepare();
+        const ai = await aiCheckRecord(rec, eng.generate, { model: eng.label, isPlausible: isPlausibleProseName });
+        ai.modelRepo = eng.modelId;
+        ai.engine = eng.id;
         await db.put("ai", { key, captureId: rec.captureId, ...ai });
       }
       const fresh = await db.get("derived", item.captureId);
@@ -218,8 +293,10 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
     const settings = await getSettings();
     let ai = null;
     try {
-      if (spec) ai = await db.get("ai", aiKey(record, modelIdOf(spec)));
-      if (!ai) ai = await db.get("ai", aiKey(record, "nano"));
+      // The engine in use first, then the other, then the pre-0.74 Nano pass.
+      const eng = await engine(state);
+      const ids = [eng && eng.modelId, "chrome-nano", spec && modelIdOf(spec), "nano"].filter(Boolean);
+      for (const id of [...new Set(ids)]) { ai = await db.get("ai", aiKey(record, id)); if (ai) break; }
     } catch (_) { /* store missing on an old database */ }
     if (ai) {
       // Nano annotated brand rows with `stance` before 0.70.0; keep that.
@@ -232,7 +309,7 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
     } else {
       let queued = null;
       try { queued = await db.get("aiQueue", record.captureId); } catch (_) { /* none */ }
-      record.aiStatus = queued ? "queued" : state.downloadedAt ? "not-checked" : "off";
+      record.aiStatus = queued ? "queued" : (await engine(state)) ? "not-checked" : "off";
     }
     return record;
   }
@@ -249,13 +326,12 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
 
   /** Check a record without storing anything (the eval script, and Ask). */
   async function checkNow(rec) {
-    const state = await getState();
-    const spec = specOf(state);
-    if (!state.downloadedAt || !spec) throw new Error("The built-in AI isn't downloaded.");
-    await llm("load", { repo: spec.repo, dtype: spec.dtype, device: state.device || "webgpu", host: spec.host || undefined }, 30 * 60 * 1000);
+    const eng = await engine(await getState());
+    if (!eng) throw new Error("The built-in AI isn't set up.");
+    await eng.prepare();
     const t0 = Date.now();
-    const ai = await aiCheckRecord(rec, (o) => llm("generate", o, 5 * 60 * 1000), { model: `${MODEL_FAMILY} ${spec.params || spec.label}`.trim(), isPlausible: isPlausibleProseName });
-    return { ...ai, wallMs: Date.now() - t0 };
+    const ai = await aiCheckRecord(rec, eng.generate, { model: eng.label, isPlausible: isPlausibleProseName });
+    return { ...ai, wallMs: Date.now() - t0, engine: eng.id };
   }
 
   /**
@@ -265,20 +341,27 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
    */
   async function askQuestion({ question, history = [], data }) {
     const state = await getState();
-    const spec = specOf(state);
-    if (!state.downloadedAt || !spec) throw new Error("The built-in AI isn't downloaded.");
+    const eng = await engine(state);
+    if (!eng) throw new Error("The built-in AI isn't set up.");
     let generate;
     if (state.custom && Array.isArray(state.custom.script)) {
       const script = [...state.custom.script];
       generate = async () => ({ text: script.length ? script.shift() : "" });
     } else {
-      await llm("load", { repo: spec.repo, dtype: spec.dtype, device: state.device || "webgpu", host: spec.host || undefined }, 30 * 60 * 1000);
-      generate = (o) => llm("generate", o, 5 * 60 * 1000);
+      await eng.prepare();
+      generate = eng.generate;
     }
     const t0 = Date.now();
     const r = await runAsk({ question, history, generate, data });
-    return { ...r, ms: Date.now() - t0, model: `${MODEL_FAMILY} ${spec.params || spec.label}`.trim() };
+    return { ...r, ms: Date.now() - t0, model: eng.label, engine: eng.id };
   }
 
-  return { askQuestion, checkNow, getState, setState, status, hardware, download, remove, enqueue, kick, attach, saveNano, onProgress, specOf, llm };
+  async function setEngine(choice) {
+    await setState({ engine: ["auto", "nano", "qwen"].includes(choice) ? choice : "auto" });
+    broadcast({ type: "ai-state" });
+    kick();
+    return { ok: true };
+  }
+
+  return { askQuestion, checkNow, getState, setState, status, hardware, download, remove, enqueue, kick, attach, saveNano, onProgress, specOf, llm, engine, benchmark, useNano, setEngine };
 }
