@@ -43,13 +43,15 @@ export function initAiSettings(slot) {
     const tier = chosen || s.tier || (pick && pick.tier) || "standard";
     slot.replaceChildren();
     const chip = s.downloading ? h("span", { className: "ai-chip busy" }, s.progress && s.progress.pct != null ? `Downloading ${Math.round(s.progress.pct)}%` : "Downloading…")
+      : s.ready && s.engine && s.engine.id === "nano" ? h("span", { className: "ai-chip ok" }, "Ready · Chrome's built-in AI")
       : s.ready ? h("span", { className: "ai-chip ok" }, `Ready · ${s.model ? (s.model.params ? `${s.model.label} (${s.model.params})` : s.model.label) : ""}${s.device ? ` · ${s.device === "webgpu" ? "graphics chip" : "processor"}` : ""}`)
       : s.error ? h("span", { className: "ai-chip bad" }, "Download failed")
       : h("span", { className: "ai-chip" }, "Off");
     slot.append(h("div", { className: "ab-row ai-head" },
       h("div", { className: "ab-row-text", id: "aiLabel" },
         h("b", {}, "Built-in AI ", chip),
-        h("span", {}, `An open-source AI model (${s.family || "Qwen3.5"}, ${s.licence || "Apache-2.0"}, 201 languages) that runs on this computer. It reads each answer's language, market, intent and audience, and checks each brand's type, owner and how the answer treats it, quoting the answer. Downloaded once from Hugging Face; nothing you capture is ever sent anywhere. Your counts don't change unless you turn that on below.`))));
+        h("span", {}, `AI that runs on this computer: Chrome's own built-in model where Chrome has it, or an open-source model (${s.family || "Qwen3.5"}, ${s.licence || "Apache-2.0"}, 201 languages) downloaded once from Hugging Face. It reads each answer's language, market, intent and audience, and checks each brand's type, owner and how the answer treats it, quoting the answer. Nothing you capture is ever sent anywhere. Your counts don't change unless you turn that on below.`))));
+    slot.append(engineBlock(s));
 
     // The hardware check, and the sizes.
     const hw = s.hardware;
@@ -68,11 +70,11 @@ export function initAiSettings(slot) {
       b.onclick = () => { chosen = id; draw(); };
       seg.append(b);
     }
-    const isCurrent = s.ready && s.tier === tier;
+    const isCurrent = s.qwenReady && s.tier === tier;
     const dl = h("button", { type: "button", className: "btn sm primary", id: "aiDownload", disabled: !!s.downloading || isCurrent },
-      s.downloading ? "Downloading…" : isCurrent ? "Downloaded" : s.ready ? `Switch to ${TIERS[tier].label}` : "Download AI model");
+      s.downloading ? "Downloading…" : isCurrent ? "Downloaded" : s.qwenReady ? `Switch to ${TIERS[tier].label}` : "Download AI model");
     dl.onclick = async () => { await send({ type: "ai-download", tier, device: pick ? pick.device : undefined }); refresh(); };
-    const rm = h("button", { type: "button", className: "btn sm ghost", id: "aiRemove", disabled: !s.ready || !!s.downloading }, "Remove model");
+    const rm = h("button", { type: "button", className: "btn sm ghost", id: "aiRemove", disabled: !s.qwenReady || !!s.downloading }, "Remove model");
     rm.onclick = async () => { if (!confirm("Remove the built-in AI model from this computer? The checks already made are kept.")) return; await send({ type: "ai-remove" }); chosen = null; refresh(); };
     // Load from a folder: for computers that can't reach huggingface.co. The
     // folder is the model's files as Hugging Face lists them (config.json,
@@ -115,6 +117,47 @@ export function initAiSettings(slot) {
         s.model ? ` Model: ${s.model.repo}.` : ""));
     }
   };
+
+  // Which engine answers (0.74.0): Chrome's own model, the downloaded one,
+  // or automatic (the fastest that passed "Test this computer").
+  let benchBusy = false;
+  function engineBlock(s) {
+    const box = h("div", { className: "ai-engine", id: "aiEngine" });
+    const nano = s.nano || "unavailable";
+    const nanoLine = nano === "available" ? "Ready on this computer. It runs on the graphics chip, and Chrome keeps it up to date."
+      : nano === "downloadable" ? "Chrome can fetch it (Chrome's own download, shared by every site and extension that uses it)."
+      : nano === "downloading" || s.nanoFetching ? `Chrome is fetching it${s.progress && s.progress.status === "nano" && s.progress.pct != null ? ` (${s.progress.pct}%)` : ""}…`
+      : "Not on this computer: Chrome offers it only with a capable graphics chip and enough free space.";
+    const useNano = h("button", { type: "button", className: "btn sm", id: "aiUseNano", hidden: nano !== "downloadable" || !!s.nanoFetching }, "Use Chrome's built-in AI");
+    useNano.onclick = async () => { useNano.disabled = true; await send({ type: "ai-use-nano" }); refresh(); };
+    box.append(h("div", { className: "ab-row ai-row" },
+      h("div", { className: "ab-row-text" }, h("b", {}, "Chrome's built-in AI"), h("span", { id: "aiNanoLine" }, nanoLine), s.nanoError ? h("span", { className: "ai-err" }, s.nanoError) : null),
+      h("div", { className: "ai-btns" }, useNano)));
+
+    const choice = s.engineChoice || "auto";
+    const seg = h("div", { className: "ab-seg", role: "radiogroup", "aria-label": "Answered by", id: "aiEngineSeg" });
+    for (const [id, label, ok] of [["auto", "Automatic", true], ["nano", "Chrome's built-in AI", nano === "available"], ["qwen", "Downloaded model", !!s.qwenReady]]) {
+      const b = h("button", { type: "button", role: "radio", className: "ab-seg-btn", "data-engine": id, "aria-checked": String(choice === id), disabled: !ok }, label);
+      b.onclick = async () => { await send({ type: "ai-set-engine", engine: id }); refresh(); };
+      seg.append(b);
+    }
+    const test = h("button", { type: "button", className: "btn sm", id: "aiBench", disabled: benchBusy || (!s.qwenReady && nano !== "available") }, benchBusy ? "Testing…" : "Test this computer");
+    test.onclick = async () => { benchBusy = true; draw(); await send({ type: "ai-benchmark" }); benchBusy = false; refresh(); };
+    box.append(h("div", { className: "ab-row ai-row" },
+      h("div", { className: "ab-row-text" }, h("b", {}, "Answered by"), h("span", {}, s.engine ? `Now: ${s.engine.label}.${s.paused ? " Waiting while a campaign runs." : ""}` : "Nothing set up yet.")),
+      seg, h("div", { className: "ai-btns" }, test)));
+    const b = s.bench;
+    if (b) {
+      const row = (name, r) => !r ? null : h("tr", {}, h("td", {}, name),
+        h("td", {}, r.ok != null && r.ms != null ? `${(r.ms / 1000).toFixed(1)} s` : "—"),
+        h("td", {}, r.score != null ? `${r.score}/${r.of}${r.ok ? "" : " (not good enough)"}` : r.notDownloaded ? "not downloaded" : r.availability ? `not ready (${r.availability})` : r.error ? "failed" : "—"),
+        h("td", {}, r.threads ? `${r.device === "webgpu" ? "graphics chip" : `processor, ${r.threads} threads`}` : name.startsWith("Chrome") ? "graphics chip" : r.device || ""));
+      box.append(h("table", { className: "ai-bench", id: "aiBenchTable" },
+        h("thead", {}, h("tr", {}, h("th", {}, "Engine"), h("th", {}, "One answer"), h("th", {}, "Quality"), h("th", {}, "Runs on"))),
+        h("tbody", {}, row("Chrome's built-in AI", b.nano), row("Downloaded model", b.qwen))));
+    }
+    return box;
+  }
 
   const refresh = async () => {
     st = await send({ type: "ai-status" });

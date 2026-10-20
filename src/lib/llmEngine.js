@@ -52,7 +52,8 @@ export function threadCount(g = globalThis) {
 
 /** What this computer offers the model: graphics chip, memory, free space. */
 export async function hardware() {
-  const out = { webgpu: false, maxBufferSize: null, maxStorageBufferBindingSize: null, deviceMemory: null, freeBytes: null, adapter: null };
+  const out = { webgpu: false, maxBufferSize: null, maxStorageBufferBindingSize: null, deviceMemory: null, freeBytes: null, adapter: null,
+    cores: Number(navigator.hardwareConcurrency) || null, isolated: !!globalThis.crossOriginIsolated, threads: threadCount() };
   try {
     if (navigator.gpu) {
       const a = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });

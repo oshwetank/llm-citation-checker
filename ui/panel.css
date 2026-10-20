@@ -7528,3 +7528,9 @@ body.popup .nav-tab[data-tab="ask"] { display: none; }
 .cap-note { color: var(--fg-muted); font-size: 12px; }
 .cap-pre { white-space: pre-wrap; font-size: 11px; max-block-size: 240px; overflow: auto; }
 @media (max-width: 560px) { .cap-row { grid-template-columns: 10px 1fr; } .cap-line, .cap-refresh { grid-column: 2; } }
+
+/* The AI engine block (0.74.0) */
+.ai-engine { border-block-end: 1px solid var(--line-soft, var(--border)); margin-block-end: 6px; }
+.ai-bench { inline-size: 100%; border-collapse: collapse; font-size: 12px; margin-block: 4px 10px; }
+.ai-bench th, .ai-bench td { text-align: start; padding: 4px 8px; border-block-end: 1px solid var(--line-soft, var(--border)); }
+.ai-bench th { color: var(--fg-muted); font-weight: 500; }

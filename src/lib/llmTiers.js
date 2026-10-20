@@ -67,7 +67,12 @@ export function pickTier(hw = {}) {
   const memOk = (t) => mem == null || mem >= (t === "strong" ? 8 : t === "standard" ? 4 : 2);
   // The 2B and 4B embedding tables are single buffers of ~0.3–0.4 GB.
   const bufOk = (t) => t === "light" || buf == null || buf >= 0.45 * GB;
-  const possible = TIER_ORDER.filter((t) => fits(t) && memOk(t) && (t === "light" || (gpu && bufOk(t))));
+  // 0.74.0: on the processor the model now gets several threads (extension
+  // pages are cross-origin isolated), so a computer with enough cores and
+  // memory runs Standard there too, instead of being held to Light.
+  const cores = Number.isFinite(hw.cores) ? hw.cores : null;
+  const cpuStrong = !gpu && cores != null && cores >= 8 && (mem == null || mem >= 8) && hw.isolated !== false;
+  const possible = TIER_ORDER.filter((t) => fits(t) && memOk(t) && (t === "light" || (gpu && bufOk(t)) || (cpuStrong && t === "standard")));
   const device = gpu ? "webgpu" : "wasm";
   if (!possible.length) {
     return { tier: null, device, possible, reason: free != null && !fits("light")
@@ -75,7 +80,8 @@ export function pickTier(hw = {}) {
       : "This computer is below what the smallest model needs." };
   }
   if (!gpu) {
-    return { tier: "light", device, possible, reason: "No graphics-chip access here (WebGPU), so the model runs on the processor. Light is the only size that is quick enough that way." };
+    if (possible.includes("standard")) return { tier: "standard", device, possible, reason: `No graphics-chip access here (WebGPU), so the model runs on the processor — on ${Math.min(8, cores - 1)} of its ${cores} cores at once, enough for Standard. "Test this computer" times it.` };
+    return { tier: "light", device, possible, reason: `No graphics-chip access here (WebGPU), so the model runs on the processor${cores ? ` (${cores} cores)` : ""}. Light is the size that is quick enough that way. Chrome's own built-in AI, where available, is faster still.` };
   }
   // Standard is the default; Strong is offered, not picked, because it is
   // twice the download and slower, and only the Ask assistant needs it.

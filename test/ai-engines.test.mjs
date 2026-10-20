@@ -144,6 +144,25 @@ try {
   const again = await msg({ type: "ai-check-now", record: { captureId: "y", answerText: "Kovo is fine.", userPrompt: "q", brandMentions: [] } });
   check("and opens again on the next job", again && again.ok && (await offscreenOpen()) === 1, JSON.stringify(again && again.error));
 
+  console.log("\nSettings → Built-in AI shows the engines and the test");
+  await msg({ type: "ai-set-engine", engine: "auto" });
+  const tab = await context.newPage();
+  tab.on("pageerror", (e) => pageErrors.push(String(e.message || e)));
+  await tab.goto(`chrome-extension://${extId}/ui/panel.html?mode=tab`);
+  await tab.evaluate(() => { document.querySelector('[data-tab="about"]')?.click(); });
+  await tab.waitForTimeout(400);
+  await tab.evaluate(() => { [...document.querySelectorAll(".ab-nav-btn")].find((b) => /Settings/.test(b.textContent))?.click(); });
+  await tab.waitForSelector("#aiEngineSeg", { timeout: 15000 }).catch(() => {});
+  const ui = await tab.evaluate(() => ({
+    seg: [...document.querySelectorAll("#aiEngineSeg [data-engine]")].map((b) => `${b.dataset.engine}:${b.getAttribute("aria-checked")}:${b.disabled ? "off" : "on"}`),
+    bench: document.getElementById("aiBenchTable")?.innerText || "",
+    chip: document.querySelector(".ai-chip")?.textContent || "",
+    test: !!document.getElementById("aiBench"),
+  }));
+  check("Automatic / Chrome's built-in AI / Downloaded model, automatic chosen, both available", ui.seg.join() === "auto:true:on,nano:false:on,qwen:false:on", ui.seg.join());
+  check("the last test's results, per engine", /Chrome's built-in AI/.test(ui.bench) && /Downloaded model/.test(ui.bench) && /processor, \d+ threads/.test(ui.bench), ui.bench);
+  check("ready, answered by Chrome's built-in AI", /Chrome's built-in AI/.test(ui.chip) && ui.test, ui.chip);
+
   check("no page errors", pageErrors.length === 0, pageErrors.join(" | "));
 } finally {
   await context.close();

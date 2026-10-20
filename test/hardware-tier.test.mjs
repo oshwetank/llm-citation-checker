@@ -35,6 +35,12 @@ console.log("picking");
   check("nothing known: Light on the processor", g.tier === "light" && g.device === "wasm");
   const h = t({ webgpu: true, maxBufferSize: 2 * GB, deviceMemory: 4, freeBytes: 50 * GB });
   check("4 GB of memory: Standard, but Strong not offered", h.tier === "standard" && !h.possible.includes("strong"), JSON.stringify(h));
+  const cpu8 = pickTier({ webgpu: false, cores: 12, deviceMemory: 8, isolated: true, freeBytes: 50 * GB });
+  check("no graphics chip but 12 cores and 8 GB: Standard on the processor (threads), not Light", cpu8.tier === "standard" && cpu8.device === "wasm" && /8 of its 12 cores/.test(cpu8.reason), JSON.stringify(cpu8));
+  const cpu4 = pickTier({ webgpu: false, cores: 4, deviceMemory: 8, isolated: true, freeBytes: 50 * GB });
+  check("4 cores: Light, and Chrome's own AI named as faster", cpu4.tier === "light" && /4 cores/.test(cpu4.reason) && /Chrome/.test(cpu4.reason), JSON.stringify(cpu4));
+  const noIso = pickTier({ webgpu: false, cores: 16, deviceMemory: 8, isolated: false, freeBytes: 50 * GB });
+  check("not isolated (one thread): Light", noIso.tier === "light", JSON.stringify(noIso));
 }
 
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
