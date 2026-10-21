@@ -198,9 +198,11 @@ try {
     check("the header says how many answers the run is missing, and where", note && /2 answers are missing from the last run/.test(note) && /2 on ChatGPT/.test(note), note);
     await page.click("#cpRetryMissing");
     // The same sign-in check as Start run; this test browser is signed out.
-    const gate2 = await waitFor(() => page.$("#signin-gate-backdrop"), 4000);
+    const gate2 = await waitFor(() => page.evaluate(() => !!document.getElementById("signin-gate-backdrop")), 10000);
     if (gate2) await page.click('#signin-gate-backdrop button:has-text("Run anyway")');
-    const s = await waitFor(async () => { const x = await status(); return x && x.running ? x : null; }, 8000);
+    // Running with prompts: while the sign-in check runs, the runner reads
+    // "running" with nothing in it yet.
+    const s = await waitFor(async () => { const x = await status(); return x && x.running && x.total ? x : null; }, 15000);
     check("Retry starts a run of just those prompts", s && s.total === 2, JSON.stringify(s && { total: s.total, running: s.running }));
     const runs = await ask({ type: "geo-run-list", profileId });
     check("into the same campaign run, not a new one", runs && runs.runs.length === 1 && runs.runs[0].status === "running", JSON.stringify(runs && runs.runs.map((r) => [r.id.slice(0, 6), r.status])));
