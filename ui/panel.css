@@ -7388,3 +7388,8 @@ html[data-motion="on"] .ask-dots i:nth-child(3) { animation-delay: 0.3s; }
 .ask-chat .ask-input:focus { outline: none; }
 .ask-chat .ask-form:focus-within { border-color: var(--accent); }
 .ask-chat .ask-foot { margin-top: 4px; }
+
+/* Answers missing from the last run, and asking them again (0.78.1). */
+.cp-missing { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 8px; padding: 8px 12px; border-radius: 10px; background: var(--amber-bg, #fef3c7); color: var(--amber-fg, #92400e); font-size: 13px; }
+.cp-missing[hidden] { display: none; }
+.cp-missing .btn { margin-inline-start: auto; }

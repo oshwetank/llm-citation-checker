@@ -12,12 +12,22 @@ of its own**, except, if you turn on **Read the cited pages**, to the pages an a
 and, if you download the **built-in AI**, a one-time download of the model's files from
 Hugging Face. Nothing you capture ever leaves your device: the AI runs on your computer.
 
-> **v0.78.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.78.1** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **Fixes from the Sunban Windows campaign** (0.78.1).
+>   - **Limit cards are no longer answers.** Signed out, about 4 in 10 of ChatGPT's replies were its "Message limit reached" card, and CitoSkeleton had stored them as answers that named no brand, which pulled ChatGPT's numbers down. They're now marked as ChatGPT refusing the turn:
+>     - they're left out of the numbers;
+>     - the run pauses and asks again after a cooldown;
+>     - after four cooldowns in a row it gives up on ChatGPT for the rest of the run, so the run can finish.
+>
+>     Captures already stored are read again once, on update.
+>   - **Prompts restored.** Signed-out ChatGPT captures now keep their prompt (it was always empty).
+>   - **Retry missing.** When the last run has prompts with no answer, the campaign header says how many and on which engine. **Retry N missing** asks only those, each on the engine that has no answer for it, and adds the answers to the same run.
+>   - **Clearer diagnostics.** They now list each failure reason by engine, and count refusals separately from answers.
 > - **Smoother, tighter, clearer** (0.78.0).
 >   - **Definitions.** Pause on any button, tab or setting for 2.5 seconds (or reach it with the keyboard) and its definition appears, the same way everywhere.
 >   - **Logo and name.** The logo opens the CitoSkeleton web page; the name opens the Dashboard, in the popup too.

@@ -52,6 +52,38 @@ const stripHtml = (h) => String(h || "")
 const isUrl = (s) => typeof s === "string" && /^https?:\/\/[^\s]+$/.test(s);
 
 /**
+ * ChatGPT refusing the turn because of a message limit (0.78.1). In the
+ * owner's signed-out campaign, 39% of ChatGPT's replies were not answers but
+ * its "Message limit reached — You have reached the anonymous message limit"
+ * card, and they were stored and counted as answers that named no brand.
+ * The stream says so in two places: a diagnostic event with status 429
+ * ("source_submission_unavailable") and a safety gate of kind "rate_limited"
+ * inside the card's html. Returns a short label, or null.
+ */
+export function limitOfSource(raw) {
+  const text = String(raw || "");
+  let limited = null;
+  for (const ev of sourceEvents(text)) {
+    if (ev.type === "diagnostic" && typeof ev.payload === "string" && /"status"\s*:\s*429/.test(ev.payload)) limited = limited || "rate_limited";
+    if (typeof ev.html === "string") {
+      const h = ev.html.replace(/&quot;/g, '"');
+      const kind = /"gate"\s*:\s*\{[^}]*"kind"\s*:\s*"([a-z_]+)"/.exec(h);
+      if (kind && /limit|rate|quota/.test(kind[1])) limited = kind[1];
+      else if (/anonymous message limit|message limit reached/i.test(h)) limited = limited || "rate_limited";
+    }
+  }
+  if (!limited) return null;
+  return /anonymous message limit/i.test(text.replace(/&quot;/g, '"')) ? "anonymous message limit" : limited;
+}
+
+/** The prompt, from the form the signed-out page posts (its "prompt" field). */
+export function promptOfSourceRequest(reqBody) {
+  const b = String(reqBody || "");
+  if (!/(?:^|&)prompt=/.test(b)) return null;
+  try { const p = new URLSearchParams(b).get("prompt"); return p && p.trim() ? p.trim() : null; } catch (_) { return null; }
+}
+
+/**
  * The answer in a conversation-source stream: { answer, sources, queries,
  * conversationId, messageId, prompt, status } or null when it holds no text.
  */

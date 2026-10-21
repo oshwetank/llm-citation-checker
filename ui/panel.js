@@ -8629,6 +8629,31 @@ function renderCampaignHead(profile) {
   if (due && vol.submissions) notes.push(el("div", { className: "geo-due" }, `Today's run hasn't happened yet — last run ${profile.lastRunAt ? new Date(profile.lastRunAt).toLocaleDateString() : "never"}.`));
   if (vol.submissions > 60) notes.push(el("div", { className: "warn-box" }, el("span", {}, `${vol.submissions} automated submissions in one run is a lot of activity on one account. Consider splitting your prompts across campaigns or pausing some, and keep an eye on the run rather than leaving it unattended.`)));
   head.append(...notes);
+  // Answers missing from the last finished run (0.78.1): asked again on
+  // their engines only, and added to that same run.
+  const missing = el("div", { className: "cp-missing", id: "cpMissing", hidden: true });
+  head.append(missing);
+  if (!cpLive.live) send({ type: "geo-run-missing", profileId: profile.id }).then((m) => {
+    if (!m || !m.ok || !m.count || cpLive.live) return;
+    const parts = Object.entries(m.byEngine || {}).filter(([, n]) => n).map(([e, n]) => `${n} on ${atEngineLabel(e)}`);
+    const btn = el("button", { className: "btn sm primary", type: "button", id: "cpRetryMissing" }, `Retry ${m.count} missing`);
+    btn.onclick = withBusy(btn, "Starting…", async () => {
+      if (!confirm(`Ask the ${m.count} missing prompt${m.count === 1 ? "" : "s"} again?\n\n${parts.join(", ")}. Only those are sent, each to the engine that has no answer for it, and the answers are added to the same run.`)) return;
+      // The same sign-in check as Run, and the same way past it.
+      const attempt = async (skipAuthCheck) => {
+        const r = await send({ type: "geo-run-start", profileId: profile.id, retryRunId: m.runId, skipAuthCheck });
+        if (r && r.authBlocked) {
+          showSignInGate({ signedOut: r.signedOut, unknown: r.unknown, message: r.error, onProceed: (skip) => attempt(skip) });
+          return;
+        }
+        if (!r || !r.ok) { showToast((r && r.error) || "Couldn't start the retry.", "error"); return; }
+        loadGeo();
+      };
+      await attempt(false);
+    });
+    missing.replaceChildren(el("span", {}, el("b", {}, `${m.count} answer${m.count === 1 ? " is" : "s are"} missing from the last run`), ` · ${parts.join(", ")}`), btn);
+    missing.hidden = false;
+  });
   head.append(el("div", { id: "loaderStatus", className: "status-msg" }));
   head.append(el("div", { className: "cp-filters", id: "cpFilters" }));
   // Paint status immediately rather than waiting for the next 1.5s poll tick
@@ -9235,6 +9260,10 @@ async function buildDiagnosticReport() {
       const reasonEntries = Object.entries(run.reasons || {});
       if (reasonEntries.length) {
         lines.push(`      failure reasons — ${reasonEntries.map(([r, n]) => `${r}: ${n}`).join(", ")}`);
+      }
+      // By engine (0.78.1), so a reason says where it happened.
+      for (const [e, rs] of Object.entries(run.reasonsBy || {})) {
+        lines.push(`        ${e} — ${Object.entries(rs).map(([r, n]) => `${r}: ${n}`).join(", ")}`);
       }
     });
   } else if (runsRes.ok) {
@@ -10048,6 +10077,11 @@ function buildCampaignDiagSummaryText(r) {
     lines.push(`    expected ${run.expected}  answered ${run.stored}${run.captures != null && run.captures !== run.stored ? ` (${run.captures} captures)` : ""}  missing ${run.missing}  failed ${run.failed}`);
     const reasons = Object.entries(run.reasons || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} (${v})`).join("; ");
     if (reasons) lines.push(`    reasons: ${reasons}`);
+    if (run.limited) lines.push(`    refused by the engine (usage or message limit, not counted as answers): ${run.limited}`);
+    for (const [e, x] of Object.entries(run.byEngine || {})) {
+      const rs = Object.entries(x.reasons || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} (${v})`).join("; ");
+      lines.push(`    ${e}: answered ${x.answered}${x.limited ? `, refused ${x.limited}` : ""}${rs ? ` · ${rs}` : ""}`);
+    }
   }
   lines.push("");
   lines.push(`Errors: ${(r.errors || []).length}   Turns: ${(r.turns || []).length}   Capture events: ${(r.captures || []).length}`);

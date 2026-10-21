@@ -46,7 +46,7 @@ import { adapt as adaptPerplexity } from "./adapters/perplexity.js";
 import { adapt as adaptGrok } from "./adapters/grok.js";
 import {
   MAX_PROFILES, TRASH_RETENTION_DAYS, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
-  needsUnlock, profileChanges, addCompetitor, autoCompetitorsFrom,
+  needsUnlock, profileChanges, addCompetitor, autoCompetitorsFrom, missingTurns,
   selectTracked, computeMetrics, computeSeries, brandPresence, normName,
   effectiveTrackedBrands, headToHead, brandSourceDomains, availableEngines,
   hasSignal, turnAnswered, usageLimitOf, countCompletedForRun, countCompletedForLeg, isPrunableCapture, retentionVictims,
@@ -923,11 +923,38 @@ async function enforceRetention(settings, keepId) {
  * quality…") fold into the network capture of the same reply, and the
  * Dashboard counts each question once. Raw copies are all kept. */
 const REPAIR_KEY = "lcfcRepaired0621";
+const REPAIR_KEY_0781 = "lcfcRepaired0781";
 async function repairOnce() {
-  const got = await chrome.storage.local.get(REPAIR_KEY);
-  if (got && got[REPAIR_KEY]) return;
-  await reprocessAll();
-  await chrome.storage.local.set({ [REPAIR_KEY]: Date.now() });
+  const got = await chrome.storage.local.get([REPAIR_KEY, REPAIR_KEY_0781]);
+  if (!got || !got[REPAIR_KEY]) {
+    await reprocessAll();
+    await chrome.storage.local.set({ [REPAIR_KEY]: Date.now(), [REPAIR_KEY_0781]: Date.now() });
+    return;
+  }
+  if (!got[REPAIR_KEY_0781]) {
+    await reprocessSignedOutChatGpt().catch((e) => logErr("repair:0781", e));
+    await chrome.storage.local.set({ [REPAIR_KEY_0781]: Date.now() });
+  }
+}
+
+/* 0.78.1: signed-out ChatGPT captures read again. Until now ChatGPT's
+ * "Message limit reached" card was stored as an answer (39% of the owner's
+ * signed-out ChatGPT captures), and every signed-out capture had no prompt.
+ * Read again, the card is a refusal with no answer (left out of the numbers,
+ * listed as "usage limit") and every capture gets its prompt back. */
+async function reprocessSignedOutChatGpt() {
+  const settings = await getSettings();
+  let n = 0;
+  for (const id of await db.getAllKeys("raw")) {
+    try {
+      const row = await db.get("raw", id);
+      if (!row || row.platform !== "chatgpt" || !/\/unauth-mweb\/conversation\/updates\b/.test(row.url || "")) continue;
+      await deriveAndStore(row, undefined, settings);
+      n++;
+    } catch (_) { /* keep going */ }
+  }
+  logEvent("repair:signed-out-chatgpt", "capture", `read ${n} signed-out ChatGPT captures again`, { count: n });
+  return n;
 }
 
 async function reprocessAll() {
@@ -1094,6 +1121,7 @@ async function persistLoaderState() {
             legs: (pd.legs || []).map((leg) => ({
               tabId: leg.tabId,
               startOffset: leg.startOffset || 0,
+              ...(Array.isArray(leg.geoIdx) ? { geoIdx: leg.geoIdx } : {}),
               prompts: leg.prompts,
               idx: leg.idx,
               failed: leg.failed || 0,
@@ -1480,7 +1508,7 @@ function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "", ext
    * it across tabs) is enough to find it, and the log is deliberately free
    * of user content (see lib/errorlog.js).
    */
-  const promptIndex = (leg.startOffset || 0) + leg.idx - 1;
+  const promptIndex = geoIdxOf(leg, leg.idx - 1);
   const elapsedMs = leg.startedAt ? Date.now() - leg.startedAt : 0;
   logErr(`run:turn-failed:${plat}`, reason, {
     platform: plat,
@@ -1505,10 +1533,13 @@ function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "", ext
     ...(extraCtx || {}),
   });
   persistLoaderState();
-  syncGeoRun(undefined, reason);
+  syncGeoRun(undefined, reason, 1, plat);
+  if (retryDelayMs < 0) return; // the caller moves the leg on itself
   if (retryDelayMs > 0) setTimeout(() => loaderRunLeg(plat, leg), retryDelayMs);
   else loaderRunLeg(plat, leg);
 }
+
+const MAX_LIMIT_STREAK = 4;
 
 // A snapshot written before concurrency shipped has the OLD flat shape —
 // {tabId, prompts, idx, ...} directly on the platform, no `legs` array.
@@ -1518,6 +1549,14 @@ function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "", ext
 // the whole run; wrapping it as a single leg instead makes the upgrade
 // transparent — the run resumes as one tab, exactly as it was running
 // before, and the NEXT run it starts gets the new concurrency.
+// Where prompt i of this leg sits in the run's full prompt list (and so in
+// loader.options.geoPrompts). A leg normally holds a contiguous shard
+// (startOffset + i); a "Retry missing" leg (0.78.1) holds a chosen subset,
+// so it carries the original positions itself (leg.geoIdx).
+function geoIdxOf(leg, i) {
+  return Array.isArray(leg.geoIdx) && leg.geoIdx[i] != null ? leg.geoIdx[i] : (leg.startOffset || 0) + i;
+}
+
 function legsOf(pd) {
   if (!pd) return [];
   if (Array.isArray(pd.legs)) return pd.legs;
@@ -1660,6 +1699,7 @@ async function resumeFromSnapshot(snap) {
         // fresh tab whenever tabId is null.
         tabId: restarted ? null : sl.tabId,
         startOffset: sl.startOffset || 0,
+        ...(Array.isArray(sl.geoIdx) ? { geoIdx: sl.geoIdx } : {}),
         prompts: legPrompts,
         idx,
         failed: sl.failed || 0,
@@ -1774,22 +1814,36 @@ async function resumeFromSnapshot(snap) {
 // update). Chaining guarantees call N's read only happens after call N-1's
 // write has actually landed.
 let syncGeoRunChain = Promise.resolve();
-function syncGeoRun(statusOverride, reason, reasonCount = 1) {
-  syncGeoRunChain = syncGeoRunChain.then(() => syncGeoRunOnce(statusOverride, reason, reasonCount));
+function syncGeoRun(statusOverride, reason, reasonCount = 1, plat = null) {
+  syncGeoRunChain = syncGeoRunChain.then(() => syncGeoRunOnce(statusOverride, reason, reasonCount, plat));
   return syncGeoRunChain;
 }
-async function syncGeoRunOnce(statusOverride, reason, reasonCount) {
+async function syncGeoRunOnce(statusOverride, reason, reasonCount, plat) {
   const g = loader.options && loader.options.geo;
   if (!g || !g.runId) return;
   try {
     const run = await db.get("geoRuns", g.runId);
     if (!run) return;
-    const patch = { ...run, captured: loader.done, failed: loader.errors };
+    // A "Retry missing" pass (0.78.1) adds to the run it retries: what it
+    // recovers is taken off that run's failures.
+    const base = g.retryBase;
+    const patch = base
+      ? { ...run, captured: base.captured + loader.done, failed: Math.max(0, base.failed - loader.done) }
+      : { ...run, captured: loader.done, failed: loader.errors };
     if (reason) {
+      const key = base ? `retry ${reason}` : reason;
       const reasons = { ...(run.reasons || {}) };
-      reasons[reason] = (reasons[reason] || 0) + reasonCount;
+      reasons[key] = (reasons[key] || 0) + reasonCount;
       patch.reasons = reasons;
+      // Which engine each reason came from (0.78.1): the diagnostics said
+      // "send control never accepted the prompt: 65" without saying where.
+      if (plat) {
+        const by = { ...(run.reasonsBy || {}) };
+        by[plat] = { ...(by[plat] || {}), [key]: ((by[plat] || {})[key] || 0) + reasonCount };
+        patch.reasonsBy = by;
+      }
     }
+    if (base && statusOverride === "done") patch.retries = [...(run.retries || []), { at: Date.now(), asked: loader.total, answered: loader.done }];
     if (statusOverride) {
       patch.status = statusOverride;
       patch.finishedAt = Date.now();
@@ -2298,7 +2352,7 @@ chrome.tabs.onUpdated?.addListener((tabId, changeInfo) => {
     }
     logErr(`run:tab-reloaded:${plat}`, "Loader tab reloaded mid-turn — retrying", {
       platform: plat,
-      promptIndex: (leg.startOffset || 0) + leg.idx,
+      promptIndex: geoIdxOf(leg, leg.idx),
       totalPrompts: platformTotal(plat),
       attempt: leg.reloadRetries,
       runId: loader.runId,
@@ -2413,8 +2467,14 @@ async function loaderStart(prompts, options) {
   // a second automated tab with nothing to do would be pure extra footprint
   // on the account for zero benefit.
   const runTabIds = [];
+  // "Retry missing" (0.78.1): each engine asks only the prompts it is
+  // missing, given as positions in the full list.
+  const only = options && options.only;
   for (const plat of supported) {
-    const shards = shardPrompts(clean, CONCURRENT_TABS_PER_ENGINE).filter((s) => s.prompts.length > 0);
+    const pick = only ? (only[plat] || []).filter((i) => Number.isInteger(i) && i >= 0 && i < clean.length) : null;
+    if (pick && !pick.length) continue;
+    const list = pick ? pick.map((i) => clean[i]) : clean;
+    const shards = shardPrompts(list, CONCURRENT_TABS_PER_ENGINE).filter((s) => s.prompts.length > 0);
     const legs = [];
     for (const shard of shards) {
       const created = windowId
@@ -2434,11 +2494,14 @@ async function loaderStart(prompts, options) {
       chrome.tabs.update(created.id, { autoDiscardable: false }).catch(() => {});
       legs.push({
         tabId: created.id, startOffset: shard.startOffset, prompts: shard.prompts,
+        ...(pick ? { geoIdx: pick.slice(shard.startOffset, shard.startOffset + shard.prompts.length) } : {}),
         idx: 0, failed: 0, lastAdvanceAt: 0, durations: [], outcomes: [],
       });
     }
     loader.platforms[plat] = { legs };
   }
+  if (only) loader.total = Object.values(loader.platforms).reduce((n, pd) => n + pd.legs.reduce((m, l) => m + l.prompts.length, 0), 0);
+  if (only && !loader.total) { loader.running = false; return { ok: false, error: "Nothing is missing from this run." }; }
   // Every engine tab this run owns, grouped and collapsed so they don't take
   // over the window — one shared group for the whole run rather than one per
   // engine, since the point is minimizing footprint, not organizing by
@@ -2483,7 +2546,30 @@ async function loaderStart(prompts, options) {
  * aligned with the prompt list) so each capture is stamped with the profile,
  * run, prompt and tags it belongs to.
  */
+async function geoRunRetry(profileId, runId, runOpts = {}) {
+  const run = await db.get("geoRuns", runId);
+  if (!run || run.profileId !== profileId) return { ok: false, error: "Run not found." };
+  if (run.status === "running") return { ok: false, error: "That run is still going." };
+  const prompts = (await db.getAll("trackedPrompts")).filter((p) => p.profileId === profileId)
+    .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+  const m = missingTurns(run, prompts, await db.getAll("derived"));
+  for (const e of Object.keys(m.only)) if (!availableEngines().some((a) => a.id === e)) delete m.only[e];
+  if (!m.count) return { ok: false, error: "Nothing is missing from this run." };
+  const res = await loaderStart(m.prompts.map((p) => p.text), {
+    platforms: Object.keys(m.only).filter((e) => m.only[e].length),
+    only: m.only,
+    geo: { profileId, runId, retryBase: { captured: run.captured || 0, failed: run.failed || 0 } },
+    geoPrompts: m.prompts.map((p) => ({ id: p.id, tags: p.tags || [] })),
+    skipAuthCheck: !!runOpts.skipAuthCheck || !!run.privateWindow,
+    incognito: !!run.privateWindow,
+  });
+  if (!res.ok) return res;
+  await db.put("geoRuns", { ...run, status: "running", finishedAt: null });
+  return { ok: true, geoRunId: runId, retrying: m.count, loaderRunId: res.runId };
+}
+
 async function geoRunStart(profileId, runOpts = {}) {
+  if (runOpts.retryRunId) return geoRunRetry(profileId, runOpts.retryRunId, runOpts);
   const profile = await db.get("profiles", profileId);
   if (!profile) return { ok: false, error: "Profile not found." };
   if (!profile.brand || !profile.brand.name) {
@@ -2619,7 +2705,7 @@ function attributeCaptureToPrompt(leg, record) {
   const atPosition = leg.prompts[leg.idx];
   if (atPosition && promptTextMatches(atPosition, got)) return null;
   const hits = [];
-  leg.prompts.forEach((text, i) => { if (promptTextMatches(text, got)) hits.push((leg.startOffset || 0) + i); });
+  leg.prompts.forEach((text, i) => { if (promptTextMatches(text, got)) hits.push(geoIdxOf(leg, i)); });
   if (hits.length === 1) {
     const tp = geoPrompts[hits[0]] || {};
     return tp.id ? { promptId: tp.id, tags: tp.tags || [] } : null;
@@ -2687,7 +2773,23 @@ function loaderOnCapture(tabId, record) {
   // 0.62.2 these turns were logged "ok" with no answer.
   const limit = usageLimitOf(record);
   if (limit) {
-    logErr(`run:usage-limit:${plat}`, `${plat}: usage limit reached`, { platform: plat, promptIndex: (leg.startOffset || 0) + leg.idx, runId: loader.runId, detail: limit });
+    logErr(`run:usage-limit:${plat}`, `${plat}: usage limit reached`, { platform: plat, promptIndex: geoIdxOf(leg, leg.idx), runId: loader.runId, detail: limit });
+    // A limit that doesn't lift (0.78.1): signed out, ChatGPT's anonymous
+    // limit can last the day, and each cooldown only met it again. After
+    // MAX_LIMIT_STREAK cooldowns in a row with no answer between them, this
+    // engine's remaining prompts are marked "usage limit" so the run can
+    // finish; "Retry missing" asks them again later.
+    const pd = loader.platforms[plat];
+    pd.limitStreak = (pd.limitStreak || 0) + 1;
+    if (pd.limitStreak > MAX_LIMIT_STREAK) {
+      for (const l of pd.legs || []) {
+        clearWatchdog(l);
+        l.paused = false;
+        while (l.idx < l.prompts.length) failTurnAndAdvance(plat, l, `usage limit: ${plat} still limited after ${MAX_LIMIT_STREAK} cooldowns`, -1);
+      }
+      loaderRunLeg(plat, leg);
+      return;
+    }
     pauseForLimit(plat, `usage limit reached (${limit})`);
     return;
   }
@@ -2726,7 +2828,7 @@ function loaderOnCapture(tabId, record) {
     if (!promptTextMatches(wantPrompt, gotPrompt)) {
       logErr(`run:late-capture:${plat}`, "capture did not match the prompt in flight", {
         platform: plat,
-        promptIndex: (leg.startOffset || 0) + leg.idx,
+        promptIndex: geoIdxOf(leg, leg.idx),
         totalPrompts: platformTotal(plat),
         runId: loader.runId,
       });
@@ -2741,8 +2843,9 @@ function loaderOnCapture(tabId, record) {
   leg.outcomes[leg.idx] = { status: "done", reason: null, at: Date.now() };
   leg.lastAdvanceAt = Date.now();
   loader.done++;
+  if (loader.platforms[plat]) loader.platforms[plat].limitStreak = 0;
   leg.inFlightIdx = -1;
-  const donePromptIndex = (leg.startOffset || 0) + leg.idx;
+  const donePromptIndex = geoIdxOf(leg, leg.idx);
   const reloadRetriesAtSuccess = leg.reloadRetries || 0;
   leg.idx++;
   // This leg is genuinely moving to a new prompt now — the reload-retry
@@ -2876,7 +2979,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               // rate and this one's alike.
               const g = loader.options.geo;
               if (g) {
-                const originalIdx = (leg.startOffset || 0) + leg.idx;
+                const originalIdx = geoIdxOf(leg, leg.idx);
                 const tp = (loader.options.geoPrompts || [])[originalIdx] || {};
                 meta.geo = {
                   profileId: g.profileId,
@@ -3517,8 +3620,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           });
           break;
         }
+        // What the last finished run is missing (0.78.1), for "Retry missing".
+        case "geo-run-missing": {
+          const runs = (await db.getAll("geoRuns")).filter((r) => r.profileId === msg.profileId).sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+          const run = runs.find((r) => r.status !== "running");
+          if (!run || runs[0] !== run) { sendResponse({ ok: true, count: 0 }); break; }
+          const prompts = (await db.getAll("trackedPrompts")).filter((p) => p.profileId === msg.profileId).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+          const m = missingTurns(run, prompts, await db.getAll("derived"));
+          const byEngine = Object.fromEntries(Object.entries(m.only).map(([e, l]) => [e, l.length]));
+          sendResponse({ ok: true, runId: run.id, count: m.count, byEngine, startedAt: run.startedAt || null });
+          break;
+        }
         case "geo-run-start": {
-          sendResponse(await geoRunStart(msg.profileId, { skipAuthCheck: !!msg.skipAuthCheck, privateWindow: !!msg.privateWindow }));
+          sendResponse(await geoRunStart(msg.profileId, { skipAuthCheck: !!msg.skipAuthCheck, privateWindow: !!msg.privateWindow, retryRunId: msg.retryRunId || null }));
           break;
         }
         // Opens an engine's own sign-in page for the pre-flight auth gate.

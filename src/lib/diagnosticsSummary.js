@@ -21,8 +21,20 @@ export function summarizeRunDiagnostics(bundle, runNo = new Map()) {
     // captures (see oneCapturePerPrompt in geo.js), and counting those read
     // "stored 67" against 40 expected in a real export.
     const runRecords = (bundle.records || []).filter((x) => x.geo && x.geo.runId === r.id);
-    const stored = new Set(runRecords.map((x) => (x.geo.promptId ? `${x.platform}|${x.geo.promptId}` : x))).size;
+    // An engine's refusal (ChatGPT's "Message limit reached" card, a usage
+    // limit) is a capture but not an answer (0.78.1): it is counted apart.
+    const isAnswer = (x) => !(x.platformSpecific && x.platformSpecific.gatewayError) || (x.answerChars || 0) > 0;
+    const key = (x) => (x.geo.promptId ? `${x.platform}|${x.geo.promptId}` : x);
+    const answeredKeys = new Set(runRecords.filter(isAnswer).map(key));
+    const stored = answeredKeys.size;
+    const limited = new Set(runRecords.filter((x) => !isAnswer(x)).map(key).filter((k) => !answeredKeys.has(k))).size;
     const missing = Math.max(0, (r.expected || 0) - stored);
+    const byEngine = {};
+    for (const e of r.engines || []) {
+      const mine = runRecords.filter((x) => x.platform === e);
+      const ans = new Set(mine.filter(isAnswer).map(key));
+      byEngine[e] = { answered: ans.size, limited: new Set(mine.filter((x) => !isAnswer(x)).map(key).filter((k) => !ans.has(k))).size, reasons: (r.reasonsBy || {})[e] || {} };
+    }
     return {
       runId: r.id,
       runNo: runNo.get(r.id),
@@ -34,6 +46,8 @@ export function summarizeRunDiagnostics(bundle, runNo = new Map()) {
       missing,
       failed: r.failed || 0,
       reasons: r.reasons || {},
+      limited,
+      byEngine,
     };
   });
   return { perRun, errors: bundle.errors || [] };

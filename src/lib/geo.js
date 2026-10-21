@@ -912,3 +912,24 @@ export function brandSourceDomains(records, trackedBrands, name, limit = 10) {
       || a.domain.localeCompare(b.domain))
     .slice(0, Math.max(0, limit));
 }
+
+/* "Retry missing" (0.78.1): ask again only the prompts a finished run has no
+ * answer for, engine by engine, and add the answers to that same run. In the
+ * owner's 752-turn run, 101 turns had no answer (65 never accepted by the
+ * send button, 28 sent with no answer, ChatGPT's message limit on top). */
+export function missingTurns(run, prompts, records) {
+  const have = new Set();
+  for (const r of records || []) {
+    if (!r.geo || r.geo.runId !== run.id || !(r.answerChars > 0)) continue;
+    have.add(`${r.platform}|${r.geo.promptId}`);
+  }
+  const ids = new Set(run.promptIds || []);
+  const list = (prompts || []).filter((p) => ids.has(p.id));
+  const only = {};
+  let n = 0;
+  for (const e of run.engines || []) {
+    only[e] = [];
+    list.forEach((p, i) => { if (!have.has(`${e}|${p.id}`)) { only[e].push(i); n++; } });
+  }
+  return { prompts: list, only, count: n };
+}

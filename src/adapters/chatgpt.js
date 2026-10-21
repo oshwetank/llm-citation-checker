@@ -23,7 +23,7 @@ import { isKnownRetrievalName, enginesNamedIn } from "../lib/retrieval.js";
 import { walk, collectByKey, collectObjects, firstPath, isHttpUrl, domainOf } from "../lib/deep.js";
 import { detectBrands } from "../lib/brands.js";
 import { isGenUi, readGenUi } from "../lib/genui.js";
-import { isConversationSource, readConversationSource } from "../lib/chatgptSource.js";
+import { isConversationSource, readConversationSource, limitOfSource, promptOfSourceRequest } from "../lib/chatgptSource.js";
 
 export const ADAPTER_VERSION = "chatgpt@0.5.0";
 
@@ -787,15 +787,21 @@ function genUiBindings(nodes) {
 // Signed out (0.69.0): /unauth-mweb/conversation/updates, ndjson (see
 // lib/chatgptSource.js). Read by name; what it can't find stays empty.
 async function adaptSource(rawCapture, opts, diag) {
-  const r = readConversationSource(rawCapture.raw);
-  if (!r) { diag.usedFallback = true; diag.notes.push("signed-out stream: no answer text found in it"); }
+  // ChatGPT's message-limit card is not an answer (0.78.1): no answer text,
+  // and the limit on the record, so a campaign turn pauses for it and asks
+  // again later instead of counting an answer that names nobody.
+  const limit = limitOfSource(rawCapture.raw);
+  const r = limit ? null : readConversationSource(rawCapture.raw);
+  if (limit) diag.notes.push(`signed-out stream: ChatGPT refused the turn (${limit})`);
+  else if (!r) { diag.usedFallback = true; diag.notes.push("signed-out stream: no answer text found in it"); }
   const answerText = r ? cleanPassage(r.answer) : "";
   const sources = (r ? r.sources : []).map((x) => makeSource({
     url: x.url, domain: domainOf(x.url), title: x.title || domainOf(x.url), snippet: x.snippet || null,
     outcome: x.cited ? "cited" : "fetched", type: x.cited ? "citation" : "search_result", platformSpecific: {},
   }));
   const fanout = { search: (r ? r.queries : []).map((q) => ({ query: q, round: 1 })), shopping: [], image: [] };
-  let userPrompt = (r && r.prompt) || extractPrompt(rawCapture.reqBody);
+  // The signed-out page posts a form whose "prompt" field is the question.
+  let userPrompt = (r && r.prompt) || promptOfSourceRequest(rawCapture.reqBody) || extractPrompt(rawCapture.reqBody);
   if (!userPrompt) { try { userPrompt = new URL(rawCapture.pageUrl).searchParams.get("q") || null; } catch (_) { /* no address */ } }
   const { brands: brandMentions, entities: baseEntities } = await detectBrandsForCapture(answerText, [], opts.tracked, sources, [], userPrompt);
   const entities = extractEntities(baseEntities, [], brandMentions, sources, []);
@@ -808,7 +814,7 @@ async function adaptSource(rawCapture, opts, diag) {
     userPrompt, searched: sources.length > 0 || fanout.search.length > 0, fanout, sources,
     products: [], places: [], entities, images: [], brandMentions,
     answerChars: answerText.length, answerText,
-    platformSpecific: { transport: "conversation-source", signedOut: true, wordCount: answerText.trim() ? answerText.trim().split(/\s+/).length : 0, ...(r && r.status ? { status: r.status } : {}) },
+    platformSpecific: { transport: "conversation-source", signedOut: true, wordCount: answerText.trim() ? answerText.trim().split(/\s+/).length : 0, ...(r && r.status ? { status: r.status } : {}), ...(limit ? { gatewayError: limit } : {}) },
     _extraction: diag,
   });
 }

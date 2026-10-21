@@ -191,6 +191,25 @@ try {
     check("a run that captured nothing still shows in the run history", hist && hist.length === 1 && /Stopped/.test(hist[0]) && /0\/\d+ captured/.test(hist[0]), JSON.stringify(hist));
   }
 
+  // 0.78.1: what a finished run is missing is asked again, into that run.
+  console.log("\nRetry missing");
+  {
+    const note = await waitFor(() => page.evaluate(() => { const n = document.getElementById("cpMissing"); return n && !n.hidden ? n.innerText.replace(/\s+/g, " ") : null; }), 6000);
+    check("the header says how many answers the run is missing, and where", note && /2 answers are missing from the last run/.test(note) && /2 on ChatGPT/.test(note), note);
+    await page.click("#cpRetryMissing");
+    // The same sign-in check as Start run; this test browser is signed out.
+    const gate2 = await waitFor(() => page.$("#signin-gate-backdrop"), 4000);
+    if (gate2) await page.click('#signin-gate-backdrop button:has-text("Run anyway")');
+    const s = await waitFor(async () => { const x = await status(); return x && x.running ? x : null; }, 8000);
+    check("Retry starts a run of just those prompts", s && s.total === 2, JSON.stringify(s && { total: s.total, running: s.running }));
+    const runs = await ask({ type: "geo-run-list", profileId });
+    check("into the same campaign run, not a new one", runs && runs.runs.length === 1 && runs.runs[0].status === "running", JSON.stringify(runs && runs.runs.map((r) => [r.id.slice(0, 6), r.status])));
+    await page.click('#cpHead button:has-text("Stop")');
+    await waitFor(async () => { const x = await status(); return x && !x.running ? x : null; }, 8000);
+    const back = await ask({ type: "geo-run-list", profileId });
+    check("stopping it leaves that one run, its counts not doubled", back && back.runs.length === 1 && (back.runs[0].captured || 0) === 0, JSON.stringify(back && back.runs[0]).slice(0, 200));
+  }
+
   console.log("\nThe popup has the same controls");
   {
     const pop = await context.newPage();

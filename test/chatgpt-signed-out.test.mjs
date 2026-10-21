@@ -9,9 +9,9 @@
  * are made up around them, with made-up brands and sites; the reader is
  * written to read by name and to say so when it finds nothing.
  */
-import { isConversationSource, readConversationSource } from "../src/lib/chatgptSource.js";
+import { isConversationSource, readConversationSource, limitOfSource, promptOfSourceRequest } from "../src/lib/chatgptSource.js";
 import { adapt } from "../src/adapters/chatgpt.js";
-import { turnAnswered } from "../src/lib/geo.js";
+import { turnAnswered, usageLimitOf } from "../src/lib/geo.js";
 
 let failures = 0;
 const check = (label, cond, detail) => {
@@ -55,6 +55,32 @@ console.log("\nthe record");
   check("marked signed out, and tied to its message", rec.platformSpecific.signedOut === true && rec.turnId === "m-1" && rec.conversationId === "c-0a1b", JSON.stringify([rec.turnId, rec.conversationId]));
   const partial = await adapt({ captureId: "so2", raw: stream.split("\n").slice(0, 2).join("\n"), url: "https://chatgpt.com/unauth-mweb/conversation/updates", pageUrl: "https://chatgpt.com/", capturedAt: 1 });
   check("a snapshot still being written doesn't finish a campaign turn", !turnAnswered(partial) && turnAnswered(rec), JSON.stringify(partial.platformSpecific.status));
+}
+
+// 0.78.1, from the owner's Sunban campaign: 39% of signed-out ChatGPT
+// captures were ChatGPT's "Message limit reached" card, stored as answers;
+// and no signed-out capture had its prompt. The stream below has the same
+// shape as theirs (a 429 diagnostic, then the gate inside the card's html),
+// with made-up ids; the form fields are the ones the signed-out page posts.
+console.log("\nChatGPT's message limit, and the prompt from the form");
+{
+  const esc = (o) => JSON.stringify(o).replace(/"/g, "&quot;");
+  const limitStream = [
+    JSON.stringify({ version: 2, type: "control", detail: { operationId: "op-9", streamType: "initial", kind: "started" } }),
+    JSON.stringify({ version: 2, type: "diagnostic", kind: "source_submission_unavailable", payload: JSON.stringify({ status: 429, recoveredPendingTurn: false, hasUpstreamBody: true }) }),
+    JSON.stringify({ version: 2, type: "shared", html: `<template for="conversation-partial-control"><span data-conversation-safety="${esc({ dismissedInterventionIds: [], gate: { body: "You have reached the anonymous message limit.", kind: "rate_limited", title: "Message limit reached" } })}" hidden=""><section><h2>Message limit reached</h2><p>You have reached the anonymous message limit.</p><button>New chat</button><a>Log in or sign up</a></section></span></template>` }),
+  ].join("\n");
+  const form = new URLSearchParams({ conversationState: JSON.stringify({ messages: [], parentMessageId: "client-created-root" }), prompt: PROMPT, timezone: "Asia/Kolkata" }).toString();
+  check("the limit card is recognised", limitOfSource(limitStream) === "anonymous message limit", limitOfSource(limitStream));
+  check("an ordinary answer is not", limitOfSource(stream) === null);
+  check("a 429 on its own is a limit too", limitOfSource(JSON.stringify({ version: 2, type: "diagnostic", payload: "{\"status\":429}" })) === "rate_limited");
+  check("the prompt is the form's prompt field", promptOfSourceRequest(form) === PROMPT && promptOfSourceRequest("{}") === null);
+  const rec = await adapt({ captureId: "so3", raw: limitStream, url: "https://chatgpt.com/unauth-mweb/conversation/updates?operationId=op-9", reqBody: form, pageUrl: "https://chatgpt.com/", capturedAt: 1 }, { tracked: [{ name: "Zento" }] });
+  check("the card is not an answer: no text, no brands", rec.answerText === "" && rec.answerChars === 0 && !rec.brandMentions.length, JSON.stringify(rec.answerText));
+  check("it carries the limit, so a campaign pauses and asks again", usageLimitOf(rec) === "anonymous message limit" && !turnAnswered(rec));
+  check("and its prompt", rec.userPrompt === PROMPT, rec.userPrompt);
+  const ok = await adapt({ captureId: "so4", raw: stream, url: "https://chatgpt.com/unauth-mweb/conversation/updates", reqBody: form, pageUrl: "https://chatgpt.com/", capturedAt: 1 }, { tracked: [] });
+  check("a real answer keeps its prompt from the form too", ok.userPrompt === PROMPT && ok.answerText.includes("Lumora") && !usageLimitOf(ok));
 }
 
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
