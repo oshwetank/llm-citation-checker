@@ -6783,7 +6783,7 @@ function renderCampaignSwitcher() {
  * It opens on the latest run, so the KPIs can say what changed since the run
  * before; "All runs combined" is one pick away.
  */
-let cbRun = null;            // null: the latest run with answers; "all"; or a run id
+let cbRun = null;            // null or "latest": each prompt's newest answer per engine (0.80.0); "all"; or a run id
 let cbViewAs = null;         // brand name; null: your own brand
 let cbFocus = "mentions";    // which KPI view
 let cbTags = [];
@@ -6883,8 +6883,12 @@ async function renderCampaignBoard(box, profile) {
   const scope = el("span", { className: "muted small cp-scope", id: "campaignResultsH" }, `${r.answers} answer${r.answers === 1 ? "" : "s"} · ${b.runLabel}${b.previousLabel ? ` · compared with ${b.previousLabel}` : ""}`);
   if (!slot) head.append(el("div", { className: "card-header" }, el("h3", {}, "Results"), scope));
   const controls = el("div", { className: "cb-controls" });
-  const runSel = el("select", { className: "filter", id: "cbRun", "aria-label": "Run", title: "One run, or every run combined" });
-  runsWithAnswers.forEach((x, i) => runSel.append(el("option", { value: x.id }, `Run ${runNo(x.id)} · ${runDate(x.startedAt)}${i === 0 ? " (latest)" : ""}`)));
+  const runSel = el("select", { className: "filter", id: "cbRun", "aria-label": "Run", title: "The newest answer for each prompt on each engine, one run, or every run combined" });
+  // The default (0.80.0): each engine's newest answers, from whichever run,
+  // so engines run on different days read as one campaign.
+  // Offered when engines ran in different runs (r.mixedRuns).
+  if (r.mixedRuns) runSel.append(el("option", { value: "latest" }, "Latest answers · every engine"));
+  runsWithAnswers.forEach((x, i) => runSel.append(el("option", { value: x.id }, `Run ${runNo(x.id)} · ${runDate(x.startedAt)}${r.mixedRuns && (x.engines || []).length ? ` · ${x.engines.map(atEngineLabel).join(", ")}` : ""}${i === 0 ? " (latest)" : ""}`)));
   runSel.append(el("option", { value: "all" }, "All runs combined"));
   runSel.value = r.runId;
   runSel.onchange = () => { cbRun = runSel.value; rerender(); };
@@ -7045,8 +7049,21 @@ async function renderCampaignBoard(box, profile) {
   /* --- the board (0.64.0): src/lib/campaignView.js, drawn by ui/campaignView.js --- */
   // The sources table with its drill-downs stays, at the foot of Sources.
   const srcBox = cbSection("cb-sources", "Every site, with its pages", "", el("div", { className: "muted small" }, "Loading sources…"));
+  // For Run vs run (0.80.0): the runs with answers, newest first, and the
+  // comparison of any two, worked out by the worker over the same engines
+  // and tags as the board.
+  const runsAscAll = [...r.runs].sort((a, c) => (a.startedAt || 0) - (c.startedAt || 0));
+  const runsForCompare = [...r.runs].filter((x) => x.hasAnswers).sort((a, c) => (c.startedAt || 0) - (a.startedAt || 0)).map((x) => ({
+    id: x.id, hasAnswers: true,
+    label: `Run ${runsAscAll.findIndex((y) => y.id === x.id) + 1} · ${new Date(x.startedAt).toLocaleDateString(undefined, { day: "numeric", month: "short" })}${(x.engines || []).length ? ` · ${x.engines.map(atEngineLabel).join(", ")}` : ""}`,
+  }));
   renderCampaignView(box, r.view, {
     el, engineIcon: engineIconEl, openCapture, realOwn: r.ownBrand,
+    runs: runsForCompare,
+    compareRuns: async (a, c) => {
+      const res = await send({ type: "campaign-run-compare", profileId: profile.id, runA: a, runB: c, engines: geoEngineFilter, tags: cbTags, tagMode: cbTagMode, viewAs: cbViewAs || undefined });
+      return res && res.ok ? res.compare : null;
+    },
     deltas: Object.fromEntries(((b.focus && b.focus.mentions) || []).map((k) => [k.label, k.delta])),
     openDomain: (d) => openCampaignDomain(profile, d),
     openFullCompare: (name) => { cbDetail = name; renderCampaigns(); },
@@ -11090,8 +11107,11 @@ function runTour(startAt = 0) {
   backdrop.append(card);
   document.body.append(backdrop);
 
+  // Seen the moment it opens (0.80.0), not when it's clicked through: a popup
+  // closed half way used to bring it back every time it was opened.
+  markTourSeen();
   const finish = () => {
-    try { localStorage.setItem(TOUR_SEEN_KEY, "1"); } catch (_) {}
+    markTourSeen();
     backdrop.remove();
     document.removeEventListener("keydown", onKey, true);
   };
@@ -11152,10 +11172,19 @@ function runTour(startAt = 0) {
 // First run: load the sample capture, then walk through what the screens mean.
 // Sample data is loaded FIRST so the tabs the tour switches to have something
 // on them — a tour of five empty screens explains nothing.
+// Kept in the extension's own storage as well as this page's (0.80.0), so the
+// popup, the full tab and a reload all agree it has been seen.
+function markTourSeen() {
+  try { localStorage.setItem(TOUR_SEEN_KEY, "1"); } catch (_) {}
+  try { chrome.storage.local.set({ [TOUR_SEEN_KEY]: Date.now() }); } catch (_) {}
+}
+async function tourSeen() {
+  try { if (localStorage.getItem(TOUR_SEEN_KEY) === "1") return true; } catch (_) { return true; }
+  try { const got = await chrome.storage.local.get(TOUR_SEEN_KEY); if (got && got[TOUR_SEEN_KEY]) { localStorage.setItem(TOUR_SEEN_KEY, "1"); return true; } } catch (_) { /* treat as unseen */ }
+  return false;
+}
 async function maybeFirstRun() {
-  let seen = false;
-  try { seen = localStorage.getItem(TOUR_SEEN_KEY) === "1"; } catch (_) { seen = true; }
-  if (seen) return;
+  if (await tourSeen()) return;
   try {
     const status = await send({ type: "demo-status" });
     // Someone with real captures already knows what this is; don't push
@@ -11167,6 +11196,9 @@ async function maybeFirstRun() {
   } catch (_) {
     // Sample data is a nicety — never block the tour, or the panel, on it.
   }
+  // Asked again after the wait above: it may have been seen meanwhile (in
+  // the other view, or set by a test), and it must open only once.
+  if (await tourSeen()) return;
   runTour(0);
 }
 

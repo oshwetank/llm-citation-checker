@@ -87,10 +87,10 @@ try {
   const tabTo = async (id) => { await page.evaluate((id) => document.querySelector(`.cv-tab[data-section="${id}"]`)?.click(), id); await settle(400); };
   const shownSecs = () => page.evaluate(() => [...document.querySelectorAll("#cvPanel section.cv-sec")].map((s) => s.id));
 
-  console.log("\nnine sections as tabs, one at a time (0.67.0)");
+  console.log("\nten sections as tabs, one at a time (0.67.0; Run vs run added in 0.80.0)");
   {
     const tabs = await page.evaluate(() => [...document.querySelectorAll(".cv-tabs [role=tab]")].map((b) => ({ id: b.dataset.section, text: b.textContent, sel: b.getAttribute("aria-selected") })));
-    check("a tab for each section, in the order asked for", JSON.stringify(tabs.map((t) => t.id)) === JSON.stringify(["cv-overview", "cv-brands", "cv-compare", "cv-sources", "cv-citations", "cv-prompts", "cv-products", "cv-searches", "cv-signals"]), tabs.map((t) => t.id).join(" | "));
+    check("a tab for each section, in the order asked for", JSON.stringify(tabs.map((t) => t.id)) === JSON.stringify(["cv-overview", "cv-brands", "cv-compare", "cv-sources", "cv-citations", "cv-prompts", "cv-runs", "cv-products", "cv-searches", "cv-signals"]), tabs.map((t) => t.id).join(" | "));
     check("with counts where a count says something", tabs.some((t) => /^Citations\d+$/.test(t.text)), tabs.map((t) => t.text).join(" | "));
     check("Overview is open, and only Overview", JSON.stringify(await shownSecs()) === JSON.stringify(["cv-overview"]) && tabs[0].sel === "true", JSON.stringify(await shownSecs()));
     check("the app bar no longer carries the section links", await page.evaluate(() => !document.querySelector("#headerPage .cb-nav, #headerPage .cb-nav-btn")));

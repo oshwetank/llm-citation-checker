@@ -303,7 +303,7 @@ try {
     await page.waitForTimeout(2500);
     // It opens on the tab last used in the full tab (kept in this browser).
     check("the board renders in the popup, on the tab last open", await page.evaluate(() => document.body.classList.contains("popup") && document.querySelector(".cv-tab.on")?.dataset.section === "cv-prompts" && !!document.getElementById("cv-prompts")));
-    check("its section tabs are on the board, not in the popup's bar", await page.evaluate(() => document.querySelectorAll("#campaignResults .cv-tabs .cv-tab").length === 9 && !document.querySelector("#headerPage .cb-nav-btn, #headerPage .cv-tab")));
+    check("its section tabs are on the board, not in the popup's bar", await page.evaluate(() => document.querySelectorAll("#campaignResults .cv-tabs .cv-tab").length === 10 && !document.querySelector("#headerPage .cb-nav-btn, #headerPage .cv-tab")));
     await tab("cv-prompts");
     const wide = await page.evaluate(() => { const c = document.querySelector(".app-content"); return c.scrollWidth - c.clientWidth; });
     check("nothing on it widens the popup", wide <= 0, `${wide}px`);

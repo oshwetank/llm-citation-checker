@@ -253,7 +253,7 @@ export function promptsInScope(prompts, tags, recs) {
  *   engineFilter (the engines the board is limited to; empty for all),
  *   tags (the tag filter the answers were selected with; empty for none)
  */
-export function campaignBoard(recs, { profile, brands, viewAs, prompts = [], runs = [], runId = null, all = recs, engineFilter = [], tags = [] } = {}) {
+export function campaignBoard(recs, { profile, brands, viewAs, prompts = [], runs = [], runId = null, latest = false, all = recs, engineFilter = [], tags = [] } = {}) {
   prompts = promptsInScope(prompts, tags, all);
   const own = brands.find((b) => b.isOwn) || brands[0] || { name: (profile && profile.brand && profile.brand.name) || "", url: "" };
   const view = brands.find((b) => normName(b.name) === normName(viewAs || "")) || own;
@@ -532,7 +532,7 @@ export function campaignBoard(recs, { profile, brands, viewAs, prompts = [], run
     view: { name: view.name, url: view.url || "", domain: dom, isOwn: !!view.isOwn },
     own: { name: own.name },
     engines: engines.map((e) => ({ id: e, label: ENGINE_LABEL[e] })),
-    runLabel: curRun ? `Run ${runNo.get(curRun.id)}` : "All runs combined",
+    runLabel: curRun ? `Run ${runNo.get(curRun.id)}` : latest ? "Latest answer per prompt and engine" : "All runs combined",
     previousLabel: prevLabel,
     focus, available, byKind, products, brandRows, mentionPool: metrics.mentionPool, asSource, byEngine, collected,
     acrossRuns, heat, topics, recommend, siteKinds, gapSites, searches: searchesView, prompts: promptRows,

@@ -21,6 +21,7 @@ import {
   parseCooldownFromNotice, formatCooldown,
 } from "./lib/pacing.js";
 import { createErrorLog } from "./lib/errorlog.js";
+import { compareRuns } from "./lib/runCompare.js";
 import { BUILD } from "./lib/build.js";
 import { noteHealth, emptyHealth, healthReport, verdict, ENGINES as HEALTH_ENGINES } from "./lib/captureHealth.js";
 import { checkEnginesAuth, checkEngineAuth, AUTH_COOKIES } from "./lib/auth-check.js";
@@ -47,7 +48,7 @@ import { adapt as adaptGrok } from "./adapters/grok.js";
 import {
   MAX_PROFILES, TRASH_RETENTION_DAYS, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
   needsUnlock, profileChanges, addCompetitor, autoCompetitorsFrom, missingTurns,
-  selectTracked, computeMetrics, computeSeries, brandPresence, normName,
+  selectTracked, latestAnswers, computeMetrics, computeSeries, brandPresence, normName,
   effectiveTrackedBrands, headToHead, brandSourceDomains, availableEngines,
   hasSignal, turnAnswered, usageLimitOf, countCompletedForRun, countCompletedForLeg, isPrunableCapture, retentionVictims,
 } from "./lib/geo.js";
@@ -1903,6 +1904,7 @@ async function resumeFromSnapshot(snap) {
   if (Object.values(loader.platforms).every((pd) => pd.legs.every((leg) => leg.idx >= leg.prompts.length))) {
     loader.running = false;
     syncGeoRun("done");
+    startNextQueued();
     notifyRunComplete();
     closeRunTabs();
   }
@@ -2246,6 +2248,8 @@ async function loaderRunLeg(plat, leg) {
     if (allDone) {
       loader.running = false;
       syncGeoRun("done");
+      startNextQueued();
+    startNextQueued();
       notifyRunComplete();
       closeRunTabs();
     }
@@ -2708,6 +2712,55 @@ async function geoRunRetry(profileId, runId, runOpts = {}) {
   return { ok: true, geoRunId: runId, retrying: m.count, loaderRunId: res.runId };
 }
 
+/* Campaigns waiting their turn (0.80.0). Asked: two campaigns for two brands
+ * should both run and each keep its own answers. One run drives the engine
+ * tabs at a time (two at once would double the automated traffic on the
+ * same accounts), so a campaign started during another's run is queued and
+ * starts by itself when that run finishes or is stopped. Kept in storage so
+ * a restart doesn't lose the queue. */
+const RUN_QUEUE_KEY = "lcfcRunQueue";
+async function loadRunQueue() {
+  try { const got = await chrome.storage.local.get(RUN_QUEUE_KEY); return Array.isArray(got[RUN_QUEUE_KEY]) ? got[RUN_QUEUE_KEY] : []; } catch (_) { return []; }
+}
+async function enqueueRun(profileId, runOpts) {
+  const profile = await db.get("profiles", profileId);
+  if (!profile) return { ok: false, error: "Campaign not found." };
+  const running = loader.options && loader.options.geo && loader.options.geo.profileId;
+  if (running === profileId && !runOpts.retryRunId) return { ok: false, error: "This campaign is already running." };
+  const q = await loadRunQueue();
+  if (!q.some((x) => x.profileId === profileId)) q.push({ profileId, runOpts, name: profile.name || "", queuedAt: Date.now() });
+  await chrome.storage.local.set({ [RUN_QUEUE_KEY]: q });
+  return { ok: true, queued: true, position: q.findIndex((x) => x.profileId === profileId) + 1 };
+}
+let startingQueued = false;
+function startNextQueued() {
+  if (startingQueued) return;
+  startingQueued = true;
+  // A moment for the finished run's tabs to close first.
+  setTimeout(async () => {
+    try {
+      while (!loader.running) {
+        const q = await loadRunQueue();
+        if (!q.length) break;
+        const [next, ...rest] = q;
+        await chrome.storage.local.set({ [RUN_QUEUE_KEY]: rest });
+        // The sign-in check was offered when it was queued; a gate now would
+        // have no one to answer it, so it isn't repeated.
+        const res = await geoRunStart(next.profileId, { ...(next.runOpts || {}), skipAuthCheck: true });
+        if (res && res.ok) {
+          logEvent("run:queue-start", "turn", `started the queued campaign "${next.name || next.profileId}"`, { profileId: next.profileId });
+          break;
+        }
+        logErr("run:queue-start", (res && res.error) || "couldn't start", { profileId: next.profileId });
+      }
+    } catch (e) {
+      logErr("run:queue-start", e);
+    } finally {
+      startingQueued = false;
+    }
+  }, 3000);
+}
+
 async function geoRunStart(profileId, runOpts = {}) {
   if (runOpts.retryRunId) return geoRunRetry(profileId, runOpts.retryRunId, runOpts);
   const profile = await db.get("profiles", profileId);
@@ -3055,6 +3108,23 @@ function completeTurn(plat, leg, record) {
   // shorter (see pacing.js's header comment).
   const delay = INTER_PROMPT_MIN_MS + Math.random() * (INTER_PROMPT_MAX_MS - INTER_PROMPT_MIN_MS);
   if (!loader.paused && !leg.paused) setTimeout(() => loaderRunLeg(plat, leg), delay);
+}
+
+// Which of a campaign's answers a view shows: one run (`runId`), every
+// answer ("all"), or by default the newest per prompt and engine (0.80.0).
+// When the newest answers all come from one run (every engine ran together),
+// that run is shown, with its change since the run before; only when engines
+// ran in different runs is the default a mix of runs (`mixed`).
+function pickCampaignAnswers(all, runs, want) {
+  if (want === "all") return { runId: null, recs: all, latestMode: false, mixed: latestRunsOf(all) > 1 };
+  if (want && want !== "latest" && runs.some((r) => r.id === want)) return { runId: want, recs: all.filter((r) => r.geo && r.geo.runId === want), latestMode: false, mixed: latestRunsOf(all) > 1 };
+  const latest = latestAnswers(all);
+  const from = [...new Set(latest.map((r) => r.geo && r.geo.runId).filter(Boolean))];
+  if (from.length === 1) return { runId: from[0], recs: all.filter((r) => r.geo && r.geo.runId === from[0]), latestMode: false, mixed: false };
+  return { runId: null, recs: latest, latestMode: true, mixed: true };
+}
+function latestRunsOf(all) {
+  return new Set(latestAnswers(all).map((r) => r.geo && r.geo.runId).filter(Boolean)).size;
 }
 
 // Strip heavy fields for list/aggregate views. The full record (with answerText)
@@ -3745,26 +3815,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // are left out of every view, the default and "all runs" included.
           const live = new Set(runs.filter((r) => r.status === "running").map((r) => r.id));
           const all = selectTracked(records, { profileId: msg.profileId, engines: msg.engines, tags: msg.tags, tagMode: msg.tagMode }).filter((x) => !(x.geo && live.has(x.geo.runId)));
-          // The run shown: the one asked for; by default the latest run that
-          // has answers, so the board opens on "now" with the change since
-          // the run before; "all" combines every run.
-          const latest = runs.find((r) => all.some((x) => x.geo && x.geo.runId === r.id));
-          const runId = msg.runId === "all" ? null : (msg.runId && runs.some((r) => r.id === msg.runId) ? msg.runId : (latest ? latest.id : null));
-          const recs = runId ? all.filter((r) => r.geo && r.geo.runId === runId) : all;
+          // What's shown (0.80.0): by default the newest answer for each
+          // prompt on each engine, whichever run it came from; or one run;
+          // or "all", every answer of every run.
+          const { runId, recs, latestMode, mixed } = pickCampaignAnswers(all, runs, msg.runId);
           const brands = effectiveTrackedBrands(profile, recs);
           const prompts = (await db.getAll("trackedPrompts")).filter((p) => p.profileId === msg.profileId)
             .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
           sendResponse({
+            mixedRuns: mixed,
             ok: true,
-            board: campaignBoard(recs, { profile, brands, viewAs: msg.viewAs, prompts, runs: runs.filter((r) => !live.has(r.id)), runId, all, engineFilter: msg.engines || [], tags: msg.tags || [] }),
+            board: campaignBoard(recs, { profile, brands, viewAs: msg.viewAs, prompts, runs: runs.filter((r) => !live.has(r.id)), runId, latest: latestMode, all, engineFilter: msg.engines || [], tags: msg.tags || [] }),
             // The 0.64.0 board's sections, over the same answers.
             // Seen from any brand (0.67.0, asked: "look at the entire data
             // for not just my brand but other competition as well"): the
             // board measures whichever brand is picked against the rest.
             view: campaignView(recs, { profile, brands: msg.viewAs && brands.some((b) => b.name === msg.viewAs) ? brands.map((b) => ({ ...b, isOwn: b.name === msg.viewAs })) : brands, prompts, engineFilter: msg.engines || [] }),
             ownBrand: (brands.find((b) => b.isOwn) || {}).name || null,
-            runId: runId || "all",
-            runs: runs.filter((r) => !live.has(r.id)).map((r) => ({ id: r.id, startedAt: r.startedAt, status: r.status, captured: r.captured || 0, expected: r.expected || 0, hasAnswers: all.some((x) => x.geo && x.geo.runId === r.id) })),
+            runId: runId || (latestMode ? "latest" : "all"),
+            runs: runs.filter((r) => !live.has(r.id)).map((r) => ({ id: r.id, startedAt: r.startedAt, status: r.status, captured: r.captured || 0, expected: r.expected || 0, hasAnswers: all.some((x) => x.geo && x.geo.runId === r.id), engines: [...new Set(all.filter((x) => x.geo && x.geo.runId === r.id).map((x) => x.platform))] })),
             brands: brands.map((b) => ({ name: b.name, isOwn: !!b.isOwn, auto: !!b.auto })),
             excludedBrands: profile.excludedBrands || [],
             // Named in the answers and not on the list (0.77.0): offered to
@@ -3776,6 +3845,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           });
           break;
         }
+        // Two runs of a campaign side by side (0.80.0, lib/runCompare.js).
+        case "campaign-run-compare": {
+          const profile = await db.get("profiles", msg.profileId);
+          if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
+          const all = selectTracked(await db.getAll("derived"), { profileId: msg.profileId, engines: msg.engines, tags: msg.tags, tagMode: msg.tagMode });
+          const recsA = all.filter((x) => x.geo && x.geo.runId === msg.runA);
+          const recsB = all.filter((x) => x.geo && x.geo.runId === msg.runB);
+          let brands = effectiveTrackedBrands(profile, [...recsA, ...recsB]);
+          if (msg.viewAs && brands.some((b) => b.name === msg.viewAs)) brands = brands.map((b) => ({ ...b, isOwn: b.name === msg.viewAs }));
+          const prompts = (await db.getAll("trackedPrompts")).filter((p) => p.profileId === msg.profileId);
+          sendResponse({ ok: true, compare: compareRuns(recsA, recsB, { brands, prompts }) });
+          break;
+        }
         // One brand against yours (0.50.0): the brand detail the board opens.
         // Same scope as the board (run, engine, tags), so the two agree.
         case "campaign-brand-detail": {
@@ -3785,9 +3867,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const all = selectTracked(records, { profileId: msg.profileId, engines: msg.engines, tags: msg.tags, tagMode: msg.tagMode });
           const runs = (await db.getAll("geoRuns")).filter((r) => r.profileId === msg.profileId)
             .sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
-          const latest = [...runs].reverse().find((r) => all.some((x) => x.geo && x.geo.runId === r.id));
-          const runId = msg.runId === "all" ? null : (msg.runId && runs.some((r) => r.id === msg.runId) ? msg.runId : (latest ? latest.id : null));
-          const recs = runId ? all.filter((r) => r.geo && r.geo.runId === runId) : all;
+          const { runId, recs, latestMode } = pickCampaignAnswers(all, runs, msg.runId);
           const brands = effectiveTrackedBrands(profile, recs);
           const own = brands.find((b) => b.isOwn);
           const prompts = (await db.getAll("trackedPrompts")).filter((p) => p.profileId === msg.profileId)
@@ -3799,7 +3879,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             sourceDomains: detail ? brandSourceDomains(recs, brands, detail.them.name) : [],
             brands: brands.map((b) => ({ name: b.name, isOwn: !!b.isOwn, auto: !!b.auto })),
             answers: recs.length,
-            runLabel: runId ? `Run ${runs.findIndex((r) => r.id === runId) + 1}` : "All runs combined",
+            runLabel: runId ? `Run ${runs.findIndex((r) => r.id === runId) + 1}` : latestMode ? "Latest answers" : "All runs combined",
           });
           break;
         }
@@ -3815,7 +3895,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
         case "geo-run-start": {
-          sendResponse(await geoRunStart(msg.profileId, { skipAuthCheck: !!msg.skipAuthCheck, privateWindow: !!msg.privateWindow, retryRunId: msg.retryRunId || null }));
+          const runOpts = { skipAuthCheck: !!msg.skipAuthCheck, privateWindow: !!msg.privateWindow, retryRunId: msg.retryRunId || null };
+          // Another campaign running (0.80.0): this one waits its turn
+          // instead of being refused, and starts when that run ends.
+          if (loader.running && !msg.noQueue) { sendResponse(await enqueueRun(msg.profileId, runOpts)); break; }
+          sendResponse(await geoRunStart(msg.profileId, runOpts));
+          break;
+        }
+        case "run-queue":
+          sendResponse({ ok: true, queue: await loadRunQueue(), runningProfileId: (loader.running && loader.options && loader.options.geo && loader.options.geo.profileId) || null });
+          break;
+        case "run-queue-remove": {
+          const q = (await loadRunQueue()).filter((x) => x.profileId !== msg.profileId);
+          await chrome.storage.local.set({ [RUN_QUEUE_KEY]: q });
+          sendResponse({ ok: true, queue: q });
           break;
         }
         // Opens an engine's own sign-in page for the pre-flight auth gate.
@@ -4239,6 +4332,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           await syncGeoRun("stopped");
           await persistLoaderState();
           sendResponse({ ok: true, ...loaderStatus() });
+          startNextQueued();
           break;
         case "loader-status":
           sendResponse({ ok: true, ...loaderStatus() });

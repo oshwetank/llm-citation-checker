@@ -298,6 +298,25 @@ export function oneCapturePerPrompt(records) {
  * `allCaptures` keeps every copy, for the diagnostics export. */
 // tagMode "all" (0.67.0) keeps only prompts carrying every tag asked for;
 // the default, "any", keeps prompts carrying at least one.
+/**
+ * The newest answer for each prompt on each engine, across every run
+ * (0.80.0). A campaign run on ChatGPT on Monday and on Gemini on Tuesday is
+ * one picture: ChatGPT's answers from Monday beside Gemini's from Tuesday.
+ * Before, the board opened on the latest run alone, so running engines one
+ * at a time made each run hide the one before ("I end up losing my ChatGPT
+ * data"), and "all runs" counted a prompt asked twice twice.
+ */
+export function latestAnswers(records) {
+  const best = new Map();
+  for (const r of records || []) {
+    const g = r.geo || {};
+    const key = `${g.promptId || String(r.userPrompt || "").trim().toLowerCase()}|${r.platform}`;
+    const cur = best.get(key);
+    if (!cur || (r.capturedAt || 0) > (cur.capturedAt || 0)) best.set(key, r);
+  }
+  return [...best.values()];
+}
+
 export function selectTracked(records, { profileId, engines, tags, tagMode = "any", since, until, runId, allCaptures = false } = {}) {
   const picked = (records || []).filter((r) => {
     if (!isTracked(r)) return false;

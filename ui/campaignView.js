@@ -651,6 +651,78 @@ function signalsSec(runHistory) {
     card("", h("h4", { className: "cv-h4" }, "Data quality"), h("div", { className: "cv-scroll" }, qt)), runHistory ? card("", runHistory) : "");
 }
 
+/* ---------- Run vs run (0.80.0) ----------
+ *
+ * Asked: "if I were to run same campaign, same prompt on same LLM, I should
+ * also be able to see the difference between them". Two runs side by side,
+ * over the prompt × engine pairs both answered (lib/runCompare.js). The runs
+ * and the comparison come from the panel (D.runs, D.compareRuns), which asks
+ * the worker; this tab draws them.
+ */
+const posText = (p) => (p == null ? "—" : p === "named" ? "named" : `#${p}`);
+function runsSec() {
+  const runs = (D.runs || []).filter((r) => r.hasAnswers);
+  if (runs.length < 2) return section("cv-runs", "Run vs run", "", card("", empty("Run this campaign again to compare one run with another. Until then there is one run to show.")));
+  // Newest first; by default the newest against the one before it.
+  if (!S.runB || !runs.some((r) => r.id === S.runB)) S.runB = runs[0].id;
+  if (!S.runA || !runs.some((r) => r.id === S.runA) || S.runA === S.runB) S.runA = (runs.find((r) => r.id !== S.runB) || {}).id;
+  const pick = (which, label) => {
+    const sel = h("select", { className: "filter", id: `cvRun${which}`, "aria-label": label });
+    runs.forEach((r) => sel.append(h("option", { value: r.id }, r.label)));
+    sel.value = which === "A" ? S.runA : S.runB;
+    sel.onchange = () => { S[`run${which}`] = sel.value; replace("cv-runs", runsSec); };
+    return sel;
+  };
+  const body = h("div", { className: "cv-stack gap", id: "cvRunsBody" }, h("div", { className: "cv-muted" }, "Comparing…"));
+  const head = card("cv-runpick", h("div", { className: "cv-runpick-row" }, h("span", { className: "cv-muted" }, "Earlier"), pick("A", "Earlier run"), h("span", { "aria-hidden": "true" }, "→"), h("span", { className: "cv-muted" }, "Later"), pick("B", "Later run")));
+  const want = `${S.runA}|${S.runB}`;
+  Promise.resolve(D.compareRuns ? D.compareRuns(S.runA, S.runB) : null).then((c) => {
+    if (`${S.runA}|${S.runB}` !== want || !body.isConnected) return;
+    body.replaceChildren();
+    if (!c || !c.compared) { body.append(card("", empty("These two runs have no prompt answered on the same engine in both, so there is nothing to set side by side."))); return; }
+    body.append(h("div", { className: "cv-tiles" },
+      tile("Compared", String(c.compared), "prompt × engine answered in both"),
+      tile("Better for you", String(c.summary.better), "placed higher, or newly named"),
+      tile("Worse for you", String(c.summary.worse), "placed lower, or dropped"),
+      tile("First place changed", String(c.summary.firstChanged), "a different brand named first")));
+    const bt = h("div", { className: "cv-table cv-runbrands", role: "table", "aria-label": "Brands in each run" });
+    bt.append(h("div", { className: "cv-tr cv-th", role: "row" }, ...["Brand", "Visibility", "", "Change", "Avg place", ""].map((x) => h("span", { role: "columnheader" }, x))));
+    c.brands.forEach((b) => {
+      const sign = b.dVisibility > 0 ? "up" : b.dVisibility < 0 ? "down" : "";
+      bt.append(h("div", { className: "cv-tr", role: "row" },
+        h("span", { role: "cell", className: "cv-who" }, brandMark(b.name, "s"), b.name, b.isOwn ? youBadge() : ""),
+        h("span", { role: "cell", className: "cv-num" }, `${b.a.visibility}% → ${b.b.visibility}%`),
+        h("span", { role: "cell" }, bar(b.b.visibility, b.isOwn ? "var(--you)" : "")),
+        h("span", { role: "cell", className: `cv-num cv-delta ${sign}` }, `${b.dVisibility > 0 ? "+" : ""}${b.dVisibility} pts`),
+        h("span", { role: "cell", className: "cv-num" }, `${b.a.avgPos ?? "—"} → ${b.b.avgPos ?? "—"}`),
+        h("span", { role: "cell", className: "cv-muted" }, b.dPos == null ? "" : b.dPos < 0 ? "higher" : b.dPos > 0 ? "lower" : "same")));
+    });
+    body.append(card("", h("h4", { className: "cv-h4" }, "Brands", h("span", { className: "cv-sub" }, "on the prompts both runs answered")), h("div", { className: "cv-scroll" }, bt)));
+    const filt = S.runRows || "changed";
+    const rows = c.rows.filter((r) => filt === "all" || r.change !== "same" || r.firstChanged || r.gained.length || r.lost.length);
+    const pg = paged("runrows", rows, 12, () => replace("cv-runs", runsSec));
+    const pt = h("div", { className: "cv-table cv-runrows", role: "table", "aria-label": "Prompts in each run" });
+    pt.append(h("div", { className: "cv-tr cv-th", role: "row" }, ...["Prompt", "Engine", "You", "Named first", "Came in / dropped"].map((x) => h("span", { role: "columnheader" }, x))));
+    pg.rows.forEach((r) => pt.append(h("div", { className: `cv-tr cv-run-${r.change}`, role: "row" },
+      h("span", { role: "cell" }, promptLink(r.prompt, r.b.captureId)),
+      h("span", { role: "cell", className: "cv-who" }, engineMark(r.engine, "s"), ENG[r.engine] || r.engine),
+      h("span", { role: "cell", className: "cv-num" }, `${posText(r.a.pos)} → ${posText(r.b.pos)}`),
+      h("span", { role: "cell" }, r.firstChanged ? `${r.a.first || "—"} → ${r.b.first || "—"}` : (r.b.first || "—")),
+      h("span", { role: "cell" }, ...r.gained.map((n) => h("span", { className: "cv-badge good" }, `+ ${n}`)), ...r.lost.map((n) => h("span", { className: "cv-badge bad" }, `− ${n}`))))));
+    body.append(card("", h("div", { className: "cv-head-row" }, h("h4", { className: "cv-h4" }, "Prompt by prompt"),
+      chips("Show", [["changed", "What changed"], ["all", "All"]], filt, (id) => { S.runRows = id; S.pg.runrows = 0; replace("cv-runs", runsSec); })),
+      rows.length ? h("div", { className: "cv-scroll" }, pt) : empty("Nothing changed between these runs."), pg.pager));
+    if (c.sites.length) {
+      const st = h("div", { className: "cv-table cv-runsites", role: "table", "aria-label": "Sites cited in each run" });
+      st.append(h("div", { className: "cv-tr cv-th", role: "row" }, ...["Site", "Earlier", "Later", "Change"].map((x) => h("span", { role: "columnheader" }, x))));
+      c.sites.slice(0, 12).forEach((x) => st.append(h("div", { className: "cv-tr", role: "row" }, h("span", { role: "cell" }, x.domain), h("span", { role: "cell", className: "cv-num" }, String(x.a)), h("span", { role: "cell", className: "cv-num" }, String(x.b)), h("span", { role: "cell", className: `cv-num cv-delta ${x.d > 0 ? "up" : x.d < 0 ? "down" : ""}` }, `${x.d > 0 ? "+" : ""}${x.d}`))));
+      body.append(card("", h("h4", { className: "cv-h4" }, "Sites cited", h("span", { className: "cv-sub" }, "answers citing each")), h("div", { className: "cv-scroll" }, st)));
+    }
+    if (c.onlyA || c.onlyB) body.append(h("p", { className: "cv-muted small" }, `Left out: ${c.onlyA} answer${c.onlyA === 1 ? "" : "s"} only in the earlier run, ${c.onlyB} only in the later one (another engine or prompt).`));
+  }).catch(() => { body.replaceChildren(card("", empty("Couldn't compare these runs."))); });
+  return section("cv-runs", "Run vs run", "the same prompts on the same engine, two runs side by side", head, body);
+}
+
 /* ---------- the board ---------- */
 
 // One section at a time behind a row of tabs (0.67.0). Asked for: "why is
@@ -658,11 +730,11 @@ function signalsSec(runHistory) {
 // section links had sat in the app bar, where they wrapped.
 export const CV_SECTIONS = [
   ["cv-overview", "Overview"], ["cv-brands", "Brands"], ["cv-compare", "Compare"], ["cv-sources", "Sources"], ["cv-citations", "Citations"],
-  ["cv-prompts", "Prompts"], ["cv-products", "Products & topics"], ["cv-searches", "Searches & ads"], ["cv-signals", "Signals & data"],
+  ["cv-prompts", "Prompts"], ["cv-runs", "Run vs run"], ["cv-products", "Products & topics"], ["cv-searches", "Searches & ads"], ["cv-signals", "Signals & data"],
 ];
 const SECTION_FN = {
   "cv-overview": () => overviewSec(), "cv-brands": () => brandsSec(), "cv-compare": () => compareSec(), "cv-sources": () => sourcesSec(SRC_DRILL),
-  "cv-citations": () => citationsSec(), "cv-prompts": () => promptsSec(), "cv-products": () => productsSec(), "cv-searches": () => searchesSec(), "cv-signals": () => signalsSec(RUN_HISTORY),
+  "cv-citations": () => citationsSec(), "cv-prompts": () => promptsSec(), "cv-products": () => productsSec(), "cv-searches": () => searchesSec(), "cv-signals": () => signalsSec(RUN_HISTORY), "cv-runs": () => runsSec(),
 };
 /** The count shown on each tab. */
 export function sectionCounts(v) {
