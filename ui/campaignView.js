@@ -665,7 +665,14 @@ function runsSec() {
   if (runs.length < 2) return section("cv-runs", "Run vs run", "", card("", empty("Run this campaign again to compare one run with another. Until then there is one run to show.")));
   // Newest first; by default the newest against the one before it.
   if (!S.runB || !runs.some((r) => r.id === S.runB)) S.runB = runs[0].id;
-  if (!S.runA || !runs.some((r) => r.id === S.runA) || S.runA === S.runB) S.runA = (runs.find((r) => r.id !== S.runB) || {}).id;
+  // The earlier run defaults to the last one before it on the same engines:
+  // a ChatGPT run set against a Gemini-only run has nothing to compare.
+  if (!S.runA || !runs.some((r) => r.id === S.runA) || S.runA === S.runB) {
+    const b = runs.find((r) => r.id === S.runB) || {};
+    const older = runs.slice(runs.indexOf(b) + 1);
+    const same = older.find((r) => (r.engines || []).some((e) => (b.engines || []).includes(e)));
+    S.runA = (same || older[0] || runs.find((r) => r.id !== S.runB) || {}).id;
+  }
   const pick = (which, label) => {
     const sel = h("select", { className: "filter", id: `cvRun${which}`, "aria-label": label });
     runs.forEach((r) => sel.append(h("option", { value: r.id }, r.label)));

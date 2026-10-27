@@ -215,12 +215,14 @@ try {
     // Analyze: open a capture.
     await tab.evaluate(() => document.querySelector('[data-tab="analyze"]')?.click());
     await tab.waitForTimeout(1500);
-    const hasAt = await tab.evaluate(() => !!document.querySelector("#atHandoff"));
-    check("Analyze has Continue in…", hasAt);
-    await tab.click("#atHandoff");
-    const menu = await tab.evaluate(() => [...document.querySelectorAll(".ho-wrap:has(#atHandoff) .ho-item")].map((b) => b.dataset.engine || b.dataset.act));
+    // 0.80.0: one share icon in the app bar sends what's on screen; the
+    // pages have no button of their own any more.
+    const hasAt = await tab.evaluate(() => { const w = document.getElementById("appShareWrap"); return !!w && !w.hidden && !!document.querySelector("#appShare svg") && !document.querySelector("#analyze .ho-btn"); });
+    check("Analyze shares through the app bar's share icon, not a button of its own", hasAt);
+    await tab.click("#appShare");
+    const menu = await tab.evaluate(() => [...document.querySelectorAll(".ho-wrap:has(#appShare) .ho-item")].map((b) => b.dataset.engine || b.dataset.act));
     check("the menu: five AIs, Copy, Download", JSON.stringify(menu) === JSON.stringify(["chatgpt", "claude", "gemini", "perplexity", "grok", "copy", "download"]), menu.join(","));
-    await tab.evaluate(() => document.querySelector('.ho-wrap:has(#atHandoff) .ho-item[data-engine="perplexity"]').click());
+    await tab.evaluate(() => document.querySelector('.ho-wrap:has(#appShare) .ho-item[data-engine="perplexity"]').click());
     await tab.waitForSelector("#hoText", { timeout: 5000 }).catch(() => {});
     await tab.waitForTimeout(500);
     const pv = await tab.evaluate(() => ({ text: document.querySelector("#hoText")?.value || "", size: document.querySelector("#hoSize")?.textContent || "", engine: document.querySelector("#hoEngine")?.value }));
@@ -248,23 +250,23 @@ try {
     // The clipboard is read back through a stand-in: reading it for real
     // asks a permission nobody can answer here.
     await tab.evaluate(() => { window.__clip = ""; navigator.clipboard.writeText = async (t) => { window.__clip = t; }; });
-    await tab.click("#atHandoff");
-    await tab.evaluate(() => document.querySelector('.ho-wrap:has(#atHandoff) .ho-item[data-act="copy"]').click());
+    await tab.click("#appShare");
+    await tab.evaluate(() => document.querySelector('.ho-wrap:has(#appShare) .ho-item[data-act="copy"]').click());
     await tab.waitForTimeout(600);
     const clip = await tab.evaluate(() => window.__clip);
     check("Copy for any AI puts the pack on the clipboard", /CitoSkeleton/.test(clip) && clip.length > 200, clip.slice(0, 80));
-    await tab.click("#atHandoff");
+    await tab.click("#appShare");
     const dl = tab.waitForEvent("download", { timeout: 5000 }).catch(() => null);
-    await tab.evaluate(() => document.querySelector('.ho-wrap:has(#atHandoff) .ho-item[data-act="download"]').click());
+    await tab.evaluate(() => document.querySelector('.ho-wrap:has(#appShare) .ho-item[data-act="download"]').click());
     const d = await dl;
     check("Download as .md", d && /\.md$/.test(d.suggestedFilename()), d && d.suggestedFilename());
 
     // Campaigns.
     await tab.evaluate(() => document.querySelector('[data-tab="loader"]')?.click());
     await tab.waitForTimeout(2500);
-    check("the campaign board has Continue in…", await tab.evaluate(() => !!document.querySelector("#cpHandoff")));
-    await tab.click("#cpHandoff");
-    await tab.evaluate(() => document.querySelector('.ho-wrap:has(#cpHandoff) .ho-item[data-engine="gemini"]').click());
+    check("on the campaign page, the same icon shares the campaign", await tab.evaluate(() => !document.getElementById("appShareWrap").hidden && !document.querySelector("#loader .ho-btn")));
+    await tab.click("#appShare");
+    await tab.evaluate(() => document.querySelector('.ho-wrap:has(#appShare) .ho-item[data-engine="gemini"]').click());
     await tab.waitForSelector("#hoText", { timeout: 5000 }).catch(() => {});
     await tab.waitForTimeout(800);
     const cp = await tab.evaluate(() => document.querySelector("#hoText")?.value || "");

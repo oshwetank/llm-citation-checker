@@ -2074,12 +2074,21 @@
         refs.push({ url: href, title: (a.innerText || a.getAttribute("aria-label") || "").trim().slice(0, 300) || null });
         if (refs.length >= 80) break;
       }
+      // Its pictures, as the stream's own image component (0.80.0).
+      const pics = [];
+      for (const im of bot.querySelectorAll("img[src]")) {
+        const src = im.currentSrc || im.src || "";
+        if (!/^https?:/i.test(src) || (im.naturalWidth && im.naturalWidth < 48) || pics.some((p) => p.thumbnail_url === src)) continue;
+        const a = im.closest("a[href]");
+        pics.push({ thumbnail_url: src, url: a && /^https?:/i.test(a.href) ? a.href : null, title: (im.alt || "").slice(0, 200) || null });
+        if (pics.length >= 30) break;
+      }
       const conversationId = (location.pathname.match(/\/c\/([\w-]+)/) || [])[1] || null;
       const msgId = bot.getAttribute("data-message-id") || `page-${now}`;
       const ev = (detail) => JSON.stringify({ version: 2, type: "conversation-source", harvestSource: "dom", detail: { streamType: "conversation", kind: "message", conversationId, ...detail } });
       const raw = [
         ev({ role: "user", messageId: u.getAttribute("data-message-id") || `page-u-${now}`, markdown: prompt }),
-        ev({ messageId: msgId, revision: 1, status: "resolved", markdown: answer, references: refs }),
+        ev({ messageId: msgId, revision: 1, status: "resolved", markdown: answer, references: refs, ...(pics.length ? { components: { pics: { componentName: "AsyncImage", state: { images: pics } } } } : {}) }),
       ].join("\n");
       tellWorker({
         type: "raw-conversation",

@@ -56,9 +56,22 @@ function download(name, text) {
 /**
  * @param {{getParts: () => Promise<{title, text}[]>|{title, text}[], task?: string, question?: () => string, label?: string, id?: string, file?: string}} o
  */
+function shareIcon() {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("width", "15"); svg.setAttribute("height", "15"); svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none"); svg.setAttribute("stroke", "currentColor"); svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round"); svg.setAttribute("stroke-linejoin", "round"); svg.setAttribute("aria-hidden", "true");
+  for (const d of ["M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7", "M16 6l-4-4-4 4", "M12 2v13"]) {
+    const p = document.createElementNS(ns, "path"); p.setAttribute("d", d); svg.append(p);
+  }
+  return svg;
+}
+
 export function handoffButton(o) {
   const wrap = h("span", { className: "ho-wrap" });
-  const btn = h("button", { type: "button", className: "btn sm ho-btn", id: o.id || null, "aria-haspopup": "menu", "aria-expanded": "false", "data-tip": tr("Take this data, your question and a request to another AI in one click") }, o.label || "Continue in…");
+  // `icon` (0.80.0): the app bar's share button, an icon rather than a word.
+  const btn = h("button", { type: "button", className: o.icon ? "ho-btn ho-icon" : "btn sm ho-btn", id: o.id || null, "aria-haspopup": "menu", "aria-expanded": "false", "aria-label": o.icon ? tr("Share with another AI") : null, "data-tip": tr("Take this data, your question and a request to another AI in one click") }, o.icon ? shareIcon() : (o.label || "Continue in…"));
   const menu = h("div", { className: "ho-menu", role: "menu", hidden: true });
   const close = () => { menu.hidden = true; btn.setAttribute("aria-expanded", "false"); };
   const pack = async (engine, task, question) => buildPack({ engine, task, question, parts: await o.getParts() });
@@ -80,7 +93,7 @@ export function handoffButton(o) {
   const copy = h("button", { type: "button", role: "menuitem", className: "ho-item", "data-act": "copy" }, "Copy for any AI");
   copy.onclick = async () => { close(); const p = await pack("claude", o.task || "explain", (o.question && o.question()) || ""); try { await navigator.clipboard.writeText(p.text); copy.textContent = tr("Copied"); } catch (_) { openPreview(o, "claude", {}); } };
   const dl = h("button", { type: "button", role: "menuitem", className: "ho-item", "data-act": "download" }, "Download as .md");
-  dl.onclick = async () => { close(); const p = await pack("claude", o.task || "explain", (o.question && o.question()) || ""); download(o.file || "citoskeleton-context.md", p.text); };
+  dl.onclick = async () => { close(); const p = await pack("claude", o.task || "explain", (o.question && o.question()) || ""); download((typeof o.file === "function" ? o.file() : o.file) || "citoskeleton-context.md", p.text); };
   menu.append(copy, dl);
   btn.onclick = (ev) => { ev.stopPropagation(); const open = menu.hidden; menu.hidden = !open; btn.setAttribute("aria-expanded", String(open)); };
   document.addEventListener("click", (ev) => { if (!wrap.contains(ev.target)) close(); });

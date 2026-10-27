@@ -943,7 +943,9 @@ const REPAIR_KEY = "lcfcRepaired0621";
 const REPAIR_KEY_0781 = "lcfcRepaired0781";
 // 0.79.0: signed-out ChatGPT answers keep their lines (adaptSource), so their
 // lists and headings reach brand detection: read once more on update.
-const REPAIR_KEY_0790 = "lcfcRepaired0790";
+// 0.80.0: and once more, for their products, places and pictures, on
+// installs that already ran the 0.79.0 pass.
+const REPAIR_KEY_0790 = "lcfcRepaired0800";
 async function repairOnce() {
   const got = await chrome.storage.local.get([REPAIR_KEY, REPAIR_KEY_0781, REPAIR_KEY_0790]);
   if (!got || !got[REPAIR_KEY]) {
@@ -3891,7 +3893,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const prompts = (await db.getAll("trackedPrompts")).filter((p) => p.profileId === msg.profileId).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
           const m = missingTurns(run, prompts, await db.getAll("derived"));
           const byEngine = Object.fromEntries(Object.entries(m.only).map(([e, l]) => [e, l.length]));
-          sendResponse({ ok: true, runId: run.id, count: m.count, byEngine, startedAt: run.startedAt || null });
+          sendResponse({ ok: true, runId: run.id, count: m.count, byEngine, startedAt: run.startedAt || null, status: run.status || null });
           break;
         }
         case "geo-run-start": {

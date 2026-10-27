@@ -93,6 +93,10 @@ export function readConversationSource(raw) {
   const texts = []; // { messageId, revision, markdown, html, order }
   const refs = new Map(); // url -> { url, title, snippet, cited }
   const queries = [];
+  // The answer's own cards (0.80.0): products, local businesses and pictures,
+  // from its generative-UI components. Signed out, these were all dropped,
+  // so a campaign's answers showed no products, places or images.
+  const products = new Map(), places = new Map(), images = new Map();
   let conversationId = null, prompt = null, status = null, order = 0;
   const addRef = (url, title, snippet, cited) => {
     if (!isUrl(url)) return;
@@ -105,6 +109,20 @@ export function readConversationSource(raw) {
   };
   for (const ev of events) {
     walk(ev, (o) => {
+      if (o.componentName === "Entity" && isObj(o.state) && typeof o.state.value === "string") {
+        const st = o.state, pay = isObj(st.action_payload) ? st.action_payload : {};
+        const extra = isObj(pay.extraParams) ? pay.extraParams : {};
+        const name = st.value.trim();
+        if (name && pay.category === "product" && !products.has(name)) products.set(name, { id: name, name, price: null, merchant: null, image: isUrl(st.image_url) ? st.image_url : null, note: extra.disambiguation || null, renderAs: "inline" });
+        if (name && /^(?:local_)?business$/.test(pay.category || "") && !places.has(name)) places.set(name, { name, address: extra.location || null, mapsUrl: isUrl(st.directions_url) ? st.directions_url : null, image: isUrl(st.image_url) ? st.image_url : null, category: null });
+      }
+      if (o.componentName === "AsyncImage" && isObj(o.state) && Array.isArray(o.state.images)) {
+        for (const im of o.state.images) {
+          const url = isObj(im) && (im.thumbnail_url || im.content_url);
+          if (!isUrl(url) || images.has(url)) continue;
+          images.set(url, { url, sourceUrl: isUrl(im.url) ? im.url : null, title: typeof im.title === "string" ? im.title : null });
+        }
+      }
       if (typeof o.conversationId === "string" && !conversationId) conversationId = o.conversationId;
       if (typeof o.status === "string") status = o.status;
       const role = o.role || (isObj(o.author) && o.author.role);
@@ -146,5 +164,5 @@ export function readConversationSource(raw) {
   }
   answer = answer.trim();
   if (!answer) return null;
-  return { answer, sources: [...refs.values()], queries, conversationId, messageId: lastId, prompt, status };
+  return { answer, sources: [...refs.values()], queries, conversationId, messageId: lastId, prompt, status, products: [...products.values()], places: [...places.values()], images: [...images.values()].slice(0, 60) };
 }

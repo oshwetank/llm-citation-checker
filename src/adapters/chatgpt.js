@@ -808,8 +808,9 @@ async function adaptSource(rawCapture, opts, diag) {
   // The signed-out page posts a form whose "prompt" field is the question.
   let userPrompt = (r && r.prompt) || promptOfSourceRequest(rawCapture.reqBody) || extractPrompt(rawCapture.reqBody);
   if (!userPrompt) { try { userPrompt = new URL(rawCapture.pageUrl).searchParams.get("q") || null; } catch (_) { /* no address */ } }
-  const { brands: brandMentions, entities: baseEntities } = await detectBrandsForCapture(answerText, [], opts.tracked, sources, [], userPrompt);
-  const entities = extractEntities(baseEntities, [], brandMentions, sources, []);
+  const products = (r && r.products) || [], places = (r && r.places) || [], images = (r && r.images) || [];
+  const { brands: brandMentions, entities: baseEntities } = await detectBrandsForCapture(answerText, products, opts.tracked, sources, places, userPrompt);
+  const entities = extractEntities(baseEntities, products, brandMentions, sources, places);
   if (pageCopy) diag.notes.push("read off the page: the network stream wasn't seen, so searches and pages read aren't known");
   else if (r && !r.queries.length) diag.notes.push("signed-out stream: no searches named in it");
   return makeRecord({
@@ -818,7 +819,7 @@ async function adaptSource(rawCapture, opts, diag) {
     conversationId: r ? r.conversationId : null,
     ...(r && r.messageId ? { turnId: r.messageId } : {}),
     userPrompt, searched: sources.length > 0 || fanout.search.length > 0, fanout, sources,
-    products: [], places: [], entities, images: [], brandMentions,
+    products, places, entities, images, brandMentions,
     answerChars: answerText.length, answerText,
     // A copy read off the page (0.79.0, content-iso chatgptPageCopy) has the
     // same shape but says nothing about sign-in, searches or what was read.

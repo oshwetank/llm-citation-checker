@@ -752,6 +752,35 @@ function withScrollPreserved(renderFn) {
   if (scroller && scroller.scrollTop !== y) scroller.scrollTop = y;
 }
 
+/* The share icon (0.80.0). Asked: "Continue in… could have been a share
+ * icon at the very top corner", not a button on Analyze, the campaign page
+ * and the Dashboard. One icon in the app bar sends what the page in view
+ * holds — the answer, the campaign, the prompts picked — to another AI; Ask
+ * keeps its own "Continue in…". Each page says what it would share. */
+const SHARE_BY_TAB = {};
+function setShare(tab, src) { SHARE_BY_TAB[tab] = src; syncShareIcon(); }
+function activeTabName() { return (document.querySelector(".panel.active") || {}).id || ""; }
+function syncShareIcon() {
+  const wrap = document.getElementById("appShareWrap");
+  if (wrap) wrap.hidden = !SHARE_BY_TAB[activeTabName()];
+}
+function mountShareIcon() {
+  const bar = document.querySelector(".header-actions");
+  if (!bar || document.getElementById("appShare")) return;
+  const ho = handoffButton({
+    id: "appShare", icon: true,
+    getParts: async () => { const s = SHARE_BY_TAB[activeTabName()]; return s ? await s.getParts() : []; },
+    file: () => { const s = SHARE_BY_TAB[activeTabName()]; return (s && s.file) || "citoskeleton.md"; },
+  });
+  ho.id = "appShareWrap";
+  bar.prepend(ho);
+  syncShareIcon();
+}
+function dashboardParts(rows, picked) {
+  const list = rows.slice(0, 200).map((r) => `- "${String(r.text || "").slice(0, 300)}"${(r.engines || []).length ? ` — ${r.engines.map(atEngineLabel).join(", ")}` : ""}${r.latestAt ? ` (${new Date(r.latestAt).toISOString().slice(0, 10)})` : ""}`);
+  return [{ title: picked ? `Prompts I picked (${rows.length})` : `Prompts I've asked AI engines (${rows.length}${rows.length > 200 ? ", first 200" : ""})`, text: list.join("\n") }];
+}
+
 function showTab(name) {
   const scroller = activeScroller();
   const current = document.querySelector(".panel.active")?.id;
@@ -787,6 +816,7 @@ function showTab(name) {
   if (name === "about") aboutEnter();
   if (name === "ask") renderAsk(document.getElementById("ask"), { openCapture, openSettings: () => { showTab("about"); abGo("settings"); setTimeout(() => document.getElementById("setAi")?.scrollIntoView({ block: "start" }), 50); } });
   if (name === "analyze") abNoteAnalyzed(ANALYZE_SHOWN);
+  syncShareIcon();
 
   // Switching tabs changes the document's total scrollable height (each
   // tab's content is a different length), so the browser clamps whatever
@@ -2405,9 +2435,10 @@ function atHeaderTools(rec) {
   const sw = el("button", { className: `at-detail-switch${on ? " on" : ""}`, type: "button", role: "switch", "aria-checked": String(on), "data-detail-switch": "", title: "Expert adds raw ids, listing feeds, a grounding figure and the raw payload" },
     el("span", { className: "at-switch-track", "aria-hidden": "true" }, el("span", { className: "at-switch-dot" })), el("span", { className: "at-switch-label" }, "Expert"));
   sw.onclick = () => setDetail(document.documentElement.getAttribute("data-detail") === "expert" ? "simple" : "expert");
-  // This answer, a task and a question, to another AI (0.76.0).
-  const ho = handoffButton({ id: "atHandoff", getParts: async () => answerParts(await hydrate(rec.captureId) || rec, { ownBrand: (ownBrandFor(rec, GEO_PROFILES) || {}).name || null }), file: "citoskeleton-answer.md" });
-  const nodes = [ho, sw];
+  // This answer, a task and a question, to another AI: through the app
+  // bar's share icon (0.80.0), not a button of its own.
+  setShare("analyze", { getParts: async () => answerParts(await hydrate(rec.captureId) || rec, { ownBrand: (ownBrandFor(rec, GEO_PROFILES) || {}).name || null }), file: "citoskeleton-answer.md" });
+  const nodes = [sw];
   const idx = RECORDS.findIndex((r) => r.captureId === rec.captureId);
   if (idx >= 0 && RECORDS.length > 1) {
     const go = (j) => { const t = RECORDS[j]; if (t) { atResetState(); openCapture(t.captureId); } };
@@ -6039,6 +6070,8 @@ function renderDashboardImpl() {
   list.append(head);
 
   const selRows = v.list.filter((r) => dbSelected.has(r.key));
+  // The share icon sends the prompts picked, or the list as filtered (0.80.0).
+  setShare("dashboard", { getParts: () => dashboardParts(selRows.length ? selRows : v.list, !!selRows.length), file: "citoskeleton-prompts.md" });
   if (!popup && selRows.length) {
     const bar = el("div", { className: "db-selbar", role: "toolbar", "aria-label": "Selected prompts" });
     const one = selRows.length === 1 && selRows[0].engines.length > 1;
@@ -6928,7 +6961,7 @@ async function renderCampaignBoard(box, profile) {
   // picked here.
   controls.append(
     el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Run"), runSel),
-    el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Viewing"), picker),
+    el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Brand"), picker),
     el("div", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Engines"), engine));
   if (!wb.isConnected) controls.append(wb);
   head.append(controls);
@@ -7054,7 +7087,7 @@ async function renderCampaignBoard(box, profile) {
   // and tags as the board.
   const runsAscAll = [...r.runs].sort((a, c) => (a.startedAt || 0) - (c.startedAt || 0));
   const runsForCompare = [...r.runs].filter((x) => x.hasAnswers).sort((a, c) => (c.startedAt || 0) - (a.startedAt || 0)).map((x) => ({
-    id: x.id, hasAnswers: true,
+    id: x.id, hasAnswers: true, engines: x.engines || [],
     label: `Run ${runsAscAll.findIndex((y) => y.id === x.id) + 1} · ${new Date(x.startedAt).toLocaleDateString(undefined, { day: "numeric", month: "short" })}${(x.engines || []).length ? ` · ${x.engines.map(atEngineLabel).join(", ")}` : ""}`,
   }));
   renderCampaignView(box, r.view, {
@@ -8596,6 +8629,7 @@ function renderCampaignHead(profile) {
         return;
       }
       if (!r.ok) { showToast(r.error, "error"); return; }
+      if (r.queued) showToast(`Queued (${r.position === 1 ? "next" : `#${r.position}`}): it starts by itself when the run going now finishes.`);
       loadGeo();
     };
     await attempt(false);
@@ -8607,6 +8641,7 @@ function renderCampaignHead(profile) {
     if (!confirm(`Run signed out?\n\n${vol.submissions} submissions (${vol.prompts} prompts × ${vol.engines} engines) will be sent from a new private window, signed out of every engine, so the answers carry no account history or memory.\n\nGrok needs an account, so it is left out. Other engines may limit how much you can ask signed out.`)) return;
     const r = await send({ type: "geo-run-start", profileId: profile.id, privateWindow: true });
     if (!r || !r.ok) { showToast((r && r.error) || "Couldn't start the run.", "error"); return; }
+    if (r.queued) showToast(`Queued (${r.position === 1 ? "next" : `#${r.position}`}): it starts by itself when the run going now finishes.`);
     if (r.leftOut && r.leftOut.length) showToast("Grok is left out of signed-out runs: it needs a signed-in account.");
     loadGeo();
   });
@@ -8630,14 +8665,36 @@ function renderCampaignHead(profile) {
     const r = await send({ type: "loader-stop" });
     withScrollPreserved(() => renderLoaderStatus(r));
   };
-  // The campaign's findings, a task and a question, to another AI (0.76.0).
-  const ho = handoffButton({ id: "cpHandoff", getParts: async () => { const r = await send({ type: "campaign-insights", profileId: profile.id }); return r && r.ok ? campaignParts(r.insights) : []; }, file: `${String(profile.name || "campaign").replace(/[^\p{L}\p{N}]+/gu, "-")}-citoskeleton.md` });
-  const actions = el("div", { className: "cp-actions" }, edit, exp, ho, runBtn, privBtn, pauseBtn, resumeBtn, stopBtn);
-  if (campaignManageOpen) {
-    const del = el("button", { className: "btn ghost danger cp-btn", type: "button" }, "Delete campaign");
-    del.onclick = trashCampaign(profile);
-    actions.prepend(del);
-  }
+  // The campaign's findings, a task and a question, to another AI: through
+  // the app bar's share icon (0.80.0).
+  setShare("loader", { getParts: async () => { const r = await send({ type: "campaign-insights", profileId: profile.id }); return r && r.ok ? campaignParts(r.insights) : []; }, file: `${String(profile.name || "campaign").replace(/[^\p{L}\p{N}]+/gu, "-")}-citoskeleton.md` });
+  // Fewer buttons (0.80.0, asked: "the 4 to 6 buttons at the top are
+  // creating a lot of confusion"). One Run, with signed out under its arrow;
+  // while a run goes, Pause or Resume and Stop; everything else under ⋯.
+  const menuOf = (btn, items, cls) => {
+    const menu = el("div", { className: "cp-menu", role: "menu", hidden: true }, ...items);
+    const wrap = el("span", { className: `cp-menu-wrap ${cls || ""}` }, btn, menu);
+    const close = () => { menu.hidden = true; btn.setAttribute("aria-expanded", "false"); };
+    btn.setAttribute("aria-haspopup", "menu");
+    btn.setAttribute("aria-expanded", "false");
+    btn.onclick = (ev) => { ev.stopPropagation(); const open = menu.hidden; menu.hidden = !open; btn.setAttribute("aria-expanded", String(open)); };
+    menu.addEventListener("click", () => close());
+    document.addEventListener("click", (ev) => { if (!wrap.contains(ev.target)) close(); });
+    items.forEach((b) => b.setAttribute("role", "menuitem"));
+    return wrap;
+  };
+  privBtn.className = "btn ghost cp-btn cp-run-private";
+  privBtn.replaceChildren("Run signed out", el("span", { className: "cp-menu-sub" }, "in a private window, without your accounts"));
+  const caret = el("button", { className: "btn primary cp-btn cp-caret", type: "button", "aria-label": "More ways to run", title: "Run signed out" }, "▾");
+  const runSplit = el("span", { className: "cp-split cp-idle" }, runBtn, menuOf(caret, [privBtn], "cp-run-menu"));
+  edit.classList.remove("btn", "ghost");
+  exp.classList.remove("btn", "ghost");
+  const items = [edit, exp];
+  const del = el("button", { className: "cp-btn danger cp-del", type: "button" }, "Delete campaign");
+  del.onclick = trashCampaign(profile);
+  items.push(del);
+  const more = el("button", { className: "btn ghost cp-btn cp-more", type: "button", "aria-label": "More", title: "Edit setup, export, delete" }, "⋯");
+  const actions = el("div", { className: "cp-actions" }, runSplit, pauseBtn, resumeBtn, stopBtn, menuOf(more, items, "cp-more-menu"));
   head.append(el("div", { className: "cp-title" },
     el("div", { className: "cp-name" }, el("h1", { id: "cpName" }, profile.name || "Campaign"), el("span", { className: "cp-sub" }, sub)),
     actions));
@@ -8653,9 +8710,15 @@ function renderCampaignHead(profile) {
   if (!cpLive.live) send({ type: "geo-run-missing", profileId: profile.id }).then((m) => {
     if (!m || !m.ok || !m.count || cpLive.live) return;
     const parts = Object.entries(m.byEngine || {}).filter(([, n]) => n).map(([e, n]) => `${n} on ${atEngineLabel(e)}`);
-    const btn = el("button", { className: "btn sm primary", type: "button", id: "cpRetryMissing" }, `Retry ${m.count} missing`);
+    // A run that was stopped is carried on from where it stopped (0.80.0,
+    // asked: "if I stop a campaign run and want to restart it, I can't"):
+    // the same call as Retry missing, named for what it does.
+    const stopped = m.status === "stopped";
+    const btn = el("button", { className: "btn sm primary", type: "button", id: "cpRetryMissing" }, stopped ? `Continue this run · ${m.count} left` : `Retry ${m.count} missing`);
     btn.onclick = withBusy(btn, "Starting…", async () => {
-      if (!confirm(`Ask the ${m.count} missing prompt${m.count === 1 ? "" : "s"} again?\n\n${parts.join(", ")}. Only those are sent, each to the engine that has no answer for it, and the answers are added to the same run.`)) return;
+      if (!confirm(stopped
+        ? `Carry on the run you stopped?\n\n${m.count} prompt${m.count === 1 ? "" : "s"} left: ${parts.join(", ")}. Only those are sent, and the answers are added to the same run.`
+        : `Ask the ${m.count} missing prompt${m.count === 1 ? "" : "s"} again?\n\n${parts.join(", ")}. Only those are sent, each to the engine that has no answer for it, and the answers are added to the same run.`)) return;
       // The same sign-in check as Run, and the same way past it.
       const attempt = async (skipAuthCheck) => {
         const r = await send({ type: "geo-run-start", profileId: profile.id, retryRunId: m.runId, skipAuthCheck });
@@ -8668,8 +8731,20 @@ function renderCampaignHead(profile) {
       };
       await attempt(false);
     });
-    missing.replaceChildren(el("span", {}, el("b", {}, `${m.count} answer${m.count === 1 ? " is" : "s are"} missing from the last run`), ` · ${parts.join(", ")}`), btn);
+    missing.replaceChildren(el("span", {}, el("b", {}, stopped ? `The last run was stopped with ${m.count} answer${m.count === 1 ? "" : "s"} to go` : `${m.count} answer${m.count === 1 ? " is" : "s are"} missing from the last run`), ` · ${parts.join(", ")}`), btn);
     missing.hidden = false;
+  });
+  // Waiting its turn behind another campaign's run (0.80.0).
+  const queued = el("div", { className: "cp-queued", id: "cpQueued", hidden: true });
+  head.append(queued);
+  send({ type: "run-queue" }).then((q) => {
+    const i = q && q.ok ? (q.queue || []).findIndex((x) => x.profileId === profile.id) : -1;
+    if (i < 0) return;
+    const running = GEO_PROFILES.find((p) => p.id === q.runningProfileId);
+    const cancel = el("button", { className: "btn sm ghost", type: "button" }, "Cancel");
+    cancel.onclick = async () => { await send({ type: "run-queue-remove", profileId: profile.id }); queued.hidden = true; showToast("Taken out of the queue"); };
+    queued.replaceChildren(el("span", {}, el("b", {}, "Queued"), ` · ${i === 0 ? "starts" : `#${i + 1} in line, starts`} when ${running ? `“${running.name}”` : "the run going now"} finishes`), cancel);
+    queued.hidden = false;
   });
   head.append(el("div", { id: "loaderStatus", className: "status-msg" }));
   head.append(el("div", { className: "cp-filters", id: "cpFilters" }));
@@ -11033,6 +11108,7 @@ loadSettings();
 // empty. That reads as "the tool is broken" with zero information to act
 // on. This is the last-resort net for whatever isn't already handled
 // upstream, so at least the failure is visible and includes the real error.
+mountShareIcon();
 load().then(maybeFirstRun).catch((err) => { // also fills the Compare pickers, after projects are known
   console.error("panel load() failed:", err);
   const root = $("#analyze");

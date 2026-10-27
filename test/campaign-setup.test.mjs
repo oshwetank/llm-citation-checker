@@ -246,6 +246,7 @@ try {
   // 0.77.0, asked: "I don't want to open and enable the editing of the
   // campaign". Everything but the brand and website edits in place.
   console.log("\nA locked campaign's setup opens editable, and saves as you go");
+  await page.click("#cpHead .cp-more");
   await page.click('#cpHead button:has-text("Edit setup")');
   await page.waitForTimeout(300);
   check("editable, with no unlock step", await page.evaluate(() => {

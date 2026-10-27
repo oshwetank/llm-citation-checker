@@ -178,7 +178,7 @@ try {
     const h = await page.evaluate(() => {
       const head = document.getElementById("cpHead");
       const cards = [...document.querySelectorAll("#loader > *")].map((x) => x.id || x.className);
-      const btns = head ? [...head.querySelectorAll(".cp-actions button:not(.ho-wrap button)")].filter((b) => getComputedStyle(b).display !== "none").map((b) => b.textContent) : [];
+      const btns = head ? [...head.querySelectorAll(".cp-actions button:not(.ho-wrap button):not(.cp-menu button)")].filter((b) => getComputedStyle(b).display !== "none").map((b) => b.textContent) : [];
       const name = head?.querySelector("h1")?.getBoundingClientRect();
       const acts = head?.querySelector(".cp-actions")?.getBoundingClientRect();
       return {
@@ -196,7 +196,11 @@ try {
     });
     check("the page opens on the campaign's own header", h.first === "cpHead", h.cards.join(" > "));
     check("named, with what it covers", h.name === "Board Test" && /\d+ prompts × 2 engines/.test(h.sub) && /last run/.test(h.sub), `${h.name} — ${h.sub}`);
-    check("Edit setup, Export…, Run again and Run signed out beside the name", h.btns.join("|") === "Edit setup|Export…|Run again|Run signed out" && h.beside, `${h.btns.join("|")} beside=${h.beside}`);
+    // 0.80.0: one Run (signed out under its arrow), everything else under ⋯.
+    check("Run again, its arrow and ⋯ beside the name", h.btns.join("|") === "Run again|▾|⋯" && h.beside, `${h.btns.join("|")} beside=${h.beside}`);
+    const menu = await page.evaluate(() => [...document.querySelectorAll("#cpHead .cp-more-menu .cp-menu button")].map((b) => b.textContent));
+    check("⋯ holds Edit setup, Export… and Delete campaign", menu.join("|") === "Edit setup|Export…|Delete campaign", menu.join("|"));
+    check("the arrow holds Run signed out", await page.evaluate(() => /^Run signed out/.test(document.querySelector("#cpHead .cp-run-menu .cp-menu button")?.textContent || "")));
     check("Pause, Resume and Stop only while a run is going", !h.btns.some((x) => /Pause|Resume|Stop/.test(x)), h.btns.join("|"));
     check("the run, brand and engine filters are in it", h.filters);
     check("no separate summary, run or results card", !h.oldCards);

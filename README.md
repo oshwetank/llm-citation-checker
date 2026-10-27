@@ -12,12 +12,22 @@ of its own**, except, if you turn on **Read the cited pages**, to the pages an a
 and, if you download the **built-in AI**, a one-time download of the model's files from
 Hugging Face. Nothing you capture ever leaves your device: the AI runs on your computer.
 
-> **v0.79.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.80.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **Campaigns that make sense** (0.80.0).
+>   - **Engines run on different days, one view.** Run ChatGPT on Monday and Gemini on Tuesday, and the campaign shows each engine's newest answers together ("Latest answers · every engine"). Before, the board showed only the newest run, so the Gemini run hid the ChatGPT one.
+>   - **Run vs run.** A new tab sets two runs side by side, over the prompts both answered on the same engine. It shows each brand's visibility and place, and the change. Prompt by prompt, it shows where your brand moved, who was named first, and which brands came in or dropped out. It also lists the sites cited in each run.
+>   - **Two campaigns, one after the other.** Starting a campaign while another runs queues it ("Queued · starts when … finishes", with Cancel). It starts by itself when that run finishes or is stopped.
+>   - **Carry on a stopped run.** After Stop, the campaign offers "Continue this run · N left", which asks only what's left and adds the answers to the same run.
+>   - **A calmer header.** One **Run** button, with a ▾ for "Run signed out". While a run goes, Pause or Resume and Stop. Everything else (Edit setup, Export…, Delete) is under **⋯**.
+>   - **Share icon instead of "Continue in…" everywhere.** One share icon at the top right sends what's on screen to another AI: the answer in Analyze, the campaign, or the prompts picked on the Dashboard. Ask keeps its own "Continue in…".
+>   - **Brand on every tab.** The campaign's brand picker (now labelled "Brand") points every tab, including Run vs run, at the brand you pick.
+>   - **Pictures, places and products in signed-out answers.** ChatGPT's own cards in signed-out answers are read now: pictures with the page they came from, local businesses with where they are and directions, and products. On the owner's signed-out captures, 112 of 122 answers now show pictures, where none did. Answers already stored are read again once. Answers read off the page keep their pictures too.
+>   - **The welcome guide shows once.** It used to come back every time if it was closed partway. The extension now remembers it was opened.
 > - **ChatGPT fast and reliable next to Gemini** (0.79.0).
 >   - **ChatGPT answers read off the page when the network can't be seen.** Your 0.78.1 report showed ChatGPT pages making no conversation request the extension could see, only a WebSocket per prompt, so ChatGPT turns timed out while Gemini's were captured. When a ChatGPT answer finishes and no network capture arrives, CitoSkeleton now reads it straight off the page: the prompt, the answer with its lists and headings, and its links as cited sources. This works for campaign turns and for questions asked by hand, but never for a conversation you only open. These copies are labelled as page copies, because searches and pages read can't be seen this way. With Debug capture on, ChatGPT's socket messages are kept for a proper reader.
 >   - **Signed-out answers keep their structure.** Their lines were folded into one, which hid lists from brand detection. On the owner's signed-out captures, brands found per answer go from 4.05 to 5.67. Stored answers are read again once, on update.

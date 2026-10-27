@@ -93,5 +93,28 @@ console.log("\nChatGPT's message limit, and the prompt from the form");
   check("a real answer keeps its prompt from the form too", ok.userPrompt === PROMPT && ok.answerText.includes("Lumora") && !usageLimitOf(ok));
 }
 
+// 0.80.0: the answer's own cards. Signed out, ChatGPT's answer carries its
+// products, local businesses and pictures as generative-UI components
+// (Entity, AsyncImage); they were all dropped, so campaign answers showed none.
+console.log("\nproducts, places and pictures");
+{
+  const comp = (componentName, state) => ({ componentName, status: "resolved", state });
+  const cards = [
+    ev({ role: "user", messageId: "u-9", markdown: "linen shirt shops near Pune" }),
+    ev({ messageId: "m-9", revision: 1, status: "resolved", markdown: "**Zento Linen** sells the **Zento Breeze** shirt; try **Kovo Store Pune**.",
+      components: {
+        a: comp("Entity", { value: "Zento Breeze", action_payload: { category: "product", extraParams: { disambiguation: "linen shirt" } }, image_url: null }),
+        b: comp("Entity", { value: "Kovo Store Pune", action_payload: { category: "local_business", extraParams: { location: "Baner, Pune" } }, directions_url: "https://maps.example/kovo-pune", image_url: "https://img.example/kovo.jpg" }),
+        c: comp("Entity", { value: "Zento Linen", action_payload: { category: "brand" } }),
+        d: comp("AsyncImage", { images: [{ url: "https://stylelab.example/zento-breeze", thumbnail_url: "https://img.example/zb-thumb.jpg", content_url: "https://img.example/zb.jpg", title: "Zento Breeze" }] }),
+      } }),
+  ].join("\n");
+  const rec = await adapt({ captureId: "so9", raw: cards, url: "https://chatgpt.com/unauth-mweb/conversation/updates?operationId=op-9", reqBody: "{}", pageUrl: "https://chatgpt.com/", capturedAt: 1 }, { tracked: [{ name: "Zento" }] });
+  check("a product card", rec.products.length === 1 && rec.products[0].name === "Zento Breeze", JSON.stringify(rec.products));
+  check("a place, with where it is and its directions", rec.places.length === 1 && rec.places[0].name === "Kovo Store Pune" && rec.places[0].address === "Baner, Pune" && rec.places[0].mapsUrl === "https://maps.example/kovo-pune", JSON.stringify(rec.places));
+  check("a picture, with the page it came from", rec.images.length === 1 && rec.images[0].url === "https://img.example/zb-thumb.jpg" && rec.images[0].sourceUrl === "https://stylelab.example/zento-breeze", JSON.stringify(rec.images));
+  check("a brand entity is not a product or place", !rec.products.some((p) => p.name === "Zento Linen") && !rec.places.some((p) => p.name === "Zento Linen"));
+}
+
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);

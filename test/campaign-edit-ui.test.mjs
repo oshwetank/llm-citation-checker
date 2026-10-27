@@ -111,6 +111,7 @@ try {
   }
 
   console.log("\n4. prompts: primary and secondary tags");
+  await page.click("#cpHead .cp-more");
   await page.click('#cpHead button:has-text("Edit setup")');
   await page.waitForTimeout(800);
   const head = await page.evaluate(() => [...document.querySelectorAll(".prompt-table th")].map((t) => t.textContent));

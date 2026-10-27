@@ -76,7 +76,7 @@ try {
   const head = () => page.evaluate(() => {
     const h = document.getElementById("cpHead");
     if (!h) return null;
-    const shown = [...h.querySelectorAll(".cp-actions button:not(.ho-wrap button)")].filter((b) => getComputedStyle(b).display !== "none").map((b) => b.textContent);
+    const shown = [...h.querySelectorAll(".cp-actions button:not(.ho-wrap button):not(.cp-menu button)")].filter((b) => getComputedStyle(b).display !== "none").map((b) => b.textContent);
     return { live: h.classList.contains("live"), paused: h.classList.contains("paused"), shown, status: document.getElementById("loaderStatus")?.innerText || "" };
   });
 
@@ -100,7 +100,7 @@ try {
   {
     const h = await head();
     check("the campaign opens on its header", !!h);
-    check("it offers Start run, and no Pause, Resume or Stop", h && h.shown.join("|") === "Edit setup|Export…|Start run|Run signed out" && !h.live, h && h.shown.join("|"));
+    check("it offers Start run, and no Pause, Resume or Stop", h && h.shown.join("|") === "Start run|▾|⋯" && !h.live, h && h.shown.join("|"));
     check("the service worker has no run going", !(await status()).running);
   }
 
@@ -117,7 +117,7 @@ try {
     const ps = await waitFor(async () => { const x = await status(); return x && x.platStats && x.platStats.chatgpt ? x.platStats.chatgpt : null; }, 6000);
     check("with this campaign's two prompts on ChatGPT", !!ps && ps.total === 2, JSON.stringify(ps).slice(0, 200));
     const h = await waitFor(async () => { const x = await head(); return x && x.live ? x : null; }, 4000);
-    check("the header goes live: Edit setup, Export…, Pause, Stop", !!h && h.shown.join("|") === "Edit setup|Export…|Pause|Stop", h && h.shown.join("|"));
+    check("the header goes live: Pause, Stop and ⋯", !!h && h.shown.join("|") === "Pause|Stop|⋯", h && h.shown.join("|"));
     check("and shows the run's progress and its prompts", !!h && /Running/i.test(h.status) && /chatgpt/i.test(h.status) && /which kettle boils fastest/.test(h.status), h && h.status.slice(0, 160));
     // Two status polls later it is still there (the poll rebuilds it).
     await page.waitForTimeout(3300);
@@ -168,7 +168,7 @@ try {
     const s = await waitFor(async () => { const x = await status(); return x && x.paused ? x : null; }, 6000);
     check("Pause pauses the run in the service worker", !!s && s.running && s.paused);
     const h = await waitFor(async () => { const x = await head(); return x && x.paused ? x : null; }, 4000);
-    check("the header offers Resume and Stop", !!h && h.shown.join("|") === "Edit setup|Export…|Resume|Stop", h && h.shown.join("|"));
+    check("the header offers Resume and Stop", !!h && h.shown.join("|") === "Resume|Stop|⋯", h && h.shown.join("|"));
     check("and says it is paused", !!h && /Paused/i.test(h.status), h && h.status.slice(0, 120));
     await page.click("#cpHead .cp-resume");
     const r = await waitFor(async () => { const x = await status(); return x && x.running && !x.paused ? x : null; }, 6000);
@@ -183,7 +183,7 @@ try {
     const s = await waitFor(async () => { const x = await status(); return x && !x.running ? x : null; }, 8000);
     check("Stop ends the run in the service worker", !!s);
     const h = await waitFor(async () => { const x = await head(); return x && !x.live ? x : null; }, 4000);
-    check("the header offers Run again, no live controls", !!h && h.shown.join("|") === "Edit setup|Export…|Run again|Run signed out", h && h.shown.join("|"));
+    check("the header offers Run again, no live controls", !!h && h.shown.join("|") === "Run again|▾|⋯", h && h.shown.join("|"));
     const runs = await ask({ type: "geo-run-list", profileId });
     check("the run is recorded as stopped", runs && runs.ok && runs.runs.length === 1 && runs.runs[0].status === "stopped", JSON.stringify(runs && runs.runs).slice(0, 200));
     await page.waitForTimeout(1500);
@@ -225,9 +225,9 @@ try {
     const r = await pop.evaluate(() => {
       const h = document.getElementById("cpHead");
       const c = document.querySelector(".app-content");
-      return { run: !!h?.querySelector(".cp-run"), shown: h ? [...h.querySelectorAll(".cp-actions button:not(.ho-wrap button)")].filter((b) => getComputedStyle(b).display !== "none").map((b) => b.textContent) : [], wide: c.scrollWidth - c.clientWidth };
+      return { run: !!h?.querySelector(".cp-run"), shown: h ? [...h.querySelectorAll(".cp-actions button:not(.ho-wrap button):not(.cp-menu button)")].filter((b) => getComputedStyle(b).display !== "none").map((b) => b.textContent) : [], wide: c.scrollWidth - c.clientWidth };
     });
-    check("the header and its actions are there", r.run && r.shown.join("|") === "Edit setup|Export…|Run again|Run signed out", r.shown.join("|"));
+    check("the header and its actions are there", r.run && r.shown.join("|") === "Run again|▾|⋯", r.shown.join("|"));
     check("and fit the popup", r.wide <= 0, `${r.wide}px too wide`);
     await pop.close();
   }
