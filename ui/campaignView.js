@@ -181,7 +181,7 @@ function overviewSec() {
       rows.append(h("span", { className: "cv-split-row" }, engineMark(s.engine, "s"), bar(w, `var(--eng-${s.engine})`), h("span", { className: `cv-num${s.value == null ? " cv-muted" : ""}` }, txt)));
     });
     kpis.append(card("cv-kpi",
-      h("div", { className: "cv-kpi-top" }, h("span", { className: "cv-kpi-l", ...(TERM[k.id] ? { "data-term": TERM[k.id] } : {}) }, k.label), k.rank ? h("span", { className: "cv-badge", title: `${ord(k.rank)} of ${k.of} brands` }, `${ord(k.rank)} of ${k.of}`) : h("span", { className: "cv-badge" }, `of ${k.of}`)),
+      h("div", { className: "cv-kpi-top" }, h("span", { className: "cv-kpi-l", ...(TERM[k.id] ? { "data-term": TERM[k.id] } : {}) }, k.label), k.rank ? h("span", { className: "cv-badge", title: `${ord(k.rank)} of ${k.of} brands` }, `${ord(k.rank)} of ${k.of}`) : k.of != null ? h("span", { className: "cv-badge" }, `of ${k.of}`) : ""),
       h("div", { className: "cv-kpi-v" }, k.value == null ? "—" : String(k.value), h("span", { className: "cv-kpi-u" }, k.id === "responses" ? ` / ${k.of}` : k.unit)),
       delta(k.id), rows));
   }

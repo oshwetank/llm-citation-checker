@@ -112,9 +112,11 @@ try {
   const engines = new Set((b.view && b.view.prompts || []).flatMap((p) => (p.cells || []).filter((c) => c && c.answered).map((c) => c.engine)));
   check("ChatGPT's answers from run 3 beside Gemini's from run 2: 3 answers, not 5", b.answers === 3, b.answers);
   await page.evaluate(() => document.querySelector('[data-tab="loader"]')?.click());
-  await page.waitForTimeout(400);
-  await page.evaluate((id) => { const s = [...document.querySelectorAll(".cp-switch select, #cpSwitch, select")].find((x) => [...x.options || []].some((o) => o.value === id)); if (s) { s.value = id; s.dispatchEvent(new Event("change", { bubbles: true })); } }, seeded.profileId);
-  await page.waitForTimeout(2500);
+  // The switcher is a row of chips. Wait for the seeded campaign's chip, open
+  // it, then wait for its board: fixed sleeps were too short on CI.
+  await page.waitForFunction(() => [...document.querySelectorAll(".geo-switcher .geo-chip")].some((b) => /^Combined Test/.test(b.textContent)), null, { timeout: 15000 }).catch(() => {});
+  await page.evaluate(() => { const b = [...document.querySelectorAll(".geo-switcher .geo-chip")].find((x) => /^Combined Test/.test(x.textContent)); if (b && !b.classList.contains("active")) b.click(); });
+  await page.waitForFunction(() => document.getElementById("cbRun") && /Latest answer/.test(document.getElementById("campaignResultsH")?.textContent || ""), null, { timeout: 15000 }).catch(() => {});
   const pick = await page.evaluate(() => ({ value: document.getElementById("cbRun")?.value, first: document.querySelector("#cbRun option")?.textContent, scope: document.getElementById("campaignResultsH")?.textContent || "" }));
   check("the run picker starts on Latest answers · every engine", pick.value === "latest" && /Latest answers/.test(pick.first), JSON.stringify(pick));
   check("and the board says what it shows", /Latest answer per prompt and engine/.test(pick.scope), pick.scope);
@@ -129,7 +131,7 @@ try {
   const g = await ask({ type: "campaign-run-compare", profileId: seeded.profileId, runA: runs[0].id, runB: runs[1].id });
   check("a ChatGPT run against a Gemini run has nothing in common", g.ok && g.compare.compared === 0);
   await page.evaluate(() => document.querySelector('.cv-tab[data-section="cv-runs"]')?.click());
-  await page.waitForTimeout(1500);
+  await page.waitForFunction(() => document.getElementById("cvRunA") && document.querySelectorAll("#cv-runs .cv-tile").length === 4, null, { timeout: 15000 }).catch(() => {});
   const tabUi = await page.evaluate(() => ({ a: !!document.getElementById("cvRunA"), b: !!document.getElementById("cvRunB"), tiles: document.querySelectorAll("#cv-runs .cv-tile").length, rows: document.querySelectorAll("#cv-runs .cv-runrows .cv-tr:not(.cv-th)").length }));
   check("the Run vs run tab: two run pickers, the summary and the prompts", tabUi.a && tabUi.b && tabUi.tiles === 4, JSON.stringify(tabUi));
 
