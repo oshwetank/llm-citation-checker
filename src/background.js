@@ -247,8 +247,31 @@ async function sessionOf(sender, platform, url) {
 // re-create them," and calling ensureHeartbeatAlarm() is itself idempotent
 // (checks before creating), so there's no cost to being explicit here
 // rather than relying on load-order coincidence.
+/* The welcome guide (0.81.0, ui/welcome.html): opened once, full page, when
+ * the extension is installed, and once on the update that brings it to
+ * someone who already had the extension. Asked: "this landing page … only
+ * pops up one time". Never in an automated browser (a test run is a fresh
+ * install every time), unless a test asks for it. */
+const WELCOME_OFFERED_KEY = "citoWelcomeOffered";
+async function openWelcomeOnce({ evenAutomated = false } = {}) {
+  try {
+    // Test browsers run headless; the worker's navigator.webdriver isn't set.
+    const automated = !!navigator.webdriver || /HeadlessChrome/.test(navigator.userAgent || "");
+    if (automated && !evenAutomated) return false;
+    const got = await chrome.storage.local.get([WELCOME_OFFERED_KEY, "citoWelcomeDone", "citoSignup"]);
+    if (got[WELCOME_OFFERED_KEY] || got.citoWelcomeDone) return false;
+    await chrome.storage.local.set({ [WELCOME_OFFERED_KEY]: Date.now() });
+    await chrome.tabs.create({ url: chrome.runtime.getURL("ui/welcome.html"), active: true });
+    return true;
+  } catch (e) {
+    logErr("welcome", e);
+    return false;
+  }
+}
+
 chrome.runtime.onInstalled.addListener((details) => {
   if (details && details.reason === "update") repairOnce().catch((e) => logErr("repair", e));
+  if (details && (details.reason === "install" || details.reason === "update")) openWelcomeOnce();
   chrome.tabs.query({ url: AI_TAB_MATCHES }, (tabs) => {
     for (const t of tabs || []) {
       try {
@@ -3904,6 +3927,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse(await geoRunStart(msg.profileId, runOpts));
           break;
         }
+        case "welcome-open-once":
+          sendResponse({ ok: true, opened: await openWelcomeOnce({ evenAutomated: !!msg.evenAutomated }) });
+          break;
+        // The email given on the welcome page or in Settings (0.81.0). Kept on
+        // this computer; sent to the developer's server once it exists (0.82.0).
+        case "signup-saved":
+        case "signup-removed":
+          sendResponse({ ok: true });
+          break;
         case "run-queue":
           sendResponse({ ok: true, queue: await loadRunQueue(), runningProfileId: (loader.running && loader.options && loader.options.geo && loader.options.geo.profileId) || null });
           break;

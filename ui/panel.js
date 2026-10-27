@@ -42,6 +42,7 @@ import { analyzeFanout, FANOUT_BENCHMARK, titleMatchesQueries } from "../src/lib
 import { sanitizeText, trimLabel } from "../src/lib/text-sanitize.js";
 import { pipelineOf, typeLabel, supplierOf, retrievalMix } from "../src/lib/retrieval.js";
 import { formatCooldown, formatDuration, runTookMs } from "../src/lib/pacing.js";
+import { checkEmail } from "../src/lib/emailCheck.js";
 import { BUILD } from "../src/lib/build.js";
 import { netlogReportLines } from "../src/lib/netlog.js";
 import {
@@ -11136,118 +11137,18 @@ load().then(maybeFirstRun).catch((err) => { // also fills the Compare pickers, a
  *   - SAMPLE DATA: one realistic capture (src/lib/demo-data.js) so the panels
  *     have something to render. Clearly labelled, removable in one click, and
  *     never mistakable for a real capture.
- *   - THE TOUR: a short walkthrough of what each tab answers. Steps that
- *     point at a tab actually switch to it, so the user sees the real screen
- *     rather than a description of it.
+ *   - THE GUIDE: since 0.81.0 a full page of its own (ui/welcome.html), in
+ *     pictures, ending with the email sign-up. The worker opens it once on
+ *     install; a panel that finds it never opened opens it once too. It
+ *     replaced the modal tour drawn over the panel, which kept coming back.
  *
- * Shown once. The flag lives in localStorage rather than extension storage
- * because it is per-view chrome, not user data, and losing it costs one
- * dismissible dialog rather than anything real. Re-runnable from About.
+ * Shown once: the flag is kept in the extension's storage as well as this
+ * page's. Re-openable from About.
  * ========================================================================== */
 const TOUR_SEEN_KEY = "cito-tour-seen";
 
-const TOUR_STEPS = [
-  {
-    tab: null,
-    title: "Welcome to CitoSkeleton",
-    body: "This tracks how AI answer engines talk about brands — which ones they name, which sources they cite, and what they searched to get there. Everything stays on your machine.",
-  },
-  {
-    tab: "analyze",
-    title: "Analyze — one answer, in full",
-    body: "The searches the engine ran, the brands it named and the pages behind them. 'Cited' vs 'read' is the key number: a page the engine read but never cited is a very different signal from one it built its answer on. Asked the same prompt more than once? 'All answers to this prompt' compares them run by run and engine by engine.",
-  },
-  {
-    tab: "dashboard",
-    title: "Dashboard — everything you've captured",
-    body: "Every prompt you've asked, on any engine, in one list. Search the prompts, the answers and what the engines searched for; narrow it by when, which engine and what kind of answer came back.",
-  },
-  {
-    tab: "loader",
-    title: "Campaigns — run prompts on a schedule",
-    body: "Give it a list of prompts and the engines to run them on, and it drives your own logged-in sessions at a human pace. It checks you're signed in before opening anything, so a run can't quietly fail into a login page. Each campaign's results show under it.",
-  },
-  {
-    tab: "about",
-    title: "You're set",
-    body: "Sample data is loaded so these screens have something to show. Remove it whenever you like from this tab — your real captures aren't touched. You can replay this tour from here too.",
-  },
-];
-
-function runTour(startAt = 0) {
-  document.getElementById("tour-backdrop")?.remove();
-  let i = startAt;
-
-  const backdrop = el("div", { id: "tour-backdrop", className: "modal-backdrop tour-backdrop" });
-  const card = el("div", { className: "modal-content tour-card", tabindex: "-1" });
-  backdrop.append(card);
-  document.body.append(backdrop);
-
-  // Seen the moment it opens (0.80.0), not when it's clicked through: a popup
-  // closed half way used to bring it back every time it was opened.
-  markTourSeen();
-  const finish = () => {
-    markTourSeen();
-    backdrop.remove();
-    document.removeEventListener("keydown", onKey, true);
-  };
-  const onKey = (e) => {
-    if (e.key === "Escape") { e.preventDefault(); finish(); }
-    else if (e.key === "ArrowRight") { e.preventDefault(); go(i + 1); }
-    else if (e.key === "ArrowLeft") { e.preventDefault(); go(i - 1); }
-  };
-  document.addEventListener("keydown", onKey, true);
-
-  function go(next) {
-    if (next < 0) return;
-    if (next >= TOUR_STEPS.length) return finish();
-    i = next;
-    const step = TOUR_STEPS[i];
-    // Switch to the tab the step is about, so the user is looking at the real
-    // screen while reading about it rather than at a description of one.
-    if (step.tab) { try { showTab(step.tab); } catch (_) {} }
-    render();
-  }
-
-  function render() {
-    const step = TOUR_STEPS[i];
-    card.textContent = "";
-
-    const dots = el("div", { className: "tour-dots" });
-    TOUR_STEPS.forEach((_, n) => dots.append(el("span", { className: "tour-dot" + (n === i ? " is-on" : "") })));
-
-    const header = el("div", { className: "modal-header" },
-      el("h3", { className: "modal-title" }, step.title),
-      el("button", { className: "modal-close-btn", title: "Skip tour" }, "×"));
-    header.querySelector(".modal-close-btn").onclick = finish;
-
-    const body = el("div", { className: "modal-body" },
-      el("p", {}, step.body),
-      el("p", { className: "muted small" }, `Step ${i + 1} of ${TOUR_STEPS.length}`));
-
-    const footer = el("div", { className: "modal-footer tour-footer" });
-    footer.append(dots);
-    const spacer = el("span", { style: "flex:1" });
-    footer.append(spacer);
-    if (i > 0) {
-      const back = el("button", { className: "btn ghost" }, "Back");
-      back.onclick = () => go(i - 1);
-      footer.append(back);
-    }
-    const next = el("button", { className: "btn primary" }, i === TOUR_STEPS.length - 1 ? "Done" : "Next");
-    next.onclick = () => go(i + 1);
-    footer.append(next);
-
-    card.append(header, body, footer);
-    next.focus();
-  }
-
-  render();
-}
-
-// First run: load the sample capture, then walk through what the screens mean.
-// Sample data is loaded FIRST so the tabs the tour switches to have something
-// on them — a tour of five empty screens explains nothing.
+// First run: load the sample capture, so the screens have something on them,
+// and make sure the welcome guide has been shown once.
 // Kept in the extension's own storage as well as this page's (0.80.0), so the
 // popup, the full tab and a reload all agree it has been seen.
 function markTourSeen() {
@@ -11275,7 +11176,11 @@ async function maybeFirstRun() {
   // Asked again after the wait above: it may have been seen meanwhile (in
   // the other view, or set by a test), and it must open only once.
   if (await tourSeen()) return;
-  runTour(0);
+  markTourSeen();
+  send({ type: "welcome-open-once" });
+}
+function openWelcome() {
+  try { chrome.tabs.create({ url: chrome.runtime.getURL("ui/welcome.html") }); } catch (_) { window.open("welcome.html", "_blank"); }
 }
 
 /* About-tab controls for the sample data and the tour. */
@@ -11308,6 +11213,55 @@ async function abToggleSample() {
 
 $("#demoToggle")?.addEventListener("click", withBusy($("#demoToggle"), "Working…", abToggleSample));
 
-$("#replayTour")?.addEventListener("click", () => runTour(0));
+$("#replayTour")?.addEventListener("click", () => openWelcome());
+
+/* About → Settings → Email for updates (0.81.0): the email given on the
+ * welcome page, changed or removed here. Same checks as there
+ * (lib/emailCheck.js); kept in chrome.storage.local under citoSignup. */
+const SIGNUP_KEY = "citoSignup";
+async function renderEmailSetting() {
+  const input = $("#setEmail"), state = $("#setEmailState"), msg = $("#setEmailMsg"), rm = $("#setEmailRemove");
+  if (!input) return;
+  let got = null;
+  try { got = (await chrome.storage.local.get(SIGNUP_KEY))[SIGNUP_KEY] || null; } catch (_) { /* nothing kept */ }
+  if (got && got.email) {
+    input.value = got.email;
+    state.textContent = "You'll hear about updates and offers at this address. Only the developer sees it; it's never shared.";
+    rm.hidden = false;
+  } else {
+    input.value = "";
+    state.textContent = got && got.skipped ? "Not given. Without it you won't hear about new features and fixes." : "Only for news about CitoSkeleton's updates and offers. Never shared with anyone else.";
+    rm.hidden = true;
+  }
+  msg.textContent = "";
+  msg.className = "ab-email-msg";
+}
+$("#setEmailSave")?.addEventListener("click", async () => {
+  const msg = $("#setEmailMsg");
+  const r = checkEmail($("#setEmail").value);
+  if (!r.ok) { msg.textContent = r.message; msg.className = "ab-email-msg bad"; return; }
+  const btn = $("#setEmailSave");
+  if (r.reason === "typo" && btn.dataset.typo !== r.email) {
+    btn.dataset.typo = r.email;
+    msg.textContent = `${r.message} Press Save again to keep yours.`;
+    msg.className = "ab-email-msg warn";
+    return;
+  }
+  delete btn.dataset.typo;
+  try { await chrome.storage.local.set({ [SIGNUP_KEY]: { email: r.email, at: Date.now(), consent: true, sent: false, source: "settings" } }); } catch (_) { /* nothing to keep it in */ }
+  send({ type: "signup-saved" });
+  await renderEmailSetting();
+  const m = $("#setEmailMsg");
+  m.textContent = "Saved ✨";
+  m.className = "ab-email-msg ok";
+});
+$("#setEmailRemove")?.addEventListener("click", async () => {
+  try { await chrome.storage.local.set({ [SIGNUP_KEY]: { skipped: true, removedAt: Date.now(), at: Date.now() } }); } catch (_) { /* nothing kept */ }
+  send({ type: "signup-removed" });
+  await renderEmailSetting();
+  showToast("Email removed. You won't get update news.");
+});
+renderEmailSetting();
+try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch[SIGNUP_KEY]) renderEmailSetting(); }); } catch (_) { /* no storage events */ }
 
 refreshDemoControls();

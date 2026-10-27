@@ -12,12 +12,19 @@ of its own**, except, if you turn on **Read the cited pages**, to the pages an a
 and, if you download the **built-in AI**, a one-time download of the model's files from
 Hugging Face. Nothing you capture ever leaves your device: the AI runs on your computer.
 
-> **v0.80.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.81.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **A welcome guide and email sign-up** (0.81.0).
+>   - **A full-page welcome, once.** When CitoSkeleton is installed, or updated by someone who hasn't seen it, it opens a page of its own, in pictures with little text. It covers what the tool does, Analyze, the Dashboard, Campaigns, and Ask and share. It replaces the tour that was drawn over the panel and kept coming back. About → "Open the guide" shows it again.
+>   - **Email for updates.** The last step asks for an email, with a plain note: it's only for news about updates and offers, never sold or shared with anyone, and only the developer sees it.
+>     - The address is checked properly. Random text is refused, and so are throwaway inboxes, Gen Z style ("A burner inbox? Not the vibe 💀"). A slip like "gmial.com" gets a "did you mean".
+>     - Skip is allowed: it says once what you'd miss, then never asks again.
+>     - The email can be changed or removed in About → Settings → Data and capture.
+>     - It's kept on this computer until the developer's server is live (0.82.0).
 > - **Campaigns that make sense** (0.80.0).
 >   - **Engines run on different days, one view.** Run ChatGPT on Monday and Gemini on Tuesday, and the campaign shows each engine's newest answers together ("Latest answers · every engine"). Before, the board showed only the newest run, so the Gemini run hid the ChatGPT one.
 >   - **Run vs run.** A new tab sets two runs side by side, over the prompts both answered on the same engine. It shows each brand's visibility and place, and the change. Prompt by prompt, it shows where your brand moved, who was named first, and which brands came in or dropped out. It also lists the sites cited in each run.

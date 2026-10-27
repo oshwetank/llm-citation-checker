@@ -1,11 +1,14 @@
 /*
- * tour-once.test.mjs — the first-run guide opens once (0.80.0).
+ * tour-once.test.mjs — the welcome guide opens once, and its email step
+ * (0.80.0, 0.81.0).
  *
  * Reported: "the beginner guide screen keeps on popping up many times, even
- * if the user is not using it for the first time". It was marked seen only
- * when clicked through to the end, so a popup closed half way showed it again
- * next time; and it read the flag before loading the sample data and not
- * after, so it could open after being marked seen.
+ * if the user is not using it for the first time". The 0.80.0 fix marked the
+ * old in-panel tour seen when it opened; 0.81.0 replaced that tour with a
+ * full page (ui/welcome.html) the worker opens once on install. Asked with it:
+ * an email for update news, checked properly, burner inboxes refused "in a
+ * Gen Z style way", a plain statement of what it's for, and a skip that is
+ * respected and never pushed again.
  */
 import { rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -44,33 +47,77 @@ try {
   let sw = context.serviceWorkers()[0];
   if (!sw) sw = await context.waitForEvent("serviceworker", { timeout: 20000 });
   const extId = sw.url().split("/")[2];
-  const shown = async (url) => {
-    const p = await context.newPage();
-    await p.goto(url);
-    let on = false;
-    for (let i = 0; i < 12 && !on; i++) { await p.waitForTimeout(500); on = await p.evaluate(() => !!document.getElementById("tour-backdrop")); }
-    return { p, on };
-  };
+  const welcomePages = () => context.pages().filter((p) => p.url().endsWith("/ui/welcome.html"));
 
-  console.log("\nthe first time");
-  const first = await shown(`chrome-extension://${extId}/ui/panel.html`);
-  check("the guide opens", first.on);
-  // Closed half way: the popup simply goes away, nothing clicked.
-  await first.p.close();
+  console.log("\nthe panel never draws a guide over itself");
+  const panel = await context.newPage();
+  await panel.goto(`chrome-extension://${extId}/ui/panel.html`);
+  await panel.waitForTimeout(3000);
+  check("no modal tour on the first open", !(await panel.evaluate(() => !!document.getElementById("tour-backdrop"))));
+  const ask = (m) => panel.evaluate((m) => new Promise((r) => chrome.runtime.sendMessage(m, r)), m);
 
-  console.log("\nevery time after");
-  const second = await shown(`chrome-extension://${extId}/ui/panel.html`);
-  check("not again in the popup, though it was closed half way", !second.on);
-  await second.p.close();
-  const tab = await shown(`chrome-extension://${extId}/ui/panel.html?mode=tab`);
-  check("nor in the full tab", !tab.on);
-  await tab.p.evaluate(() => localStorage.clear());
-  await tab.p.reload();
-  await tab.p.waitForTimeout(4000);
-  check("nor when this page's own storage is cleared (the extension remembers)", !(await tab.p.evaluate(() => !!document.getElementById("tour-backdrop"))));
-  await tab.p.evaluate(() => document.getElementById("replayTour")?.click());
-  await tab.p.waitForTimeout(300);
-  check("it can still be replayed from About", await tab.p.evaluate(() => !!document.getElementById("tour-backdrop")));
+  console.log("\nthe welcome page, once");
+  const before = welcomePages().length;
+  const first = await ask({ type: "welcome-open-once", evenAutomated: true });
+  await panel.waitForTimeout(800);
+  check("opens as a page of its own", first.opened && welcomePages().length === before + 1, JSON.stringify(first));
+  const again = await ask({ type: "welcome-open-once", evenAutomated: true });
+  await panel.waitForTimeout(500);
+  check("and never again", !again.opened && welcomePages().length === before + 1, JSON.stringify(again));
+
+  const w = welcomePages()[0];
+  await w.setViewportSize({ width: 1280, height: 800 });
+  await w.waitForTimeout(400);
+  const steps = [];
+  for (let i = 0; i < 5; i++) {
+    steps.push(await w.evaluate(() => ({ title: document.querySelector(".wl-h")?.textContent, art: !!document.querySelector(".wl-art"), words: (document.querySelector(".wl-sub")?.textContent || "").split(/\s+/).length })));
+    await w.click("#wlNext");
+    await w.waitForTimeout(250);
+  }
+  check("five picture steps: what it is, Analyze, Dashboard, Campaigns, Ask and share", steps.length === 5 && steps.every((s) => s.art) && /Analyze/.test(steps[1].title) && /Dashboard/.test(steps[2].title) && /Campaigns/.test(steps[3].title), steps.map((s) => s.title).join(" | "));
+  check("light on words: under 40 per step", steps.every((s) => s.words < 40), steps.map((s) => s.words).join(","));
+
+  console.log("\nthe email step");
+  check("then the email, with what it's used for", await w.evaluate(() => !!document.getElementById("wlEmail") && /never sold, shared/i.test(document.getElementById("wlPrivacy")?.textContent || "")));
+  const tryEmail = async (e) => { await w.fill("#wlEmail", e); await w.click("#wlSend"); await w.waitForTimeout(250); return w.evaluate(() => ({ text: document.getElementById("wlMsg")?.textContent || "", cls: document.getElementById("wlMsg")?.className || "" })); };
+  const junk = await tryEmail("lol random text");
+  check("random text is refused", /doesn't look like an email/.test(junk.text) && /bad/.test(junk.cls), JSON.stringify(junk));
+  const burner = await tryEmail("me@yopmail.com");
+  check("a burner inbox is called out, Gen Z style", /burner|vibe/i.test(burner.text) && /💀/.test(burner.text), burner.text);
+  const typo = await tryEmail("asha@gmial.com");
+  check("a slip in gmail's name gets a 'did you mean'", /Did you mean/.test(typo.text) && /gmail\.com/.test(typo.text), typo.text);
+  check("nothing kept yet", !(await panel.evaluate(async () => (await chrome.storage.local.get("citoSignup")).citoSignup)));
+
+  // Skip, said once plainly, then taken at its word.
+  await w.click("#wlSkip");
+  await w.waitForTimeout(200);
+  const skipNote = await w.evaluate(() => document.getElementById("wlMsg")?.textContent || "");
+  check("skipping says once what you'd miss", /won't hear about new features/.test(skipNote), skipNote);
+  await w.fill("#wlEmail", "asha.k@zento.example");
+  await w.click("#wlSend");
+  await w.waitForTimeout(500);
+  const kept = await panel.evaluate(async () => (await chrome.storage.local.get(["citoSignup", "citoWelcomeDone"])));
+  check("a real email is kept, with consent", kept.citoSignup && kept.citoSignup.email === "asha.k@zento.example" && kept.citoSignup.consent === true, JSON.stringify(kept.citoSignup));
+  check("and the guide is done", !!kept.citoWelcomeDone && await w.evaluate(() => /You're in/.test(document.querySelector(".wl-h")?.textContent || "")));
+
+  console.log("\nSettings");
+  const tab = await context.newPage();
+  await tab.goto(`chrome-extension://${extId}/ui/panel.html?mode=tab`);
+  await tab.waitForTimeout(1200);
+  await tab.evaluate(() => document.querySelector('[data-tab="about"]')?.click());
+  await tab.waitForTimeout(400);
+  await tab.evaluate(() => [...document.querySelectorAll(".ab-nav-btn, .ab-more-row")].find((b) => b.textContent.includes("Settings"))?.click());
+  await tab.waitForTimeout(500);
+  check("About → Settings shows the email", await tab.evaluate(() => document.getElementById("setEmail")?.value === "asha.k@zento.example" && !document.getElementById("setEmailRemove").hidden));
+  await tab.fill("#setEmail", "x@mailinator.com");
+  await tab.click("#setEmailSave");
+  await tab.waitForTimeout(200);
+  check("the same checks there", /burner|vibe/i.test(await tab.evaluate(() => document.getElementById("setEmailMsg").textContent)));
+  await tab.click("#setEmailRemove");
+  await tab.waitForTimeout(400);
+  const removed = await panel.evaluate(async () => (await chrome.storage.local.get("citoSignup")).citoSignup);
+  check("Remove forgets it", removed && !removed.email && removed.skipped, JSON.stringify(removed));
+  check("the guide can be opened again from About", await tab.evaluate(() => /guide/i.test(document.getElementById("replayTour")?.textContent || "")));
 } finally {
   await context.close();
 }

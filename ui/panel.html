@@ -36,7 +36,7 @@
             </button>
             <div class="brand-text">
               <button type="button" class="brand-title" id="brandTitle">CitoSkeleton</button>
-              <span class="version-badge">v0.80.0</span>
+              <span class="version-badge">v0.81.0</span>
               <span class="brand-sub">ChatGPT, Gemini, Perplexity &amp; Grok</span>
             </div>
             <!-- Pause capture (0.66.0), in the popup and the tab. -->
@@ -293,6 +293,20 @@
                         <span class="ab-unit">MB</span>
                       </div>
                     </div>
+                    <!-- Email for updates (0.81.0): the one asked for on the welcome
+                         page; changed or removed here. Applies at once. -->
+                    <div class="ab-row ab-email-row" id="setEmailRow">
+                      <label class="ab-row-text" for="setEmail">
+                        <b>Email for updates</b>
+                        <span id="setEmailState">Only for news about CitoSkeleton's updates and offers. Never shared with anyone else.</span>
+                      </label>
+                      <div class="ab-email">
+                        <input id="setEmail" type="email" autocomplete="email" placeholder="you@example.com" />
+                        <button type="button" id="setEmailSave" class="btn sm">Save</button>
+                        <button type="button" id="setEmailRemove" class="btn sm ghost" hidden>Remove</button>
+                      </div>
+                      <p class="ab-email-msg" id="setEmailMsg" role="status"></p>
+                    </div>
                     <!-- Built-in AI (0.70.0): an open-source model run on this
                          computer. Applies at once, outside Save / Undo
                          (ui/aiSettings.js; the model lives in src/aiService.js). -->
@@ -372,10 +386,10 @@
                   </div>
                   <div class="ab-tool">
                     <div class="ab-tool-text">
-                      <b>Guided tour</b>
-                      <span>A short walk through each tab, the same one shown on first install.</span>
+                      <b>Welcome guide</b>
+                      <span>What each part is for, in pictures: the same guide shown on first install.</span>
                     </div>
-                    <button type="button" id="replayTour" class="btn sm ghost">Replay tour</button>
+                    <button type="button" id="replayTour" class="btn sm ghost">Open the guide</button>
                   </div>
                 </div>
               </div>

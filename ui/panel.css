@@ -4022,22 +4022,6 @@ body.popup .pp-chip { font-size: 10px; }
 }
 
 /* ---------- First-run tour ---------- */
-/* Sits above the sign-in gate and the drill-down modals: it only ever runs on
-   a fresh install, where none of those can be open, but if it somehow raced
-   one it should be the thing the user is looking at. */
-.tour-backdrop { z-index: 200; }
-.tour-card { max-width: 460px; }
-.tour-footer { display: flex; align-items: center; gap: 8px; }
-.tour-dots { display: flex; align-items: center; gap: 6px; }
-.tour-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--border);
-  transition: background 0.2s ease, transform 0.2s ease;
-}
-.tour-dot.is-on { background: var(--accent); transform: scale(1.35); }
-
 /* ---------- Sample-data notice ---------- */
 /* Demo rows must never be mistakable for real captures — see the note in
    src/lib/demo-data.js on why that property matters more than the styling. */
@@ -7430,3 +7414,13 @@ html[data-motion="on"] .ask-dots i:nth-child(3) { animation-delay: 0.3s; }
 body.popup .app-header { flex-wrap: nowrap !important; gap: 6px !important; padding: 8px !important; }
 body.popup .nav-tabs { min-width: 0; }
 body.popup .ho-icon { inline-size: 28px; block-size: 28px; }
+
+/* ---------- 0.81.0: Email for updates ---------- */
+.ab-email-row { flex-wrap: wrap; }
+.ab-email { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.ab-email input { inline-size: 240px; max-inline-size: 100%; padding: 6px 8px; border: 1px solid var(--line-soft, var(--border)); border-radius: var(--r-ctl, 6px); background: var(--surface-solid, transparent); color: inherit; font: inherit; }
+.ab-email-msg { flex-basis: 100%; margin: 0; font-size: 13px; min-block-size: 0; }
+.ab-email-msg:empty { display: none; }
+.ab-email-msg.bad { color: var(--red-fg, #b91c1c); font-weight: 600; }
+.ab-email-msg.warn { color: var(--amber-fg, #a15c00); }
+.ab-email-msg.ok { color: var(--green-fg, #15803d); }
