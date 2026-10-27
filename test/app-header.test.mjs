@@ -96,7 +96,8 @@ try {
     check("the name shows, beside the logo", !!m.title && m.logo && m.title.l >= m.logo.r - 1, JSON.stringify(m.title));
     check("pop-out is an icon that still says what it does", m.openLabel === "none" && /full tab/i.test(m.openAria), `${m.openLabel} · ${m.openAria}`);
     // 0.56.0: the canvas's bar has no theme button; Appearance is in Settings.
-    check("nothing else in the bar: no theme button", await page.evaluate(() => !document.getElementById("themeToggle") && document.querySelectorAll(".header-actions button").length === 1));
+    // 0.80.0: the share icon sits beside it, hidden on pages with nothing to share.
+    check("nothing else in the bar: no theme button; the share icon beside pop-out", await page.evaluate(() => !document.getElementById("themeToggle") && [...document.querySelectorAll(".header-actions > button, .header-actions > .ho-wrap > button")].map((b) => b.id).sort().join() === "appShare,openTab"));
   }
 
   console.log("\nThe full tab: the logo and name, the pages beside them, the page's own items at the right");

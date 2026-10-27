@@ -195,7 +195,8 @@ try {
   console.log("\nRetry missing");
   {
     const note = await waitFor(() => page.evaluate(() => { const n = document.getElementById("cpMissing"); return n && !n.hidden ? n.innerText.replace(/\s+/g, " ") : null; }), 6000);
-    check("the header says how many answers the run is missing, and where", note && /2 answers are missing from the last run/.test(note) && /2 on ChatGPT/.test(note), note);
+    // 0.80.0: a run that was stopped offers to carry on from where it stopped.
+    check("the header says how many answers the run is missing, and where", note && (/2 answers are missing from the last run/.test(note) || /stopped with 2 answers to go/.test(note)) && /2 on ChatGPT/.test(note), note);
     await page.click("#cpRetryMissing");
     // The same sign-in check as Start run; this test browser is signed out.
     const gate2 = await waitFor(() => page.evaluate(() => !!document.getElementById("signin-gate-backdrop")), 10000);

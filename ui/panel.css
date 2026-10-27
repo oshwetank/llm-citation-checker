@@ -766,8 +766,10 @@ body.popup .app-header {
 .header-page { order: 3; display: flex; align-items: center; gap: 2px; min-width: 0; margin-inline-start: auto; }
 .header-page:empty { display: none; }
 .header-actions { order: 4; }
-/* Both its buttons are popup-only (see .popout-btn). */
-body.tab .header-actions { display: none !important; }
+/* The pop-out is popup-only (see .popout-btn); the share icon (0.80.0)
+   sits here in both, at the right-hand end of the bar. */
+body.tab .header-actions { display: flex; }
+body.tab .app-header:not(:has(.header-page:not(:empty))) .header-actions { margin-inline-start: auto; }
 .header-note { font-size: 12px; color: var(--fg-secondary); }
 /* Analyze's tools in the bar: the pager (the find box left in 0.60.2). */
 .at-pager { display: flex; align-items: center; gap: 2px; margin-inline-start: 6px; }
@@ -6555,12 +6557,14 @@ polyline.ot-line.c5 { stroke: #c9a227; } circle.ot-line.c5 { fill: #c9a227; }
 @media (min-width: 1000px) {
   body.tab .app-header, body:not(.popup) .app-header {
     display: grid !important;
-    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto;
     align-items: center !important;
   }
   body.tab .brand-logo-group { grid-column: 1; justify-self: start; }
   body.tab .nav-tabs { grid-column: 2; justify-self: center; }
   body.tab .header-page { grid-column: 3; justify-self: end; margin-inline-start: 0; }
+  /* The share icon (0.80.0), in the corner after the page's own tools. */
+  body.tab .header-actions { grid-column: 4; grid-row: 1; justify-self: end; }
   body.tab .header-page:empty { display: block; }
 }
 /* Simple / Expert as one switch */
@@ -7420,3 +7424,9 @@ html[data-motion="on"] .ask-dots i:nth-child(3) { animation-delay: 0.3s; }
 .cv-runsites .cv-tr { grid-template-columns: minmax(160px, 2fr) 70px 70px 70px; }
 .cv-runrows .cv-badge { margin-inline-end: 4px; }
 .cp-head.live .cp-idle { display: none; }
+.cp-head.live .cp-caret { display: none; }
+.cp-queued[hidden] { display: none; }
+/* The popup's bar keeps to one row with the share icon in it (0.80.0). */
+body.popup .app-header { flex-wrap: nowrap !important; gap: 6px !important; padding: 8px !important; }
+body.popup .nav-tabs { min-width: 0; }
+body.popup .ho-icon { inline-size: 28px; block-size: 28px; }
