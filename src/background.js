@@ -16,8 +16,8 @@ import { probeIsRead } from "./lib/geminiChannel.js";
 import { createAiService } from "./aiService.js";
 import { db } from "./lib/db.js";
 import {
-  turnBudgetMs, legEta, INTER_PROMPT_MIN_MS, INTER_PROMPT_MAX_MS,
-  CONCURRENT_TABS_PER_ENGINE, LEG_START_STAGGER_MS, shardPrompts,
+  turnBudgetMs, legEta, runTookMs, INTER_PROMPT_MIN_MS, INTER_PROMPT_MAX_MS,
+  CONCURRENT_TABS_PER_ENGINE, tabsForEngine, LEG_START_STAGGER_MS, shardPrompts,
   parseCooldownFromNotice, formatCooldown,
 } from "./lib/pacing.js";
 import { createErrorLog } from "./lib/errorlog.js";
@@ -337,6 +337,11 @@ function payloadShape(rawText) {
   return out.replace(/\s+/g, "").slice(0, 120);
 }
 
+// Raw text past this is never read, whatever the stored-size setting: the
+// copy alone would hold that much memory twice over.
+const RAW_HARD_CAP_BYTES = 64 * 1024 * 1024;
+const gzBytes = (gz) => (gz && typeof gz.byteLength === "number" ? gz.byteLength : 0);
+
 async function storeCapture(payload, meta) {
   const platform = platformFromUrl(payload.pageUrl || payload.url);
   const settings = await getSettings();
@@ -365,8 +370,16 @@ async function storeCapture(payload, meta) {
 
   // Guard against pathological payloads (Gemini local/map answers have been seen
   // at 25MB raw / ~5MB stored). Without a cap the store grows ~1GB per 1k captures.
+  // The cap is on what is stored, the compressed copy (0.79.0). Signed-out
+  // ChatGPT answers arrive as 5–8 MB of mostly page markup that compresses
+  // tenfold; capped on raw length, the longest of them were dropped whole,
+  // and their campaign turns then timed out with the answer on screen.
   const capBytes = Math.max(1, settings.maxCaptureMB) * 1024 * 1024;
-  if (rawText.length > capBytes) {
+  if (rawText.length > RAW_HARD_CAP_BYTES) {
+    return { skipped: "too-large", bytes: rawText.length };
+  }
+  const gz = await gzipString(rawText);
+  if (gzBytes(gz) > capBytes) {
     return { skipped: "too-large", bytes: rawText.length };
   }
 
@@ -384,7 +397,7 @@ async function storeCapture(payload, meta) {
     geo: (meta && meta.geo) || null, // ditto: tracking provenance must survive reprocess
     session: (meta && meta.session) || null, // private window / signed in (0.66.0)
 
-    gz: await gzipString(rawText),
+    gz,
     rawSchema: 1,
   };
   await db.put("raw", rawRow);
@@ -458,7 +471,10 @@ async function storeCapture(payload, meta) {
 
   if (record) record = await settleSameAnswer(record);
 
-  await enforceRetention(settings, record ? record.captureId : captureId);
+  // Not awaited (0.79.0): with a full store it scans every capture, and a
+  // campaign turn waited on it before it could move on. It never removes the
+  // capture just stored.
+  enforceRetention(settings, record ? record.captureId : captureId).catch(() => {});
   // A copy of an answer already stored is merged into that record, which
   // keeps its id; that is the capture the panel should show.
   return { captureId: record ? record.captureId : captureId, record };
@@ -1086,6 +1102,38 @@ function newLoaderState() {
   return { running: false, paused: false, options: {}, done: 0, errors: 0, total: 0, platforms: {}, runId: null, interrupted: null };
 }
 
+// The window a resumed run's new tabs open in: its own private window when it
+// runs signed out (reopened if it was closed), otherwise wherever Chrome puts
+// them.
+async function resumeWindowId() {
+  if (!(loader.options && loader.options.incognito)) return null;
+  if (loader.windowId != null) {
+    try { const w = await chrome.windows.get(loader.windowId); if (w && w.incognito) return w.id; } catch (_) { /* closed */ }
+  }
+  const win = await chrome.windows.create({ incognito: true });
+  loader.windowId = win.id;
+  return win.id;
+}
+
+// Every pause and resume of the whole run goes through here, so the time a
+// run spent stopped can be left out of how long it took (0.79.0).
+function setLoaderPaused(v) {
+  const now = Date.now();
+  if (v && !loader.paused) loader.pausedAt = now;
+  if (!v && loader.paused && loader.pausedAt) {
+    loader.pausedMs = (loader.pausedMs || 0) + (now - loader.pausedAt);
+    loader.pausedAt = null;
+  }
+  loader.paused = v;
+}
+
+// How long the run has been working, without the time it sat paused.
+function loaderActiveMs(now = Date.now()) {
+  if (!loader.startedAt) return 0;
+  const paused = (loader.pausedMs || 0) + (loader.paused && loader.pausedAt ? now - loader.pausedAt : 0);
+  return Math.max(0, now - loader.startedAt - paused);
+}
+
 // Best-effort: a persistence failure must never break a run already in
 // progress, so every call site fires this and moves on rather than awaiting
 // a hard guarantee.
@@ -1110,6 +1158,9 @@ async function persistLoaderState() {
       // thread-list preview is this run's answer or an older run's — see
       // isUnusableCampaignPreview. Has to survive a restart like the rest.
       startedAt: loader.startedAt || null,
+      pausedMs: loader.pausedMs || 0,
+      pausedAt: loader.pausedAt || null,
+      windowId: loader.windowId != null ? loader.windowId : null,
       // Stamped fresh on every write so a resume always compares against the
       // CURRENT session's nonce, not a stale one cached from before this
       // worker instance's own restart.
@@ -1118,6 +1169,8 @@ async function persistLoaderState() {
         Object.entries(loader.platforms).map(([plat, pd]) => [
           plat,
           {
+            rateLimitedUntil: pd.rateLimitedUntil || null,
+            cooldownReason: pd.cooldownReason || null,
             legs: (pd.legs || []).map((leg) => ({
               tabId: leg.tabId,
               startOffset: leg.startOffset || 0,
@@ -1134,6 +1187,7 @@ async function persistLoaderState() {
               // across a restart so a resumed turn can't be handed out twice.
               sentToken: leg.sentToken || null,
               durations: leg.durations || [],
+              finishTimes: leg.finishTimes || [],
               outcomes: leg.outcomes || [],
               // Set only on a rate-limit hit — see loader-rate-limited — so
               // this one engine's legs sit out while a sibling platform's
@@ -1245,15 +1299,33 @@ chrome.alarms?.onAlarm?.addListener((alarm) => {
   }
 });
 
+// A sleeping worker woken by something other than the heartbeat — an answer
+// arriving — first picks its run back up, so that answer counts for its turn
+// (0.79.0; it was stored without its run and the turn then timed out).
+// Shared, so the heartbeat and a capture can't restore the run twice.
+let restoring = null;
+function restoreRunIfAny() {
+  if (loader.running) return Promise.resolve();
+  if (!restoring) {
+    restoring = (async () => {
+      const snap = await loadPersistedLoaderState();
+      if (snap && snap.running && !loader.running) await resumeFromSnapshot(snap);
+    })().finally(() => { restoring = null; });
+  }
+  return restoring;
+}
+
 async function heartbeatTick() {
   if (!loader.running) {
     // This worker instance has no memory of an active run. If persisted
     // state disagrees, a previous instance died mid-run — resume it.
-    const snap = await loadPersistedLoaderState();
-    if (snap && snap.running) await resumeFromSnapshot(snap);
+    await restoreRunIfAny();
     return;
   }
   if (loader.paused) return;
+  for (const [plat, pd] of Object.entries(loader.platforms)) {
+    if (pd.rateLimitedUntil && Date.now() >= pd.rateLimitedUntil) resumeAfterCooldown(plat);
+  }
   // This instance already believes it's mid-run, with a setTimeout watchdog
   // armed per platform — those survive as long as THIS instance stays
   // alive, so there's normally nothing to do here. This loop is the safety
@@ -1276,6 +1348,9 @@ async function heartbeatTick() {
 // much more time, at most this many times — see armWatchdog.
 const STREAM_EXTENSION_MS = 60 * 1000;
 const MAX_STREAM_EXTENSIONS = 2;
+const ANSWER_SHOWN_MIN_CHARS = 40;
+const ANSWER_SHOWN_GRACE_MS = 15000;
+
 function armWatchdog(plat, leg, ms) {
   if (!leg) return;
   leg.watchdog = setTimeout(async () => {
@@ -1289,6 +1364,23 @@ function armWatchdog(plat, leg, ms) {
     const probe = await probeLoaderTab(leg);
     if (!loader.running || loader.paused || leg.paused) return;
     if (leg.idx !== idxAtFire || leg.token !== tokenAtFire) return;
+    // A ChatGPT copy held for its stream's end (loaderOnCapture): the answer
+    // is here, so it completes the turn rather than a timeout failing it.
+    const held = quietHolds.get(leg);
+    if (held) {
+      clearTimeout(held.timer);
+      quietHolds.delete(leg);
+      completeTurn(plat, leg, held.record);
+      return;
+    }
+    // The answer is on the page and finished, but its capture hasn't landed:
+    // a short wait more, once (0.79.0). Before, this turn failed as "no
+    // answer" while the answer sat on screen.
+    if (probe && probe.ok && probe.stage === "sent" && !probe.streaming && (probe.answerChars || 0) > ANSWER_SHOWN_MIN_CHARS && leg.answerGraceToken !== leg.token) {
+      leg.answerGraceToken = leg.token;
+      armWatchdog(plat, leg, ANSWER_SHOWN_GRACE_MS);
+      return;
+    }
     // Still streaming its answer: not a failure yet. Two real ChatGPT turns
     // were failed at 90s with the stop button still showing — a long answer,
     // not a lost one. The extensions are capped so a stuck indicator can't
@@ -1305,7 +1397,9 @@ function armWatchdog(plat, leg, ms) {
     if (leg.streamExtensions) {
       ctx.streamExtensions = leg.streamExtensions;
     }
-    failTurnAndAdvance(plat, leg, reason, 0, trace, ctx);
+    const shown = !unreadable && probe && probe.ok && (probe.answerChars || 0) > ANSWER_SHOWN_MIN_CHARS;
+    if (shown) ctx.answerChars = probe.answerChars;
+    failTurnAndAdvance(plat, leg, shown ? "timeout: answer shown on the page, but its capture never arrived" : reason, 0, trace, ctx);
   }, ms);
 }
 
@@ -1428,6 +1522,12 @@ function describeTimeout(probe, unreadable = null, tab = null, nav = []) {
   };
 }
 
+// Every finished prompt, answered or failed, stamps when it finished: the
+// time-left estimate reads the spacing between them (pacing.js legEta).
+function noteFinish(leg) {
+  leg.finishTimes = [...(leg.finishTimes || []), Date.now()].slice(-12);
+}
+
 // The one place a turn is counted as failed and the run moves on — shared by
 // the watchdog, the tab-closed path, and both restart-recovery paths below,
 // so "what counts as a failure" can never quietly diverge between them.
@@ -1439,6 +1539,29 @@ function describeTimeout(probe, unreadable = null, tab = null, nav = []) {
 /* Pause one engine's legs on a cooldown, then resume them (a limit seen on
  * the page, or reported by the engine itself — Grok's gateway, 0.62.2). Other
  * engines keep running. */
+/* An engine's cooldown is over: its legs ask the prompt that met the limit
+ * again. Until 0.79.0 this called a function that didn't exist, so the legs
+ * were un-paused but never restarted, and the heartbeat then failed the
+ * waiting prompt as "watchdog lost" — every ChatGPT limit card cost a prompt
+ * and stalled that engine for the rest of the run. */
+function resumeAfterCooldown(plat) {
+  const p = loader.platforms[plat];
+  if (!p) return;
+  if (p.cooldownTimer) { clearTimeout(p.cooldownTimer); p.cooldownTimer = null; }
+  if (!p.rateLimitedUntil) return; // already resumed (timer and heartbeat both fire)
+  p.rateLimitedUntil = null;
+  if (!loader.running) return;
+  logErr(`run:auto-resume:${plat}`, "Cooldown expired, auto-resuming platform queue", { platform: plat, runId: loader.runId });
+  for (const leg of p.legs || []) {
+    if (!leg.paused) continue;
+    leg.paused = false;
+    if (leg.idx < leg.prompts.length && !loader.paused) loaderRunLeg(plat, leg);
+  }
+  if (loader.interrupted && loader.interrupted.reason === "rate limit" && loader.interrupted.platform === plat) loader.interrupted = null;
+  persistLoaderState();
+  syncGeoRun();
+}
+
 async function pauseForLimit(matched, detail) {
   const p = loader.platforms[matched];
   const cooldownMs = parseCooldownFromNotice(detail);
@@ -1453,19 +1576,9 @@ async function pauseForLimit(matched, detail) {
 
   // Arm an auto-resume timer for this specific platform
   if (p.cooldownTimer) clearTimeout(p.cooldownTimer);
-  p.cooldownTimer = setTimeout(() => {
-    p.rateLimitedUntil = null;
-    p.cooldownTimer = null;
-    if (loader.running) {
-      for (const leg of p.legs || []) {
-        leg.paused = false;
-      }
-      logErr(`run:auto-resume:${matched}`, "Cooldown expired, auto-resuming platform queue", { platform: matched, runId: loader.runId });
-      (p.legs || []).forEach((l) => loaderAdvanceLeg(p, l));
-      persistLoaderState();
-      syncGeoRun();
-    }
-  }, cooldownMs);
+  // The worker can sleep through a 30-minute timer, so the heartbeat also
+  // resumes an engine whose cooldown has passed (see heartbeatTick).
+  p.cooldownTimer = setTimeout(() => resumeAfterCooldown(matched), cooldownMs);
 
   loader.interrupted = {
     at: Date.now(),
@@ -1486,6 +1599,7 @@ function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "", ext
   leg.failed = (leg.failed || 0) + 1;
   leg.outcomes = leg.outcomes || [];
   leg.outcomes[leg.idx] = { status: "failed", reason, at: Date.now() };
+  noteFinish(leg);
   leg.inFlightIdx = -1;
   leg.idx++;
   leg.lastAdvanceAt = Date.now();
@@ -1675,6 +1789,10 @@ async function resumeFromSnapshot(snap) {
     total: snap.total || 0,
     runId: snap.runId,
     startedAt: snap.startedAt || null,
+    // Time the browser was closed counts as paused, not as work (0.79.0).
+    pausedMs: (snap.pausedMs || 0) + (snap.savedAt && !snap.pausedAt && Date.now() - snap.savedAt > 2 * 60 * 1000 ? Date.now() - snap.savedAt : 0),
+    pausedAt: snap.pausedAt || null,
+    windowId: restarted ? null : (snap.windowId != null ? snap.windowId : null),
     platforms: {},
   };
 
@@ -1713,12 +1831,13 @@ async function resumeFromSnapshot(snap) {
         inFlightIdx: idx === (sl.idx || 0) && (Number.isInteger(sl.inFlightIdx) ? sl.inFlightIdx === sl.idx : !!sl.token) ? idx : -1,
         sentToken: sl.sentToken || null,
         durations: sl.durations || [],
+        finishTimes: sl.finishTimes || [],
         outcomes,
         watchdog: null,
         paused: !!sl.paused,
       };
     });
-    loader.platforms[plat] = { legs };
+    loader.platforms[plat] = { legs, rateLimitedUntil: sp.rateLimitedUntil || null, cooldownReason: sp.cooldownReason || null };
   }
   loader.done = Object.values(loader.platforms)
     .reduce((n, pd) => n + pd.legs.reduce((m, leg) => m + leg.idx, 0), 0);
@@ -1756,7 +1875,7 @@ async function resumeFromSnapshot(snap) {
         // UI, and simply parking everything keeps one predictable recovery
         // path.
         leg.tabId = null;
-        loader.paused = true;
+        setLoaderPaused(true);
         loader.interrupted = {
           at: Date.now(),
           reason: ownership.reason === "tab_closed"
@@ -1847,6 +1966,10 @@ async function syncGeoRunOnce(statusOverride, reason, reasonCount, plat) {
     if (statusOverride) {
       patch.status = statusOverride;
       patch.finishedAt = Date.now();
+      // How long the run worked, without the time it sat paused or the
+      // browser was closed; a retry adds its own working time (0.79.0).
+      // finishedAt − startedAt spanned days once a run was retried later.
+      patch.activeMs = (base ? base.activeMs || 0 : 0) + loaderActiveMs();
     }
     await db.put("geoRuns", patch);
   } catch (_) {
@@ -1976,7 +2099,8 @@ function loaderStatus() {
     // this is just the shards back to back) — the per-prompt status list
     // needs to read the same regardless of how many tabs are working it.
     const prompts = [];
-    let bestAvg = null, worstEta = null, etaKnownForPlat = true, anyRemaining = false;
+    let worstEta = null, etaKnownForPlat = true, anyRemaining = false;
+    const avgs = [];
 
     for (let li = 0; li < legs.length; li++) {
       const leg = legs[li];
@@ -1998,7 +2122,7 @@ function loaderStatus() {
       const eta = turnEta(leg);
       if (inFlight && eta == null) etaKnownForPlat = false;
       if (eta) worstEta = Math.max(worstEta || 0, eta.remainingMs);
-      if (eta) bestAvg = bestAvg == null ? eta.avgMs : (bestAvg + eta.avgMs) / 2;
+      if (eta && eta.avgMs != null) avgs.push(eta.avgMs);
 
       // Per-prompt status list — previously nothing tracked this at all, only
       // an aggregate done/total count and one truncated "current" string
@@ -2023,7 +2147,12 @@ function loaderStatus() {
       legStats.push({
         tab: li + 1,
         current: started ? leg.prompts[leg.idx] : null,
-        elapsedMs: started && leg.startedAt ? Math.min(now - leg.startedAt, turnBudgetMs(leg)) : null,
+        // The real time this prompt has been going, not capped at its budget
+        // (0.79.0: it froze at "1m 30s/1m 30s" through every extension and
+        // through a whole cooldown). A leg sitting out a limit has no turn
+        // running; the platform's cooldownUntil says how long is left.
+        elapsedMs: started && !leg.paused && leg.startedAt ? now - leg.startedAt : null,
+        sinceSentMs: started && !leg.paused && leg.sentAt ? now - leg.sentAt : null,
         turnTimeoutMs: turnBudgetMs(leg),
       });
     }
@@ -2033,7 +2162,8 @@ function loaderStatus() {
     platStats[plat] = {
       done, total, failed,
       legs: legStats,
-      avgTurnMs: bestAvg != null ? Math.round(bestAvg) : null,
+      avgTurnMs: avgs.length ? Math.round(avgs.reduce((a, b) => a + b, 0) / avgs.length) : null,
+      cooldownUntil: pd.rateLimitedUntil || null,
       etaMs: anyRemaining && etaKnownForPlat && worstEta != null ? Math.round(worstEta) : null,
       prompts,
       // True once this platform's legs were paused by loader-rate-limited —
@@ -2079,6 +2209,8 @@ function loaderStatus() {
     // agrees on it, and null whenever the ETA is unknown rather than showing
     // a confidently wrong time.
     etaAt: etaKnown ? Date.now() + etaMs : null,
+    // Working time so far, paused time left out (0.79.0).
+    activeMs: loaderActiveMs(now),
     interrupted,
     platStats,
   };
@@ -2128,7 +2260,7 @@ async function loaderRunLeg(plat, leg) {
       failTurnAndAdvance(plat, leg, "tab closed", 500);
     } else {
       leg.tabId = null;
-      loader.paused = true;
+      setLoaderPaused(true);
       loader.interrupted = { at: Date.now(), reason: "a Loader tab was navigated away from the engine" };
       await persistLoaderState();
     }
@@ -2142,6 +2274,7 @@ async function loaderRunLeg(plat, leg) {
   leg.token = crypto.randomUUID();
   leg.expectedPrompt = prompt;
   leg.startedAt = Date.now();
+  leg.sentAt = 0;
   // The one prompt this leg can currently complete — see loaderOnCapture.
   leg.inFlightIdx = leg.idx;
   leg.streamExtensions = 0;
@@ -2428,6 +2561,9 @@ async function loaderStart(prompts, options) {
   // runs up by the campaign's id) could never find a single log entry.
   loader.runId = (options && options.geo && options.geo.runId) || crypto.randomUUID();
   loader.startedAt = Date.now();
+  loader.pausedMs = 0;
+  loader.pausedAt = null;
+  loader.windowId = null;
   // Clear any badge left over from a previous run's completion so it never
   // reads as this run's status by mistake.
   try {
@@ -2444,6 +2580,7 @@ async function loaderStart(prompts, options) {
     try {
       const win = await chrome.windows.create({ incognito: true });
       windowId = win.id;
+      loader.windowId = windowId;
     } catch (_) {
       loader.running = false;
       return { ok: false, error: "Failed to create Incognito window." };
@@ -2474,7 +2611,7 @@ async function loaderStart(prompts, options) {
     const pick = only ? (only[plat] || []).filter((i) => Number.isInteger(i) && i >= 0 && i < clean.length) : null;
     if (pick && !pick.length) continue;
     const list = pick ? pick.map((i) => clean[i]) : clean;
-    const shards = shardPrompts(list, CONCURRENT_TABS_PER_ENGINE).filter((s) => s.prompts.length > 0);
+    const shards = shardPrompts(list, tabsForEngine(plat)).filter((s) => s.prompts.length > 0);
     const legs = [];
     for (const shard of shards) {
       const created = windowId
@@ -2558,7 +2695,7 @@ async function geoRunRetry(profileId, runId, runOpts = {}) {
   const res = await loaderStart(m.prompts.map((p) => p.text), {
     platforms: Object.keys(m.only).filter((e) => m.only[e].length),
     only: m.only,
-    geo: { profileId, runId, retryBase: { captured: run.captured || 0, failed: run.failed || 0 } },
+    geo: { profileId, runId, retryBase: { captured: run.captured || 0, failed: run.failed || 0, activeMs: runTookMs(run) || 0 } },
     geoPrompts: m.prompts.map((p) => ({ id: p.id, tags: p.tags || [] })),
     skipAuthCheck: !!runOpts.skipAuthCheck || !!run.privateWindow,
     incognito: !!run.privateWindow,
@@ -2669,8 +2806,22 @@ function platformTotal(plat) {
 // and deciding which prompt it's filed under (attributeCaptureToPrompt) —
 // so they can never disagree. Loose on purpose: adapters normalise
 // whitespace differently from the string the run navigated with.
+// Folded hard enough that the same question still matches after an engine
+// echoes it back escaped or re-punctuated (0.79.0): signed-out ChatGPT reads
+// it from page markup, where quotes and ampersands arrive as entities, and a
+// real answer was dropped as a "late capture" over a curly apostrophe.
+const ENTITY = { amp: "&", quot: '"', apos: "'", lt: "<", gt: ">", nbsp: " " };
 function normPrompt(t) {
-  return String(t || "").replace(/\s+/g, " ").trim().toLowerCase();
+  return String(t || "")
+    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e) => {
+      if (e[0] === "#") { const n = e[1].toLowerCase() === "x" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10); return Number.isFinite(n) ? String.fromCodePoint(n) : m; }
+      return ENTITY[e.toLowerCase()] ?? m;
+    })
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\p{P}\p{S}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 function promptTextMatches(a, b) {
   const x = normPrompt(a), y = normPrompt(b);
@@ -2747,7 +2898,15 @@ function isUnusableCampaignPreview(leg, record) {
   return null;
 }
 
-function loaderOnCapture(tabId, record) {
+// A ChatGPT copy handed over because the stream went quiet may be an answer
+// paused mid-search (0.79.0). The turn waits this long for the stream's end
+// line or its close; a later copy replaces it, and without one this copy
+// completes the turn. Before 0.79.0 such a copy completed the turn at once,
+// the next prompt navigated the tab away, and the rest of the answer was lost.
+const QUIET_SETTLE_MS = 6000;
+const quietHolds = new WeakMap(); // leg -> { timer, record }
+
+function loaderOnCapture(tabId, record, end) {
   if (!loader.running) return;
   const found = legForTab(tabId);
   if (!found) return;
@@ -2836,11 +2995,30 @@ function loaderOnCapture(tabId, record) {
     }
   }
 
+  const held = quietHolds.get(leg);
+  if (held) { clearTimeout(held.timer); quietHolds.delete(leg); }
+  if (plat === "chatgpt" && end === "quiet") {
+    const token = leg.token, idx = leg.idx;
+    quietHolds.set(leg, {
+      record,
+      timer: setTimeout(() => {
+        quietHolds.delete(leg);
+        if (!loader.running || leg.token !== token || leg.idx !== idx || leg.inFlightIdx !== idx) return;
+        completeTurn(plat, leg, record);
+      }, QUIET_SETTLE_MS),
+    });
+    return;
+  }
+  completeTurn(plat, leg, record);
+}
+
+function completeTurn(plat, leg, record) {
   clearWatchdog(leg);
   const turnElapsedMs = leg.startedAt ? Date.now() - leg.startedAt : 0;
   if (leg.startedAt) leg.durations = [...(leg.durations || []), turnElapsedMs].slice(-DURATION_WINDOW);
   leg.outcomes = leg.outcomes || [];
   leg.outcomes[leg.idx] = { status: "done", reason: null, at: Date.now() };
+  noteFinish(leg);
   leg.lastAdvanceAt = Date.now();
   loader.done++;
   if (loader.platforms[plat]) loader.platforms[plat].limitStreak = 0;
@@ -2959,6 +3137,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const capEngine = platformFromUrl((msg.payload || {}).pageUrl || (msg.payload || {}).url);
           if (await capturePausedFor(sender)) { noteCapture(capEngine, { kind: "drop", reason: "paused" }); sendResponse({ ok: true, captureId: null, skipped: "paused" }); break; }
           let meta = null;
+          if (!loader.running) await restoreRunIfAny().catch((err) => logErr("restoreRunIfAny", err));
           if (loader.running) {
             const found = legForTab(tabId);
             if (found) {
@@ -3007,7 +3186,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           else if (res && res.captureId && !res.record) noteCapture(capEngine, { kind: "drop", reason: "empty", path: endpointShape((msg.payload || {}).url, (msg.payload || {}).pageUrl) });
           else if (res && res.record) noteCapture(capEngine, { kind: "stored", captureId: res.captureId });
           if (res && res.captureId) {
-            loaderOnCapture(tabId, res.record);
+            loaderOnCapture(tabId, res.record, (msg.payload || {}).end);
             // Notify the popup if it's open. Use a callback so a missing receiver
             // doesn't surface as an unhandled promise rejection.
             try {
@@ -3060,6 +3239,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const ok = !!(found && found.leg.token && found.leg.token === msg.token);
           if (ok && found.leg.sentToken !== msg.token) {
             found.leg.sentToken = msg.token;
+            found.leg.sentAt = Date.now();
             noteTabEvent(found.leg, "sent");
             persistLoaderState();
           }
@@ -3989,7 +4169,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse(await loaderStart(msg.prompts, msg.options));
           break;
         case "loader-pause":
-          loader.paused = true;
+          setLoaderPaused(true);
           for (const pd of Object.values(loader.platforms)) {
             for (const leg of pd.legs) clearWatchdog(leg);
           }
@@ -4018,7 +4198,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 }
                 if (!alive) {
                   try {
-                    const tab = await chrome.tabs.create({ url: engineBaseUrl(plat), active: false });
+                    // A signed-out run resumes in a private window, never
+                    // in the signed-in one (0.79.0).
+                    const winId = await resumeWindowId();
+                    const tab = winId != null
+                      ? await chrome.tabs.create({ windowId: winId, url: engineBaseUrl(plat), active: false })
+                      : await chrome.tabs.create({ url: engineBaseUrl(plat), active: false });
                     leg.tabId = tab.id;
                     chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
                   } catch (_) {
@@ -4030,7 +4215,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 }
               }
             }
-            loader.paused = false;
+            setLoaderPaused(false);
             loader.interrupted = null;
             await persistLoaderState();
             for (const [plat, pd] of Object.entries(loader.platforms)) {
@@ -4045,7 +4230,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             for (const leg of pd.legs) clearWatchdog(leg);
           }
           loader.running = false;
-          loader.paused = false;
+          setLoaderPaused(false);
           // "stopped" here, not "done" — deliberately no badge/notification:
           // the user just clicked Stop, they're already right there.
           await syncGeoRun("stopped");

@@ -55,6 +55,11 @@ console.log("\nthe record");
   check("marked signed out, and tied to its message", rec.platformSpecific.signedOut === true && rec.turnId === "m-1" && rec.conversationId === "c-0a1b", JSON.stringify([rec.turnId, rec.conversationId]));
   const partial = await adapt({ captureId: "so2", raw: stream.split("\n").slice(0, 2).join("\n"), url: "https://chatgpt.com/unauth-mweb/conversation/updates", pageUrl: "https://chatgpt.com/", capturedAt: 1 });
   check("a snapshot still being written doesn't finish a campaign turn", !turnAnswered(partial) && turnAnswered(rec), JSON.stringify(partial.platformSpecific.status));
+  // 0.79.0: the in-progress words are matched whole; a finished word that
+  // merely contains one ("stream_complete", "generated") is done.
+  const withStatus = (status) => ({ ...rec, platformSpecific: { ...rec.platformSpecific, status } });
+  check("'resolved', 'stream_complete' and 'generated' finish a turn; 'streaming' and 'pending' don't",
+    ["resolved", "stream_complete", "generated", "complete"].every((x) => turnAnswered(withStatus(x))) && ["streaming", "pending", "in_progress"].every((x) => !turnAnswered(withStatus(x))));
 }
 
 // 0.78.1, from the owner's Sunban campaign: 39% of signed-out ChatGPT

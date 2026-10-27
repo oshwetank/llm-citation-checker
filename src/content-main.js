@@ -356,24 +356,46 @@
     } catch (_) { /* never in the page's way */ }
   }
 
+  // The line that ends a ChatGPT answer stream (0.79.0): `data: [DONE]` and
+  // `message_stream_complete` signed in, `{"version":N,"type":"end"}` on the
+  // signed-out updates stream. Until 0.79.0 nothing looked for it, so an
+  // answer was handed over only when the stream closed, or after 30 s of
+  // silence, and an open stream that kept pinging never went silent: the
+  // answer sat on screen for a minute or two before it was recorded.
+  const CHATGPT_END_RE = /^data: \[DONE\]\s*$|"type":\s*"message_stream_complete"|^\{"version":\d+,"type":"end"\}\s*$/m;
+  // Keep-alive lines carry no answer, so they don't count as the stream
+  // talking: the quiet hand-off times silence in answer data only.
+  const KEEPALIVE_LINE_RE = /^(?::.*|event:\s*(?:ping|keepalive|heartbeat)|data:\s*(?:"?(?:ping|pong)"?|\{"type":\s*"(?:ping|pong|keepalive|heartbeat)"[^{}]*\})|\{"type":"(?:ping|pong|keepalive|heartbeat)"[^{}]*\})\s*$/i;
+  const keepAliveOnly = (chunk) => chunk.split("\n").every((l) => !l.trim() || KEEPALIVE_LINE_RE.test(l.trim()));
+
   // Drain a cloned stream to text without disturbing the branch the page reads.
   // `quietMs`: also hand it over whenever it goes quiet that long, for a
   // stream that may stay open after its answer (ChatGPT's signed-out
   // conversation/updates, 0.69.0); the copies are folded into one answer.
-  async function drain(stream, meta, { quietMs = 0 } = {}) {
+  // `endRe`: hand it over the moment the stream says the answer is done.
+  // Each copy says how it was handed over (`end`): "marker", "quiet" or
+  // "close" — a quiet copy may be an answer paused mid-search.
+  async function drain(stream, meta, { quietMs = 0, endRe = null } = {}) {
     const reader = stream.getReader();
     const decoder = new TextDecoder();
-    let raw = "", sent = 0, timer = null;
-    const hand = () => {
+    let raw = "", sent = 0, timer = null, ended = false;
+    const hand = (end) => {
       timer = null;
-      if (raw.length > sent && !isBackgroundSubscription(raw)) { sent = raw.length; emit({ ...meta, raw, capturedAt: Date.now() }); }
+      if (raw.length > sent && !isBackgroundSubscription(raw)) { sent = raw.length; emit({ ...meta, raw, end, capturedAt: Date.now() }); }
     };
     try {
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
-        raw += decoder.decode(value, { stream: true });
-        if (quietMs) { if (timer) clearTimeout(timer); timer = setTimeout(hand, quietMs); }
+        const chunk = decoder.decode(value, { stream: true });
+        raw += chunk;
+        if (endRe && !ended && endRe.test(raw.slice(-(chunk.length + 400)))) {
+          ended = true;
+          if (timer) { clearTimeout(timer); timer = null; }
+          hand("marker");
+          continue;
+        }
+        if (quietMs && !ended && !keepAliveOnly(chunk)) { if (timer) clearTimeout(timer); timer = setTimeout(() => hand("quiet"), quietMs); }
       }
     } catch (_) {
       /* partial capture is still useful */
@@ -381,7 +403,7 @@
     if (timer) clearTimeout(timer);
     raw += decoder.decode();
     if (raw && raw.length > sent && !isBackgroundSubscription(raw)) {
-      emit({ ...meta, raw, capturedAt: Date.now() });
+      emit({ ...meta, raw, end: ended ? "marker" : "close", capturedAt: Date.now() });
     }
   }
 
@@ -454,10 +476,11 @@
         const cloned = resp.clone();
         if (cloned.body) {
           // A stream may stay open after its answer (signed-out ChatGPT's
-          // updates stream did, 0.69.0): on ChatGPT the answer is also handed
-          // over once the stream has been quiet for 30 s — long past any
-          // pause inside an answer — and the copies fold into one answer.
-          drain(cloned.body, { url, reqBody, transport: unknownStream ? "fetch-stream" : "fetch" }, { quietMs: /\/unauth-mweb\//.test(url || "") ? 3000 : IS_CHATGPT ? 30000 : 0 });
+          // updates stream did, 0.69.0). On ChatGPT the answer is handed over
+          // at the stream's own end line, and otherwise once the answer data
+          // has been quiet for a few seconds; the copies fold into one
+          // answer, and the campaign runner waits on a quiet copy (0.79.0).
+          drain(cloned.body, { url, reqBody, transport: unknownStream ? "fetch-stream" : "fetch" }, IS_CHATGPT ? { quietMs: /\/unauth-mweb\//.test(url || "") ? 3000 : 4000, endRe: CHATGPT_END_RE } : {});
         } else if (typeof cloned.text === "function") {
           cloned.text().then((raw) => {
             if (raw && !isBackgroundSubscription(raw)) {

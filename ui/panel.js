@@ -41,7 +41,7 @@ import { aggregateSources } from "../src/lib/sources.js";
 import { analyzeFanout, FANOUT_BENCHMARK, titleMatchesQueries } from "../src/lib/fanout.js";
 import { sanitizeText, trimLabel } from "../src/lib/text-sanitize.js";
 import { pipelineOf, typeLabel, supplierOf, retrievalMix } from "../src/lib/retrieval.js";
-import { formatCooldown } from "../src/lib/pacing.js";
+import { formatCooldown, formatDuration, runTookMs } from "../src/lib/pacing.js";
 import { BUILD } from "../src/lib/build.js";
 import { netlogReportLines } from "../src/lib/netlog.js";
 import {
@@ -8680,7 +8680,7 @@ function renderRunHistory(profile) {
     if (!runs.length) { list.append("No runs yet."); return; }
     const table = el("div", { className: "loader-history-rows" });
     runs.forEach((run) => {
-      const dur = run.finishedAt ? fmtDuration(run.finishedAt - run.startedAt) : null;
+      const dur = run.finishedAt ? fmtDuration(runTookMs(run)) : null;
       const statusLabel = { running: "Running", done: "Done", stopped: "Stopped", failed: "Failed" }[run.status] || run.status;
       // Clickable: this list used to be read-only text, so seeing that one run
       // captured fewer than the others gave you no way to go and look at it.
@@ -9255,7 +9255,7 @@ async function buildDiagnosticReport() {
   lines.push("Campaign runs (most recent 20)");
   if (runsRes.ok && runsRes.runs.length) {
     runsRes.runs.slice(0, 20).forEach((run) => {
-      const dur = run.finishedAt ? fmtDuration(run.finishedAt - run.startedAt) : "still running / never finished";
+      const dur = run.finishedAt ? fmtDuration(runTookMs(run)) : "still running / never finished";
       lines.push(`  ${new Date(run.startedAt).toISOString()} · ${run.status} · ${(run.engines || []).join("+") || "—"} · ${run.captured || 0}/${run.expected || 0} captured${run.failed ? `, ${run.failed} failed` : ""} · took ${dur}`);
       const reasonEntries = Object.entries(run.reasons || {});
       if (reasonEntries.length) {
@@ -9608,12 +9608,7 @@ $("#deleteFiltered")?.addEventListener("click", async () => {
 // mm:ss for a duration; "<1s" for anything under a second so a fast turn
 // doesn't read as "0s" (which looks broken, not fast).
 function fmtDuration(ms) {
-  if (ms == null) return null;
-  const s = Math.round(ms / 1000);
-  if (s < 1) return "<1s";
-  const m = Math.floor(s / 60);
-  const r = s % 60;
-  return m ? `${m}m ${r}s` : `${r}s`;
+  return formatDuration(ms);
 }
 
 const PROMPT_STATUS_ICON = { done: "✓", failed: "✕", running: "●", pending: "…" };
@@ -9705,6 +9700,7 @@ function renderLoaderStatus(s) {
   const state = s.paused ? "Paused" : "Running";
   const summary = el("div", { className: "loader-summary" },
     el("b", {}, state), ` — ${s.done}/${s.total} done`,
+    s.activeMs ? el("span", { className: "muted loader-active" }, ` · running ${fmtDuration(s.activeMs)}`) : "",
     s.errors ? el("span", { className: "loader-errcount" }, ` · ${s.errors} failed`) : "",
     s.etaMs != null ? el("span", { className: "muted" }, ` · ~${fmtDuration(s.etaMs)} remaining`) : (s.paused ? "" : el("span", { className: "muted" }, " · estimating time remaining…")));
   box.append(summary);
@@ -9734,7 +9730,7 @@ function renderLoaderStatus(s) {
       el("span", { className: "loader-finish-icon" }, "🕒"),
       el("span", {}, "Expected to finish around "), el("b", {}, when),
       el("div", { className: "muted small" },
-        "Based on how long this run's prompts have actually been taking, including the pause between them. You can close this panel — the run keeps going, and you'll get a notification when it's done.")));
+        "Based on how fast this run's prompts have actually been finishing, failed ones and pauses included. You can close this panel — the run keeps going, and you'll get a notification when it's done.")));
   }
 
   /* Why it's paused, when it wasn't the user who paused it.
@@ -9812,7 +9808,11 @@ function renderLoaderStatus(s) {
     const activeLegs = (ps.legs || []).filter((l) => l.current);
     if (activeLegs.length) {
       for (const l of activeLegs) {
-        const elapsed = l.elapsedMs != null ? `${fmtDuration(l.elapsedMs)}/${fmtDuration(l.turnTimeoutMs)}` : "";
+        // The real time this prompt has taken so far (0.79.0), and past its
+        // limit it says so instead of freezing at "1m 30s/1m 30s".
+        const elapsed = l.elapsedMs == null ? ""
+          : l.elapsedMs > l.turnTimeoutMs ? `${fmtDuration(l.elapsedMs)}, past its ${fmtDuration(l.turnTimeoutMs)} limit`
+          : `${fmtDuration(l.elapsedMs)} of ${fmtDuration(l.turnTimeoutMs)}`;
         const tag = activeLegs.length > 1 ? `tab ${l.tab}: ` : "";
         sub.push(`${tag}"${l.current.slice(0, 28)}${l.current.length > 28 ? "…" : ""}"${elapsed ? ` (${elapsed})` : ""}`);
       }
@@ -9823,7 +9823,7 @@ function renderLoaderStatus(s) {
     // loader-rate-limited in background.js) — this tile is where that
     // becomes visible per engine, since the KPI row is the only place
     // showing each platform on its own rather than the run as a whole.
-    if (ps.paused) sub.unshift("⏸ paused");
+    if (ps.paused) sub.unshift(ps.cooldownUntil && ps.cooldownUntil > Date.now() ? `⏸ limit: resumes in ${fmtDuration(ps.cooldownUntil - Date.now())}` : "⏸ paused");
     kpis.append(el("div", { className: `geo-kpi${ps.paused ? " geo-kpi-paused" : ""}` },
       el("div", { className: "k-label" }, label),
       el("div", { className: "k-value" }, `${ps.done}/${ps.total}`),

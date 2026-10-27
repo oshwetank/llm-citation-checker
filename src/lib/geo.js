@@ -751,6 +751,12 @@ export function hasSignal(r) {
  * gateway turn is done only once Grok says the response completed and there
  * is answer text.
  */
+// The statuses a signed-out answer carries while it's still being written
+// ("pending", "streaming"); "resolved" and "complete" are done. Matched whole
+// (0.79.0): the old pattern also matched finished words such as
+// "stream_complete" or "generated", and such a capture waited out the turn.
+const STILL_WRITING_RE = /^(?:in_?progress|streaming|pending|running|generating|queued)$/i;
+
 export function turnAnswered(r) {
   if (!hasSignal(r)) return false;
   const ps = (r && r.platformSpecific) || {};
@@ -760,7 +766,7 @@ export function turnAnswered(r) {
   if (r.platform === "gemini" && ps.transport === "webchannel") return (r.answerChars || 0) > 0;
   // ChatGPT signed out (0.69.0): handed over whenever its stream goes quiet,
   // so a snapshot still being written doesn't count.
-  if (r.platform === "chatgpt" && ps.transport === "conversation-source") return (r.answerChars || 0) > 0 && !/progress|stream|pending|running|generat/i.test(ps.status || "");
+  if (r.platform === "chatgpt" && ps.transport === "conversation-source") return (r.answerChars || 0) > 0 && !STILL_WRITING_RE.test(ps.status || "");
   return true;
 }
 

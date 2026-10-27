@@ -209,6 +209,9 @@
         reqBody: data.reqBody || null,
         transport: data.transport || "fetch",
         raw: data.raw || "",
+        // How the page handed it over: at the stream's end line, when it
+        // closed, or after it went quiet (0.79.0).
+        end: typeof data.end === "string" ? data.end : null,
         capturedAt: data.capturedAt || Date.now(),
         pageUrl: location.href,
       },
@@ -745,7 +748,9 @@
         if (!text) return null;
         for (const re of LIMIT_PATTERNS) {
           const m = text.match(re);
-          if (m) return m[0].replace(/\s+/g, " ").slice(0, 120);
+          // With the words after it (0.79.0): "try again in 1 minute" follows
+          // the match, and without it every limit waited the default 30 min.
+          if (m) return text.slice(m.index, m.index + m[0].length + 120).replace(/\s+/g, " ").trim().slice(0, 200);
         }
         return null;
       };
@@ -1096,6 +1101,15 @@
           try { streaming = !!pick(sel.streaming); } catch (_) {}
           let isSignedOut = false;
           try { isSignedOut = signedOut(); } catch (_) {}
+          // How much answer the page shows (a count, never the text): an
+          // answer on screen that wasn't captured is a capture problem, not
+          // an engine that didn't reply (0.79.0).
+          let answerChars = 0;
+          try {
+            const msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
+            const last = msgs.length ? msgs[msgs.length - 1] : null;
+            answerChars = last ? (last.innerText || last.textContent || "").trim().length : 0;
+          } catch (_) {}
           reply({
             ok: true,
             stage: sentOk ? "sent" : submitTried ? "send-attempted" : injected ? "typed"
@@ -1107,6 +1121,7 @@
             visibility: document.visibilityState,
             focused: document.hasFocus(),
             streaming,
+            answerChars,
             signedOut: isSignedOut,
             trace: trace.join(" "),
           });

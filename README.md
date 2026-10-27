@@ -12,12 +12,18 @@ of its own**, except, if you turn on **Read the cited pages**, to the pages an a
 and, if you download the **built-in AI**, a one-time download of the model's files from
 Hugging Face. Nothing you capture ever leaves your device: the AI runs on your computer.
 
-> **v0.78.1** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.79.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **ChatGPT fast and reliable next to Gemini** (0.79.0).
+>   - **Recorded the moment the answer ends.** ChatGPT keeps its answer stream open after the answer, sending small keep-alive messages, and CitoSkeleton waited for it to close, which took a minute or two. It now records the answer as soon as ChatGPT says it's done.
+>   - **Long signed-out answers kept.** Signed-out answers can be over 8 MB, mostly page markup, and the longest were dropped as too large. The size limit now applies to the compressed copy.
+>   - **The run carries on after a usage limit.** When the cooldown ended, ChatGPT never actually restarted, and the prompt that hit the limit was failed. Now that prompt is asked again. "Try again in 1 minute" is read too, where every limit used to wait 30 minutes.
+>   - **One ChatGPT tab per run.** ChatGPT's tabs share one session, so two tabs hit its limit twice as fast. Gemini keeps two.
+>   - **Honest times.** Time left comes from how fast prompts have actually been finishing, failures and pauses included. Each prompt shows how long it has really been going. The run shows its working time, and "took" leaves out paused time, in hours and days.
 > - **Fixes from the Sunban Windows campaign** (0.78.1).
 >   - **Limit cards are no longer answers.** Signed out, about 4 in 10 of ChatGPT's replies were its "Message limit reached" card, and CitoSkeleton had stored them as answers that named no brand, which pulled ChatGPT's numbers down. They're now marked as ChatGPT refusing the turn:
 >     - they're left out of the numbers;
