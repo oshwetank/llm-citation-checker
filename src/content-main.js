@@ -350,7 +350,7 @@
   const GEMINI_PROBE_RE = /\/v1\/processSession\b|\/batchexecute\b/;
   let geminiUpload = ""; // the last WebChannel upload that carried a prompt
   function probe(url, method, reqBody, body) {
-    if (!IS_GEMINI || !debugOn() || !body) return;
+    if (!(IS_GEMINI || IS_CHATGPT) || !debugOn() || !body) return;
     try {
       window.postMessage({ __LCFC__: CHANNEL, type: "probe", url: String(url || "").slice(0, 2000), method: String(method || "GET"), reqBody: typeof reqBody === "string" ? reqBody.slice(0, 50000) : "", body: String(body).slice(0, 300000), at: Date.now() }, location.origin);
     } catch (_) { /* never in the page's way */ }
@@ -647,8 +647,30 @@
         // The capture check (0.73.1): a live socket the capture doesn't read
         // is named, in case an engine moves its answers onto one.
         if (!isTargetWs && !isThirdParty(wsUrl)) health("socket", wsUrl, { method: "WS" });
+        // ChatGPT's own socket (0.79.0): in the owner's 0.78.1 report each
+        // ChatGPT prompt opened ws.chatgpt.com/…/ws/user/… and no conversation
+        // request was seen at all, so the answer may travel here. With Debug
+        // capture on, its frames are kept as a probe for the owner to send,
+        // so a reader can be written from the real shape; the answer itself
+        // is read off the page meanwhile (content-iso chatgptPageCopy).
+        let probeFrames = [], probeBytes = 0, probeTimer = null;
+        const probeFlush = () => {
+          probeTimer = null;
+          if (!probeFrames.length) return;
+          probe(wsUrl, "WS", "", probeFrames.join("\n"));
+          probeFrames = []; probeBytes = 0;
+        };
+        const keepProbe = IS_CHATGPT && /(?:^|\.)ws\.chatgpt\.com$/i.test((() => { try { return new URL(wsUrl, location.href).hostname; } catch (_) { return ""; } })());
+        if (keepProbe) ws.addEventListener("close", probeFlush);
         ws.addEventListener("message", (ev) => {
           inFrames++;
+          if (keepProbe && debugOn() && probeBytes < 300000) {
+            const f = typeof ev.data === "string" ? ev.data : `[binary frame, ${(ev.data && (ev.data.byteLength || ev.data.size)) || 0} bytes]`;
+            probeFrames.push(f.slice(0, 300000 - probeBytes));
+            probeBytes += f.length;
+            if (probeTimer) clearTimeout(probeTimer);
+            probeTimer = setTimeout(probeFlush, 5000);
+          }
           const d = typeof ev.data === "string" ? ev.data : "";
           bytes += d.length;
           if (!shape && d.length >= 40 && !isBackgroundSubscription(d)) shape = netShape(d);

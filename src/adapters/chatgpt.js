@@ -790,11 +790,16 @@ async function adaptSource(rawCapture, opts, diag) {
   // ChatGPT's message-limit card is not an answer (0.78.1): no answer text,
   // and the limit on the record, so a campaign turn pauses for it and asks
   // again later instead of counting an answer that names nobody.
+  const pageCopy = /^\s*\{[^\n]*"harvestSource":"dom"/.test(String(rawCapture.raw || ""));
   const limit = limitOfSource(rawCapture.raw);
   const r = limit ? null : readConversationSource(rawCapture.raw);
   if (limit) diag.notes.push(`signed-out stream: ChatGPT refused the turn (${limit})`);
   else if (!r) { diag.usedFallback = true; diag.notes.push("signed-out stream: no answer text found in it"); }
-  const answerText = r ? cleanPassage(r.answer) : "";
+  // Line by line (0.79.0): cleanPassage folds all whitespace, and run over
+  // the whole answer it flattened every list and heading into one line —
+  // the structure brand detection reads (lib/brands.js), so names in a
+  // signed-out list were missed.
+  const answerText = r ? r.answer.split(/\r?\n/).map((l) => (l.trim() ? cleanPassage(l) : "")).join("\n").replace(/\n{3,}/g, "\n\n").trim() : "";
   const sources = (r ? r.sources : []).map((x) => makeSource({
     url: x.url, domain: domainOf(x.url), title: x.title || domainOf(x.url), snippet: x.snippet || null,
     outcome: x.cited ? "cited" : "fetched", type: x.cited ? "citation" : "search_result", platformSpecific: {},
@@ -805,7 +810,8 @@ async function adaptSource(rawCapture, opts, diag) {
   if (!userPrompt) { try { userPrompt = new URL(rawCapture.pageUrl).searchParams.get("q") || null; } catch (_) { /* no address */ } }
   const { brands: brandMentions, entities: baseEntities } = await detectBrandsForCapture(answerText, [], opts.tracked, sources, [], userPrompt);
   const entities = extractEntities(baseEntities, [], brandMentions, sources, []);
-  if (r && !r.queries.length) diag.notes.push("signed-out stream: no searches named in it");
+  if (pageCopy) diag.notes.push("read off the page: the network stream wasn't seen, so searches and pages read aren't known");
+  else if (r && !r.queries.length) diag.notes.push("signed-out stream: no searches named in it");
   return makeRecord({
     captureId: rawCapture.captureId, platform: "chatgpt", model: null,
     capturedAt: rawCapture.capturedAt, pageUrl: rawCapture.pageUrl, rawRef: rawCapture.captureId,
@@ -814,7 +820,9 @@ async function adaptSource(rawCapture, opts, diag) {
     userPrompt, searched: sources.length > 0 || fanout.search.length > 0, fanout, sources,
     products: [], places: [], entities, images: [], brandMentions,
     answerChars: answerText.length, answerText,
-    platformSpecific: { transport: "conversation-source", signedOut: true, wordCount: answerText.trim() ? answerText.trim().split(/\s+/).length : 0, ...(r && r.status ? { status: r.status } : {}), ...(limit ? { gatewayError: limit } : {}) },
+    // A copy read off the page (0.79.0, content-iso chatgptPageCopy) has the
+    // same shape but says nothing about sign-in, searches or what was read.
+    platformSpecific: { transport: pageCopy ? "page-copy" : "conversation-source", ...(pageCopy ? { pageCopy: true } : { signedOut: true }), wordCount: answerText.trim() ? answerText.trim().split(/\s+/).length : 0, ...(r && r.status ? { status: r.status } : {}), ...(limit ? { gatewayError: limit } : {}) },
     _extraction: diag,
   });
 }

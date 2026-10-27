@@ -202,6 +202,7 @@
     if (data.type !== "raw-conversation") return;
 
     pageHealth.forwarded++;
+    pageHealth.lastForwardAt = Date.now();
     tellWorker({
       type: "raw-conversation",
       payload: {
@@ -919,7 +920,7 @@
         // Positive proof the turn went out — native auto-submit landed, or our
         // own send did. Nothing left for this script but the limit watch.
         const why = submittedWhy();
-        if (why) { T("sent", why); sentOk = true; sentWhy = why; reportSent(token); dropQ(); return; }
+        if (why) { T("sent", why); sentOk = true; sentWhy = why; if (pageFacts.onAsked) pageFacts.onAsked(); reportSent(token); dropQ(); return; }
 
         if (ticks > MAX_WAIT_TICKS) {
           stopLoop();
@@ -1992,5 +1993,110 @@
         });
       }
     } catch (_) {}
+  })();
+  /* ---------- ChatGPT page copy (0.79.0) ----------
+   *
+   * The owner's 0.78.1 network report from a ChatGPT + Gemini run: on
+   * chatgpt.com the page made no conversation request at all that the page
+   * script could see, only a WebSocket to ws.chatgpt.com per prompt. The
+   * answer had moved where the fetch patch can't follow, so ChatGPT turns
+   * timed out while Gemini's were captured. This reads a finished answer off
+   * the page instead, the same way Perplexity and Grok have a page copy:
+   * the prompt, the answer as markdown (brand detection reads its structure,
+   * see domToMarkdown) and the links in it as cited sources.
+   *
+   * Only for a question asked in this page (a campaign send, or the user's
+   * Enter or send click), never for a conversation merely opened. Only once
+   * the answer has finished (no stop button, text unchanged for a few
+   * seconds), and only if no network capture arrived for it meanwhile:
+   * when ChatGPT's stream is readable, that copy is the better one. The
+   * copy is shaped like the signed-out stream the ChatGPT adapter already
+   * reads, marked as a page copy.
+   */
+  (function chatgptPageCopy() {
+    if (!/(?:^|\.)(?:chatgpt\.com|chat\.openai\.com)$/.test(location.hostname)) return;
+    const USER = '[data-message-author-role="user"]';
+    const BOT = '[data-message-author-role="assistant"]';
+    const STOP = '[data-testid="stop-button"], button[aria-label*="Stop" i]';
+    const SETTLE_MS = 3000;          // answer text unchanged this long = finished
+    const NETWORK_GRACE_MS = 2500;   // then this long for the stream's own copy
+    const GIVE_UP_MS = 6 * 60 * 1000;
+    let watch = null;
+    let lastSig = "";
+
+    const lastOf = (sel) => { const all = document.querySelectorAll(sel); return all.length ? all[all.length - 1] : null; };
+    // `before`: the questions on the page before this one. A key press or
+    // click comes before the page adds the question, so it reads them then;
+    // a campaign send is reported once the question is already on the page,
+    // and its page was opened for that one question.
+    const asked = (before) => {
+      const at = Date.now();
+      if (watch && at - watch.askedAt < 1500) return;
+      const u = lastOf(USER);
+      if (watch && watch.stop) watch.stop();
+      watch = before ? { ...before } : { userCount: document.querySelectorAll(USER).length, userText: u ? (u.innerText || "").trim() : "" };
+      Object.assign(watch, { askedAt: at, text: "", changedAt: 0, doneAt: 0, stop: null });
+      const w = watch;
+      w.stop = startClock(1000);
+      const off = onClockTick(() => check(w));
+      const prevStop = w.stop;
+      w.stop = () => { off(); prevStop(); };
+    };
+    const finish = (w) => { if (w.stop) { w.stop(); w.stop = null; } if (watch === w) watch = null; };
+
+    const check = (w) => {
+      const now = Date.now();
+      if (now - w.askedAt > GIVE_UP_MS) return finish(w);
+      const users = document.querySelectorAll(USER);
+      const u = users.length ? users[users.length - 1] : null;
+      const prompt = u ? (u.innerText || "").trim() : "";
+      // A new question must be on the page first.
+      if (!u || (users.length <= w.userCount && prompt === w.userText)) return;
+      const bot = lastOf(BOT);
+      if (!bot || (u.compareDocumentPosition(bot) & Node.DOCUMENT_POSITION_FOLLOWING) === 0) return;
+      const text = (bot.innerText || "").trim();
+      if (text !== w.text) { w.text = text; w.changedAt = now; w.doneAt = 0; return; }
+      if (text.length < 50 || document.querySelector(STOP) || now - w.changedAt < SETTLE_MS) return;
+      if (!w.doneAt) { w.doneAt = now; return; }
+      if (now - w.doneAt < NETWORK_GRACE_MS) return;
+      // The stream's own copy arrived after the question: nothing to add.
+      if ((pageHealth.lastForwardAt || 0) > w.askedAt) return finish(w);
+      const answer = domToMarkdown(bot).trim() || text;
+      const sig = `${prompt}::${answer.length}::${answer.slice(-120)}`;
+      if (sig === lastSig) return finish(w);
+      lastSig = sig;
+      const refs = [];
+      const seen = new Set();
+      for (const a of bot.querySelectorAll("a[href]")) {
+        const href = a.href || "";
+        if (!/^https?:/i.test(href) || /(?:^|\.)(?:chatgpt\.com|openai\.com)\//i.test(href.replace(/^https?:\/\//, "")) || seen.has(href)) continue;
+        seen.add(href);
+        refs.push({ url: href, title: (a.innerText || a.getAttribute("aria-label") || "").trim().slice(0, 300) || null });
+        if (refs.length >= 80) break;
+      }
+      const conversationId = (location.pathname.match(/\/c\/([\w-]+)/) || [])[1] || null;
+      const msgId = bot.getAttribute("data-message-id") || `page-${now}`;
+      const ev = (detail) => JSON.stringify({ version: 2, type: "conversation-source", harvestSource: "dom", detail: { streamType: "conversation", kind: "message", conversationId, ...detail } });
+      const raw = [
+        ev({ role: "user", messageId: u.getAttribute("data-message-id") || `page-u-${now}`, markdown: prompt }),
+        ev({ messageId: msgId, revision: 1, status: "resolved", markdown: answer, references: refs }),
+      ].join("\n");
+      tellWorker({
+        type: "raw-conversation",
+        payload: { url: location.href, reqBody: null, transport: "page-copy", raw, end: "page", capturedAt: now, pageUrl: location.href },
+      });
+      finish(w);
+    };
+
+    // The question going out: a campaign send (pageFacts.onAsked) or the
+    // user's own Enter or send click in the composer.
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.target && e.target.closest && e.target.closest('#prompt-textarea, form, [contenteditable="true"]')) asked();
+    }, true);
+    document.addEventListener("click", (e) => {
+      const b = e.target && e.target.closest && e.target.closest('#composer-submit-button, [data-testid="send-button"], button[aria-label*="Send" i]');
+      if (b) asked();
+    }, true);
+    pageFacts.onAsked = () => asked({ userCount: 0, userText: "" });
   })();
 })();

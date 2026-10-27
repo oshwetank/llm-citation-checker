@@ -940,16 +940,19 @@ async function enforceRetention(settings, keepId) {
  * Dashboard counts each question once. Raw copies are all kept. */
 const REPAIR_KEY = "lcfcRepaired0621";
 const REPAIR_KEY_0781 = "lcfcRepaired0781";
+// 0.79.0: signed-out ChatGPT answers keep their lines (adaptSource), so their
+// lists and headings reach brand detection: read once more on update.
+const REPAIR_KEY_0790 = "lcfcRepaired0790";
 async function repairOnce() {
-  const got = await chrome.storage.local.get([REPAIR_KEY, REPAIR_KEY_0781]);
+  const got = await chrome.storage.local.get([REPAIR_KEY, REPAIR_KEY_0781, REPAIR_KEY_0790]);
   if (!got || !got[REPAIR_KEY]) {
     await reprocessAll();
-    await chrome.storage.local.set({ [REPAIR_KEY]: Date.now(), [REPAIR_KEY_0781]: Date.now() });
+    await chrome.storage.local.set({ [REPAIR_KEY]: Date.now(), [REPAIR_KEY_0781]: Date.now(), [REPAIR_KEY_0790]: Date.now() });
     return;
   }
-  if (!got[REPAIR_KEY_0781]) {
-    await reprocessSignedOutChatGpt().catch((e) => logErr("repair:0781", e));
-    await chrome.storage.local.set({ [REPAIR_KEY_0781]: Date.now() });
+  if (!got[REPAIR_KEY_0781] || !got[REPAIR_KEY_0790]) {
+    await reprocessSignedOutChatGpt().catch((e) => logErr("repair:0790", e));
+    await chrome.storage.local.set({ [REPAIR_KEY_0781]: Date.now(), [REPAIR_KEY_0790]: Date.now() });
   }
 }
 

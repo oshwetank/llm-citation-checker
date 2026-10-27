@@ -52,6 +52,11 @@ console.log("\nthe record");
   check("three cited sources and one search", rec.sources.filter((x) => x.outcome === "cited").length === 3 && rec.fanout.search.length === 1, JSON.stringify([rec.sources.length, rec.fanout.search.length]));
   const brands = rec.brandMentions.map((b) => b.brand);
   check("brands named in the answer", brands.includes("Zento") && brands.includes("Kovo"), brands.join(", "));
+  // 0.79.0: the answer keeps its lines, so a list reaches brand detection as
+  // a list; folded onto one line, "Lumora" (named only in a list item, and
+  // not tracked) was missed.
+  check("the answer keeps its lines", rec.answerText.split("\n").length >= 3 && /^- \*\*Kovo Weave\*\*/m.test(rec.answerText), JSON.stringify(rec.answerText));
+  check("an untracked brand named only in a list item is found", brands.includes("Lumora"), brands.join(", "));
   check("marked signed out, and tied to its message", rec.platformSpecific.signedOut === true && rec.turnId === "m-1" && rec.conversationId === "c-0a1b", JSON.stringify([rec.turnId, rec.conversationId]));
   const partial = await adapt({ captureId: "so2", raw: stream.split("\n").slice(0, 2).join("\n"), url: "https://chatgpt.com/unauth-mweb/conversation/updates", pageUrl: "https://chatgpt.com/", capturedAt: 1 });
   check("a snapshot still being written doesn't finish a campaign turn", !turnAnswered(partial) && turnAnswered(rec), JSON.stringify(partial.platformSpecific.status));

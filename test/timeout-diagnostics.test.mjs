@@ -157,8 +157,8 @@ try {
       competitors: [], engines: ["chatgpt", "grok"], locked: true,
       createdAt: Date.now(), lastRunAt: Date.now(), deletedAt: null,
     });
-    // Two prompts on one engine run in its two tabs at once, so both
-    // watchdogs fire in the same ~90s.
+    // ChatGPT runs in one tab (0.79.0), so its two prompts run one after
+    // the other: two ~90s watchdogs back to back.
     for (const text of texts) {
       await put("trackedPrompts", { id: crypto.randomUUID(), profileId: id, text, tags: [], active: true, createdAt: Date.now() });
     }
@@ -169,12 +169,12 @@ try {
   const started = await ask({ type: "geo-run-start", profileId, skipAuthCheck: true });
   check("run started", started && started.ok, JSON.stringify(started));
 
-  console.log("\nWaiting out the turns' real watchdogs (~90s)…");
+  console.log("\nWaiting out the turns' real watchdogs (~90s each, ChatGPT's one after the other)…");
   let entry = null;
   let unreadableEntry = null;
   let grokEntry = null;
   let hungEntry = null;
-  const deadline = Date.now() + 150000;
+  const deadline = Date.now() + 260000;
   while ((!entry || !unreadableEntry || !grokEntry || !hungEntry) && Date.now() < deadline) {
     await page.waitForTimeout(5000);
     const log = await ask({ type: "error-log", limit: 100 });

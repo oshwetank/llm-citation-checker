@@ -150,19 +150,24 @@ try {
   await page.waitForTimeout(1200);
   const after = await tabCount();
   const opened = after - before;
-  // 2 engines x 2 tabs each (5 prompts splits into two non-empty shards per
-  // engine) = 4 new tabs. This is the headline assertion: concurrency is
+  // Gemini in 2 tabs (5 prompts split into two non-empty shards) plus ChatGPT
+  // in 1 (0.79.0: its tabs share one session, see pacing.js TABS_PER_ENGINE)
+  // = 3 new tabs. This is the headline assertion: concurrency is
   // supposed to open MORE than one tab per engine now, and this is the only
   // way to prove that really happened rather than trusting a status report
   // that could be wrong in the same way the tabs are.
-  check("exactly 4 new real tabs were opened (2 engines x 2 concurrent tabs)",
-    opened === 4, `before=${before} after=${after} opened=${opened}`);
+  check("exactly 3 new real tabs were opened (Gemini in 2, ChatGPT in 1)",
+    opened === 3, `before=${before} after=${after} opened=${opened}`);
 
-  console.log("\nloader-status reports 2 legs per engine, correctly sharded");
+  console.log("\nloader-status reports Gemini's 2 legs, correctly sharded, and ChatGPT's 1");
   const status = await ask({ type: "loader-status" });
   check("a run is reported as running", status && status.running === true, JSON.stringify(status).slice(0, 200));
 
-  for (const plat of ["chatgpt", "gemini"]) {
+  {
+    const ps = status.platStats && status.platStats.chatgpt;
+    check("chatgpt: one leg holding the whole list", ps && ps.total === 5 && Array.isArray(ps.legs) && ps.legs.length === 1 && ps.legs[0].current === PROMPTS[0], JSON.stringify(ps && ps.legs));
+  }
+  for (const plat of ["gemini"]) {
     const ps = status.platStats && status.platStats[plat];
     check(`${plat}: platStats exists`, !!ps, JSON.stringify(status.platStats).slice(0, 300));
     if (!ps) continue;
@@ -196,7 +201,7 @@ try {
   console.log("\nWaiting past the stagger window: tab 2 should now have started too");
   await page.waitForTimeout(3000); // LEG_START_STAGGER_MS (2500) + margin
   const status2 = await ask({ type: "loader-status" });
-  for (const plat of ["chatgpt", "gemini"]) {
+  for (const plat of ["gemini"]) {
     const ps = status2.platStats && status2.platStats[plat];
     const leg2 = ps && ps.legs && ps.legs[1];
     check(`${plat}: tab 2 has started after the stagger window elapsed`,
