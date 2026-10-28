@@ -8,16 +8,22 @@ those they *cite* versus merely *fetch*, and which brands they name — then mea
 brand's visibility against competitors over time.
 
 Everything is stored **locally in your browser**. The extension makes **no network requests
-of its own**, except, if you turn on **Read the cited pages**, to the pages an answer cited,
-and, if you download the **built-in AI**, a one-time download of the model's files from
-Hugging Face. Nothing you capture ever leaves your device: the AI runs on your computer.
+of its own**, except, if you turn on **Read the cited pages**, to the pages an answer cited;
+if you download the **built-in AI**, a one-time download of the model's files from
+Hugging Face; and, once accounts are switched on, when you sign in, share a campaign by
+code, open a code, or leave an email for updates. Nothing you capture ever leaves your
+device unless you choose to share that campaign: the AI runs on your computer.
 
-> **v0.81.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.82.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **Share a campaign, so someone else can run it** (0.82.0).
+>   - **As a file.** Campaigns → ⋯ → Share campaign… saves the whole campaign as one `.cito` file: its setup, prompts and tags, every run, the answers, and the raw captures behind them. Whoever gets it opens it from Campaigns → Import… and has the same campaign, with the same numbers, ready to run on their own computer. Nothing of theirs is overwritten: an import is always a new campaign.
+>   - **By code, with an account.** Sign in under About → Account with a code sent by email (no password). Then Share gives a 10-letter code that opens the campaign for anyone signed in, for 90 days, and About → Account lists what you've shared, with Stop sharing.
+>   - **Accounts aren't switched on in this build.** The server is in `server/` (Vercel + Supabase) with its setup steps; until it's deployed, every place that offers a code says so, and sharing by file works regardless. The update email from 0.81.0 is sent once the server is live.
 > - **A welcome guide and email sign-up** (0.81.0).
 >   - **A full-page welcome, once.** When CitoSkeleton is installed, or updated by someone who hasn't seen it, it opens a page of its own, in pictures with little text. It covers what the tool does, Analyze, the Dashboard, Campaigns, and Ask and share. It replaces the tour that was drawn over the panel and kept coming back. About → "Open the guide" shows it again.
 >   - **Email for updates.** The last step asks for an email, with a plain note: it's only for news about updates and offers, never sold or shared with anyone, and only the developer sees it.

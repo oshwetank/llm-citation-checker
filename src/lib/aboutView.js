@@ -20,6 +20,7 @@ export const ABOUT_STEPS = [
 
 /** What's new — the redesign, newest first. */
 export const ABOUT_NEWS = [
+  { head: "Share a campaign.", body: "Campaigns → ⋯ → Share campaign… saves it as one file someone else opens with Import… and runs on their own computer, with the same answers and numbers." },
   { head: "About, rebuilt.", body: "An overview, a searchable glossary of every metric, settings you can undo, data & tools, and diagnostics, each on its own page." },
   { head: "A campaign's results are one board.", body: "Pick a run, an engine, tags and a brand; see it by kind of answer, product cards, every competitor, each engine, each run and every prompt." },
   { head: "A page for each competitor.", body: "Head to head against your brand, engine by engine and prompt by prompt, with the sites that cite one and not the other." },

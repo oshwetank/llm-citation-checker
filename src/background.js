@@ -31,6 +31,10 @@ import { campaignReport } from "./lib/campaignReport.js";
 import { findPrevious } from "./lib/analyzeView.js";
 import { summarizeRunDiagnostics } from "./lib/diagnosticsSummary.js";
 import { gzipString, gunzipToString } from "./lib/gzip.js";
+import { campaignParts, makeBundle, encodeBundle, decodeBundle, readBundle, bundleFileName, bufToB64, b64ToBuf } from "./lib/campaignBundle.js";
+import { makeCloud, cloudReady, CLOUD_SESSION_KEY } from "./lib/cloud.js";
+import { CLOUD } from "./lib/cloudConfig.js";
+import { checkEmail } from "./lib/emailCheck.js";
 import { citedUrls, pageVerdict, pageSummary, wordCount, PAGE_TTL_MS } from "./lib/pageText.js";
 import { appendRing } from "./lib/netlog.js";
 import { offersFrom, attachOffers, productUpdateFrom, productPanelFrom, formChoicesFrom, cardIndexFor } from "./lib/offers.js";
@@ -269,8 +273,88 @@ async function openWelcomeOnce({ evenAutomated = false } = {}) {
   }
 }
 
+/* Accounts and update emails (0.82.0, lib/cloud.js). Off while
+ * lib/cloudConfig.js is empty: nothing is sent and the panel says so. */
+const cloudOn = () => cloudReady(CLOUD);
+const cloud = makeCloud(CLOUD, {
+  load: async () => (await chrome.storage.local.get(CLOUD_SESSION_KEY))[CLOUD_SESSION_KEY] || null,
+  save: async (s) => (s ? chrome.storage.local.set({ [CLOUD_SESSION_KEY]: s }) : chrome.storage.local.remove(CLOUD_SESSION_KEY)),
+});
+
+// The email left on the welcome page or in Settings goes to the server once
+// there is one; what was sent, and its unsubscribe token, is kept apart from
+// citoSignup so Remove can still unsubscribe after the address is cleared.
+const SIGNUP_SENT_KEY = "citoSignupSent";
+async function syncSignup() {
+  if (!cloudOn()) return { ok: true, sent: false, reason: "off" };
+  const got = await chrome.storage.local.get(["citoSignup", SIGNUP_SENT_KEY]);
+  const want = got.citoSignup && got.citoSignup.email && got.citoSignup.consent ? got.citoSignup.email : "";
+  const sent = got[SIGNUP_SENT_KEY] || null;
+  try {
+    if (sent && sent.email !== want) {
+      await cloud.unsubscribe(sent.email, sent.token).catch((e) => { if (e.status !== 404) throw e; });
+      await chrome.storage.local.remove(SIGNUP_SENT_KEY);
+    }
+    if (want && (!sent || sent.email !== want)) {
+      const r = await cloud.subscribe(want, { source: got.citoSignup.source || "extension" });
+      await chrome.storage.local.set({ [SIGNUP_SENT_KEY]: { email: want, token: r.token, at: Date.now() }, citoSignup: { ...got.citoSignup, sent: true } });
+    }
+    return { ok: true, sent: !!want };
+  } catch (e) {
+    // Tried again at the next start; the address stays on this computer.
+    logErr("signup", e);
+    return { ok: false, error: e.message };
+  }
+}
+
+chrome.runtime.onStartup?.addListener(() => { syncSignup(); });
+
+/* A campaign as a .cito file (0.82.0, lib/campaignBundle.js). Its raw
+ * captures are read one by one, by key: the raw store can be large. */
+async function exportCampaignFile(profileId, { includeRaw = true } = {}) {
+  const profile = await db.get("profiles", profileId);
+  if (!profile) return { ok: false, error: "Campaign not found." };
+  const parts = campaignParts(profile.id, {
+    prompts: await db.getAll("trackedPrompts"),
+    runs: await db.getAll("geoRuns"),
+    records: await db.getAll("derived"),
+  });
+  if (includeRaw) {
+    const ids = [...new Set(parts.records.flatMap((r) => [r.captureId, ...(r.mergedFrom || [])]))];
+    for (const id of ids) { const row = await db.get("raw", id); if (row) parts.raws.push(row); }
+  }
+  const s = (await chrome.storage.local.get(CLOUD_SESSION_KEY))[CLOUD_SESSION_KEY];
+  const bundle = makeBundle({ profile, ...parts, includeRaw, appVersion: chrome.runtime.getManifest().version, from: s && s.user && s.user.name ? { name: s.user.name } : null });
+  try {
+    const file = await encodeBundle(bundle);
+    return { ok: true, file, fileName: bundleFileName(profile), name: profile.name || "Campaign", counts: bundle.counts };
+  } catch (e) {
+    return { ok: false, error: e.message, tooLarge: true };
+  }
+}
+
+async function importCampaignBundle(bundle, { from = "" } = {}) {
+  const live = (await db.getAll("profiles")).filter((p) => !p.deletedAt);
+  if (live.length >= MAX_PROFILES) return { ok: false, error: `You can track at most ${MAX_PROFILES} campaigns. Delete one, then import this again.` };
+  const taken = new Set(live.map((p) => (p.name || "").trim().toLowerCase()));
+  const base = (bundle.profile.name || "Shared campaign").trim();
+  let name = base;
+  for (let i = 1; taken.has(name.toLowerCase()); i++) name = i === 1 ? `${base} (shared)` : `${base} (shared ${i})`;
+  if (from && !(bundle.from && bundle.from.name)) bundle = { ...bundle, from: { name: from } };
+  const out = readBundle(bundle, { name });
+  for (const p of out.prompts) await db.put("trackedPrompts", p);
+  for (const r of out.runs) await db.put("geoRuns", r);
+  for (const r of out.raws) await db.put("raw", r);
+  for (const r of out.records) await db.put("derived", r);
+  // The campaign last, so a half-finished import never shows up as one.
+  await db.put("profiles", out.profile);
+  broadcast({ type: "capture-updated" });
+  return { ok: true, profileId: out.profile.id, name: out.profile.name, counts: { prompts: out.prompts.length, runs: out.runs.length, answers: out.records.length } };
+}
+
 chrome.runtime.onInstalled.addListener((details) => {
   if (details && details.reason === "update") repairOnce().catch((e) => logErr("repair", e));
+  syncSignup();
   if (details && (details.reason === "install" || details.reason === "update")) openWelcomeOnce();
   chrome.tabs.query({ url: AI_TAB_MATCHES }, (tabs) => {
     for (const t of tabs || []) {
@@ -3573,6 +3657,70 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
 
+        // Share a campaign as a file, and open one (0.82.0). The file is the
+        // whole campaign: setup, prompts, runs, answers and raw captures.
+        case "campaign-bundle-export": {
+          const r = await exportCampaignFile(msg.profileId, { includeRaw: msg.includeRaw !== false });
+          sendResponse(r.ok ? { ok: true, data: bufToB64(r.file), bytes: r.file.byteLength, fileName: r.fileName, counts: r.counts } : r);
+          break;
+        }
+        case "campaign-bundle-import": {
+          let bundle;
+          try { bundle = await decodeBundle(b64ToBuf(msg.data)); } catch (e) { sendResponse({ ok: false, error: e.message }); break; }
+          sendResponse(await importCampaignBundle(bundle));
+          break;
+        }
+
+        // Accounts and shared codes (0.82.0). Each says plainly when accounts
+        // aren't switched on, rather than failing somewhere later.
+        case "cloud-status": {
+          const s = cloudOn() ? await cloud.session().catch(() => null) : null;
+          sendResponse({ ok: true, ready: cloudOn(), signedIn: !!s, user: s ? s.user : null });
+          break;
+        }
+        case "cloud-request-code":
+        case "cloud-verify":
+        case "cloud-sign-out":
+        case "cloud-profile-save":
+        case "cloud-shares":
+        case "cloud-share-revoke":
+        case "campaign-share-upload":
+        case "campaign-share-open": {
+          if (!cloudOn()) { sendResponse({ ok: false, off: true, error: "Accounts aren't switched on yet. Share the campaign as a file instead." }); break; }
+          try {
+            if (msg.type === "cloud-request-code") {
+              const r = checkEmail(msg.email);
+              if (!r.ok) { sendResponse({ ok: false, error: r.message }); break; }
+              await cloud.requestCode(r.email);
+              sendResponse({ ok: true, email: r.email });
+            } else if (msg.type === "cloud-verify") {
+              const s = await cloud.verifyCode(msg.email, msg.code);
+              const p = await cloud.getProfile().catch(() => null);
+              if (p && p.display_name) await chrome.storage.local.set({ [CLOUD_SESSION_KEY]: { ...s, user: { ...s.user, name: p.display_name } } });
+              sendResponse({ ok: true, user: { ...s.user, name: (p && p.display_name) || "" } });
+            } else if (msg.type === "cloud-sign-out") {
+              sendResponse(await cloud.signOut());
+            } else if (msg.type === "cloud-profile-save") {
+              sendResponse({ ok: true, profile: await cloud.saveProfile(msg.name) });
+            } else if (msg.type === "cloud-shares") {
+              sendResponse({ ok: true, shares: await cloud.shareList() });
+            } else if (msg.type === "cloud-share-revoke") {
+              sendResponse(await cloud.shareRevoke(msg.code));
+            } else if (msg.type === "campaign-share-upload") {
+              const r = await exportCampaignFile(msg.profileId, { includeRaw: msg.includeRaw !== false });
+              if (!r.ok) { sendResponse(r); break; }
+              const up = await cloud.shareUpload(r.file, { name: r.name, counts: r.counts });
+              sendResponse({ ok: true, code: up.code, expiresAt: up.expiresAt, bytes: r.file.byteLength });
+            } else {
+              const got = await cloud.shareFetch(msg.code);
+              sendResponse(await importCampaignBundle(await decodeBundle(got.bytes), { from: got.meta.from }));
+            }
+          } catch (e) {
+            sendResponse({ ok: false, error: e.message, signedOut: e.status === 401 });
+          }
+          break;
+        }
+
         case "geo-prompt-list": {
           const prompts = await db.getAll("trackedPrompts");
           const scoped = msg.profileId ? prompts.filter((p) => p.profileId === msg.profileId) : prompts;
@@ -3931,10 +4079,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, opened: await openWelcomeOnce({ evenAutomated: !!msg.evenAutomated }) });
           break;
         // The email given on the welcome page or in Settings (0.81.0). Kept on
-        // this computer; sent to the developer's server once it exists (0.82.0).
+        // this computer; sent to the developer's server once accounts are
+        // switched on (0.82.0), and unsubscribed from there on Remove.
         case "signup-saved":
         case "signup-removed":
-          sendResponse({ ok: true });
+          sendResponse(await syncSignup());
           break;
         case "run-queue":
           sendResponse({ ok: true, queue: await loadRunQueue(), runningProfileId: (loader.running && loader.options && loader.options.geo && loader.options.geo.profileId) || null });

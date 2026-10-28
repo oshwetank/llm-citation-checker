@@ -1,0 +1,8 @@
+{
+  "name": "citoskeleton-server",
+  "private": true,
+  "version": "0.82.0",
+  "description": "CitoSkeleton accounts, update emails and shared campaigns: Vercel functions over Supabase.",
+  "type": "module",
+  "engines": { "node": ">=20" }
+}

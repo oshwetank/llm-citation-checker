@@ -43,6 +43,7 @@ import { sanitizeText, trimLabel } from "../src/lib/text-sanitize.js";
 import { pipelineOf, typeLabel, supplierOf, retrievalMix } from "../src/lib/retrieval.js";
 import { formatCooldown, formatDuration, runTookMs } from "../src/lib/pacing.js";
 import { checkEmail } from "../src/lib/emailCheck.js";
+import { bufToB64, b64ToBuf } from "../src/lib/campaignBundle.js";
 import { BUILD } from "../src/lib/build.js";
 import { netlogReportLines } from "../src/lib/netlog.js";
 import {
@@ -5535,6 +5536,7 @@ let currentFilteredRecs = [];
 // The canvas's line glyphs (Glyph.dc.html): 24×24, stroked in currentColor.
 // Static markup, never built from data.
 const GLYPH_PATHS = {
+  user: '<circle cx="12" cy="8.5" r="3.6"/><path d="M4.5 20c1.2-3.6 4-5.5 7.5-5.5s6.3 1.9 7.5 5.5"/>',
   filter: '<path d="M3 5h18l-7 8v6l-4 2v-8z"/>',
   globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18"/><path d="M12 3a14 14 0 0 0 0 18"/>',
   noglobe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18"/><path d="M12 3a14 14 0 0 0 0 18"/><path d="M4 4l16 16" stroke-width="2.6"/>',
@@ -6800,6 +6802,9 @@ function renderCampaignSwitcher() {
       if (r.ok) { geoActiveId = r.profile.id; campaignManageOpen = false; loadGeo(); } else showToast(r.error, "error");
     };
     switcher.append(add);
+    const imp = el("button", { className: "geo-chip add", type: "button", id: "cpImport", title: "Open a campaign someone shared with you" }, "Import…");
+    imp.onclick = () => openImportDialog();
+    switcher.append(imp);
   }
   return switcher;
 }
@@ -7656,7 +7661,10 @@ function renderCampaignEmptyState() {
     const r = await send({ type: "geo-profile-save", profile: makeProfile({ name: "My first campaign" }) });
     if (r.ok) { geoActiveId = r.profile.id; loadGeo(); } else showToast(r.error, "error");
   };
-  box.append(el("div", { className: "ft-actions" }, cta));
+  // Someone sent you a campaign (0.82.0): open it without making one first.
+  const imp = el("button", { className: "btn ghost", type: "button", id: "cpImportFirst" }, "Import a shared campaign…");
+  imp.onclick = () => openImportDialog();
+  box.append(el("div", { className: "ft-actions" }, cta, imp));
   return box;
 }
 
@@ -8593,6 +8601,120 @@ function renderPromptManager(profile, dis, persistDetails) {
 // capture re-renders the tab) shows Pause / Stop straight away rather than
 // "Run again" until the next status reply.
 let cpLive = { live: false, paused: false, profileId: null };
+
+/* Share a campaign, and open one someone shared (0.82.0). Asked: "transfer
+ * a campaign to another person who can then run it on their own system".
+ * Always as a .cito file; by a 10-character code too once accounts are
+ * switched on and you're signed in (About → Account). */
+function saveBytes(fileName, b64) {
+  const blob = new Blob([b64ToBuf(b64)], { type: "application/octet-stream" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = fileName;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+const fmtMB = (bytes) => (bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);
+
+async function openShareDialog(profile) {
+  document.getElementById("share-modal-backdrop")?.remove();
+  const backdrop = el("div", { id: "share-modal-backdrop", className: "modal-backdrop" });
+  const modal = el("div", { className: "modal-content sh-modal", role: "dialog", "aria-modal": "true", "aria-labelledby": "sh-title" });
+  const closeBtn = el("button", { className: "modal-close-btn", type: "button", title: "Close", "aria-label": "Close" }, "×");
+  modal.append(el("div", { className: "modal-header" }, el("div", {}, el("h3", { className: "modal-title", id: "sh-title" }, `Share ${profile.name || "campaign"}`), el("div", { className: "muted small" }, "They get the setup, prompts, runs and answers, and can run it themselves.")), closeBtn));
+  const raw = el("input", { type: "checkbox", id: "shRaw", checked: true });
+  const status = el("p", { className: "sh-status", role: "status", id: "shStatus" });
+  const fileBtn = el("button", { className: "btn primary", type: "button", id: "shFile" }, "Download file (.cito)");
+  const codeBox = el("div", { className: "sh-code-box", id: "shCodeBox" });
+  modal.append(el("div", { className: "modal-body sh-body" },
+    el("label", { className: "sh-check" }, raw, el("span", {}, el("b", {}, "Include the raw captures"), el("span", { className: "muted small" }, " · larger, and lets them re-read the answers with a newer CitoSkeleton"))),
+    el("div", { className: "sh-way" }, el("h4", { className: "sh-h" }, "As a file"), el("p", { className: "muted small" }, "Send it any way you like. They open it from Campaigns → Import."), fileBtn),
+    el("div", { className: "sh-way" }, el("h4", { className: "sh-h" }, "By code"), codeBox),
+    status));
+  backdrop.append(modal);
+  document.body.append(backdrop);
+  const close = wireModalDismiss(backdrop, modal);
+  closeBtn.onclick = close;
+
+  fileBtn.onclick = withBusy(fileBtn, "Packing…", async () => {
+    const r = await send({ type: "campaign-bundle-export", profileId: profile.id, includeRaw: raw.checked });
+    if (!r || !r.ok) { status.textContent = (r && r.error) || "Couldn't pack the campaign."; status.className = "sh-status bad"; return; }
+    saveBytes(r.fileName, r.data);
+    status.textContent = `Saved ${r.fileName} · ${fmtMB(r.bytes)} · ${plural(r.counts.prompts, "prompt")}, ${plural(r.counts.runs, "run")}, ${plural(r.counts.answers, "answer")}.`;
+    status.className = "sh-status ok";
+  });
+
+  const cs = await send({ type: "cloud-status" });
+  if (!cs || !cs.ready) {
+    codeBox.append(el("p", { className: "muted small" }, "Accounts aren't switched on yet, so sharing by code isn't available. The file works the same."));
+  } else if (!cs.signedIn) {
+    const go = el("button", { className: "btn sm ghost", type: "button" }, "Sign in…");
+    go.onclick = () => { close(); openAccount(); };
+    codeBox.append(el("p", { className: "muted small" }, "Sign in to get a short code they can type in instead of a file."), go);
+  } else {
+    const get = el("button", { className: "btn ghost", type: "button", id: "shGetCode" }, "Get a code");
+    codeBox.append(el("p", { className: "muted small" }, "A code that opens this campaign for anyone signed in, for 90 days. Stop it any time in About → Account."), get);
+    get.onclick = withBusy(get, "Uploading…", async () => {
+      const r = await send({ type: "campaign-share-upload", profileId: profile.id, includeRaw: raw.checked });
+      if (!r || !r.ok) { status.textContent = (r && r.error) || "Couldn't share it."; status.className = "sh-status bad"; return; }
+      const code = `${r.code.slice(0, 5)}-${r.code.slice(5)}`;
+      const copy = el("button", { className: "btn sm ghost", type: "button" }, "Copy");
+      copy.onclick = async () => { try { await navigator.clipboard.writeText(r.code); showToast("Code copied."); } catch (_) { showToast("Couldn't copy: select the code instead.", "error"); } };
+      codeBox.replaceChildren(el("div", { className: "sh-code", id: "shCode" }, el("code", {}, code), copy), el("p", { className: "muted small" }, `They open it from Campaigns → Import → Open a code. ${fmtMB(r.bytes)}.`));
+      status.textContent = "";
+    });
+  }
+}
+
+async function openImportDialog() {
+  document.getElementById("import-modal-backdrop")?.remove();
+  const backdrop = el("div", { id: "import-modal-backdrop", className: "modal-backdrop" });
+  const modal = el("div", { className: "modal-content sh-modal", role: "dialog", "aria-modal": "true", "aria-labelledby": "im-title" });
+  const closeBtn = el("button", { className: "modal-close-btn", type: "button", title: "Close", "aria-label": "Close" }, "×");
+  modal.append(el("div", { className: "modal-header" }, el("div", {}, el("h3", { className: "modal-title", id: "im-title" }, "Import a shared campaign"), el("div", { className: "muted small" }, "It's added as a campaign of your own, beside the ones you have. Nothing of yours changes.")), closeBtn));
+  const file = el("input", { type: "file", id: "imFile", accept: ".cito,.json,application/json,application/octet-stream", className: "sh-file" });
+  const status = el("p", { className: "sh-status", role: "status", id: "imStatus" });
+  const codeBox = el("div", { className: "sh-code-box" });
+  modal.append(el("div", { className: "modal-body sh-body" },
+    el("div", { className: "sh-way" }, el("h4", { className: "sh-h" }, "From a file"), el("p", { className: "muted small" }, "A .cito file someone sent you."), file),
+    el("div", { className: "sh-way" }, el("h4", { className: "sh-h" }, "Open a code"), codeBox),
+    status));
+  backdrop.append(modal);
+  document.body.append(backdrop);
+  const close = wireModalDismiss(backdrop, modal);
+  closeBtn.onclick = close;
+  const done = (r) => {
+    if (!r || !r.ok) { status.textContent = (r && r.error) || "Couldn't import it."; status.className = "sh-status bad"; return; }
+    close();
+    showToast(`Imported ${r.name}: ${plural(r.counts.prompts, "prompt")}, ${plural(r.counts.answers, "answer")}.`);
+    geoActiveId = r.profileId;
+    campaignManageOpen = false;
+    loadGeo();
+  };
+  file.onchange = async () => {
+    const f = file.files && file.files[0];
+    if (!f) return;
+    status.textContent = "Reading…";
+    status.className = "sh-status";
+    const buf = await f.arrayBuffer();
+    done(await send({ type: "campaign-bundle-import", data: bufToB64(buf) }));
+  };
+  const cs = await send({ type: "cloud-status" });
+  if (!cs || !cs.ready) {
+    codeBox.append(el("p", { className: "muted small" }, "Accounts aren't switched on yet. Ask for the file instead."));
+  } else if (!cs.signedIn) {
+    const go = el("button", { className: "btn sm ghost", type: "button" }, "Sign in…");
+    go.onclick = () => { close(); openAccount(); };
+    codeBox.append(el("p", { className: "muted small" }, "Sign in to open a code."), go);
+  } else {
+    const input = el("input", { type: "text", id: "imCode", className: "filter sh-code-input", placeholder: "ABCDE-FGHJK", autocomplete: "off", spellcheck: "false", "aria-label": "Share code" });
+    const open = el("button", { className: "btn primary", type: "button" }, "Open");
+    open.onclick = withBusy(open, "Opening…", async () => done(await send({ type: "campaign-share-open", code: input.value })));
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") open.click(); });
+    codeBox.append(el("div", { className: "sh-code-row" }, input, open));
+  }
+}
+
 function renderCampaignHead(profile) {
   const head = el("section", { className: `card cp-head${cpLive.live ? " live" : ""}${cpLive.paused ? " paused" : ""}`, id: "cpHead", "aria-labelledby": "cpName" });
   head.append(el("div", { className: "cp-switch" }, el("span", { className: "muted small" }, `Campaigns · ${GEO_PROFILES.length} of ${MAX_PROFILES}`), renderCampaignSwitcher()));
@@ -8690,7 +8812,9 @@ function renderCampaignHead(profile) {
   const runSplit = el("span", { className: "cp-split cp-idle" }, runBtn, menuOf(caret, [privBtn], "cp-run-menu"));
   edit.classList.remove("btn", "ghost");
   exp.classList.remove("btn", "ghost");
-  const items = [edit, exp];
+  const shareBtn = el("button", { className: "cp-btn cp-share-campaign", type: "button", id: "cpShareCampaign", title: "Send this campaign to someone, as a file or a code, so they can run it too" }, "Share campaign…");
+  shareBtn.onclick = () => openShareDialog(profile);
+  const items = [edit, exp, shareBtn];
   const del = el("button", { className: "cp-btn danger cp-del", type: "button" }, "Delete campaign");
   del.onclick = trashCampaign(profile);
   items.push(del);
@@ -10195,9 +10319,10 @@ populateDiagExportProfiles();
  * settings, the storage meter, the log's counts, the version check) is in
  * src/lib/aboutView.js; this file only draws it.
  */
-const AB_TAB_SECTIONS = ["overview", "glossary", "settings", "data", "diagnostics"];
+const AB_TAB_SECTIONS = ["overview", "glossary", "settings", "account", "data", "diagnostics"];
 const AB_PAGES = {
   overview: { label: "Overview", glyph: "info" },
+  account: { label: "Account", glyph: "user", sub: "Sign in, your name, campaigns you've shared" },
   glossary: { label: "Metric glossary", glyph: "book", sub: "What every number means, and how to use it" },
   settings: { label: "Settings", glyph: "sliders", sub: "How much is kept on this device" },
   data: { label: "Data & tools", glyph: "tools", sub: "Reprocess captures, sample data, the tour" },
@@ -10278,6 +10403,7 @@ function renderAbout() {
   if (sec === "news") { const box = $("#abNews"); box.textContent = ""; box.append(abNewsCard(false)); }
   if (sec === "glossary") renderAboutGlossary();
   if (sec === "term") renderAboutTerm();
+  if (sec === "account") renderAccount();
   if (sec === "settings") { renderStorageMeter(); updateSettingsStatus(); }
   if (sec === "diagnostics") { renderDiagRows(); renderCaptureCheck(); }
 }
@@ -10437,7 +10563,7 @@ function renderAboutHome() {
 
   const st = buildStatus(abBuildReply, BUILD);
   const more = el("div", { className: "card ab-card ab-more" }, el("h3", { className: "ab-h3" }, "More"));
-  ["glossary", "settings", "data", "diagnostics", "news"].forEach((id) => {
+  ["glossary", "settings", "account", "data", "diagnostics", "news"].forEach((id) => {
     const p = AB_PAGES[id];
     let trail = null;
     if (id === "glossary") trail = el("span", { className: "ab-nav-count" }, String(glossaryEntries().length));
@@ -11263,5 +11389,82 @@ $("#setEmailRemove")?.addEventListener("click", async () => {
 });
 renderEmailSetting();
 try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch[SIGNUP_KEY]) renderEmailSetting(); }); } catch (_) { /* no storage events */ }
+
+/* About → Account (0.82.0): sign in with a code sent by email (no
+ * password), the name shown on campaigns you share, and those campaigns,
+ * each with Stop sharing. Off, and saying so, until accounts are switched
+ * on (src/lib/cloudConfig.js). */
+function openAccount() {
+  abGoTab("about");
+  abGo("account");
+}
+let acctEmail = "";
+async function renderAccount() {
+  const box = $("#abAccount");
+  if (!box) return;
+  const card = el("div", { className: "card ab-card ac-card" },
+    el("div", { className: "ab-head ab-tab-only" }, el("div", {}, el("h2", { className: "ab-title" }, "Account"), el("p", { className: "ab-sub" }, "Only needed to share campaigns by code. Your captures stay on this computer either way."))));
+  box.replaceChildren(card);
+  const st = await send({ type: "cloud-status" });
+  const msg = el("p", { className: "ab-email-msg", role: "status", id: "acMsg" });
+  const say = (t, cls = "") => { msg.textContent = t; msg.className = `ab-email-msg ${cls}`; };
+  if (!st || !st.ready) {
+    card.append(el("p", { className: "ac-off", id: "acOff" }, "Accounts aren't switched on yet. You can still share any campaign as a file: Campaigns → ⋯ → Share campaign…, and open one with Campaigns → Import…"));
+    return;
+  }
+  if (!st.signedIn) {
+    const email = el("input", { type: "email", id: "acEmail", className: "filter", placeholder: "you@company.com", autocomplete: "email", value: acctEmail });
+    const sendBtn = el("button", { className: "btn sm primary", type: "button", id: "acSend" }, "Email me a code");
+    const code = el("input", { type: "text", id: "acCode", className: "filter ac-code", inputMode: "numeric", autocomplete: "one-time-code", placeholder: "6-digit code", maxLength: 10 });
+    const verify = el("button", { className: "btn sm primary", type: "button", id: "acVerify" }, "Sign in");
+    const step2 = el("div", { className: "ac-row", hidden: !acctEmail }, code, verify);
+    sendBtn.onclick = withBusy(sendBtn, "Sending…", async () => {
+      const r = await send({ type: "cloud-request-code", email: email.value });
+      if (!r || !r.ok) return say((r && r.error) || "Couldn't send the code.", "bad");
+      acctEmail = r.email;
+      step2.hidden = false;
+      say(`Code sent to ${r.email}. It's good for an hour.`, "ok");
+      code.focus();
+    });
+    verify.onclick = withBusy(verify, "Checking…", async () => {
+      const r = await send({ type: "cloud-verify", email: acctEmail || email.value, code: code.value });
+      if (!r || !r.ok) return say((r && r.error) || "That code didn't work.", "bad");
+      acctEmail = "";
+      renderAccount();
+    });
+    code.addEventListener("keydown", (e) => { if (e.key === "Enter") verify.click(); });
+    card.append(el("div", { className: "ac-row" }, email, sendBtn), step2, msg, el("p", { className: "muted small" }, "No password: each time, we email you a code. The email is used to sign you in, nothing else."));
+    return;
+  }
+  const u = st.user || {};
+  const name = el("input", { type: "text", id: "acName", className: "filter", maxLength: 60, placeholder: "Your name or team", value: u.name || "" });
+  const saveName = el("button", { className: "btn sm ghost", type: "button", id: "acNameSave" }, "Save");
+  saveName.onclick = withBusy(saveName, "Saving…", async () => {
+    const r = await send({ type: "cloud-profile-save", name: name.value });
+    say(r && r.ok ? "Saved ✨" : (r && r.error) || "Couldn't save it.", r && r.ok ? "ok" : "bad");
+  });
+  const out = el("button", { className: "btn sm ghost", type: "button", id: "acSignOut" }, "Sign out");
+  out.onclick = withBusy(out, "Signing out…", async () => { await send({ type: "cloud-sign-out" }); renderAccount(); });
+  const list = el("div", { className: "ac-shares", id: "acShares" }, el("p", { className: "muted small" }, "Loading…"));
+  card.append(
+    el("div", { className: "ac-who" }, glyphEl("user", 18), el("b", { id: "acWho" }, u.email || ""), out),
+    el("label", { className: "ab-label", for: "acName" }, "Name on what you share"), el("div", { className: "ac-row" }, name, saveName), msg,
+    el("h3", { className: "ab-h3" }, "Campaigns you've shared"), list);
+  const r = await send({ type: "cloud-shares" });
+  list.textContent = "";
+  if (!r || !r.ok) { list.append(el("p", { className: "muted small" }, (r && r.error) || "Couldn't load them.")); return; }
+  if (!r.shares.length) { list.append(el("p", { className: "muted small" }, "None yet. Share one from Campaigns → ⋯ → Share campaign…")); return; }
+  for (const s of r.shares) {
+    const stop = el("button", { className: "btn sm ghost danger", type: "button" }, "Stop sharing");
+    stop.onclick = withBusy(stop, "Stopping…", async () => {
+      if (!confirm(`Stop sharing ${s.name}? The code ${s.code} stops working. Anyone who already imported it keeps their copy.`)) return;
+      const x = await send({ type: "cloud-share-revoke", code: s.code });
+      if (x && x.ok) renderAccount(); else say((x && x.error) || "Couldn't stop it.", "bad");
+    });
+    list.append(el("div", { className: "ac-share" },
+      el("div", {}, el("b", {}, s.name), el("span", { className: "muted small" }, ` · ${s.code.slice(0, 5)}-${s.code.slice(5)} · ${fmtMB(s.bytes || 0)} · opened ${plural(s.downloads || 0, "time")} · until ${new Date(s.expires_at).toLocaleDateString(uiLang())}`)),
+      stop));
+  }
+}
 
 refreshDemoControls();

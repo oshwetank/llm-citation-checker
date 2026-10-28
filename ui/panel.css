@@ -7424,3 +7424,30 @@ body.popup .ho-icon { inline-size: 28px; block-size: 28px; }
 .ab-email-msg.bad { color: var(--red-fg, #b91c1c); font-weight: 600; }
 .ab-email-msg.warn { color: var(--amber-fg, #a15c00); }
 .ab-email-msg.ok { color: var(--green-fg, #15803d); }
+
+/* Share a campaign, import one, and About → Account (0.82.0). */
+.sh-modal { inline-size: min(560px, calc(100vw - 32px)); }
+.sh-body { display: grid; gap: 14px; }
+.sh-check { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; }
+.sh-check input { margin-block-start: 3px; }
+.sh-way { display: grid; gap: 6px; padding: 12px; border: 1px solid var(--line-soft, var(--border)); border-radius: var(--r-card, 10px); }
+.sh-way > .btn { justify-self: start; }
+.sh-h { margin: 0; font-size: 14px; }
+.sh-code-box { display: grid; gap: 6px; }
+.sh-code-box > .btn { justify-self: start; }
+.sh-code { display: flex; gap: 10px; align-items: center; }
+.sh-code code { font: 600 20px/1.2 var(--font-mono, ui-monospace, monospace); letter-spacing: 0.08em; padding: 6px 10px; border-radius: var(--r-ctl, 6px); background: var(--surface-2, rgba(127,127,127,.08)); user-select: all; }
+.sh-code-row, .ac-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.sh-code-input { inline-size: 160px; text-transform: uppercase; font-family: var(--font-mono, ui-monospace, monospace); letter-spacing: 0.06em; }
+.sh-status { margin: 0; font-size: 13px; }
+.sh-status:empty { display: none; }
+.sh-status.bad { color: var(--red-fg, #b91c1c); font-weight: 600; }
+.sh-status.ok { color: var(--green-fg, #15803d); }
+.ac-card { display: grid; gap: 10px; }
+.ac-row input { inline-size: 240px; max-inline-size: 100%; }
+.ac-row input.ac-code { inline-size: 140px; letter-spacing: 0.12em; }
+.ac-off { margin: 0; }
+.ac-who { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ac-who .btn { margin-inline-start: auto; }
+.ac-shares { display: grid; gap: 6px; }
+.ac-share { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; padding: 8px 10px; border: 1px solid var(--line-soft, var(--border)); border-radius: var(--r-ctl, 6px); }
