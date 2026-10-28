@@ -199,7 +199,7 @@ try {
     // 0.80.0: one Run (signed out under its arrow), everything else under ⋯.
     check("Run again, its arrow and ⋯ beside the name", h.btns.join("|") === "Run again|▾|⋯" && h.beside, `${h.btns.join("|")} beside=${h.beside}`);
     const menu = await page.evaluate(() => [...document.querySelectorAll("#cpHead .cp-more-menu .cp-menu button")].map((b) => b.textContent));
-    check("⋯ holds Edit setup, Export… and Delete campaign", menu.join("|") === "Edit setup|Export…|Delete campaign", menu.join("|"));
+    check("⋯ holds Edit setup, Export…, Share campaign… and Delete campaign", menu.join("|") === "Edit setup|Export…|Share campaign…|Delete campaign", menu.join("|"));
     check("the arrow holds Run signed out", await page.evaluate(() => /^Run signed out/.test(document.querySelector("#cpHead .cp-run-menu .cp-menu button")?.textContent || "")));
     check("Pause, Resume and Stop only while a run is going", !h.btns.some((x) => /Pause|Resume|Stop/.test(x)), h.btns.join("|"));
     check("the run, brand and engine filters are in it", h.filters);

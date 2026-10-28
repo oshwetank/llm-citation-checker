@@ -89,7 +89,7 @@ try {
   console.log("\na side menu, one page at a time");
   {
     const nav = await page.evaluate(() => [...document.querySelectorAll("#abNav .ab-nav-btn")].map((b) => b.querySelector(".ab-nav-label")?.textContent));
-    check("five pages in the side menu", nav.join("|") === "Overview|Metric glossary|Settings|Data & tools|Diagnostics", nav.join(" | "));
+    check("six pages in the side menu, Account among them (0.82.0)", nav.join("|") === "Overview|Metric glossary|Settings|Account|Data & tools|Diagnostics", nav.join(" | "));
     const s = await shown();
     check("it opens on the overview, and only the overview", s.ab === "overview" && s.visible.join() === "overview", JSON.stringify(s));
     const geo = await page.evaluate(() => {
@@ -263,7 +263,7 @@ try {
     const h = await home();
     check("a first visit is welcomed", h.title === "Welcome to CitoSkeleton", h.title);
     check("with three steps to get started, none done", h.progress === "0 of 3 done" && h.steps.join() === "ask:todo,analyze:todo,campaign:todo", JSON.stringify(h));
-    check("then the pages, as a list", h.more.join("|") === "Metric glossary|Settings|Data & tools|Diagnostics|What’s new", h.more.join(" | "));
+    check("then the pages, as a list", h.more.join("|") === "Metric glossary|Settings|Account|Data & tools|Diagnostics|What’s new", h.more.join(" | "));
     check("no side menu in the popup", h.side === "none", h.side);
     check("and nothing wider than the popup", h.wide <= 0, `${h.wide}px`);
 
