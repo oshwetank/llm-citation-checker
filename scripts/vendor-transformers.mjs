@@ -26,6 +26,9 @@ const FILES = [
   ["transformers", "LICENSE", "LICENSE-transformers.txt"],
   ["ort", "dist/ort-wasm-simd-threaded.asyncify.mjs", "ort-wasm-simd-threaded.asyncify.mjs"],
   ["ort", "dist/ort-wasm-simd-threaded.asyncify.wasm", "ort-wasm-simd-threaded.asyncify.wasm"],
+  // ONNX Runtime's own API, for Laya (0.83.0): a plain ONNX graph that
+  // Transformers.js has no model class for. Loads the same glue and .wasm.
+  ["ort", "dist/ort.webgpu.min.mjs", "ort.webgpu.min.mjs"],
 ];
 // onnxruntime-web's package carries no LICENSE file; its package.json says
 // MIT, under Microsoft's copyright (github.com/microsoft/onnxruntime).
