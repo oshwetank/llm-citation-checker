@@ -14,12 +14,18 @@ Hugging Face; and, once accounts are switched on, when you sign in, share a camp
 code, open a code, or leave an email for updates. Nothing you capture ever leaves your
 device unless you choose to share that campaign: the AI runs on your computer.
 
-> **v0.83.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.84.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **Models as switches, and capture that holds when a site changes** (0.84.0).
+>   - **Models in Ask.** Ask → Models on this computer: one switch for the AI model and one for Laya. On downloads it; off stops a download or removes the model. The popup has Ask too. The download's progress shows in the app bar.
+>   - **Uninstalling removes them.** The models are kept in the extension's own storage, which Chrome deletes with the extension. Gemini Nano is Chrome's own and stays.
+>   - **Capture when an engine changes its format.** A question asked by hand on ChatGPT, Gemini, Perplexity or Grok is read off the page when no readable network copy of the answer is stored: the prompt, the answer, its brands and its links. A network copy, when it arrives, still wins.
+>   - **Said, not lost.** If a question still isn't captured after 90 seconds, Analyze says so, with Refresh the tab and Copy capture report.
+>   - **Clicks and scroll.** Every clickable thing shows it, with press feedback and 24px targets. Jumps scroll smoothly, unless Motion is off. Rows that scroll sideways fade at the edge.
 > - **Fast labels with Laya** (0.83.0).
 >   - **What it does.** About → Settings → Built-in AI → **Fast labels: Laya**. Laya is an open decision model (Apache-2.0, many languages). Download it once and it labels every answer: what it asks, its stage, who it's for, how far its market reaches, and for each brand what it is and how the answer treats it. It picks among fixed options in one pass of the model and writes no text, so it's much quicker than the AI model and can't invent a name or a quote. A quote is always the answer's own words.
 >   - **Unsure labels.** The multilingual Laya isn't calibrated, so a label is kept only when Laya is clearly sure. The rest are left blank and listed as unsure.

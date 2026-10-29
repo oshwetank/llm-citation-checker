@@ -20,6 +20,8 @@ export const ABOUT_STEPS = [
 
 /** What's new — the redesign, newest first. */
 export const ABOUT_NEWS = [
+  { head: "Models are switches, in Ask.", body: "Ask → Models on this computer: flip one on to download it, off to remove it. Uninstalling CitoSkeleton removes them too." },
+  { head: "Capture holds when a site changes.", body: "A question you ask by hand is read off the page when its network copy can't be read, and Analyze says so if one still wasn't captured." },
   { head: "Fast labels with Laya.", body: "About → Settings → Built-in AI: download Laya once and it labels every answer by picking among fixed options, much quicker than the AI model, and it never invents a name." },
   { head: "Share a campaign.", body: "Campaigns → ⋯ → Share campaign… saves it as one file someone else opens with Import… and runs on their own computer, with the same answers and numbers." },
   { head: "About, rebuilt.", body: "An overview, a searchable glossary of every metric, settings you can undo, data & tools, and diagnostics, each on its own page." },
