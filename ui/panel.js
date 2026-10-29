@@ -2989,7 +2989,7 @@ function aiName(kind, code) {
 function atAiSection(rec) {
   const ai = rec.aiStatus === "done" ? rec.ai : null;
   const st = rec.aiStatus || "off";
-  const chip = ai ? apPill(ai.source === "nano" ? "Gemini Nano" : "Built-in AI", "info", ai.model || "")
+  const chip = ai ? apPill(ai.source === "nano" ? "Gemini Nano" : ai.source === "laya" ? "Laya" : "Built-in AI", "info", ai.model || "")
     : apPill({ queued: "Queued", "not-checked": "Not checked", failed: "Check failed", off: "AI check off" }[st] || "AI check off", st === "failed" ? "warn" : "neutral");
   const sec = atSection("at-ai", "AI check", "", chip);
   sec.dataset.rail = "AI check";

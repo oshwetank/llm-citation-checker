@@ -4717,6 +4717,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "ai-remove":
           sendResponse(await aiSvc.remove());
           break;
+        // Laya, for the labels (0.83.0).
+        case "laya-download":
+          sendResponse(await aiSvc.downloadLaya({ device: msg.device }));
+          break;
+        case "laya-remove":
+          sendResponse(await aiSvc.removeLaya());
+          break;
+        case "ai-set-labeller":
+          sendResponse(await aiSvc.setLabeller(msg.labeller));
+          break;
+        // Tests only: a stand-in Laya bundle served from this computer.
+        case "laya-test-model": {
+          const host = String((msg.model || {}).host || "");
+          if (!/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/$/.test(host)) { sendResponse({ ok: false, error: "local addresses only" }); break; }
+          const st = await aiSvc.getState();
+          await aiSvc.setState({ laya: { ...(st.laya || {}), custom: { repo: String(msg.model.repo), rev: String(msg.model.rev || "main"), sub: String(msg.model.sub || ""), host, label: "Test Laya" }, downloadedAt: null } });
+          sendResponse({ ok: true });
+          break;
+        }
         // 0.74.0: which engine answers, Chrome's own model, and the speed test.
         case "ai-set-engine":
           sendResponse(await aiSvc.setEngine(msg.engine));

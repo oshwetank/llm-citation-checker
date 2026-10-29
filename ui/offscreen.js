@@ -78,6 +78,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
  * imported on the first AI job, so reading cited pages stays light. */
 let engine = null;
 const getEngine = () => (engine = engine || import("../src/lib/llmEngine.js"));
+let laya = null;
+const getLaya = () => (laya = laya || import("../src/lib/layaEngine.js"));
 let lastProgress = 0;
 const sendProgress = (p) => {
   const progress = { status: p.status, file: p.file || null, loaded: p.loaded || 0, total: p.total || 0, pct: p.progress ?? null };
@@ -102,6 +104,19 @@ async function llmOp(op, args = {}) {
     case "unload": await e.unload(); return { ok: true };
     case "cached": return e.cachedBytes(args.repo, args.host);
     case "remove": return e.removeCached(args.repo, args.host);
+    // Laya, the labeller (0.83.0, src/lib/layaEngine.js): its own engine,
+    // and the whole check runs here, where its tokenizer is.
+    case "laya-load": { const L = await getLaya(); return L.load({ ...args, onProgress: (p) => sendProgress({ ...(p || {}), status: `laya-${(p && p.status) || "progress"}` }) }); }
+    case "laya-status": return (await getLaya()).status();
+    case "laya-unload": await (await getLaya()).unload(); return { ok: true };
+    case "laya-cached": return (await getLaya()).cachedBytes(args);
+    case "laya-remove": return (await getLaya()).removeCached(args);
+    case "laya-check": {
+      const L = await getLaya();
+      const st = await L.load(args.spec);
+      const { layaCheckRecord } = await import("../src/lib/laya.js");
+      return layaCheckRecord(args.record, (items) => L.run(items), { tok: L.encoder(), model: args.label || "Laya", maxLen: st.maxLen, headMaxLen: st.headMaxLen, temperature: st.temperature });
+    }
     default: throw new Error(`unknown op ${op}`);
   }
 }

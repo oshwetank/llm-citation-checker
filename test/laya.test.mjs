@@ -7,7 +7,7 @@
  * answerOf against rl_agent_api.system_one; the labels CitoSkeleton keeps.
  */
 import { readFileSync } from "node:fs";
-import { buildSequence, renderOptions, serializeState, answerOf, confidenceOf, layaQuestions, layaCheckRecord, MIN_P } from "../src/lib/laya.js";
+import { buildSequence, renderOptions, serializeState, answerOf, confidenceOf, layaQuestions, layaCheckRecord, spanIn, MIN_P } from "../src/lib/laya.js";
 import { applyAi } from "../src/lib/aiCheck.js";
 import { INTENTS, STANCES } from "../src/lib/aiValidate.js";
 
@@ -89,7 +89,9 @@ check("a flat answer is left out, and listed as unsure", !ai.market || !ai.marke
 check("…as unsure", ai.checks.unsure.some((u) => u.what === "scope") && ai.checks.unsure.some((u) => u.what === "stance:Kovo"));
 const z = ai.entities.find((x) => x.name === "Zento");
 check("a brand's type and stance", z && z.type === "brand" && z.stance === "recommended");
-check("the quote is the rules' own passage, verbatim from the answer", z.quote === "Zento is the top pick." && rec.answerText.includes(z.quote));
+check("the quote is the answer's own text where the rules found it", z.quote === "Zento is the top pick." && rec.answerText.includes(z.quote));
+check("found again across folded spacing", spanIn("intro\n\n### 1. Zento\n\n**Around 27**", "### 1. Zento **Around 27**") === "### 1. Zento\n\n**Around 27**");
+check("a passage that isn't there quotes nothing", spanIn("Zento is good", "Kovo is bad") === null);
 const k = ai.entities.find((x) => x.name === "Kovo");
 check("an unsure stance stays unlabelled", k && k.type === "brand" && !k.stance);
 check("language from the record", ai.lang === "en");

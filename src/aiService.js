@@ -20,9 +20,15 @@
  * once, on the graphics chip or on several processor cores. "Test this
  * computer" times both on the same made-up answer. Nothing runs while a
  * campaign is running (isBusy), so the AI never competes with its tabs.
+ *
+ * Laya (0.83.0, lib/laya.js): the labels can come from a decision model
+ * instead, one encoder pass per question, no text generated. Once it is
+ * downloaded it labels every answer ("Label answers with": auto or Laya),
+ * and the language model is kept for Ask.
  */
 import { TIERS, pickTier, MODEL_FAMILY, MODEL_LICENCE } from "./lib/llmTiers.js";
 import { aiCheckRecord, applyAi, aiKey } from "./lib/aiCheck.js";
+import { LAYA_VERSION } from "./lib/laya.js";
 import { textMatches } from "./lib/textMatch.js";
 import { ask as runAsk } from "./lib/assistant.js";
 import { isPlausibleProseName } from "./lib/brands.js";
@@ -30,6 +36,11 @@ import { nanoAvailability, nanoGenerate, nanoDownload } from "./lib/nanoEngine.j
 import { BENCH_RECORD, benchVerdict, chooseEngine } from "./lib/aiBench.js";
 
 const STATE_KEY = "lcfcAi";
+// Laya multilingual (duration465/laya-onnx, Apache-2.0): an ONNX export of
+// convaiinnovations/laya's multilingual checkpoint. fp32, 1.3 GB. Pin `rev`
+// to a commit of that repository once it has been checked on a real machine;
+// an int8 copy (training/laya-quantize.py) can replace it.
+export const LAYA_DEFAULT = { repo: "duration465/laya-onnx", rev: "main", sub: "multilingual", host: null, label: "Laya multilingual", bytes: 1306000000 };
 const MAX_TRIES = 2;
 
 export function createAiService({ db, getSettings, ensureOffscreen, resetOffscreen = async () => {}, logErr = () => {}, broadcast = () => {}, isBusy = () => false }) {
@@ -100,6 +111,68 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
     return null;
   }
 
+  /* ---- Laya, for the labels ---- */
+  let layaProgress = null;
+  let layaDownloading = null;
+  const layaSpecOf = (state) => (state.laya && state.laya.custom) || LAYA_DEFAULT;
+  const layaReady = (state) => !!(state.laya && state.laya.downloadedAt);
+  const layaIdOf = (spec) => `laya-v${LAYA_VERSION}:${spec.repo}@${spec.rev || "main"}/${spec.sub || ""}`;
+  // What labels an answer now: Laya when it's downloaded (unless the user
+  // picked the language model), else the language model.
+  async function labeller(state) {
+    if (layaReady(state) && state.labeller !== "llm") {
+      const spec = layaSpecOf(state);
+      const args = { repo: spec.repo, rev: spec.rev, sub: spec.sub, host: spec.host || undefined, device: (state.laya && state.laya.device) || "webgpu" };
+      return {
+        id: "laya", modelId: layaIdOf(spec), label: spec.label || "Laya",
+        prepare: async () => {},
+        // The whole check runs in the offscreen page, where the tokenizer is.
+        check: (rec) => llm("laya-check", { spec: args, label: spec.label || "Laya", record: slimRecord(rec) }, 10 * 60 * 1000),
+      };
+    }
+    return engine(state);
+  }
+  const slimRecord = (r) => ({
+    captureId: r.captureId, userPrompt: r.userPrompt || "", answerText: r.answerText || "", answerLang: r.answerLang || null,
+    brandMentions: (r.brandMentions || []).map((m) => ({ brand: m.brand, firstIndex: m.firstIndex, count: m.count, passages: (m.passages || []).slice(0, 3) })),
+  });
+
+  async function downloadLaya({ device } = {}) {
+    if (layaDownloading) return { ok: true, already: true };
+    const state = await getState();
+    const spec = layaSpecOf(state);
+    layaProgress = { status: "laya-initiate", pct: 0 };
+    layaDownloading = (async () => {
+      try {
+        const info = await llm("laya-load", { repo: spec.repo, rev: spec.rev, sub: spec.sub, host: spec.host || undefined, device: device || (state.pick && state.pick.device) || "webgpu" }, 6 * 60 * 60 * 1000);
+        await setState({ laya: { ...((await getState()).laya || {}), downloadedAt: Date.now(), device: info.device, error: null } });
+        layaProgress = { status: "laya-ready", pct: 100 };
+        broadcast({ type: "ai-state" });
+        kick();
+      } catch (e) {
+        await setState({ laya: { ...((await getState()).laya || {}), error: String(e && e.message || e) } });
+        layaProgress = null;
+        logErr("laya-download", e);
+        broadcast({ type: "ai-state" });
+      } finally { layaDownloading = null; }
+    })();
+    return { ok: true, started: true };
+  }
+  async function removeLaya() {
+    const state = await getState();
+    const spec = layaSpecOf(state);
+    try { await llm("laya-remove", { repo: spec.repo, rev: spec.rev, sub: spec.sub, host: spec.host || undefined }, 120000); } catch (e) { logErr("laya-remove", e); }
+    await setState({ laya: { ...(state.laya || {}), downloadedAt: null, error: null } });
+    broadcast({ type: "ai-state" });
+    return { ok: true };
+  }
+  async function setLabeller(choice) {
+    await setState({ labeller: ["auto", "laya", "llm"].includes(choice) ? choice : "auto" });
+    broadcast({ type: "ai-state" });
+    kick();
+    return { ok: true };
+  }
+
   /** "Test this computer": time each available engine on the same answer. */
   async function benchmark() {
     const state = await getState();
@@ -151,6 +224,8 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
       tier: state.tier || null, model: spec ? { id: spec.id, label: spec.label, params: spec.params, repo: spec.repo } : null,
       custom: state.custom && state.custom.repo ? { repo: state.custom.repo } : null,
       ready: !!eng, engine: eng ? { id: eng.id, label: eng.label } : null, engineChoice: state.engine || "auto",
+      laya: (() => { const sp = layaSpecOf(state); const l = state.laya || {}; return { ready: layaReady(state), label: sp.label, repo: sp.repo, bytes: sp.bytes || null, custom: !!l.custom, downloadedAt: l.downloadedAt || null, device: l.device || null, error: l.error || null, downloading: !!layaDownloading, progress: layaProgress, msPerAnswer: l.msPerAnswer || null }; })(),
+      labeller: state.labeller || "auto", labelsBy: await (async () => { const lb = await labeller(state); return lb ? { id: lb.id, label: lb.label } : null; })(),
       nano: await nanoAvailability(), nanoFetching: !!nanoFetching, nanoError: state.nanoError || null, bench: state.bench || null, paused: !!isBusy(),
       qwenReady: qwenReady(state), downloadedAt: state.downloadedAt || null,
       device: state.device || null, error: state.error || null,
@@ -161,7 +236,7 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
     };
   }
 
-  function onProgress(p) { progress = p; }
+  function onProgress(p) { if (p && /^laya-/.test(p.status || "")) layaProgress = p; else progress = p; }
 
   /** Download (or load from the cache) the chosen size. Returns at once. */
   async function download({ tier, device } = {}) {
@@ -215,7 +290,7 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
   async function enqueue(rec, { force = false } = {}) {
     if (!rec || !rec.captureId || !String(rec.answerText || "").trim()) return { ok: false, reason: "no answer text" };
     const state = await getState();
-    if (!(await engine(state))) return { ok: false, reason: "The built-in AI isn't set up." };
+    if (!(await labeller(state))) return { ok: false, reason: "The built-in AI isn't set up." };
     if (!force) {
       const s = await getSettings();
       if (isCampaign(rec) ? s.aiOnCampaigns === false : s.aiOnEveryday === false) return { ok: false, reason: "off for this kind of answer" };
@@ -241,7 +316,7 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
           const items = (await db.getAll("aiQueue")).sort((a, b) => a.at - b.at);
           if (!items.length) break;
           const state = await getState();
-          const eng = await engine(state);
+          const eng = await labeller(state);
           if (!eng) break;
           await processOne(items[0], eng);
         }
@@ -259,10 +334,13 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
     try {
       if (!(await db.get("ai", key))) {
         await eng.prepare();
-        const ai = await aiCheckRecord(rec, eng.generate, { model: eng.label, isPlausible: isPlausibleProseName });
+        const t0 = Date.now();
+        const ai = eng.check ? await eng.check(rec) : await aiCheckRecord(rec, eng.generate, { model: eng.label, isPlausible: isPlausibleProseName });
         ai.modelRepo = eng.modelId;
         ai.engine = eng.id;
         await db.put("ai", { key, captureId: rec.captureId, ...ai });
+        // Laya's measured pace, for Settings: a running average.
+        if (eng.id === "laya") { const st = await getState(); const prev = (st.laya && st.laya.msPerAnswer) || 0; const ms = Date.now() - t0; await setState({ laya: { ...(st.laya || {}), msPerAnswer: prev ? Math.round(prev * 0.7 + ms * 0.3) : ms } }); }
       }
       const fresh = await db.get("derived", item.captureId);
       await db.delete("aiQueue", item.captureId);
@@ -295,8 +373,9 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
     let ai = null;
     try {
       // The engine in use first, then the other, then the pre-0.74 Nano pass.
-      const eng = await engine(state);
-      const ids = [eng && eng.modelId, "chrome-nano", spec && modelIdOf(spec), "nano"].filter(Boolean);
+      const eng = await labeller(state);
+      const laya = layaReady(state) ? layaIdOf(layaSpecOf(state)) : null;
+      const ids = [eng && eng.modelId, laya, "chrome-nano", spec && modelIdOf(spec), "nano"].filter(Boolean);
       for (const id of [...new Set(ids)]) { ai = await db.get("ai", aiKey(record, id)); if (ai) break; }
     } catch (_) { /* store missing on an old database */ }
     if (ai) {
@@ -310,7 +389,7 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
     } else {
       let queued = null;
       try { queued = await db.get("aiQueue", record.captureId); } catch (_) { /* none */ }
-      record.aiStatus = queued ? "queued" : (await engine(state)) ? "not-checked" : "off";
+      record.aiStatus = queued ? "queued" : (await labeller(state)) ? "not-checked" : "off";
     }
     return record;
   }
@@ -364,5 +443,5 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
     return { ok: true };
   }
 
-  return { askQuestion, checkNow, getState, setState, status, hardware, download, remove, enqueue, kick, attach, saveNano, onProgress, specOf, llm, engine, benchmark, useNano, setEngine };
+  return { askQuestion, checkNow, getState, setState, status, hardware, download, remove, enqueue, kick, attach, saveNano, onProgress, specOf, llm, engine, labeller, benchmark, useNano, setEngine, downloadLaya, removeLaya, setLabeller };
 }

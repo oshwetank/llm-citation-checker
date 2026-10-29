@@ -226,9 +226,13 @@ export async function layaCheckRecord(rec, run, opts = {}) {
     const e = entities.get(it.q.brand) || { name: it.q.brand };
     e[it.q.field] = a.choice;
     e[`${it.q.field}P`] = label.p;
-    // The quote is the rules' own passage: copied from the answer, so it
-    // always holds up; Laya picks the label, never the words.
-    if (it.q.field === "stance" && a.choice !== "mentioned" && it.q.passages && it.q.passages[0]) e.quote = it.q.passages[0];
+    // The quote is the answer's own text where the rules found the brand
+    // (their passages have the spacing folded, so they are found again
+    // here); Laya picks the label, never the words.
+    if (it.q.field === "stance" && a.choice !== "mentioned") {
+      const quote = (it.q.passages || []).map((p) => spanIn(text, p)).find(Boolean);
+      if (quote) e.quote = quote;
+    }
     entities.set(it.q.brand, e);
   });
   // Facts the rules already know exactly, beside Laya's labels.
@@ -243,3 +247,16 @@ export async function layaCheckRecord(rec, run, opts = {}) {
   return out;
 }
 const round = (x) => Math.round(x * 1e4) / 1e4;
+
+/**
+ * Where a passage sits in the answer, as the answer writes it: its words in
+ * order with any spacing between them. The first 30 words are enough to
+ * place it. Null when it isn't there.
+ */
+export function spanIn(text, passage) {
+  const words = String(passage || "").trim().split(/\s+/).filter(Boolean).slice(0, 30);
+  if (!words.length) return null;
+  const esc = (w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const m = new RegExp(words.map(esc).join("\\s+"), "u").exec(String(text || ""));
+  return m ? m[0] : null;
+}

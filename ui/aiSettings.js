@@ -52,6 +52,7 @@ export function initAiSettings(slot) {
         h("b", {}, "Built-in AI ", chip),
         h("span", {}, `AI that runs on this computer: Chrome's own built-in model where Chrome has it, or an open-source model (${s.family || "Qwen3.5"}, ${s.licence || "Apache-2.0"}, 201 languages) downloaded once from Hugging Face. It reads each answer's language, market, intent and audience, and checks each brand's type, owner and how the answer treats it, quoting the answer. Nothing you capture is ever sent anywhere. Your counts don't change unless you turn that on below.`))));
     slot.append(engineBlock(s));
+    slot.append(layaBlock(s));
 
     // The hardware check, and the sizes.
     const hw = s.hardware;
@@ -120,7 +121,7 @@ export function initAiSettings(slot) {
     }
     if (s.error && !s.downloading) slot.append(h("p", { className: "ai-err", role: "alert" }, `The last download failed: ${s.error}. Check the connection, or that huggingface.co isn't blocked here, and try again.`));
 
-    if (s.ready) {
+    if (s.ready || (s.laya && s.laya.ready)) {
       const set = (patch) => send({ type: "settings-set", patch });
       slot.append(
         sw("aiCampaigns", "Check campaign answers", "Each answer a campaign captures is checked in the background, one at a time.", s.settings && s.settings.onCampaigns, (v) => set({ aiOnCampaigns: v })),
@@ -172,10 +173,47 @@ export function initAiSettings(slot) {
     return box;
   }
 
+  // Laya, for the labels (0.83.0): a decision model that picks each label
+  // in one pass instead of writing it out, so it is much quicker per answer.
+  function layaBlock(s) {
+    const L = s.laya || {};
+    const box = h("div", { className: "ai-engine ai-laya", id: "aiLaya" });
+    const chip = L.downloading ? h("span", { className: "ai-chip busy" }, L.progress && L.progress.pct != null ? `Downloading ${Math.round(L.progress.pct)}%` : "Downloading…")
+      : L.ready ? h("span", { className: "ai-chip ok" }, `Ready${L.device ? ` · ${L.device === "webgpu" ? "graphics chip" : "processor"}` : ""}`)
+      : L.error ? h("span", { className: "ai-chip bad" }, "Download failed") : h("span", { className: "ai-chip" }, "Off");
+    const dl = h("button", { type: "button", className: "btn sm primary", id: "layaDownload", disabled: !!L.downloading || !!L.ready }, L.downloading ? "Downloading…" : L.ready ? "Downloaded" : `Download Laya · ${gb(L.bytes)}`);
+    dl.onclick = async () => { await send({ type: "laya-download" }); refresh(); };
+    const rm = h("button", { type: "button", className: "btn sm ghost", id: "layaRemove", disabled: !L.ready || !!L.downloading }, "Remove");
+    rm.onclick = async () => { if (!confirm("Remove Laya from this computer? The labels already made are kept.")) return; await send({ type: "laya-remove" }); refresh(); };
+    box.append(h("div", { className: "ab-row ai-row" },
+      h("div", { className: "ab-row-text" }, h("b", {}, "Fast labels: Laya ", chip),
+        h("span", {}, `An open decision model (${L.label || "Laya multilingual"}, Apache-2.0, many languages) that labels each answer — what it asks, its stage, who it's for, how far it reaches, and what each brand is and how it's treated — by choosing among fixed options in one pass, with no text written. Much quicker than the AI model, and it never invents a name. Downloaded once from Hugging Face; Ask still uses the AI model.`),
+        L.msPerAnswer ? h("span", { id: "layaPace" }, `Measured here: about ${(L.msPerAnswer / 1000).toFixed(1)} s per answer.`) : null,
+        L.error && !L.downloading ? h("span", { className: "ai-err", role: "alert" }, `The last download failed: ${L.error}.`) : null),
+      h("div", { className: "ai-btns" }, dl, rm)));
+    if (L.downloading && L.progress) {
+      const pct = L.progress.pct != null ? Math.max(0, Math.min(100, L.progress.pct)) : null;
+      box.append(h("div", { className: "ai-progress", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": pct == null ? null : String(Math.round(pct)), "aria-label": "Laya download progress" },
+        h("i", { style: `width:${pct == null ? 5 : pct}%` }),
+        h("span", {}, L.progress.total ? `${L.progress.file || ""} · ${gb(L.progress.loaded)} of ${gb(L.progress.total)}` : "Starting…")));
+    }
+    const choice = s.labeller || "auto";
+    const seg = h("div", { className: "ab-seg", role: "radiogroup", "aria-label": "Label answers with", id: "aiLabellerSeg" });
+    for (const [id, label, ok] of [["auto", "Automatic", true], ["laya", "Laya (fast)", !!L.ready], ["llm", "The AI model", !!s.ready]]) {
+      const b = h("button", { type: "button", role: "radio", className: "ab-seg-btn", "data-labeller": id, "aria-checked": String(choice === id), disabled: !ok }, label);
+      b.onclick = async () => { await send({ type: "ai-set-labeller", labeller: id }); refresh(); };
+      seg.append(b);
+    }
+    box.append(h("div", { className: "ab-row ai-row" },
+      h("div", { className: "ab-row-text" }, h("b", {}, "Label answers with"), h("span", { id: "aiLabelsBy" }, s.labelsBy ? `Now: ${s.labelsBy.label}. Automatic uses Laya once it's downloaded.` : "Nothing set up yet.")),
+      seg));
+    return box;
+  }
+
   const refresh = async () => {
     st = await send({ type: "ai-status" });
     draw();
-    if (st && st.downloading) { if (!poll) poll = setInterval(refresh, 1000); }
+    if (st && (st.downloading || (st.laya && st.laya.downloading))) { if (!poll) poll = setInterval(refresh, 1000); }
     else if (poll) { clearInterval(poll); poll = null; }
   };
   // The hardware check opens the AI page and asks Chrome for a graphics
