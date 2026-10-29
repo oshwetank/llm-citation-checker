@@ -39,6 +39,14 @@
   // The capture check (0.73.1): this page's own record of what it saw, for
   // the worker to ask about (cs-ping) and for reasons a capture went nowhere.
   const pageHealth = { loadedAt: Date.now(), conv: 0, lastConv: null, unknown: [], forwarded: 0, sendFailed: 0, mismatched: 0, lastError: "" };
+  // Whether the worker stored an answer from this engine since `since`
+  // (0.84.0). The page copies below go by this, not by pageHealth's
+  // lastForwardAt: after an engine changes its format its traffic is still
+  // forwarded, it just can't be read, and nothing gets stored.
+  const storedSince = (since) => new Promise((resolve) => {
+    try { chrome.runtime.sendMessage({ type: "capture-stored-since", since }, (r) => { void chrome.runtime.lastError; resolve(!!(r && r.stored)); }); }
+    catch (_) { resolve(false); }
+  });
   const tellWorker = (msg) => {
     try {
       chrome.runtime.sendMessage(msg, () => { if (chrome.runtime.lastError) { pageHealth.sendFailed++; pageHealth.lastError = String(chrome.runtime.lastError.message || "").slice(0, 120); } });
@@ -126,6 +134,27 @@
   window.addEventListener("pagehide", flushNetlog);
 
   const engineSubmit = { at: 0, via: "" };
+  // The person's own send (0.84.0): Enter in the composer, or a click on its
+  // send button. The page readers below start from this as well as from the
+  // engine's submit request, which content-main can only see while it knows
+  // the engine's address for it — when an engine changes that, the request
+  // goes unseen and, before 0.84.0, nothing on its page was read either.
+  const userAsked = { at: 0 };
+  const SEND_BTN = '#composer-submit-button, [data-testid="send-button"], button[aria-label*="Send" i], button[aria-label*="Submit" i], button[type="submit"], .send-button';
+  const COMPOSER = 'textarea, [contenteditable="true"], rich-textarea, #prompt-textarea, form';
+  // The worker is told too, so a question whose answer is never stored is
+  // reported in Analyze instead of missed in silence (captureHealth.js
+  // missedAnswers).
+  const noteAsked = () => {
+    const now = Date.now();
+    if (now - userAsked.at < 1500) return;
+    userAsked.at = now;
+    tellWorker({ type: "user-asked" });
+  };
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.target && e.target.closest && e.target.closest(COMPOSER)) noteAsked();
+  }, true);
+  document.addEventListener("click", (e) => { if (e.target && e.target.closest && e.target.closest(SEND_BTN)) noteAsked(); }, true);
   window.addEventListener("message", (event) => {
     if (event.source !== window) return;
     if (event.origin !== location.origin) return;
@@ -1559,7 +1588,7 @@
       // reopening an old Grok chat 44 minutes later stored it again as a new
       // answer, its prompt read as "Youbest good quality…" (reported: "the
       // promt which i never run"). Reading a conversation is not asking.
-      if (!engineSubmit.at) return;
+      if (!engineSubmit.at && !userAsked.at) return;
 
       let promptText = "";
       let answerText = "";
@@ -2059,8 +2088,13 @@
       if (text.length < 50 || document.querySelector(STOP) || now - w.changedAt < SETTLE_MS) return;
       if (!w.doneAt) { w.doneAt = now; return; }
       if (now - w.doneAt < NETWORK_GRACE_MS) return;
-      // The stream's own copy arrived after the question: nothing to add.
-      if ((pageHealth.lastForwardAt || 0) > w.askedAt) return finish(w);
+      // The stream's own copy was stored after the question: nothing to add.
+      if (w.asking) return;
+      if ((pageHealth.lastForwardAt || 0) > w.askedAt && w.storedChecked !== w.doneAt) {
+        w.asking = true;
+        storedSince(w.askedAt).then((stored) => { w.asking = false; if (stored) finish(w); else w.storedChecked = w.doneAt; });
+        return;
+      }
       const answer = domToMarkdown(bot).trim() || text;
       const sig = `${prompt}::${answer.length}::${answer.slice(-120)}`;
       if (sig === lastSig) return finish(w);
@@ -2107,5 +2141,85 @@
       if (b) asked();
     }, true);
     pageFacts.onAsked = () => asked({ userCount: 0, userText: "" });
+  })();
+
+  /* ---------- Gemini page copy (0.84.0) ----------
+   * Gemini had no page copy at all: when its network format changed
+   * (StreamGenerate, then a WebChannel), an answer asked by hand was simply
+   * not captured. Same rules as ChatGPT's above — only for a question asked
+   * in this page, only once the answer has finished, only when no network
+   * copy arrived — in the shape every engine shares (adapters/pageCopy.js). */
+  (function geminiPageCopy() {
+    if (!/(?:^|\.)gemini\.google\.com$/.test(location.hostname)) return;
+    const USER = 'user-query, .user-query-container, [data-test-id="user-query"]';
+    const BOT = 'model-response, .model-response-text, [data-test-id="model-response"]';
+    const STOP = 'button[aria-label*="Stop" i], .stop-icon, [data-test-id="stop-button"]';
+    const SETTLE_MS = 3000, NETWORK_GRACE_MS = 2500, GIVE_UP_MS = 6 * 60 * 1000;
+    let watch = null, lastSig = "";
+    const all = (sel) => document.querySelectorAll(sel);
+    const lastOf = (sel) => { const a = all(sel); return a.length ? a[a.length - 1] : null; };
+    const promptOf = (u) => String((u && (u.querySelector(".query-text, .query-content, p") || u).innerText) || "").replace(/^You said\s*/i, "").trim();
+    const finish = (w) => { if (w.stop) { w.stop(); w.stop = null; } if (watch === w) watch = null; };
+    const asked = () => {
+      const at = Date.now();
+      if (watch && at - watch.askedAt < 1500) return;
+      if (watch && watch.stop) watch.stop();
+      const u = lastOf(USER);
+      const w = watch = { userCount: all(USER).length, userText: promptOf(u), askedAt: at, text: "", changedAt: 0, doneAt: 0, stop: null };
+      const stopClock = startClock(1000);
+      const off = onClockTick(() => check(w));
+      w.stop = () => { off(); stopClock(); };
+    };
+    const check = (w) => {
+      const now = Date.now();
+      if (now - w.askedAt > GIVE_UP_MS) return finish(w);
+      const users = all(USER);
+      const u = users.length ? users[users.length - 1] : null;
+      const prompt = promptOf(u);
+      if (!u || (users.length <= w.userCount && prompt === w.userText)) return;
+      const bot = lastOf(BOT);
+      if (!bot || (u.compareDocumentPosition(bot) & Node.DOCUMENT_POSITION_FOLLOWING) === 0) return;
+      const body = bot.querySelector("message-content, .markdown, .model-response-text") || bot;
+      const text = (body.innerText || "").trim();
+      if (text !== w.text) { w.text = text; w.changedAt = now; w.doneAt = 0; return; }
+      if (text.length < 30 || document.querySelector(STOP) || now - w.changedAt < SETTLE_MS) return;
+      if (!w.doneAt) { w.doneAt = now; return; }
+      if (now - w.doneAt < NETWORK_GRACE_MS) return;
+      if (w.asking) return;
+      if ((pageHealth.lastForwardAt || 0) > w.askedAt && w.storedChecked !== w.doneAt) {
+        w.asking = true;
+        storedSince(w.askedAt).then((stored) => { w.asking = false; if (stored) finish(w); else w.storedChecked = w.doneAt; });
+        return;
+      }
+      const markdown = domToMarkdown(body).trim() || text;
+      const sig = `${prompt}::${markdown.length}::${markdown.slice(-120)}`;
+      if (sig === lastSig) return finish(w);
+      lastSig = sig;
+      const links = [], seen = new Set();
+      for (const a of bot.querySelectorAll("a[href]")) {
+        const href = a.href || "";
+        if (!/^https?:/i.test(href) || seen.has(href)) continue;
+        seen.add(href);
+        links.push({ url: href, title: (a.innerText || a.getAttribute("aria-label") || "").trim().slice(0, 300) || null });
+        if (links.length >= 80) break;
+      }
+      const images = [];
+      for (const im of bot.querySelectorAll("img[src]")) {
+        const src = im.currentSrc || im.src || "";
+        if (!/^https?:/i.test(src) || (im.naturalWidth && im.naturalWidth < 48) || images.some((x) => x.src === src)) continue;
+        const a = im.closest("a[href]");
+        images.push({ src, href: a && /^https?:/i.test(a.href) ? a.href : null, alt: (im.alt || "").slice(0, 200) || null });
+        if (images.length >= 30) break;
+      }
+      const conversationId = (location.pathname.match(/\/app\/([\w-]+)/) || [])[1] || null;
+      const raw = JSON.stringify({ format: "cito-page-copy", v: 1, platform: "gemini", prompt, markdown, links, images, conversationId });
+      tellWorker({ type: "raw-conversation", payload: { url: location.href, reqBody: null, transport: "page-copy", raw, end: "page", capturedAt: now, pageUrl: location.href } });
+      finish(w);
+    };
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.target && e.target.closest && e.target.closest('rich-textarea, [contenteditable="true"], textarea')) asked();
+    }, true);
+    document.addEventListener("click", (e) => { if (e.target && e.target.closest && e.target.closest('button[aria-label*="Send" i], .send-button, [data-test-id="send-button"]')) asked(); }, true);
+    pageFacts.onAsked = () => asked();
   })();
 })();

@@ -43,6 +43,8 @@
             <button id="capToggle" class="cap-toggle" type="button" role="switch" aria-checked="true" title="Capturing your engine chats. Click to pause.">
               <span class="cap-dot" aria-hidden="true"></span><span class="cap-label">Capturing</span>
             </button>
+            <!-- A model downloading (0.84.0): seen from every page, opens Ask. -->
+            <button id="modelDl" class="model-dl" type="button" hidden title="An AI model is downloading. Open Ask to see it, or to cancel."><span class="model-dl-ring" aria-hidden="true"></span><span class="model-dl-pct">0%</span></button>
           </div>
           <!-- Pop-out to the full tab: a square icon in the popup's one-row bar
                (0.55.0), hidden in the tab itself. Tab wiring keys off
@@ -85,6 +87,9 @@
       </header>
 
       <main class="app-content">
+        <!-- An answer asked by hand that never arrived (0.84.0): said here,
+             on whichever page is open, instead of missed in silence. -->
+        <div id="missedBanner" class="missed-banner" role="alert" hidden></div>
         <section id="analyze" class="panel active"></section>
         <section id="dashboard" class="panel"></section>
         <section id="loader" class="panel"></section>

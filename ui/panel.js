@@ -11499,3 +11499,71 @@ function syncOverflowEdges(root = document) {
   window.addEventListener("resize", later);
   later();
 }
+
+/* A model download in progress, shown in the app bar on every page
+ * (0.84.0): it used to show only in Settings, so leaving the page made it
+ * look like nothing was happening. It opens Ask, where the switch is. */
+{
+  const chip = document.getElementById("modelDl");
+  let t = 0;
+  const tick = async () => {
+    clearTimeout(t);
+    const s = await send({ type: "ai-status" }).catch(() => null);
+    const p = s && (s.downloading ? s.progress : s.laya && s.laya.downloading ? s.laya.progress : null);
+    const busy = !!(s && (s.downloading || (s.laya && s.laya.downloading)));
+    if (chip) {
+      chip.hidden = !busy;
+      const pct = p && p.pct != null ? Math.max(0, Math.min(100, Math.round(p.pct))) : null;
+      chip.querySelector(".model-dl-pct").textContent = pct == null ? "…" : `${pct}%`;
+      chip.style.setProperty("--pct", String(pct || 0));
+      chip.setAttribute("aria-label", `Downloading ${s && s.downloading ? "Ask's AI model" : "Fast labels"}${pct == null ? "" : `, ${pct}%`}`);
+    }
+    if (busy) t = setTimeout(tick, 1500);
+  };
+  chip?.addEventListener("click", () => showTab("ask"));
+  try { chrome.runtime.onMessage.addListener((m) => { if (m && m.type === "ai-state") tick(); }); } catch (_) { /* not in the extension */ }
+  document.addEventListener("change", (e) => { if (e.target && /^sw(AskModel|Laya)$/.test(e.target.id)) setTimeout(tick, 600); });
+  tick();
+}
+
+/* "Your last question on Gemini wasn't captured" (0.84.0). Asked: the
+ * everyday capture "is getting broken with each update". When it is, the
+ * person should know at once, with the two things that help: refreshing
+ * that tab, and the capture report to send us. */
+{
+  const ENGINE_NAME = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok" };
+  const box = document.getElementById("missedBanner");
+  const ago = (t) => { const m = Math.max(1, Math.round((Date.now() - t) / 60000)); return m === 1 ? "a minute ago" : `${m} minutes ago`; };
+  const draw = (list) => {
+    if (!box) return;
+    box.replaceChildren();
+    box.hidden = !list.length;
+    for (const m of list) {
+      const name = ENGINE_NAME[m.engine] || m.engine;
+      const refresh = el("button", { className: "btn sm", type: "button" }, `Refresh the ${name} tab`);
+      refresh.onclick = async () => { if (m.tabId != null) await send({ type: "capture-refresh-tab", tabId: m.tabId }); await send({ type: "capture-missed-dismiss", engine: m.engine }); check(); showToast(`Refreshed. Ask ${name} again and it will be captured.`); };
+      const report = el("button", { className: "btn sm ghost", type: "button" }, "Copy capture report");
+      report.onclick = async () => {
+        const r = await send({ type: "capture-check" });
+        try { await navigator.clipboard.writeText((r && r.report) || ""); showToast("Copied. Paste it in a message to us."); } catch (_) { showToast("Couldn't copy: About → Diagnostics has the report.", "error"); }
+      };
+      const close = el("button", { className: "missed-x", type: "button", "aria-label": "Dismiss" }, "×");
+      close.onclick = async () => { await send({ type: "capture-missed-dismiss", engine: m.engine }); check(); };
+      box.append(el("div", { className: "missed-row", "data-engine": m.engine },
+        el("div", { className: "missed-text" }, el("b", {}, `Your question on ${name} (${ago(m.askedAt)}) wasn't captured.`),
+          el("span", {}, "The page may have lost its link to CitoSkeleton, or the site changed how it sends answers.")),
+        el("div", { className: "missed-btns" }, refresh, report, close)));
+    }
+  };
+  let t = 0;
+  const check = async () => {
+    clearTimeout(t);
+    let afterMs;
+    try { afterMs = Number(localStorage.getItem("cito-test-missed-after")) || undefined; } catch (_) { /* none */ }
+    const r = await send({ type: "capture-missed", afterMs }).catch(() => null);
+    draw((r && r.ok && r.missed) || []);
+    t = setTimeout(check, 20000);
+  };
+  try { chrome.runtime.onMessage.addListener((m) => { if (m && (m.type === "new-capture" || m.type === "capture-updated")) check(); }); } catch (_) { /* not in the extension */ }
+  check();
+}

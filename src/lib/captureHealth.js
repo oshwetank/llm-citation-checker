@@ -36,8 +36,33 @@ export function noteHealth(state, engine, e) {
   if (e.kind === "conv") cur.conv = { at, path: e.path || "", method: e.method || "", status: e.status || 0 };
   else if (e.kind === "unknown") cur.unknown = push(cur.unknown, { at, ev: e.ev || "stream-unknown", path: e.path || "", method: e.method || "", ctype: e.ctype || "" });
   else if (e.kind === "stored") cur.stored = { at, captureId: e.captureId || "" };
+  else if (e.kind === "asked") cur.asked = { at, tabId: e.tabId ?? null };
   else if (e.kind === "drop") cur.drops = push(cur.drops, { at, reason: e.reason || "unknown", path: e.path || "" });
   return { ...s, [engine]: cur };
+}
+
+/**
+ * Questions asked by hand that never became a stored answer (0.84.0): an
+ * engine where the person sent a question, and nothing was stored after it,
+ * once enough time has passed for the answer to have finished. Until then
+ * an answer was missed in silence. Older than `staleMs`, or dismissed after
+ * it was asked, it's left alone.
+ * @returns {{engine: string, askedAt: number, tabId: number|null}[]}
+ */
+export const MISSED_AFTER_MS = 90 * 1000;
+export function missedAnswers(state, now = Date.now(), dismissed = {}, { afterMs = MISSED_AFTER_MS, staleMs = 30 * 60 * 1000 } = {}) {
+  const out = [];
+  for (const engine of ENGINES) {
+    const cur = state && state[engine];
+    const asked = cur && cur.asked;
+    if (!asked || !asked.at) continue;
+    if (cur.stored && cur.stored.at >= asked.at) continue;
+    const age = now - asked.at;
+    if (age < afterMs || age > staleMs) continue;
+    if ((dismissed[engine] || 0) >= asked.at) continue;
+    out.push({ engine, askedAt: asked.at, tabId: asked.tabId ?? null });
+  }
+  return out;
 }
 
 const REASON = {

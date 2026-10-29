@@ -23,7 +23,7 @@ import {
 import { createErrorLog } from "./lib/errorlog.js";
 import { compareRuns } from "./lib/runCompare.js";
 import { BUILD } from "./lib/build.js";
-import { noteHealth, emptyHealth, healthReport, verdict, ENGINES as HEALTH_ENGINES } from "./lib/captureHealth.js";
+import { noteHealth, emptyHealth, healthReport, verdict, missedAnswers, ENGINES as HEALTH_ENGINES } from "./lib/captureHealth.js";
 import { checkEnginesAuth, checkEngineAuth, AUTH_COOKIES } from "./lib/auth-check.js";
 import { buildDemoRecords, isDemoRecord } from "./lib/demo-data.js";
 import { buildCampaignXlsx, campaignCsvFiles, campaignExportCounts } from "./lib/campaignXlsx.js";
@@ -49,6 +49,7 @@ import { enrichBrandsWithAI, enrichBrandStance } from "./lib/ai-brands.js";
 import { adapt as adaptGemini } from "./adapters/gemini.js";
 import { adapt as adaptPerplexity } from "./adapters/perplexity.js";
 import { adapt as adaptGrok } from "./adapters/grok.js";
+import { adaptPageCopy, isPageCopy } from "./adapters/pageCopy.js";
 import {
   MAX_PROFILES, TRASH_RETENTION_DAYS, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
   needsUnlock, profileChanges, addCompetitor, autoCompetitorsFrom, missingTurns,
@@ -382,6 +383,7 @@ function noteCapture(engine, e) {
   if (e && e.kind === "drop" && e.reason !== "paused") logEvent(`capture:drop:${engine}`, "capture", `capture not saved: ${e.reason}`, { platform: engine, reason: e.reason, path: e.path || "" });
   return healthChain;
 }
+const MISSED_DISMISSED_KEY = "citoMissedDismissed";
 const ENGINE_TAB_URLS = ["https://chatgpt.com/*", "https://chat.openai.com/*", "https://gemini.google.com/*", "https://www.perplexity.ai/*", "https://perplexity.ai/*", "https://grok.com/*"];
 // Each open engine tab, asked how capture stands there. No answer within
 // 1.5 s means its script is cut off from the extension.
@@ -456,7 +458,8 @@ async function storeCapture(payload, meta) {
   const rawText = payload.raw || "";
 
   // Gemini emits many small RPCs; only the assistant generation is substantial.
-  if (platform === "gemini" && rawText.length < 2000) return null;
+  // A copy read off the page (0.84.0) is the answer itself, however short.
+  if (platform === "gemini" && rawText.length < 2000 && !isPageCopy(rawText)) return null;
 
   // Reject autocomplete, suggest, and navigation prediction requests (they are not answers).
   //
@@ -675,7 +678,9 @@ const withTimeout = (p, ms, fallback) => new Promise((resolve) => {
 async function deriveAndStore(rawRow, rawText, settings, { settle = true } = {}) {
   const raw = rawText ?? (await gunzipToString(rawRow.gz));
   const cfg = settings || (await getSettings());
-  const adapter = ADAPTERS[rawRow.platform] || ADAPTERS.chatgpt;
+  // An answer read off the page (0.84.0, adapters/pageCopy.js): one shape
+  // for every engine, whatever its network format is this week.
+  const adapter = isPageCopy(raw) ? adaptPageCopy : ADAPTERS[rawRow.platform] || ADAPTERS.chatgpt;
   const record = await adapter(
     {
       captureId: rawRow.captureId,
@@ -3307,6 +3312,38 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const counts = { derived, manual };
           const engines = HEALTH_ENGINES.map((e) => verdict(e, health[e], tabs, { paused }));
           sendResponse({ ok: true, version: BUILD, paused, tabs, health, engines, counts, retentionMax: settings.retentionMax, report: healthReport({ version: BUILD, health, tabs, paused, counts, retentionMax: settings.retentionMax }) });
+          break;
+        }
+        // A question sent by hand in an engine tab (0.84.0), for the missed-
+        // answer notice. A campaign's own tabs are left out: the run reports
+        // its misses itself.
+        case "user-asked": {
+          const tabId = sender && sender.tab && sender.tab.id;
+          if (tabId != null && !legForTab(tabId)) await noteCapture(platformFromUrl(sender.tab.url || ""), { kind: "asked", tabId });
+          sendResponse({ ok: true });
+          break;
+        }
+        // Was an answer stored for this engine since the question (0.84.0)?
+        // The page copies ask this rather than trusting that something was
+        // forwarded: after a format change the traffic still goes through,
+        // it just can't be read.
+        case "capture-stored-since": {
+          const engine = platformFromUrl((sender && sender.tab && sender.tab.url) || "");
+          const h = ((await chrome.storage.local.get(HEALTH_KEY))[HEALTH_KEY] || {})[engine] || {};
+          sendResponse({ ok: true, stored: !!(h.stored && h.stored.at > Number(msg.since || 0)) });
+          break;
+        }
+        case "capture-missed": {
+          const got = await chrome.storage.local.get([HEALTH_KEY, MISSED_DISMISSED_KEY]);
+          // afterMs: tests only, to wait less than the real 90 s.
+          const afterMs = Number(msg.afterMs) >= 1000 ? Number(msg.afterMs) : undefined;
+          sendResponse({ ok: true, missed: missedAnswers(got[HEALTH_KEY], Date.now(), got[MISSED_DISMISSED_KEY] || {}, afterMs ? { afterMs } : {}) });
+          break;
+        }
+        case "capture-missed-dismiss": {
+          const got = (await chrome.storage.local.get(MISSED_DISMISSED_KEY))[MISSED_DISMISSED_KEY] || {};
+          await chrome.storage.local.set({ [MISSED_DISMISSED_KEY]: { ...got, [String(msg.engine)]: Date.now() } });
+          sendResponse({ ok: true });
           break;
         }
         case "capture-refresh-tab": {

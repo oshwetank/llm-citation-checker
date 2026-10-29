@@ -2,7 +2,7 @@
  * The capture check's record and verdicts (src/lib/captureHealth.js, 0.73.1).
  * Run: node test/capture-health.test.mjs
  */
-import { emptyHealth, noteHealth, verdict, healthReport } from "../src/lib/captureHealth.js";
+import { emptyHealth, noteHealth, verdict, healthReport , missedAnswers, MISSED_AFTER_MS } from "../src/lib/captureHealth.js";
 
 let failures = 0;
 function check(label, cond, detail = "") {
@@ -40,6 +40,22 @@ console.log("\nthe report");
 const rep = healthReport({ version: "0.73.1", health: h, tabs: [{ engine: "chatgpt", alive: true, marker: true, conv: 2, forwarded: 2, url: "https://chatgpt.com/c/:id", ageMs: 120000 }], counts: { derived: 10, manual: 4 }, retentionMax: 2000 });
 check("names the version, counts and each engine", /v0\.73\.1/.test(rep) && /stored: 10 answers \(4 asked by hand\)/.test(rep) && ["chatgpt", "gemini", "perplexity", "grok"].every((e) => rep.includes(`## ${e}`)));
 check("the tab line", /tab https:\/\/chatgpt\.com\/c\/:id: connected · marker ok · requests seen 2/.test(rep), rep);
+
+console.log("\nan answer asked by hand that never arrived (0.84.0)");
+{
+  const T = 1_000_000_000;
+  let h = noteHealth(null, "gemini", { kind: "asked", at: T, tabId: 7 });
+  check("not yet: the answer may still be coming", missedAnswers(h, T + 30_000).length === 0);
+  const m = missedAnswers(h, T + MISSED_AFTER_MS + 1);
+  check("after 90 s with nothing stored, it's missed, with its tab", m.length === 1 && m[0].engine === "gemini" && m[0].tabId === 7, JSON.stringify(m));
+  h = noteHealth(h, "gemini", { kind: "stored", at: T + 20_000, captureId: "c" });
+  check("stored after the question: not missed", missedAnswers(h, T + 200_000).length === 0);
+  h = noteHealth(h, "chatgpt", { kind: "stored", at: T - 5000, captureId: "old" });
+  h = noteHealth(h, "chatgpt", { kind: "asked", at: T, tabId: 3 });
+  check("an older answer doesn't count for a newer question", missedAnswers(h, T + 120_000).map((x) => x.engine).join() === "chatgpt");
+  check("dismissed: left alone", missedAnswers(h, T + 120_000, { chatgpt: T + 1 }).length === 0);
+  check("half an hour on: no longer news", missedAnswers(h, T + 31 * 60_000).length === 0);
+}
 
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);
