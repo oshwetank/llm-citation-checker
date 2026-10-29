@@ -153,6 +153,9 @@ try {
   await tab.waitForTimeout(400);
   await tab.evaluate(() => { [...document.querySelectorAll(".ab-nav-btn")].find((b) => /Settings/.test(b.textContent))?.click(); });
   await tab.waitForSelector("#aiEngineSeg", { timeout: 15000 }).catch(() => {});
+  // From 0.84.0 the engine choice and the test sit under More options.
+  await tab.evaluate(() => { const d = document.getElementById("aiMore"); if (d) d.open = true; });
+  await tab.waitForTimeout(200);
   const ui = await tab.evaluate(() => ({
     seg: [...document.querySelectorAll("#aiEngineSeg [data-engine]")].map((b) => `${b.dataset.engine}:${b.getAttribute("aria-checked")}:${b.disabled ? "off" : "on"}`),
     bench: document.getElementById("aiBenchTable")?.innerText || "",
