@@ -19,3 +19,4 @@ _*.html
 dist/
 training/data/
 runs/
+__pycache__/
