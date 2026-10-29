@@ -114,9 +114,10 @@ try {
 
   console.log("\nTop menu: Compare is gone, reached from the answer instead");
   {
-    // Shown tabs only: Ask (0.73.0) is in the markup but hidden in the popup.
+    // Shown tabs only. Ask is in the popup too from 0.84.0: the model
+    // switches live there, so a new user finds them.
     const tabs = await page.evaluate(() => [...document.querySelectorAll(".nav-tabs [data-tab]")].filter((b) => b.getBoundingClientRect().width > 0).map((b) => b.dataset.tab));
-    check("the menu is Analyze, Dashboard, Campaigns, About", tabs.join() === "analyze,dashboard,loader,about", tabs.join());
+    check("the menu is Analyze, Dashboard, Campaigns, Ask, About", tabs.join() === "analyze,dashboard,loader,ask,about", tabs.join());
   }
 
   // Since 0.59.0 the default Studio theme sets Geist; Classic keeps IBM Plex.
@@ -259,7 +260,7 @@ try {
       places: document.querySelectorAll("#ap-places .ap-place").length,
       brandsTitle: document.querySelector("#ap-brands .ap-h")?.textContent || "",
     }));
-    check("paging to the older capture works", ids === 4 && r.kind === "Local", r.kind);
+    check("paging to the older capture works", ids === 5 && r.kind === "Local", r.kind);
     check("its places are listed", r.places > 0, r.places);
   }
 
