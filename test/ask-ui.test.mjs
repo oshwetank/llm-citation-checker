@@ -74,18 +74,23 @@ try {
     const vis = await page.evaluate(() => { const b = document.querySelector('[data-tab="ask"]'); return b && getComputedStyle(b).display !== "none"; });
     check("in the full tab's menu", vis);
     await openAsk();
+    await page.waitForSelector("#swAskModel", { timeout: 10000 }).catch(() => {});
     const t = await page.evaluate(() => document.getElementById("ask").innerText);
-    check("without the built-in AI it says what to set up", /needs the built-in AI/.test(t) && !!(await page.$("#askSetup")), t.slice(0, 200));
-    await page.click("#askSetup");
-    await page.waitForTimeout(600);
-    check("the button opens Settings → Built-in AI", await page.evaluate(() => !!document.getElementById("setAi") && document.querySelector('[data-tab="about"]').classList.contains("active")));
+    check("without a model, Ask offers the switches right there (0.84.0)", /Models on this computer/.test(t) && !!(await page.$("#swAskModel")) && !!(await page.$("#swLaya")), t.slice(0, 300));
+    check("each says its size, and that uninstalling removes it", /download, once/.test(t) && /Uninstalling CitoSkeleton removes them/.test(t));
   }
 
   console.log("\nasking, with the built-in AI");
   {
     await msg({ type: "ai-test-model", model: { repo: "tiny", host: HOST, dtype: "fp32", script: SCRIPT } });
-    await msg({ type: "ai-download", device: "wasm" });
+    await openAsk();
+    await page.waitForSelector("#swAskModel", { timeout: 10000 }).catch(() => {});
+    // Turned on in Ask, the way a new user would.
+    await page.evaluate(() => { const i = document.getElementById("swAskModel"); i.checked = true; i.dispatchEvent(new Event("change", { bubbles: true })); });
     for (let i = 0; i < 120; i++) { const s = await msg({ type: "ai-status" }); if (s.ready || s.error) break; await page.waitForTimeout(500); }
+    check("the switch downloaded it", (await msg({ type: "ai-status" })).ready);
+    await page.waitForSelector(".ask-chip", { timeout: 10000 }).catch(() => {});
+    check("and Ask turned into the chat by itself", (await page.$$(".ask-chip")).length === 4);
     await openAsk();
     check("suggested questions are offered", (await page.$$(".ask-chip")).length === 4);
     // A chat (0.78.0): the box at the bottom, the conversation above it.
@@ -134,7 +139,11 @@ try {
     await page.setViewportSize({ width: 540, height: 600 });
     await page.goto(`chrome-extension://${extId}/ui/panel.html`);
     await page.waitForTimeout(800);
-    check("has no Ask tab: there is no room for a chat", await page.evaluate(() => { const b = document.querySelector('[data-tab="ask"]'); return !b || getComputedStyle(b).display === "none"; }));
+    // 0.84.0: Ask is in the popup too, where new users are.
+    check("has the Ask tab", await page.evaluate(() => { const b = document.querySelector('[data-tab="ask"]'); return !!b && getComputedStyle(b).display !== "none"; }));
+    await page.evaluate(() => document.querySelector('[data-tab="ask"]').click());
+    await page.waitForSelector("#askInput, .ask-input", { timeout: 8000 }).catch(() => {});
+    check("and its chat fits: the box to type in is on screen", await page.evaluate(() => { const i = document.querySelector("#askInput, .ask-chat .ask-input"); if (!i) return false; const r = i.getBoundingClientRect(); return r.bottom <= innerHeight && r.top >= 0 && r.width > 200; }));
   }
   check("no page errors", errors.length === 0, errors.join(" | "));
 } finally { await context.close(); server.close(); }

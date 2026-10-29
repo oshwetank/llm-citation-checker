@@ -4724,6 +4724,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "laya-remove":
           sendResponse(await aiSvc.removeLaya());
           break;
+        case "ai-cancel-download":
+          sendResponse(await aiSvc.cancelDownload(msg.kind === "laya" ? "laya" : "llm"));
+          break;
         case "ai-set-labeller":
           sendResponse(await aiSvc.setLabeller(msg.labeller));
           break;

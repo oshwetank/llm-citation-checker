@@ -117,7 +117,7 @@ for t in test/*.test.mjs; do node "$t" || echo "FAILED: $t"; done
 
 **Laya, for the labels (0.83.0).** The owner chose (26 Oct) Laya to replace the language model for **labels only**. Ask keeps the language model, or the hand-off.
 - **The model.** `duration465/laya-onnx`, folder `multilingual/`: an unofficial ONNX export of `convaiinnovations/laya`'s multilingual checkpoint, which is mmBERT-base (22 layers, 256k vocabulary) with a decision head, under Apache-2.0.
-  - Files: `laya.onnx` plus `laya.onnx.data` (fp32, 1.3 GB), `laya_config.json`, `tokenizer/`.
+  - Files: `laya.onnx` plus `laya.onnx.data` (fp32, 1.2 GB), `laya_config.json`, `tokenizer/`.
   - Inputs and outputs: `input_ids`, `attention_mask`, `marker_pos`, `marker_mask`, `qtype` → `logits`, `act_probs`.
   - It ships **uncalibrated** (temperature 1).
 - **`src/lib/laya.js`** (pure; unit test `laya`).

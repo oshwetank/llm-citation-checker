@@ -9,6 +9,7 @@
 import { tr } from "./i18n.js";
 import { TIERS, TIER_ORDER, sizeLabel } from "../src/lib/llmTiers.js";
 import { importFiles } from "../src/lib/llmEngine.js";
+import { mountModelSwitches } from "./modelSwitches.js";
 
 function h(tag, props = {}, ...kids) {
   const n = document.createElement(tag);
@@ -36,6 +37,12 @@ function sw(id, label, note, checked, onChange) {
 export function initAiSettings(slot) {
   if (!slot) return;
   let st = null, chosen = null, poll = null, hwAsked = false;
+  // The switches (0.84.0) are made once and moved back in on each redraw,
+  // so they keep their own state and listeners; everything else, the sizes,
+  // engines and folders, is under "More options".
+  const switches = h("div", { className: "ai-switches", id: "aiSwitches" });
+  mountModelSwitches(switches, {});
+  let moreOpen = false;
 
   const draw = () => {
     const s = st || {};
@@ -51,15 +58,19 @@ export function initAiSettings(slot) {
       h("div", { className: "ab-row-text", id: "aiLabel" },
         h("b", {}, "Built-in AI ", chip),
         h("span", {}, `AI that runs on this computer: Chrome's own built-in model where Chrome has it, or an open-source model (${s.family || "Qwen3.5"}, ${s.licence || "Apache-2.0"}, 201 languages) downloaded once from Hugging Face. It reads each answer's language, market, intent and audience, and checks each brand's type, owner and how the answer treats it, quoting the answer. Nothing you capture is ever sent anywhere. Your counts don't change unless you turn that on below.`))));
-    slot.append(engineBlock(s));
-    slot.append(layaBlock(s));
+    slot.append(switches);
+    const more = h("details", { className: "ai-more", id: "aiMore", open: moreOpen }, h("summary", {}, h("b", {}, "More options"), h("span", {}, "Model size, which engine answers, loading from a folder, your own trained model")));
+    more.addEventListener("toggle", () => { moreOpen = more.open; });
+    slot.append(more);
+    more.append(engineBlock(s));
+    more.append(layaBlock(s));
 
     // The hardware check, and the sizes.
     const hw = s.hardware;
     if (hw) {
       const bits = [hw.webgpu ? `graphics chip found${hw.adapter ? ` (${hw.adapter})` : ""}` : "no graphics-chip access (WebGPU)", hw.deviceMemory ? `${hw.deviceMemory}+ GB memory` : null, hw.freeBytes != null ? `${gb(hw.freeBytes)} free for the extension` : null].filter(Boolean);
-      slot.append(h("p", { className: "ai-hw", id: "aiHw" }, h("b", {}, "This computer: "), bits.join(" · "), pick ? h("span", { className: "ai-why" }, `. Suggested: ${pick.tier ? TIERS[pick.tier].label : "none"}. ${pick.reason}`) : null));
-    } else slot.append(h("p", { className: "ai-hw", id: "aiHw" }, "Checking this computer…"));
+      more.append(h("p", { className: "ai-hw", id: "aiHw" }, h("b", {}, "This computer: "), bits.join(" · "), pick ? h("span", { className: "ai-why" }, `. Suggested: ${pick.tier ? TIERS[pick.tier].label : "none"}. ${pick.reason}`) : null));
+    } else more.append(h("p", { className: "ai-hw", id: "aiHw" }, "Checking this computer…"));
 
     const seg = h("div", { className: "ab-seg ai-seg", role: "radiogroup", "aria-labelledby": "aiLabel", id: "aiTier" });
     for (const id of TIER_ORDER) {
@@ -106,20 +117,20 @@ export function initAiSettings(slot) {
       await send({ type: "ai-download", device: pick ? pick.device : undefined });
       refresh();
     };
-    slot.append(h("div", { className: "ab-row ai-actions" },
+    more.append(h("div", { className: "ab-row ai-actions" },
       h("div", { className: "ab-row-text" }, h("b", {}, "Model size"), h("span", {}, `${TIERS[tier].label}: Qwen3.5 ${TIERS[tier].params}, about ${sizeLabel(tier)} once. ${TIERS[tier].for}.`)),
       seg, h("div", { className: "ai-btns" }, dl, folder, rm, pickDir), folderNote));
-    slot.append(h("div", { className: "ab-row ai-row" },
+    more.append(h("div", { className: "ab-row ai-row" },
       h("div", { className: "ab-row-text" }, h("b", {}, "Your trained model"), h("span", {}, "A model fine-tuned on CitoSkeleton's data (training/ in the source code), from your own Hugging Face repository.")),
       h("div", { className: "ai-btns" }, own, ownBtn)));
 
     if (s.downloading) {
       const pct = s.progress && s.progress.pct != null ? Math.max(0, Math.min(100, s.progress.pct)) : null;
-      slot.append(h("div", { className: "ai-progress", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": pct == null ? null : String(Math.round(pct)), "aria-label": "Download progress" },
+      more.append(h("div", { className: "ai-progress", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": pct == null ? null : String(Math.round(pct)), "aria-label": "Download progress" },
         h("i", { style: `width:${pct == null ? 5 : pct}%` }),
         h("span", {}, s.progress && s.progress.total ? `${gb(s.progress.loaded)} of ${gb(s.progress.total)}` : "Starting…")));
     }
-    if (s.error && !s.downloading) slot.append(h("p", { className: "ai-err", role: "alert" }, `The last download failed: ${s.error}. Check the connection, or that huggingface.co isn't blocked here, and try again.`));
+    if (s.error && !s.downloading) more.append(h("p", { className: "ai-err", role: "alert" }, `The last download failed: ${s.error}. Check the connection, or that huggingface.co isn't blocked here, and try again.`));
 
     if (s.ready || (s.laya && s.laya.ready)) {
       const set = (patch) => send({ type: "settings-set", patch });
@@ -181,22 +192,11 @@ export function initAiSettings(slot) {
     const chip = L.downloading ? h("span", { className: "ai-chip busy" }, L.progress && L.progress.pct != null ? `Downloading ${Math.round(L.progress.pct)}%` : "Downloading…")
       : L.ready ? h("span", { className: "ai-chip ok" }, `Ready${L.device ? ` · ${L.device === "webgpu" ? "graphics chip" : "processor"}` : ""}`)
       : L.error ? h("span", { className: "ai-chip bad" }, "Download failed") : h("span", { className: "ai-chip" }, "Off");
-    const dl = h("button", { type: "button", className: "btn sm primary", id: "layaDownload", disabled: !!L.downloading || !!L.ready }, L.downloading ? "Downloading…" : L.ready ? "Downloaded" : `Download Laya · ${gb(L.bytes)}`);
-    dl.onclick = async () => { await send({ type: "laya-download" }); refresh(); };
-    const rm = h("button", { type: "button", className: "btn sm ghost", id: "layaRemove", disabled: !L.ready || !!L.downloading }, "Remove");
-    rm.onclick = async () => { if (!confirm("Remove Laya from this computer? The labels already made are kept.")) return; await send({ type: "laya-remove" }); refresh(); };
     box.append(h("div", { className: "ab-row ai-row" },
       h("div", { className: "ab-row-text" }, h("b", {}, "Fast labels: Laya ", chip),
         h("span", {}, `An open decision model (${L.label || "Laya multilingual"}, Apache-2.0, many languages) that labels each answer — what it asks, its stage, who it's for, how far it reaches, and what each brand is and how it's treated — by choosing among fixed options in one pass, with no text written. Much quicker than the AI model, and it never invents a name. Downloaded once from Hugging Face; Ask still uses the AI model.`),
         L.msPerAnswer ? h("span", { id: "layaPace" }, `Measured here: about ${(L.msPerAnswer / 1000).toFixed(1)} s per answer.`) : null,
-        L.error && !L.downloading ? h("span", { className: "ai-err", role: "alert" }, `The last download failed: ${L.error}.`) : null),
-      h("div", { className: "ai-btns" }, dl, rm)));
-    if (L.downloading && L.progress) {
-      const pct = L.progress.pct != null ? Math.max(0, Math.min(100, L.progress.pct)) : null;
-      box.append(h("div", { className: "ai-progress", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": pct == null ? null : String(Math.round(pct)), "aria-label": "Laya download progress" },
-        h("i", { style: `width:${pct == null ? 5 : pct}%` }),
-        h("span", {}, L.progress.total ? `${L.progress.file || ""} · ${gb(L.progress.loaded)} of ${gb(L.progress.total)}` : "Starting…")));
-    }
+        L.error && !L.downloading ? h("span", { className: "ai-err", role: "alert" }, `The last download failed: ${L.error}.`) : null)));
     const choice = s.labeller || "auto";
     const seg = h("div", { className: "ab-seg", role: "radiogroup", "aria-label": "Label answers with", id: "aiLabellerSeg" });
     for (const [id, label, ok] of [["auto", "Automatic", true], ["laya", "Laya (fast)", !!L.ready], ["llm", "The AI model", !!s.ready]]) {

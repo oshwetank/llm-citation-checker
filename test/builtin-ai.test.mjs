@@ -98,7 +98,7 @@ try {
     await tab.goto(`chrome-extension://${extId}/ui/panel.html?mode=tab&capture=${res.captureId}`);
     await tab.waitForSelector("#at-ai", { timeout: 15000 }).catch(() => {});
     const t = await tab.evaluate(() => document.getElementById("at-ai")?.innerText || "");
-    check("Analyze says the AI check is off, and where to turn it on", /AI check off/.test(t) && /Settings/.test(t) && /English/.test(t), t);
+    check("Analyze says the AI check is off, and where to turn it on", /AI check off/.test(t) && /Fast labels/.test(t) && /in Ask/.test(t) && /English/.test(t), t);
     await tab.close();
   }
 
@@ -107,11 +107,15 @@ try {
     await page.waitForTimeout(400);
     await page.evaluate(() => [...document.querySelectorAll(".ab-nav-btn, .ab-more-row")].find((b) => b.textContent.includes("Settings"))?.click());
     await page.waitForTimeout(800);
+    // Sizes, folders and engines are under "More options" since 0.84.0.
+    await page.evaluate(() => { const d = document.getElementById("aiMore"); if (d && !d.open) { d.open = true; d.dispatchEvent(new Event("toggle")); } });
+    await page.waitForTimeout(200);
   };
   const card = () => page.evaluate(() => {
     const c = document.getElementById("setAi");
     return { text: c ? c.innerText : "", tiers: [...(c ? c.querySelectorAll("[data-tier]") : [])].map((b) => [b.dataset.tier, b.getAttribute("aria-checked")]),
-      download: c && c.querySelector("#aiDownload") ? c.querySelector("#aiDownload").textContent : null, switches: [...(c ? c.querySelectorAll("input[role=switch]") : [])].map((i) => [i.id, i.checked]) };
+      download: c && c.querySelector("#aiDownload") ? c.querySelector("#aiDownload").textContent : null, switches: [...(c ? c.querySelectorAll("input[role=switch]") : [])].filter((i) => !/^sw/.test(i.id)).map((i) => [i.id, i.checked]),
+      models: [...(c ? c.querySelectorAll("#aiSwitches input[role=switch]") : [])].map((i) => [i.id, i.checked]) };
   });
 
   console.log("\nthe Settings card before downloading");
@@ -123,6 +127,7 @@ try {
     check("the hardware check and a suggested size, with why", /This computer:/.test(c.text) && /Suggested:/.test(c.text), c.text);
     check("three sizes, one picked", c.tiers.length === 3 && c.tiers.filter(([, v]) => v === "true").length === 1, JSON.stringify(c.tiers));
     check("a Download button; no switches yet", c.download === "Download AI model" && c.switches.length === 0, JSON.stringify(c));
+    check("and the two model switches on top, both off (0.84.0)", JSON.stringify(c.models) === JSON.stringify([["swAskModel", false], ["swLaya", false]]), JSON.stringify(c.models));
   }
 
   console.log("\nthe hardware check");

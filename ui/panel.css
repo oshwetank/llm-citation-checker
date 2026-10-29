@@ -873,7 +873,11 @@ body.popup .nav-tabs {
   border: none;
   flex: 1 1 auto;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  /* Five pages since 0.84.0 (Ask is in the popup too): each as wide as
+     its word, so none of them touch. */
+  grid-template-columns: repeat(5, auto);
+  justify-content: space-between;
+  column-gap: 2px;
 }
 /* Text only, as on the canvas. */
 .nav-tab svg { display: none; }
@@ -899,8 +903,9 @@ body.popup .nav-tabs {
 
 body.popup .nav-tab {
   height: 28px;
-  padding: 0 4px;
-  font-size: 12px;
+  padding: 0 6px;
+  font-size: 11.5px;
+  letter-spacing: -0.01em;
   border-radius: 7px;
 }
 
@@ -7132,8 +7137,15 @@ body.popup .cv-tab { height: 30px; padding: 0 9px; font-size: 12px; }
 .ab-support li { display: flex; align-items: center; gap: 8px; }
 .ab-support li.off { color: var(--fg-secondary); }
 
-/* Ask (0.73.0, ui/askView.js) — the full tab only */
-body.popup .nav-tab[data-tab="ask"] { display: none; }
+/* Ask (0.73.0, ui/askView.js) — in the popup too since 0.84.0, where new
+   users are, so the models it needs can be found. */
+.ask-models > summary { list-style: none; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.ask-models > summary::-webkit-details-marker { display: none; }
+.ask-models > summary::before { content: "▸"; color: var(--fg-muted); }
+.ask-models[open] > summary::before { content: "▾"; }
+.ask-models[open] > summary { margin-bottom: 10px; }
+.ask-models-sum { color: var(--fg-muted); font-size: 12px; }
+.ask-empty .ask-models { margin: 0 0 12px; box-shadow: none; }
 .ask { display: grid; gap: 12px; max-width: 920px; margin: 0 auto; }
 .ask-title { margin: 0 0 4px; font-size: 18px; }
 .ask-sub { margin: 0; color: var(--fg-secondary); font-size: 13px; line-height: 1.5; }
@@ -7451,3 +7463,56 @@ body.popup .ho-icon { inline-size: 28px; block-size: 28px; }
 .ac-who .btn { margin-inline-start: auto; }
 .ac-shares { display: grid; gap: 6px; }
 .ac-share { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; padding: 8px 10px; border: 1px solid var(--line-soft, var(--border)); border-radius: var(--r-ctl, 6px); }
+
+/* ---------- Clicks, targets and scrolling (0.84.0) ----------
+   From the 29 Oct audit. `hidden` means hidden everywhere: several rules set
+   `display` on buttons and boxes, which beat the attribute, so things meant
+   to be gone were drawn (a "Use Chrome's built-in AI" button where Chrome has
+   none). Everything clickable says so with its cursor and answers a press;
+   small text buttons get a 24px target without changing how they look. */
+[hidden] { display: none !important; }
+button:not(:disabled), [role="button"], [role="tab"], [role="radio"], [role="switch"], summary, label[for], select, a[href], .nav-tab, .popout-btn { cursor: pointer; }
+button:disabled, [aria-disabled="true"] { cursor: not-allowed; }
+button:not(:disabled):active, [role="button"]:active, [role="tab"]:active, .nav-tab:active { filter: brightness(0.94); }
+html[data-motion="on"] button:not(:disabled):active,
+html[data-motion="on"] [role="tab"]:active,
+html[data-motion="on"] .nav-tab:active { transform: scale(0.97); }
+html[data-motion="on"] a, html[data-motion="on"] [role="tab"], html[data-motion="on"] [role="radio"], html[data-motion="on"] .geo-chip, html[data-motion="on"] .at-cite, html[data-motion="on"] .site-pill {
+  transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease, color var(--motion-fast) ease, box-shadow var(--motion-base) ease, transform var(--motion-fast) var(--motion-ease), filter var(--motion-fast) ease;
+}
+html[data-motion="on"] button { transition-property: background-color, border-color, color, box-shadow, transform, filter; }
+/* Small text buttons: a 24px-tall target, same look. */
+.at-cite, .site-pill, .at-backing-name, .linkbtn, .db-link, .at-glance-warn, .brand-title { min-block-size: 24px; display: inline-flex; align-items: center; }
+.db-prompt { min-block-size: 24px; }
+body.popup .cap-toggle { min-block-size: 26px; min-inline-size: 32px; justify-content: center; }
+/* A row that scrolls sideways shows that it does: its edges fade, and the
+   bar itself is hidden (the popup drew a raw scrollbar under the campaign's
+   tabs). */
+.cv-tabs, .db-kindchips { scrollbar-width: none; }
+.cv-tabs::-webkit-scrollbar { display: none; }
+.cv-tabs.overflow-end, .db-kindchips.overflow-end { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); }
+.cv-tabs.overflow-start.overflow-end, .db-kindchips.overflow-start.overflow-end { -webkit-mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent); mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent); }
+.cv-tabs.overflow-start:not(.overflow-end), .db-kindchips.overflow-start:not(.overflow-end) { -webkit-mask-image: linear-gradient(to right, transparent, #000 36px); mask-image: linear-gradient(to right, transparent, #000 36px); }
+
+/* ---------- The AI models as switches (0.84.0) ---------- */
+.ms { display: grid; gap: 8px; }
+.ms-row { display: grid; grid-template-columns: 1fr auto; gap: 6px 14px; align-items: center; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-solid, var(--card-bg)); }
+.ms-row.on { border-color: var(--accent-border, var(--accent)); }
+.ms-text { display: grid; gap: 2px; cursor: pointer; }
+.ms-text b { font-size: 14px; }
+.ms-what { color: var(--fg-secondary); font-size: 13px; }
+.ms-state { color: var(--fg-muted); font-size: 12px; }
+.ms-row.on .ms-state { color: var(--green-fg, #15803d); }
+.ms-row.busy .ms-state { color: var(--accent); }
+.ms-state.bad { color: var(--red-fg, #b91c1c); }
+.ms-progress { grid-column: 1 / -1; margin: 0; }
+.ms-note { margin: 0; color: var(--fg-muted); font-size: 12px; }
+.ms.compact .ms-row { padding: 10px 12px; }
+.ms-progress.ai-progress { height: 6px; margin: 2px 0 0; }
+.ai-switches { margin: 4px 0 10px; }
+.ai-more { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 6px; }
+.ai-more > summary { list-style: none; cursor: pointer; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; padding: 6px 0; }
+.ai-more > summary::-webkit-details-marker { display: none; }
+.ai-more > summary::before { content: "▸"; color: var(--fg-muted); }
+.ai-more[open] > summary::before { content: "▾"; }
+.ai-more > summary span { color: var(--fg-muted); font-size: 12px; }

@@ -37,7 +37,7 @@ import { BENCH_RECORD, benchVerdict, chooseEngine } from "./lib/aiBench.js";
 
 const STATE_KEY = "lcfcAi";
 // Laya multilingual (duration465/laya-onnx, Apache-2.0): an ONNX export of
-// convaiinnovations/laya's multilingual checkpoint. fp32, 1.3 GB. Pin `rev`
+// convaiinnovations/laya's multilingual checkpoint. fp32, 1.2 GB. Pin `rev`
 // to a commit of that repository once it has been checked on a real machine;
 // an int8 copy (training/laya-quantize.py) can replace it.
 export const LAYA_DEFAULT = { repo: "duration465/laya-onnx", rev: "main", sub: "multilingual", host: null, label: "Laya multilingual", bytes: 1306000000 };
@@ -111,6 +111,23 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
     return null;
   }
 
+  /* ---- Turning a model off mid-download (0.84.0) ----
+   * The switch in Ask and Settings: off while it downloads cancels it. The
+   * download runs in the offscreen page, so the page is closed (that stops
+   * every fetch at once), and what had arrived is removed. */
+  const cancelled = { llm: false, laya: false };
+  async function cancelDownload(kind) {
+    const busy = kind === "laya" ? layaDownloading : downloading;
+    if (!busy) return { ok: true, idle: true };
+    cancelled[kind] = true;
+    await resetOffscreen();
+    await busy.catch(() => {});
+    if (kind === "laya") await removeLaya(); else await remove();
+    if (kind === "laya") layaProgress = null; else progress = null;
+    broadcast({ type: "ai-state" });
+    return { ok: true, cancelled: true };
+  }
+
   /* ---- Laya, for the labels ---- */
   let layaProgress = null;
   let layaDownloading = null;
@@ -150,8 +167,9 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
         broadcast({ type: "ai-state" });
         kick();
       } catch (e) {
-        await setState({ laya: { ...((await getState()).laya || {}), error: String(e && e.message || e) } });
         layaProgress = null;
+        if (cancelled.laya) { cancelled.laya = false; broadcast({ type: "ai-state" }); return; }
+        await setState({ laya: { ...((await getState()).laya || {}), error: String(e && e.message || e) } });
         logErr("laya-download", e);
         broadcast({ type: "ai-state" });
       } finally { layaDownloading = null; }
@@ -265,8 +283,9 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
         broadcast({ type: "ai-state" });
         kick();
       } catch (e) {
-        await setState({ error: String(e && e.message || e) });
         progress = null;
+        if (cancelled.llm) { cancelled.llm = false; broadcast({ type: "ai-state" }); return; }
+        await setState({ error: String(e && e.message || e) });
         logErr("ai-download", e);
         broadcast({ type: "ai-state" });
       } finally { downloading = null; }
@@ -443,5 +462,5 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
     return { ok: true };
   }
 
-  return { askQuestion, checkNow, getState, setState, status, hardware, download, remove, enqueue, kick, attach, saveNano, onProgress, specOf, llm, engine, labeller, benchmark, useNano, setEngine, downloadLaya, removeLaya, setLabeller };
+  return { askQuestion, checkNow, getState, setState, status, hardware, download, remove, enqueue, kick, attach, saveNano, onProgress, specOf, llm, engine, labeller, benchmark, useNano, setEngine, downloadLaya, removeLaya, setLabeller, cancelDownload };
 }

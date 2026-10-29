@@ -9,6 +9,7 @@
 import { tr } from "./i18n.js";
 import { handoffButton } from "./handoff.js";
 import { askParts, campaignParts } from "../src/lib/contextPack.js";
+import { mountModelSwitches } from "./modelSwitches.js";
 
 const KEY = "lcfcAsk";
 let stepListener = null; // the one live "ask-step" listener (renderAsk replaces it)
@@ -39,11 +40,16 @@ const ENGINE = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity",
  * @param {HTMLElement} root  the #ask section
  * @param {{openCapture: (id: string) => void, openSettings: () => void}} hooks
  */
+let renderGen = 0;
 export async function renderAsk(root, hooks = {}) {
   if (!root) return;
-  root.replaceChildren();
+  // Only the latest call draws (0.84.0): two that overlap (a model coming
+  // on fires both its poll and the "ai-state" broadcast) drew Ask twice.
+  const gen = ++renderGen;
   const st = await send({ type: "ai-status" });
   let msgs = await load();
+  if (gen !== renderGen) return;
+  root.replaceChildren();
   const wrap = h("div", { className: "ask" });
   root.append(wrap);
   wrap.append(h("div", { className: "card ask-head" },
@@ -57,16 +63,28 @@ export async function renderAsk(root, hooks = {}) {
     return r && r.ok ? campaignParts(r.insights) : [];
   };
 
-  if (!st || !st.ready) {
-    const b = h("button", { type: "button", className: "btn sm primary", id: "askSetup" }, "Set up the built-in AI");
-    b.onclick = () => hooks.openSettings && hooks.openSettings();
+  // The models, as switches, right here (0.84.0; asked: "the model
+  // download needs to be in the Ask section only, otherwise the new users
+  // will never know about it"). Open when Ask can't answer yet; folded
+  // away under "Models" once it can. Ask redraws when one becomes ready.
+  const ready = !!(st && st.ready);
+  const models = h("details", { className: "card ask-models", id: "askModels", open: !ready },
+    h("summary", {}, h("b", {}, "Models on this computer"), h("span", { className: "ask-models-sum" }, ready ? (st.engine ? `Ask uses ${st.engine.label}` : "") : "Turn one on to ask questions here")));
+  const slot = h("div", {});
+  models.append(slot);
+  let redrawn = false;
+  mountModelSwitches(slot, { compact: true, onChange: (s) => { if (!redrawn && s && !!s.ready !== ready && root.isConnected) { redrawn = true; renderAsk(root, hooks); } } });
+
+  if (!ready) {
     const q = h("input", { type: "text", id: "askOffQ", className: "ask-input", placeholder: tr("Ask about your campaigns, brands, sites or answers…"), dir: "auto" });
     wrap.append(h("div", { className: "card ask-empty", id: "askOff" },
-      h("p", {}, "Ask needs the built-in AI. Download it once in About → Settings → Built-in AI; the Strong size answers best."), b,
-      h("p", { className: "ask-or" }, "Or take your latest campaign's data and your question to another AI:"),
+      h("p", {}, "Ask answers with an AI model on this computer: turn on \u201cAsk's AI model\u201d below (a one-time download), and it's ready."),
+      models,
+      h("p", { className: "ask-or" }, "Or, with no download, take your latest campaign's data and your question to another AI:"),
       h("div", { className: "ask-row" }, q, handoffButton({ id: "askOffHandoff", getParts: campaignPack, question: () => q.value, file: "citoskeleton-campaign.md" }))));
     return;
   }
+  wrap.append(models);
 
   // A chat (0.78.0, asked: "the Ask UI is not quite like a chat
   // interface"): the conversation fills the page, the box to type in stays

@@ -50,8 +50,10 @@ try {
 
 // "/laya/resolve/main/multilingual/<file>" -> test/fixtures/laya-tiny/<file>
 const hits = [];
-const server = http.createServer((req, res) => {
+let slowData = false; // hold the weights back, so a download can be cancelled mid-way
+const server = http.createServer(async (req, res) => {
   hits.push(`${req.method} ${req.url}`);
+  if (slowData && /laya\.onnx\.data/.test(req.url)) await new Promise((r) => setTimeout(r, 6000));
   const m = /^\/laya\/resolve\/main\/multilingual\/(.+)$/.exec(decodeURIComponent(req.url.split("?")[0]));
   const file = m && path.join(BUNDLE, m[1]);
   const headers = { "access-control-allow-origin": "*", "access-control-expose-headers": "content-length" };
@@ -84,7 +86,15 @@ try {
   const waitFor = async (fn, ms = 60000) => { const end = Date.now() + ms; while (Date.now() < end) { const v = await fn(); if (v) return v; await page.waitForTimeout(300); } return null; };
   const record = async (id) => ((await msg({ type: "get-record", captureId: id })) || {}).record || null;
   const outside = [];
-  context.on("request", (r) => { const u = r.url(); if (!/^(chrome-extension|data|blob):/.test(u) && !u.startsWith(HOST)) outside.push(u); });
+  // What the worker and the AI page fetch (the panel's own pictures of an
+  // answer are the answer's business, not the labeller's).
+  context.on("request", (r) => {
+    const u = r.url();
+    if (/^(chrome-extension|data|blob):/.test(u) || u.startsWith(HOST)) return;
+    let from = "";
+    try { from = r.serviceWorker() ? "worker" : (r.frame() && r.frame().url()) || ""; } catch (_) { from = "worker"; }
+    if (from === "worker" || /offscreen\.html/.test(from)) outside.push(u);
+  });
 
   console.log("\nSettings → Download Laya");
   check("the test bundle is accepted (local addresses only)", (await msg({ type: "laya-test-model", model: { host: HOST, repo: "laya", rev: "main", sub: "multilingual" } })).ok);
@@ -92,18 +102,37 @@ try {
   await page.evaluate(() => document.querySelector('[data-tab="about"]').click());
   await page.waitForTimeout(400);
   await page.evaluate(() => [...document.querySelectorAll(".ab-nav-btn, .ab-more-row")].find((b) => b.textContent.includes("Settings"))?.click());
-  await page.waitForSelector("#layaDownload", { timeout: 15000 }).catch(() => {});
-  const before = await page.evaluate(() => ({ text: document.getElementById("aiLaya")?.innerText || "", dl: document.getElementById("layaDownload")?.textContent }));
-  check("a card for Laya, off, with its download", /Fast labels: Laya/.test(before.text) && /Off/.test(before.text) && /Download Laya/.test(before.dl || ""), JSON.stringify(before));
-  check("it says Ask still uses the AI model", /Ask still uses the AI model/.test(before.text));
-  await page.click("#layaDownload");
+  await page.waitForSelector("#swLaya", { timeout: 15000 }).catch(() => {});
+  const flip = (on) => page.evaluate((on) => { const i = document.getElementById("swLaya"); i.checked = on; i.dispatchEvent(new Event("change", { bubbles: true })); }, on);
+  const before = await page.evaluate(() => ({ row: document.querySelector('#aiSwitches [data-model="laya"]')?.innerText || "", on: document.getElementById("swLaya")?.checked, about: document.getElementById("aiLaya")?.textContent || "" }));
+  check("Laya is a switch at the top of Built-in AI, off, with its size (0.84.0)", /Fast labels/.test(before.row) && /1\.2 GB|MB/.test(before.row) && before.on === false, JSON.stringify(before));
+  check("it says Ask still uses the AI model", /Ask still uses the AI model/.test(before.about));
+
+  console.log("\nturned off while it downloads: cancelled");
+  slowData = true;
+  await flip(true);
+  await waitFor(async () => { const s = await msg({ type: "ai-status" }); return s.laya.downloading ? s : null; }, 10000);
+  await page.waitForTimeout(800);
+  await page.waitForSelector("#swLaya", { timeout: 5000 });
+  await flip(false);
+  const stopped = await waitFor(async () => { const s = await msg({ type: "ai-status" }); return !s.laya.downloading ? s : null; }, 20000);
+  check("the download stops", stopped && !stopped.laya.ready && !stopped.laya.error, JSON.stringify(stopped && stopped.laya));
+  const left = await waitFor(async () => { const n = await page.evaluate(async () => { const c = await caches.open("laya-cache"); return (await c.keys()).length; }); return n === 0 ? "empty" : null; }, 15000);
+  check("and what had arrived is removed", left === "empty");
+  slowData = false;
+  await page.waitForTimeout(6500);
+  hits.length = 0;
+
+  console.log("\non: downloaded");
+  await page.waitForSelector("#swLaya", { timeout: 5000 });
+  await flip(true);
   const ready = await waitFor(async () => { const s = await msg({ type: "ai-status" }); return s && s.laya && s.laya.ready ? s : null; }, 90000);
   check("downloaded and loaded", !!ready, JSON.stringify((await msg({ type: "ai-status" })).laya));
   const files = hits.filter((h) => h.startsWith("GET ")).map((h) => h.split("multilingual/")[1]).sort();
   check("the five files, once each", files.join() === ["laya.onnx", "laya.onnx.data", "laya_config.json", "tokenizer/tokenizer.json", "tokenizer/tokenizer_config.json"].sort().join(), files.join());
   check("labels now by Laya, the language model never downloaded", ready && ready.labelsBy && ready.labelsBy.id === "laya" && !ready.qwenReady, JSON.stringify(ready && ready.labelsBy));
-  await page.waitForFunction(() => /Ready/.test(document.getElementById("aiLaya")?.innerText || ""), null, { timeout: 10000 }).catch(() => {});
-  check("the card says ready", await page.evaluate(() => /Ready/.test(document.getElementById("aiLaya")?.innerText || "")));
+  await page.waitForFunction(() => /On · downloaded/.test(document.querySelector('#aiSwitches [data-model="laya"]')?.innerText || ""), null, { timeout: 10000 }).catch(() => {});
+  check("the switch says on, downloaded", await page.evaluate(() => document.getElementById("swLaya")?.checked && /On · downloaded/.test(document.querySelector('#aiSwitches [data-model="laya"]')?.innerText || "")));
 
   console.log("\na capture, labelled");
   const hitsBefore = hits.length;
@@ -143,6 +172,7 @@ try {
   await tab.close();
 
   console.log("\nLabel answers with");
+  await page.evaluate(() => { const d = document.getElementById("aiMore"); if (d) d.open = true; });
   await page.waitForSelector("#aiLabellerSeg", { timeout: 5000 }).catch(() => {});
   const seg = await page.evaluate(() => [...document.querySelectorAll("#aiLabellerSeg [data-labeller]")].map((b) => [b.dataset.labeller, b.getAttribute("aria-checked"), b.disabled]));
   check("Automatic chosen, Laya available, the AI model not (not downloaded)", JSON.stringify(seg) === JSON.stringify([["auto", "true", false], ["laya", "false", false], ["llm", "false", true]]), JSON.stringify(seg));
@@ -152,7 +182,8 @@ try {
 
   console.log("\nRemove");
   page.once("dialog", (d) => d.accept());
-  await page.click("#layaRemove");
+  await page.waitForSelector("#swLaya", { timeout: 5000 });
+  await flip(false);
   const gone = await waitFor(async () => { const s = await msg({ type: "ai-status" }); return s.laya && !s.laya.ready ? s : null; }, 10000);
   check("removed", !!gone && !gone.labelsBy, JSON.stringify(gone && gone.labelsBy));
   const kept = await record(res.captureId);

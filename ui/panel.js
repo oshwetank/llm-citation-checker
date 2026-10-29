@@ -728,6 +728,12 @@ function fanoutCsv(records) {
 }
 // Whichever container actually scrolls: the popup's capped-height
 // .app-content, or the page itself in the full-tab view.
+// How a jump the user asked for scrolls (0.84.0): smoothly, unless Motion
+// is off (Display) or the system asks for reduced motion.
+function jumpBehavior() {
+  if (document.documentElement.dataset.motion === "off") return "auto";
+  return window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+}
 function activeScroller() {
   return document.body.classList.contains("popup") ? $(".app-content") : (document.scrollingElement || document.documentElement);
 }
@@ -1292,7 +1298,7 @@ function openProductModal(product, rec) {
 function scrollToCard(targetId) {
   const target = document.getElementById(targetId);
   if (!target) return;
-  target.scrollIntoView({ behavior: "smooth", block: "center" });
+  target.scrollIntoView({ behavior: jumpBehavior(), block: "center" });
   target.classList.add("card-highlight");
   setTimeout(() => target.classList.remove("card-highlight"), 1800);
 }
@@ -2380,7 +2386,7 @@ function atBuildRail(rail, main, { label, kind }) {
     const b = el("button", { className: "at-rail-item", type: "button", "data-target": sec.id, title: String(title).trim() },
       atIconTile(sec.id, 14), el("span", { className: "t" }, String(title).trim()), el("span", { className: "n" }, sec.dataset.count || ""));
     b.onclick = () => {
-      const behavior = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+      const behavior = jumpBehavior();
       sec.scrollIntoView({ block: "start", behavior });
     };
     rail.append(b);
@@ -2686,7 +2692,7 @@ function atApplyHighlights(scroll) {
   }
   if (scroll !== false && (atFocusBrand || atFocusCite)) {
     const first = body.querySelector(".at-mark.focus, .at-cite.focus");
-    const behavior = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+    const behavior = jumpBehavior();
     if (!first) return;
     // Scroll the pinned answer panel only. scrollIntoView() also scrolls the
     // page, so the row just clicked on the left jumped away.
@@ -2909,7 +2915,7 @@ function atGlance(rec, { brands, pages, searches, fnByUrl, kind, engineLabel, an
   if (pages.readOnly.length) {
     const more = el("button", { className: "at-glance-warn at-glance-jump", type: "button", title: "Every site it read, below" },
       `+ ${pages.readOnly.length} site${pages.readOnly.length === 1 ? "" : "s"} read but not cited ↓`);
-    more.onclick = () => document.getElementById("at-sites")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    more.onclick = () => document.getElementById("at-sites")?.scrollIntoView({ behavior: jumpBehavior(), block: "start" });
     colP.append(more);
   }
   if (!pages.rows.length) colP.append(el("span", { className: "ap-muted" }, "It cited no page."));
@@ -3016,12 +3022,17 @@ function atAiSection(rec) {
 
   if (!ai) {
     const why = {
-      off: "The built-in AI isn’t downloaded. Turn it on in About → Settings → Built-in AI to check each answer’s market, intent and how it treats each brand, on this computer.",
+      off: "No AI model is on yet. Turn on “Fast labels” in Ask to have each answer’s intent, audience and how it treats each brand labelled, on this computer.",
       queued: "Waiting its turn: answers are checked one at a time, in the background.",
       "not-checked": "Not checked yet: checks for this kind of answer are off in Settings.",
       failed: `The check didn’t finish${rec.aiError ? ` (${rec.aiError})` : ""}.`,
     }[st] || "";
     sec.append(el("p", { className: "ap-muted at-ai-why" }, why));
+    if (st === "off") {
+      const b = el("button", { className: "at-btn sm", type: "button", id: "atAiTurnOn" }, "Open the switches in Ask");
+      b.onclick = () => showTab("ask");
+      sec.append(b);
+    }
     if (st === "not-checked" || st === "failed") {
       const b = el("button", { className: "at-btn sm", type: "button", id: "atAiCheck" }, "Check with built-in AI");
       b.onclick = async () => { b.disabled = true; b.textContent = "Queued…"; await send({ type: "ai-check-capture", captureId: rec.captureId }); };
@@ -3851,7 +3862,7 @@ function atJumpToBrand(brand) {
   const row = [...document.querySelectorAll("#at-backing [data-brand]")].find((r) => atNorm(r.dataset.brand) === atNorm(brand));
   const target = row || document.getElementById("at-backing");
   if (!target) return;
-  const behavior = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+  const behavior = jumpBehavior();
   target.scrollIntoView({ block: "center", behavior });
   if (row) { row.classList.add("flash"); setTimeout(() => row.classList.remove("flash"), 1600); }
 }
@@ -5476,7 +5487,7 @@ function renderAnalyze() {
           el("div", { className: "muted small", style: "margin-top:6px" },
             "Campaign captures are kept separate from ad-hoc browsing so a tracking run can't skew your ad-hoc numbers. Open one from the Dashboard (turn on “From a campaign”) or from a prompt in the campaign's results."));
         const go = el("button", { className: "btn sm primary", style: "margin-top:10px" }, "Go to campaign results →");
-        go.onclick = () => { showTab("loader"); document.getElementById("campaignResults")?.scrollIntoView({ block: "start" }); };
+        go.onclick = () => { showTab("loader"); document.getElementById("campaignResults")?.scrollIntoView({ block: "start", behavior: jumpBehavior() }); };
         box.append(go);
         root.append(box);
         return;
@@ -8917,7 +8928,7 @@ function renderRunHistory(profile) {
         cbProfileId = profile.id;
         geoActiveId = profile.id;
         renderCampaigns();
-        document.getElementById("campaignResults")?.scrollIntoView({ block: "start", behavior: "smooth" });
+        document.getElementById("campaignResults")?.scrollIntoView({ block: "start", behavior: jumpBehavior() });
       };
       table.append(row);
     });
@@ -10528,7 +10539,7 @@ function renderAboutHome() {
     el("div", { className: "ab-home-top" }, el("img", { src: "../icons/icon128.png", width: 36, height: 36, alt: "", className: "ab-logo" }),
       el("h2", { className: "ab-title", id: "abHomeTitle" }, prog.title), el("span", { className: "version-badge" }, `v${BUILD}`)),
     el("p", { className: "ab-lead" }, "See what ChatGPT, Gemini, Perplexity and Grok read before they answer."),
-    el("p", { className: "ab-private" }, glyphEl("lock", 15), "Stays on this device. No account, no server.")));
+    el("p", { className: "ab-private" }, glyphEl("lock", 15), "Your captures stay on this computer. Nothing is sent unless you share a campaign or sign in.")));
 
   if (abDemo && abDemo.ok && abDemo.present) {
     const rm = el("button", { type: "button", className: "btn sm ghost" }, "Remove");
@@ -10539,7 +10550,7 @@ function renderAboutHome() {
 
   const start = el("div", { className: "card ab-card ab-start" });
   if (prog.allDone) {
-    start.append(el("p", { className: "ab-alldone" }, glyphEl("check", 16), "You’re all set. Replay the tour any time from Data & tools."));
+    start.append(el("p", { className: "ab-alldone" }, glyphEl("check", 16), "You’re all set. The welcome guide is in Data & tools any time."));
   } else {
     start.append(el("div", { className: "ab-start-head" }, el("h3", { className: "ab-h3" }, "Get started"), el("span", { className: "ab-progress-text" }, prog.text)),
       el("div", { className: "ab-progress", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": String(prog.steps.length), "aria-valuenow": String(prog.done), "aria-label": "Get started" },
@@ -10587,7 +10598,7 @@ function renderAboutOverview() {
         el("p", { className: "ab-sub" }, "Formerly listed as ", el("em", {}, "LLM Citation & Fan-Out Checker"), "."))),
     el("div", { className: "ab-facts" },
       el("div", { className: "ab-facts-text" }, glyphEl("lock", 18), el("span", {}, el("b", {}, "Everything stays on this device"), el("span", {}, "CitoSkeleton only reads what your browser already received."))),
-      el("div", { className: "ab-facts-chips" }, ...["No account", "No server", "No requests of its own"].map((t) => el("span", { className: "ab-fact" }, glyphEl("check", 13), t)))),
+      el("div", { className: "ab-facts-chips" }, ...["Captures stay here", "No account needed", "Nothing sent unless you share"].map((t) => el("span", { className: "ab-fact" }, glyphEl("check", 13), t)))),
     el("div", { className: "ab-works" }, el("span", { className: "ab-label" }, "Works with"), abEngineChips(false))));
 
   const steps = el("ol", { className: "ab-how" });
@@ -11468,3 +11479,23 @@ async function renderAccount() {
 }
 
 refreshDemoControls();
+
+/* Rows that scroll sideways (a campaign's section tabs, the Dashboard's kinds
+ * in the popup) fade at the edge that has more (0.84.0): their scrollbar is
+ * hidden, and the popup used to cut a chip off with no sign there was more. */
+const OVERFLOW_ROWS = ".cv-tabs, .db-kindchips";
+function syncOverflowEdges(root = document) {
+  root.querySelectorAll(OVERFLOW_ROWS).forEach((n) => {
+    const more = n.scrollWidth - n.clientWidth > 2;
+    n.classList.toggle("overflow-start", more && n.scrollLeft > 2);
+    n.classList.toggle("overflow-end", more && n.scrollLeft < n.scrollWidth - n.clientWidth - 2);
+  });
+}
+{
+  let t = 0;
+  const later = () => { clearTimeout(t); t = setTimeout(() => syncOverflowEdges(), 80); };
+  try { new MutationObserver(later).observe(document.body, { childList: true, subtree: true }); } catch (_) { /* no body */ }
+  document.addEventListener("scroll", (e) => { if (e.target && e.target.matches && e.target.matches(OVERFLOW_ROWS)) syncOverflowEdges(e.target.parentNode || document); }, true);
+  window.addEventListener("resize", later);
+  later();
+}

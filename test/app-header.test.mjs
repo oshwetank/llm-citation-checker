@@ -79,7 +79,7 @@ try {
   });
   const centre = (b) => b.t + b.h / 2;
 
-  console.log("\nThe popup: one row — the logo, the four pages, the pop-out icon");
+  console.log("\nThe popup: one row — the logo, the five pages (Ask too, 0.84.0), the pop-out icon");
   {
     await page.setViewportSize({ width: 540, height: 600 });
     await page.reload();
@@ -90,8 +90,8 @@ try {
       m.logo && m.nav && m.openTab && Math.abs(centre(m.logo) - centre(m.nav)) < 6 && Math.abs(centre(m.openTab) - centre(m.nav)) < 6,
       JSON.stringify({ logo: m.logo, nav: m.nav, openTab: m.openTab }));
     check("in that order", m.logo && m.nav && m.openTab && m.logo.r <= m.nav.l && m.nav.r <= m.openTab.l);
-    check("the pages are words, no icons", m.tabIcons === 0 && m.labels.join("|") === "Analyze|Dashboard|Campaigns|About", `${m.tabIcons} icons; ${m.labels.join("|")}`);
-    check("each page gets an equal share of the pill", Math.max(...m.tabWidths) - Math.min(...m.tabWidths) <= 1, m.tabWidths.join(", "));
+    check("the pages are words, no icons", m.tabIcons === 0 && m.labels.join("|") === "Analyze|Dashboard|Campaigns|Ask|About", `${m.tabIcons} icons; ${m.labels.join("|")}`);
+    check("every page fits its word, none touching (0.84.0: five pages)", await page.evaluate(() => { const t = [...document.querySelectorAll(".nav-tab")].filter((b) => b.offsetParent); return t.every((b) => b.scrollWidth <= b.clientWidth + 1) && t.every((b, i) => !i || b.getBoundingClientRect().left >= t[i - 1].getBoundingClientRect().right); }), m.tabWidths.join(", "));
     // 0.78.0: the name shows in the popup too, as the way to the Dashboard.
     check("the name shows, beside the logo", !!m.title && m.logo && m.title.l >= m.logo.r - 1, JSON.stringify(m.title));
     check("pop-out is an icon that still says what it does", m.openLabel === "none" && /full tab/i.test(m.openAria), `${m.openLabel} · ${m.openAria}`);
