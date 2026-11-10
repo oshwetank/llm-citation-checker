@@ -74,11 +74,12 @@ async function seedFixtures(context, extId) {
 }
 
 // Start from an empty profile. This folder is fixed and outlives the run, so
-// without this a second run on the same machine reopened the first run's
-// IndexedDB: on 10 Nov 2026 analyze-feedback merged the old captures into the
-// answer (raw-capture.txt held 4 copies, not 2) and failed on every run after
-// the first, master included. CI never saw it because each runner starts clean.
-// Only this test's own folder is removed.
+// without this a second run on the same machine reopens the first run's
+// storage. That is how analyze-feedback, which had the same fixed-folder
+// launch, failed on 10 Nov 2026: old captures were merged into the answer
+// (raw-capture.txt held 4 copies, not 2) on every run after the first, master
+// included. CI never sees it because each runner starts clean. Only this
+// test's own folder is removed.
 rmSync(PROFILE_BASE, { recursive: true, force: true });
 const context = await chromium.launchPersistentContext(PROFILE_BASE, {
   headless: false,
