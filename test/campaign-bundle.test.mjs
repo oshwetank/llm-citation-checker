@@ -4,6 +4,7 @@
  */
 import { campaignParts, makeBundle, encodeBundle, decodeBundle, readBundle, checkBundle, bundleFileName, bufToB64, b64ToBuf, BUNDLE_VERSION } from "../src/lib/campaignBundle.js";
 import { gzipString, gunzipToString } from "../src/lib/gzip.js";
+import { makeProfile, cloudLink } from "../src/lib/geo.js";
 
 let failures = 0;
 const check = (label, cond, detail) => {
@@ -79,6 +80,18 @@ check("no campaign inside", /damaged/.test(await err(() => checkBundle({ ...bund
 console.log("\nsmall things");
 check("base64 round trip", new Uint8Array(b64ToBuf(bufToB64(new Uint8Array([0, 255, 7]).buffer))).join() === "0,255,7");
 check("a readable file name", bundleFileName({ name: "Zento · Lamps!" }, new Date("2026-10-27T10:00:00Z")) === "Zento-Lamps-2026-10-27.cito");
+
+console.log("\nthe profile link (0.85.0)");
+{
+  const link = { id: "c-9", localId: "p-1", version: 4, savedAt: 1700000000000, mine: true, autoSave: true };
+  const p = makeProfile({ id: "p-1", name: "Zento", cloud: link });
+  check("a campaign keeps its link", p.cloud && p.cloud.id === "c-9" && p.cloud.version === 4 && p.cloud.autoSave === true && p.cloud.copy === false);
+  check("and keeps it through an edit", makeProfile({ ...p, name: "Zento AU", competitors: [{ name: "Kovo" }] }).cloud.id === "c-9");
+  check("no link, or a link without an id, is null", makeProfile({}).cloud === null && cloudLink({ version: 2 }) === null);
+  const b = makeBundle({ profile: p, prompts: [], runs: [], records: [], raws: [] });
+  check("a shared file never carries the link", !("cloud" in b.profile));
+  check("so an imported file starts unlinked", readBundle(b, { newId: (() => { let i = 0; return () => `n${++i}`; })() }).profile.cloud === undefined);
+}
 
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);

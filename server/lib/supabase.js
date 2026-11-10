@@ -40,9 +40,11 @@ export function rest(table, query = "", { method = "GET", body, prefer } = {}) {
   });
 }
 
-// A one-time address the extension uploads the file to directly.
-export async function signedUploadUrl(path) {
-  const d = await call(`${base()}/storage/v1/object/upload/sign/${BUCKET}/${path}`, { method: "POST", headers: svc({ "content-type": "application/json" }), body: "{}" });
+// A one-time address the extension uploads the file to directly. With
+// upsert the upload replaces what's at the path (a campaign saved again to
+// a profile, 0.85.0); share codes keep it off, so a code's file never changes.
+export async function signedUploadUrl(path, { upsert = false } = {}) {
+  const d = await call(`${base()}/storage/v1/object/upload/sign/${BUCKET}/${path}`, { method: "POST", headers: svc({ "content-type": "application/json", ...(upsert ? { "x-upsert": "true" } : {}) }), body: "{}" });
   return `${base()}/storage/v1${d.url}`;
 }
 

@@ -53,7 +53,8 @@ export function campaignParts(profileId, { prompts = [], runs = [], records = []
 // so far are kept, and the other side can continue it.
 export function makeBundle({ profile, prompts = [], runs = [], records = [], raws = [], appVersion = "", from = null, includeRaw = true }) {
   if (!profile || !profile.id) throw new Error("No campaign to share.");
-  const { deletedAt, importedFrom, ...setup } = profile;
+  // Its profile link (0.85.0) is this computer's, not the campaign's.
+  const { deletedAt, importedFrom, cloud, ...setup } = profile;
   return {
     format: BUNDLE_FORMAT,
     version: BUNDLE_VERSION,

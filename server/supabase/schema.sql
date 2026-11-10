@@ -48,3 +48,44 @@ alter table public.shared_campaigns enable row level security;
 insert into storage.buckets (id, name, public, file_size_limit)
 values ('shares', 'shares', false, 26214400)
 on conflict (id) do update set public = false, file_size_limit = 26214400;
+
+-- 0.85.0: campaigns saved to a profile, and the people each is shared with.
+-- Run this whole file again on an existing project: every statement is
+-- "if not exists", so the 0.82.0 tables are left as they are.
+--
+-- A saved campaign is the .cito file (without raw captures) at
+-- shares/<owner>/profile/<id>.cito, replaced on every save. The pending_*
+-- columns hold a save in flight, so a failed upload never changes what the
+-- list shows; /api/campaigns?done=1 moves them across.
+create table if not exists public.cloud_campaigns (
+  id             uuid primary key,
+  owner          uuid not null references auth.users (id) on delete cascade,
+  local_id       text not null check (char_length(local_id) <= 100),
+  name           text not null check (char_length(name) <= 120),
+  bytes          integer not null default 0 check (bytes >= 0 and bytes <= 26214400),
+  counts         jsonb,
+  from_name      text,
+  version        integer not null default 0,
+  saved_at       timestamptz,
+  created_at     timestamptz not null default now(),
+  pending_bytes  integer,
+  pending_counts jsonb,
+  pending_name   text,
+  unique (owner, local_id)
+);
+create index if not exists cloud_campaigns_owner on public.cloud_campaigns (owner, saved_at desc);
+alter table public.cloud_campaigns enable row level security;
+
+-- Who a saved campaign is shared with, by email. Sign-in proves the email
+-- (an emailed code), so a person sees what's shared with them as soon as
+-- they sign in with that address, account or not beforehand.
+create table if not exists public.campaign_people (
+  campaign uuid not null references public.cloud_campaigns (id) on delete cascade,
+  email    text not null check (email = lower(email) and position('@' in email) > 1),
+  added_at timestamptz not null default now(),
+  primary key (campaign, email)
+);
+create index if not exists campaign_people_email on public.campaign_people (email);
+alter table public.campaign_people enable row level security;
+-- No policies on either table: only the server (service key) reads or
+-- writes them, the same as shared_campaigns.

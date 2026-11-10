@@ -7463,6 +7463,14 @@ body.popup .ho-icon { inline-size: 28px; block-size: 28px; }
 .ac-who .btn { margin-inline-start: auto; }
 .ac-shares { display: grid; gap: 6px; }
 .ac-share { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; padding: 8px 10px; border: 1px solid var(--line-soft, var(--border)); border-radius: var(--r-ctl, 6px); }
+/* On your profile (0.85.0). */
+.sh-profile { border-color: var(--accent-line, var(--line-soft, var(--border))); }
+.sh-code-box > .sh-check, .sh-people-box { margin-block-start: 4px; }
+.sh-people-box { display: grid; gap: 6px; }
+.sh-people-box > .btn { justify-self: start; }
+.sh-people { inline-size: 100%; box-sizing: border-box; resize: vertical; font: inherit; }
+.ac-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.cp-copy-note { font-size: 13px; }
 
 /* ---------- Clicks, targets and scrolling (0.84.0) ----------
    From the 29 Oct audit. `hidden` means hidden everywhere: several rules set

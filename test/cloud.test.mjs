@@ -25,6 +25,15 @@ const fetch = async (url, opts = {}) => {
   const method = opts.method || "GET";
   const body = opts.body && typeof opts.body === "string" ? JSON.parse(opts.body) : opts.body;
   log.push({ method, path: u.pathname + u.search, auth: (opts.headers || {}).authorization || "", apikey: (opts.headers || {}).apikey || "" });
+  // 0.85.0: campaigns saved to the profile.
+  if (u.pathname === "/api/campaigns" && method === "POST" && !u.searchParams.get("done")) return json(200, { id: "c-1", uploadUrl: "https://sb.example/storage/v1/object/upload/sign/shares/u1/profile/c-1.cito?token=t" });
+  if (u.pathname.endsWith("/profile/c-1.cito") && method === "PUT") { store.set("c-1", opts.body); store.set("c-1-upsert", (opts.headers || {})["x-upsert"]); return json(200, {}); }
+  if (u.pathname === "/api/campaigns" && method === "POST") return json(200, { ok: true, version: 3, savedAt: "2026-11-10T10:00:00.000Z" });
+  if (u.pathname === "/api/campaigns" && method === "GET" && u.searchParams.get("id")) return json(200, { id: "c-1", name: "Zento", mine: false, downloadUrl: "https://sb.example/storage/v1/object/sign/shares/u1/profile/c-1.cito?token=d" });
+  if (u.pathname.endsWith("/profile/c-1.cito")) return json(200, store.get("c-1"));
+  if (u.pathname === "/api/campaigns" && method === "GET") return json(200, { mine: [{ id: "c-1" }], shared: [], usedBytes: 4 });
+  if (u.pathname === "/api/campaigns" && method === "PUT") return json(200, { id: "c-1", people: body.emails });
+  if (u.pathname === "/api/campaigns" && method === "DELETE") return json(200, { ok: true });
   if (u.pathname === "/auth/v1/otp") return body.email.includes("@") ? json(200, {}) : json(400, { msg: "Unable to validate email address: invalid format" });
   if (u.pathname === "/auth/v1/verify") return body.token === "123456" ? json(200, { access_token: `at${++issued}`, refresh_token: "rt1", expires_in: 3600, user: { id: "u1", email: body.email } }) : json(403, { error_code: "otp_expired", msg: "Token has expired or is invalid" });
   if (u.pathname === "/auth/v1/token") return body.refresh_token === "rt1" ? json(200, { access_token: `at${++issued}`, refresh_token: "rt1", expires_in: 3600, user: { id: "u1", email: "asha@zento.example" } }) : json(400, { msg: "Invalid Refresh Token" });
@@ -73,6 +82,21 @@ check("a short code is caught before asking", /10 letters/.test((await err(() =>
 check("an unknown code says so", /doesn't open a campaign/.test((await err(() => cloud.shareFetch("ZZZZZZZZZZ"))).message));
 check("my shares", (await cloud.shareList()).length === 1);
 check("stop sharing", (await cloud.shareRevoke("ABCDEFGHJK")).ok);
+
+console.log("\nsaved to the profile (0.85.0)");
+{
+  const bytes = new Uint8Array([1, 2, 3, 4]).buffer;
+  const r = await cloud.profileSave(bytes, { localId: "local-1", name: "Zento", counts: { prompts: 3 } });
+  const start = log.find((l) => l.path === "/api/campaigns" && l.method === "POST");
+  check("asks for an address, signed in", !!start && /^Bearer at/.test(start.auth));
+  check("uploads the bytes straight to storage, replacing the last save", store.get("c-1") === bytes && store.get("c-1-upsert") === "true");
+  check("confirms, and returns the version", r.id === "c-1" && r.version === 3 && !!r.savedAt && log.some((l) => l.path === "/api/campaigns?id=c-1&done=1"));
+  check("the list", (await cloud.profileList()).mine[0].id === "c-1");
+  const got = await cloud.profileFetch("c-1");
+  check("opens the latest copy", got.meta.name === "Zento" && got.bytes === bytes);
+  check("sets the people", (await cloud.profilePeople("c-1", ["ravi@kovo.example"])).people[0] === "ravi@kovo.example" && log.at(-1).method === "PUT");
+  check("removes it", (await cloud.profileRemove("c-1")).ok && log.at(-1).method === "DELETE");
+}
 
 console.log("\nupdates");
 check("subscribe needs no sign-in", (await cloud.subscribe("asha@zento.example")).token === "unsub-1" && log.at(-1).auth === "");
