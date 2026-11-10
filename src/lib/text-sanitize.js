@@ -9,6 +9,7 @@
  * bug (markdown links leaking verbatim into brand-mention cards) shipped
  * and went unnoticed until a user screenshot caught it.
  */
+import { PRICE_RE } from "./money.js";
 
 function sanitizeText(t) {
   if (!t) return "";
@@ -17,7 +18,18 @@ function sanitizeText(t) {
   text = text.replace(/products\{"selections":\[[^\]]*\]\}/gi, ""); // Remove selections JSON
   text = text.replace(/entity\[[^\]]*\]/gi, ""); // Remove internal ChatGPT SSE entity annotations
   text = text.replace(/image_group\{[^}]*\}/gi, ""); // Remove JSON leaks
-  text = text.replace(/[\uE200-\uE202][^\uE200-\uE202\n]*[\uE200-\uE202]?/g, ""); // Remove PUA cite markers
+  // PUA cite markers: OPEN U+E200 + kind + (MID U+E202 + body)+ + CLOSE U+E201
+  // (see cleanPassage in adapters/chatgpt.js). Complete sequences go first, as
+  // a whole. A single pattern used to match OPEN\u2026MID, then take the CLOSE as a
+  // new opener and eat the rest of the line \u2014 every word after a citation was
+  // lost, including model names extractBrandModels() looks for.
+  text = text.replace(/\uE200[^\uE201]*\uE201/g, "");
+  // Truncated, unclosed fragments (the slice ended mid-marker). Only OPEN or
+  // MID starts one, and only CLOSE may end one: ending on MID left the next
+  // body ("turn0search1") behind as visible text.
+  text = text.replace(/[\uE200\uE202][^\uE200-\uE202\n]*\uE201?/g, "");
+  // A lone CLOSE (the slice began mid-marker) goes on its own.
+  text = text.replace(/\uE201/g, "");
   // Markdown links — [Realme Narzo Power 5G](http://googleusercontent.com/shopping_content/1_card...)
   // leaked straight into brand-mention quote cards verbatim. Gemini's shopping-
   // carousel answer text embeds these internal, meaningless-to-the-reader
@@ -89,7 +101,8 @@ function trimLabel(raw, maxWords = 5) {
   // The next table column usually announces itself: a price, a rating, a
   // date, or the word that introduces one.
   s = s.split(/\s+(?:approx\.?|from|starting|price|rs\.?|inr|usd)\b/i)[0];
-  s = s.split(/[₹$€£]/)[0];
+  { const m = PRICE_RE.exec(s); if (m) s = s.slice(0, m.index); }
+  s = s.split(/[₹$€£¥₩]/)[0];
   s = s.split(/\s+\d[\d,.]*\s*(?:%|★|\/\s*\d)/)[0];
 
   const words = s.split(" ").filter(Boolean).slice(0, maxWords);

@@ -469,5 +469,34 @@ console.log("\na month/day name is not a brand, however it heads a line");
     found.some((n) => /nothing/i.test(n)), found.join(", "));
 }
 
+console.log("\nverbs, bullet labels and spec terms are not brands (0.62.1)");
+{
+  // Reported on a ChatGPT earbuds answer: brands "Up, IP55, AI, Dual-driver,
+  // Buy, Choose, Save". Made-up answer in the same layout: bullets with bold
+  // labels, bold verb leads, and a comparison table of spec terms.
+  const answer = [
+    "### 1. Zento Pods 4 Pro",
+    "- **ANC:** Up to 55dB, with adaptive noise cancellation.",
+    "- **Battery:** Up to 54 hours with case.",
+    "- **Calls:** AI-assisted call noise reduction.",
+    "- **Comfort/reliability:** IP55 rating and dual-device connection.",
+    "### 2. Kovo Buds Air 8",
+    "- **ANC:** Up to 52dB.",
+    "| Feature | Zento Pods 4 Pro | Kovo Buds Air 8 |",
+    "| --- | --- | --- |",
+    "| Sound | Bass-heavy | Dual-driver design |",
+    "| Calls | AI noise reduction | Six-mic system |",
+    "| Rating | IP55 | IP55 |",
+    "## Which to buy",
+    "- **Buy the Zento Pods 4 Pro** if noise cancellation matters most.",
+    "- **Choose the Kovo Buds Air 8** if you want the bigger battery.",
+    "- **Save money with the Zento Pods 4** if you don't need the Pro.",
+  ].join("\n");
+  const got = names(answer, {});
+  const junk = ["Up", "IP55", "AI", "Dual-driver", "Buy", "Choose", "Save"].filter((w) => got.includes(w));
+  check("none of the seven reported words is a brand", junk.length === 0, `got: ${got.join(", ")}`);
+  check("the real makers still are", got.includes("Zento") && got.includes("Kovo"), got.join(", "));
+}
+
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
 process.exit(failures ? 1 : 0);

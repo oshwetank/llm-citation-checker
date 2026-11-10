@@ -13,6 +13,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { inflateRawSync } from "node:zlib";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const EXT_PATH = path.resolve(HERE, "..");
@@ -80,6 +81,16 @@ try {
       { raw, reqBody: reqLine ? reqLine.slice("# reqBody: ".length) : "{}" }
     );
     await seed.waitForTimeout(300);
+    // A second copy of the same answer, a few seconds later: stored as one
+    // answer that holds both raw copies (lib/sameAnswer.js). The bundle must
+    // carry both (0.62.1).
+    await seed.evaluate(
+      ({ raw, reqBody }) => new Promise((resolve) => {
+        chrome.runtime.sendMessage({ type: "raw-conversation", payload: { raw, reqBody, pageUrl: "https://chatgpt.com/", capturedAt: Date.now() + 4000 } }, resolve);
+      }),
+      { raw, reqBody: reqLine ? reqLine.slice("# reqBody: ".length) : "{}" }
+    );
+    await seed.waitForTimeout(300);
     await seed.close();
   }
 
@@ -101,8 +112,11 @@ try {
       const cs = getComputedStyle(btn);
       return {
         insideBar: bar.contains(btn),
-        // "in the corner": last child, hard against the bar's right edge.
-        isLastChild: bar.lastElementChild === btn,
+        // "in the corner": the last control of the bar's top row, hard
+        // against its right edge. Since 0.48.0 the full tab's bar has rows
+        // (actions, prompt, chips, engine tabs); the 💬 ends the first.
+        isLastChild: (btn.parentElement === bar ? bar : btn.parentElement).lastElementChild === btn
+          && (btn.parentElement === bar || btn.parentElement === bar.firstElementChild),
         gapToRightEdge: Math.round(r.right - b.right),
         width: Math.round(b.width), height: Math.round(b.height),
         title: btn.getAttribute("title") || "",
@@ -114,7 +128,7 @@ try {
     check("the Analyze bar and the icon both exist", !info.missing, info.missing && `missing: ${info.missing}`);
     if (!info.missing) {
       check("the icon lives inside the Analyze bar", info.insideBar);
-      check("it is the last control in the bar (the corner)", info.isLastChild);
+      check("it is the last control in the bar's top row (the corner)", info.isLastChild);
       check("it sits against the bar's right edge", info.gapToRightEdge <= 20, `${info.gapToRightEdge}px from the edge`);
       check("it is small — an icon, not a button with a label",
         info.width <= 34 && info.height <= 34, `${info.width}x${info.height}`);
@@ -216,6 +230,20 @@ try {
       }) : Buffer.alloc(0);
       check("the saved file is a non-trivial zip archive",
         bytes.length > 200 && bytes[0] === 0x50 && bytes[1] === 0x4b, `${bytes.length} bytes`);
+      // Read raw-capture.txt out of the archive (local headers, stored or deflated).
+      const rawText = (() => {
+        let at = 0;
+        while (at + 30 < bytes.length && bytes.readUInt32LE(at) === 0x04034b50) {
+          const method = bytes.readUInt16LE(at + 8), size = bytes.readUInt32LE(at + 18), nameLen = bytes.readUInt16LE(at + 26), extra = bytes.readUInt16LE(at + 28);
+          const name = bytes.slice(at + 30, at + 30 + nameLen).toString();
+          const data = bytes.slice(at + 30 + nameLen + extra, at + 30 + nameLen + extra + size);
+          if (name === "raw-capture.txt") return (method === 8 ? inflateRawSync(data) : data).toString("utf8");
+          at += 30 + nameLen + extra + size;
+        }
+        return "";
+      })();
+      const copies = (rawText.match(/^# CitoSkeleton raw capture /gm) || []).length;
+      check("raw-capture.txt holds every copy the answer was merged from", copies === 2, `${copies} copies`);
       // The reporter's own words have to survive into the file, or the whole
       // exercise is just a data dump.
       check("the reporter's note is in the archive",

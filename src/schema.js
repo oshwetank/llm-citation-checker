@@ -60,6 +60,9 @@ export function makeRecord(base = {}) {
     entities: base.entities || [], // [{ text, category }]
     images: base.images || [], // [{ url, title, price?, attribution? }]
     brandMentions: base.brandMentions || [], // [{ brand, count, passages[] }]
+    // Sponsored cards shown with the answer, not part of it:
+    // [{ advertiser, advertiserUrl, label, preamble, title, body, targetUrl, targetDomain, imageUrl, format, unit, placement }]
+    ads: base.ads || [],
     carousels: base.carousels || { products: false, images: false, news: false, map: false },
     referenceTypes: base.referenceTypes || {}, // { search: n, product: n, news: n, reddit: n, youtube: n, ... }
     answerChars: base.answerChars || 0, // length of reconstructed assistant answer

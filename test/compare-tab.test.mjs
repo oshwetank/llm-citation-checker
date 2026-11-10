@@ -18,6 +18,9 @@
  *      errors occur while walking them, which catches the whole class, not
  *      just this one identifier.
  *
+ * Since 0.47.0 Compare is reached from Analyze, not the top menu; this file
+ * opens it that way.
+ *
  * Compare needs a prompt captured MORE THAN ONCE to have anything to compare,
  * so the same fixture is submitted twice (identical prompt text = one
  * timeline with two runs) rather than seeding distinct prompts.
@@ -94,8 +97,11 @@ try {
   await page.goto(`chrome-extension://${extId}/ui/panel.html?mode=tab`);
   await page.waitForTimeout(800);
 
-  // Same prompt twice -> a two-run timeline for Compare to work with.
+  // Same prompt twice -> a two-run timeline for Compare to work with. Asked
+  // twice means two conversations: the same stream twice in one conversation
+  // is one answer captured twice, which is stored once (lib/sameAnswer.js).
   for (let i = 0; i < 2; i++) {
+    const raw = i ? RAW.replace(/("conversation_id":\s*")[^"]+"/g, (_, key) => `${key}test-conversation-${i}"`) : RAW;
     await page.evaluate(
       async ({ raw, reqBody }) =>
         new Promise((resolve) => {
@@ -104,7 +110,7 @@ try {
             payload: { raw, reqBody, pageUrl: "https://chatgpt.com/", capturedAt: Date.now() },
           }, resolve);
         }),
-      { raw: RAW, reqBody: REQ_BODY }
+      { raw, reqBody: REQ_BODY }
     );
     await page.waitForTimeout(900);
   }
@@ -114,9 +120,17 @@ try {
   // Errors from seeding/first paint aren't what this test is about.
   pageErrors.length = 0;
 
-  console.log("\nCompare tab: renders a real comparison for a prompt with two runs");
-  await page.evaluate(() => document.querySelector('[data-tab="compare"]')?.click());
+  console.log("\nCompare: renders a real comparison for a prompt with two runs");
+  // Since 0.47.0 Compare is not in the top menu; it opens from the answer,
+  // on that answer's prompt (analyze-popup.test.mjs covers the popup's link).
+  const menuHasCompare = await page.evaluate(() => !!document.querySelector('.nav-tabs [data-tab="compare"]'));
+  check("Compare is no longer a top-menu tab", !menuHasCompare);
+  const opener = await page.evaluate(() => document.querySelector('#analyze [data-open="compare"]')?.textContent || "");
+  check("the answer offers to compare its two answers", /All 2 answers to this prompt/.test(opener), opener);
+  await page.evaluate(() => document.querySelector('#analyze [data-open="compare"]')?.click());
   await page.waitForTimeout(900);
+  const preselected = await page.evaluate(() => document.querySelector("#cmpPrompt")?.value || "");
+  check("Compare opens on this answer's prompt", /50000/.test(preselected), preselected);
 
   const optionCount = await page.evaluate(() => document.querySelectorAll("#cmpPrompt option").length);
   check("the prompt picker is populated (placeholder + at least one prompt)", optionCount >= 2, `${optionCount} options`);
@@ -140,6 +154,21 @@ try {
   check("#cmpOut renders content rather than staying blank", out.children > 0, `${out.children} children`);
   check("the comparison names the prompt it is comparing", /50000/.test(out.text), out.text.slice(0, 120));
   check("the run-by-run breakdown is present", /RUN BY RUN|Run by run/i.test(out.text), out.text.slice(0, 200));
+  // The Over time board (0.60.0): the movement drawn, not only counted.
+  const ot = await page.evaluate(() => ({
+    sections: [...document.querySelectorAll("#cmpOut .ot-sec")].map((x) => x.id),
+    lines: document.querySelectorAll("#ot-brands polyline, #ot-brands circle").length,
+    legend: [...document.querySelectorAll("#ot-brands .ot-leg b")].map((b) => b.textContent),
+    runs: document.querySelectorAll("#ot-runs .at-tr:not(.at-th)").length,
+    searches: document.getElementById("ot-search")?.innerText || "",
+    advice: /Heads up|Filter to one model|Not shown here: your brand/.test(document.getElementById("cmpOut")?.innerText || ""),
+  }));
+  check("what changed, where each brand came, sites run by run, searches and the runs",
+    ["ot-changed", "ot-brands", "ot-sites", "ot-search", "ot-runs"].every((id) => ot.sections.includes(id)), ot.sections.join(", "));
+  check("a line per brand across the runs, each with its movement", ot.lines > 0 && ot.legend.length > 0 && ot.legend.every((t) => /held|→|new|gone|in between/.test(t)), ot.legend.join(" | "));
+  check("a row per run", ot.runs === 2, ot.runs);
+  check("the searches are read as text, not '[object Object]'", ot.searches.length > 0 && !/object Object/.test(ot.searches), ot.searches.slice(0, 120));
+  check("no advice, and no 'rank not shown' note now that it is shown", !ot.advice);
   check(
     "no page error while rendering Compare (an undefined global here blanks the whole tab)",
     pageErrors.length === 0,
@@ -148,7 +177,7 @@ try {
 
   // Same failure mode could hide in any render path, so walk them all.
   console.log("\nEvery tab renders without throwing");
-  for (const tab of ["analyze", "dashboard", "loader", "compare", "about"]) {
+  for (const tab of ["analyze", "dashboard", "loader", "about"]) {
     pageErrors.length = 0;
     await page.evaluate((t) => document.querySelector(`[data-tab="${t}"]`)?.click(), tab);
     await page.waitForTimeout(700);

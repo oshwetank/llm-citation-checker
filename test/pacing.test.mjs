@@ -175,6 +175,31 @@ console.log("\nRate-limit cooldown parsing and formatting");
   check("formats hours and minutes", formatCooldown(5400000) === "1h 30m");
 }
 
+console.log("\nTime left from the measured pace (0.79.0)");
+{
+  const { legEta, perPromptFromFinishes, runTookMs, formatDuration, tabsForEngine } = await import("../src/lib/pacing.js");
+  // Ten prompts left; the last finishes came 60 s apart, one of them a failed
+  // turn that ran its whole budget — the old estimate (successful turns only,
+  // 20 s each plus the 4.5 s gap) said ~4 min, the real pace is 10 min.
+  const t0 = 1_000_000;
+  const leg = { prompts: Array(20).fill("p"), idx: 10, durations: [20000, 20000, 20000], finishTimes: [t0, t0 + 60000, t0 + 120000, t0 + 180000] };
+  check("one prompt costs the spacing between finishes", perPromptFromFinishes(leg.finishTimes) === 60000);
+  const e = legEta(leg);
+  check("time left = measured pace x prompts left", e && e.remainingMs === 600000 && e.measured === true, JSON.stringify(e));
+  check("fewer than 3 finishes: the turn-time estimate stands in", legEta({ ...leg, finishTimes: [t0, t0 + 60000] }).remainingMs === (20000 + 4500) * 10);
+  check("no finishes and no turns: unknown", legEta({ prompts: ["a"], idx: 0 }) === null);
+  check("only the last 10 gaps count", perPromptFromFinishes([0, 1_000_000, ...Array.from({ length: 11 }, (_, i) => 2_000_000 + i * 5000)]) === 5000);
+
+  console.log("\nHow long a run took");
+  check("its working time when recorded", runTookMs({ startedAt: 0, finishedAt: 86_400_000, activeMs: 3_600_000 }) === 3_600_000);
+  check("start to finish for runs from before 0.79.0", runTookMs({ startedAt: 1000, finishedAt: 61000 }) === 60000);
+  check("nothing for a run that never finished", runTookMs({ startedAt: 1000 }) === null);
+  check("hours read as hours, not 2529m", formatDuration(151_740_000) === "1d 18h" && formatDuration(6_120_000) === "1h 42m" && formatDuration(185_000) === "3m 5s" && formatDuration(45_000) === "45s");
+
+  console.log("\nOne ChatGPT tab");
+  check("ChatGPT runs in one tab, Gemini in two", tabsForEngine("chatgpt") === 1 && tabsForEngine("gemini") === 2);
+}
+
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
 process.exit(failures ? 1 : 0);
 

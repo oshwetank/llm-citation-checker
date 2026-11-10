@@ -1,26 +1,45 @@
 {
   "manifest_version": 3,
-  "name": "CitoSkeleton",
-  "version": "0.36.0",
-  "description": "See what ChatGPT, Gemini, Perplexity and Grok search, fetch and cite \u2014 and which brands they name. Local-only, no account.",
+  "name": "__MSG_appName__",
+  "version": "0.84.0",
+  "description": "__MSG_appDesc__",
+  "default_locale": "en",
   "permissions": [
     "storage",
     "unlimitedStorage",
     "tabs",
+    "tabGroups",
     "alarms",
     "notifications",
     "languageModel",
-    "cookies"
+    "cookies",
+    "offscreen",
+    "scripting",
+    "favicon"
   ],
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",
     "https://gemini.google.com/*",
+    "https://google.com/*",
     "https://www.perplexity.ai/*",
     "https://perplexity.ai/*",
     "https://grok.com/*",
     "https://x.com/*"
   ],
+  "incognito": "spanning",
+  "optional_host_permissions": [
+    "<all_urls>"
+  ],
+  "cross_origin_embedder_policy": {
+    "value": "credentialless"
+  },
+  "cross_origin_opener_policy": {
+    "value": "same-origin"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
   "background": {
     "service_worker": "src/background.js",
     "type": "module"

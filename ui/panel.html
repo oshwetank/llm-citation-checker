@@ -12,36 +12,45 @@
          promise — "no network calls of our own", stated in the store listing,
          the About tab and the README. A privacy tool that phones home for a
          typeface is not a privacy tool.
-         panel.css now uses system font stacks only. 'JetBrains Mono' is still
-         NAMED first in the monospace stacks so anyone who has it installed
-         locally still gets it — it just is never fetched. -->
+         Since 0.47.0 the typeface (IBM Plex) ships inside the extension, in
+         /fonts, and fonts.css's @font-face rules load it from there. Still no
+         request leaves the browser for it; analyze-popup.test.mjs checks. -->
+    <link rel="stylesheet" href="fonts.css" />
     <link rel="stylesheet" href="panel.css" />
+    <!-- Sets the theme (Studio or Classic, light or dark) on <html> before the
+         first paint. panel.js is a module and runs after the body, so leaving
+         it to panel.js flashed the light Studio page on every open for anyone
+         who picked dark or Classic. A plain script, not inline: an extension
+         page's CSP refuses inline script. -->
+    <script src="theme-boot.js"></script>
+    <script src="display-boot.js"></script>
   </head>
   <body>
     <div class="app-wrapper">
       <header class="app-header">
         <div class="header-brand">
           <div class="brand-logo-group">
-            <div class="brand-icon">
-              <img src="../icons/icon48.png" width="24" height="24" style="object-fit: contain; display: block;" alt="Logo" />
-            </div>
+            <!-- 0.78.0: the logo opens the web page, the name the Dashboard. -->
+            <button type="button" class="brand-icon" id="brandIcon" aria-label="CitoSkeleton on the web (opens a new tab)">
+              <img src="../icons/icon48.png" width="24" height="24" style="object-fit: contain; display: block;" alt="" />
+            </button>
             <div class="brand-text">
-              <span class="brand-title">CitoSkeleton</span>
-              <span class="version-badge">v0.36.0</span>
+              <button type="button" class="brand-title" id="brandTitle">CitoSkeleton</button>
+              <span class="version-badge">v0.84.0</span>
               <span class="brand-sub">ChatGPT, Gemini, Perplexity &amp; Grok</span>
             </div>
-          </div>
-          <!-- Was a bare 14px icon with the .nav-tab class, which gave it a tab's
-               padding but none of a button's affordance, so it read as a stray
-               glyph floating in the header. Now it's a labelled pill: same
-               action, but it looks pressable and says what it does. Tab wiring
-               keys off [data-tab], which this deliberately does not have. -->
-          <div class="header-actions" style="display: flex; align-items: center; gap: 6px;">
-            <button id="themeToggle" class="popout-btn" title="Toggle Light / Dark Theme" aria-label="Toggle theme">
-              <svg class="theme-icon-sun" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
-              <span class="popout-label theme-label">Theme</span>
+            <!-- Pause capture (0.66.0), in the popup and the tab. -->
+            <button id="capToggle" class="cap-toggle" type="button" role="switch" aria-checked="true" title="Capturing your engine chats. Click to pause.">
+              <span class="cap-dot" aria-hidden="true"></span><span class="cap-label">Capturing</span>
             </button>
-            <button id="openTab" class="popout-btn" title="Open CitoSkeleton in a full browser tab">
+            <!-- A model downloading (0.84.0): seen from every page, opens Ask. -->
+            <button id="modelDl" class="model-dl" type="button" hidden title="An AI model is downloading. Open Ask to see it, or to cancel."><span class="model-dl-ring" aria-hidden="true"></span><span class="model-dl-pct">0%</span></button>
+          </div>
+          <!-- Pop-out to the full tab: a square icon in the popup's one-row bar
+               (0.55.0), hidden in the tab itself. Tab wiring keys off
+               [data-tab], which this deliberately does not have. -->
+          <div class="header-actions" style="display: flex; align-items: center; gap: 6px;">
+            <button id="openTab" class="popout-btn" title="Open CitoSkeleton in a full browser tab" aria-label="Open in a full tab">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
               <span class="popout-label">Full tab</span>
             </button>
@@ -61,23 +70,38 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"></path><line x1="4" y1="22" x2="4" y2="3"></line></svg>
             <span>Campaigns</span>
           </button>
-          <button class="nav-tab tab" data-tab="compare">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>
-            <span>Compare</span>
+          <!-- Ask (0.73.0): questions about your captures, answered by the
+               built-in AI. The full tab only; the popup is too small for it. -->
+          <button class="nav-tab tab" data-tab="ask">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+            <span>Ask</span>
           </button>
           <button class="nav-tab tab" data-tab="about">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
             <span>About</span>
           </button>
         </nav>
+        <!-- What the page on screen adds to the bar (0.55.0): a campaign's
+             section links, the Dashboard's note. Filled by setHeaderPage(). -->
+        <div class="header-page" id="headerPage"></div>
       </header>
 
       <main class="app-content">
+        <!-- An answer asked by hand that never arrived (0.84.0): said here,
+             on whichever page is open, instead of missed in silence. -->
+        <div id="missedBanner" class="missed-banner" role="alert" hidden></div>
         <section id="analyze" class="panel active"></section>
         <section id="dashboard" class="panel"></section>
         <section id="loader" class="panel"></section>
+        <section id="ask" class="panel"></section>
 
+        <!-- Compare left the top menu in 0.47.0: comparing answers to one prompt
+             starts from the answer itself (Analyze → "All N answers to this
+             prompt"), so this page is always reached from Analyze. -->
         <section id="compare" class="panel">
+          <button id="cmpBack" class="analyze-context-back cmp-back" type="button" title="Back to the answer">
+            <span aria-hidden="true">←</span><span>Back to the answer</span>
+          </button>
           <div class="card">
             <div class="card-header">
               <h3>Track a prompt over time</h3>
@@ -85,8 +109,7 @@
             <p class="muted">
               Pick one prompt you have captured more than once. You get each run's own
               profile (fan-out, cited vs. fetched, answer length), a per-engine split,
-              and matrices showing every brand, domain, page and sub-query across runs —
-              so you can see not just <i>that</i> something moved, but what moved it.
+              and matrices showing every brand, domain, page and sub-query across runs.
             </p>
             <div class="proj-row cmp-pickers">
               <!-- Typing here filters the dropdown below. A bare <select> is
@@ -115,184 +138,344 @@
           <div id="cmpOut"></div>
         </section>
 
-        <section id="about" class="panel">
-          <!-- The About tab was four cards of prose with the settings form
-               buried as a run-on sentence split across three text nodes
-               ("Keep at most" / "captures - skip payloads over" / "MB"). It's
-               now: what this is -> how to use it -> settings as a real
-               labelled form -> the dev-only debugger behind a disclosure. -->
-          <!-- One header, not two: the identity block and the diagnostic action
-               used to be sibling flex items with no relationship between them —
-               different intrinsic widths, wildly different heights (a five-line
-               identity block next to a two-line action), so the row read as two
-               unrelated pieces of UI that happened to share a card ("bifurcated"
-               header). Now the identity block is the only thing that grows, the
-               diagnostic control is a fixed-width aside pinned to the header's
-               top-right with a divider, and everything shares one baseline. -->
-          <div class="card about-hero">
-            <div class="about-hero-icon"><img src="../icons/icon128.png" width="40" height="40" alt="" /></div>
-            <div class="about-hero-main">
-              <h2 class="about-title">CitoSkeleton <span class="version-badge">v0.36.0</span></h2>
-              <p class="about-tagline">
-                See what ChatGPT, Gemini, Perplexity and Grok actually read before
-                they answer — the searches they run, the pages they fetch, the
-                sources they cite, and which brands make it into the reply.
-              </p>
-              <p class="about-formerly muted small">Formerly listed as <em>LLM Citation &amp; Fan-Out Checker</em>.</p>
-              <p class="about-privacy">
-                <span class="about-lock">🔒</span>
-                Everything stays on this device. No account, no server, no network calls of our own.
-              </p>
-            </div>
-            <div class="about-hero-diag">
-              <button id="diagReport" class="btn sm ghost">🩺 Copy diagnostic report</button>
-              <span class="muted small">Storage counts and campaign run history/timing/failure reasons only — never prompt text, answers, URLs or brand names. Shown for review before anything is copied; nothing is ever sent anywhere automatically.</span>
-            </div>
-          </div>
+        <section id="about" class="panel" data-ab="overview">
+          <!-- About in five pages (0.51.0, release 5 of the canvas redesign):
+               Overview, Metric glossary, Settings, Data & tools, Diagnostics.
+               The full tab has a side menu; the popup opens on a home screen
+               with a "Get started" checklist and goes one page deep. One
+               section shows at a time (data-ab on this element). The pages
+               with prose are built by renderAbout() in panel.js; the forms
+               keep their ids, which the settings, sample, tour, log and
+               export code is wired to. -->
+          <div class="ab-layout">
+            <aside class="ab-side">
+              <nav class="ab-nav" id="abNav" aria-label="About sections"></nav>
+              <div class="ab-build" id="abBuild" role="status"></div>
+            </aside>
+            <div class="ab-main">
+              <div class="ab-subhead" id="abSubhead"></div>
 
-          <div class="card">
-            <div class="card-header"><h3>How it works</h3></div>
-            <ol class="about-steps">
-              <li>
-                <span class="about-step-n">1</span>
-                <div>
-                  <b>Run a prompt</b> in an open ChatGPT, Gemini, Perplexity or Grok tab.
-                  <div class="muted small">CitoSkeleton reads the responses your browser has already received — it never sends a request of its own.</div>
-                </div>
-              </li>
-              <li>
-                <span class="about-step-n">2</span>
-                <div>
-                  <b>Open Analyze</b> for the full breakdown of that one answer.
-                  <div class="muted small">Fan-out queries, cited vs. merely fetched sources, products, places and brand mentions.</div>
-                </div>
-              </li>
-              <li>
-                <span class="about-step-n">3</span>
-                <div>
-                  <b>Set up a Campaign</b> to track a brand across a fixed prompt set.
-                  <div class="muted small">Share of Voice, visibility, average rank and per-prompt results, measured the same way every run.</div>
-                </div>
-              </li>
-              <li>
-                <span class="about-step-n">4</span>
-                <div>
-                  <b>Use Compare</b> to watch one prompt move over time.
-                  <div class="muted small">Which brands and domains gained or lost ground between runs of the same question.</div>
-                </div>
-              </li>
-            </ol>
-            <p class="muted small about-foot">
-              Brand detection is fully automatic for every industry — there is nothing to configure.
-              Your brand, competitors, prompts and tracked engines live per campaign, in the Campaigns tab.
-            </p>
-          </div>
+              <div class="ab-sec" data-sec="home" id="abHome"></div>
+              <div class="ab-sec" data-sec="overview" id="abOverview"></div>
+              <div class="ab-sec" data-sec="news" id="abNews"></div>
 
-          <!-- Every metric in one place, generated from src/lib/glossary.js —
-               the same table the hover definitions come from, so the reference
-               and the tooltips can never disagree. -->
-          <div class="card">
-            <div class="card-header"><h3>What the numbers mean</h3></div>
-            <p class="muted small" style="margin-top:0">
-              Hover any metric label in the tool for a couple of seconds and this same
-              definition appears there. Every term is listed here for reference.
-            </p>
-            <div id="glossaryList"></div>
-          </div>
-
-          <div class="card">
-            <div class="card-header"><h3>Settings</h3></div>
-            <div class="settings-form">
-              <div class="setting-row">
-                <label class="setting-label" for="setRetention">
-                  Captures to keep
-                  <span class="muted small">Oldest captures are dropped once you go past this.</span>
-                </label>
-                <div class="setting-field">
-                  <input id="setRetention" type="number" min="50" step="50" />
-                  <span class="setting-unit">captures</span>
+              <div class="ab-sec" data-sec="glossary">
+                <div class="card ab-card">
+                  <div class="ab-head ab-tab-only">
+                    <div>
+                      <h2 class="ab-title">What the numbers mean</h2>
+                      <p class="ab-sub">Every metric in the tool, with its formula and how to act on it. Hover a metric's label anywhere in the tool to see the same definition.</p>
+                    </div>
+                    <span class="ab-count" id="abGlossCount"></span>
+                  </div>
+                  <label class="ab-search">
+                    <span class="ab-sr">Search the glossary</span>
+                    <input id="abGlossSearch" type="search" placeholder="Search terms, definitions and formulas" autocomplete="off" />
+                  </label>
+                  <div class="ab-chips" id="abGlossChips" role="group" aria-label="Groups"></div>
+                  <div class="ab-gloss" id="glossaryList"></div>
                 </div>
               </div>
-              <div class="setting-row">
-                <label class="setting-label" for="setMaxMB">
-                  Skip large payloads
-                  <span class="muted small">Responses bigger than this are not stored, to keep the local database small.</span>
-                </label>
-                <div class="setting-field">
-                  <input id="setMaxMB" type="number" min="1" step="1" />
-                  <span class="setting-unit">MB</span>
+              <div class="ab-sec" data-sec="term" id="abTerm"></div>
+
+              <div class="ab-sec" data-sec="settings">
+                <div class="card ab-card">
+                  <div class="ab-head ab-tab-only">
+                    <div>
+                      <h2 class="ab-title">Settings</h2>
+                      <p class="ab-sub">How CitoSkeleton looks, and how much it keeps on this device.</p>
+                    </div>
+                  </div>
+                  <div class="ab-meter" id="storageInfo"></div>
+                  <div class="ab-rows">
+                    <!-- Settings in groups (0.78.0, asked: "group and hide them under
+                         a thing like display settings"). Display starts closed;
+                         each group remembers whether it was open (cito-settings-open). -->
+                    <details class="ab-group" id="setGroupDisplay" data-group="display">
+                    <summary class="ab-group-h"><b>Display</b><span>Theme, light or dark, typeface, sizes, density and motion</span></summary>
+                    <!-- Appearance (0.56.0): moved here from the top bar, which the
+                         canvas keeps to the logo, the pages and pop-out. It applies
+                         at once, so it sits outside Save / Undo. -->
+                    <!-- Theme (0.59.0): Studio, the new design and the default, or
+                         Classic, the look from 0.47.0 to 0.58.0. Like Light / Dark it
+                         applies at once, outside Save / Undo, in both views. -->
+                    <div class="ab-row ab-row-theme">
+                      <div class="ab-row-text" id="setStyleLabel">
+                        <b>Theme</b>
+                        <span>Studio is the current design. Classic is the earlier look, kept for anyone who prefers it.</span>
+                      </div>
+                      <div class="ab-style" role="radiogroup" aria-labelledby="setStyleLabel" id="setStyle">
+                        <button type="button" role="radio" class="ab-style-card" data-style-pick="studio" aria-checked="false">
+                          <span class="ab-style-swatch studio" aria-hidden="true"><i></i><i></i><i></i></span>
+                          <span class="ab-style-name">Studio</span>
+                          <span class="ab-style-sub">Warm page · white cards · indigo</span>
+                        </button>
+                        <button type="button" role="radio" class="ab-style-card" data-style-pick="classic" aria-checked="false">
+                          <span class="ab-style-swatch classic" aria-hidden="true"><i></i><i></i><i></i></span>
+                          <span class="ab-style-name">Classic</span>
+                          <span class="ab-style-sub">Glass cards · blue</span>
+                        </button>
+                      </div>
+                    </div>
+                    <div class="ab-row">
+                      <div class="ab-row-text" id="setThemeLabel">
+                        <b>Appearance</b>
+                        <span>Light or dark. Applies straight away, in the popup and the full tab.</span>
+                      </div>
+                      <div class="ab-seg" role="radiogroup" aria-labelledby="setThemeLabel" id="setTheme">
+                        <button type="button" role="radio" class="ab-seg-btn" data-theme-pick="light" aria-checked="false">Light</button>
+                        <button type="button" role="radio" class="ab-seg-btn" data-theme-pick="dark" aria-checked="false">Dark</button>
+                      </div>
+                    </div>
+                    <!-- Motion (0.78.0): the transitions and the small animations that
+                         make the interface feel alive, on or off. Off also when the
+                         system asks for reduced motion. Applied before paint by
+                         display-boot.js (cito-motion → data-motion on <html>). -->
+                    <div class="ab-row">
+                      <div class="ab-row-text" id="setMotionLabel">
+                        <b>Motion</b>
+                        <span>Smooth transitions and small animations. Off keeps everything still.</span>
+                      </div>
+                      <div class="ab-seg" role="radiogroup" aria-labelledby="setMotionLabel" id="setMotion">
+                        <button type="button" role="radio" class="ab-seg-btn" data-motion-pick="on" aria-checked="false">On</button>
+                        <button type="button" role="radio" class="ab-seg-btn" data-motion-pick="off" aria-checked="false">Off</button>
+                      </div>
+                    </div>
+                    <div class="ds" id="setDisplay" aria-labelledby="setDisplayLabel"></div>
+                    </details>
+                    <details class="ab-group" id="setGroupLang" data-group="lang" open>
+                    <summary class="ab-group-h"><b>Language and detail</b><span>The interface's language, and how much technical detail it shows</span></summary>
+                    <!-- Level of detail (0.60.0): Expert adds the engine's raw ids,
+                         indexes and refs, and a Raw tab in Analyze's Details.
+                         Applies at once, outside Save / Undo, like the theme. -->
+                    <div class="ab-row">
+                      <div class="ab-row-text" id="setDetailLabel">
+                        <b>Level of detail</b>
+                        <span>Expert adds each page's index and ref ids, the listing feeds and a Raw tab.</span>
+                      </div>
+                      <div class="ab-seg" role="radiogroup" aria-labelledby="setDetailLabel" id="setDetail">
+                        <button type="button" role="radio" class="ab-seg-btn" data-detail-pick="simple" aria-checked="false">Simple</button>
+                        <button type="button" role="radio" class="ab-seg-btn" data-detail-pick="expert" aria-checked="false">Expert</button>
+                      </div>
+                    </div>
+                    <!-- Language (0.71.0): the interface's language. "Same as the
+                         browser" follows Chrome's. Applies at once (the page
+                         reloads); translations are drafts for review. -->
+                    <div class="ab-row">
+                      <label class="ab-row-text" for="setLang">
+                        <b>Language</b>
+                        <span>The interface's language. Answers are read in any language, whatever you pick here.</span>
+                      </label>
+                      <select id="setLang" class="ab-select" data-reloads="1"></select>
+                    </div>
+                    <!-- Display (0.63.0): typeface, text size, brightness, contrast,
+                         line spacing and density. Applies at once, outside Save /
+                         Undo, in both views (ui/display-boot.js; drawn by panel.js). -->
+                    </details>
+                    <details class="ab-group" id="setGroupData" data-group="data" open>
+                    <summary class="ab-group-h"><b>Data and capture</b><span>What's kept on this computer, and what's read</span></summary>
+                    <div class="ab-row">
+                      <label class="ab-row-text" for="setRetention">
+                        <b>Captures to keep</b>
+                        <span>Older captures are removed once you go past this.</span>
+                      </label>
+                      <div class="ab-stepper">
+                        <button type="button" class="ab-stepbtn" data-step="setRetention" data-dir="-1" aria-label="Fewer captures">−</button>
+                        <input id="setRetention" type="number" min="50" step="50" inputmode="numeric" />
+                        <button type="button" class="ab-stepbtn" data-step="setRetention" data-dir="1" aria-label="More captures">+</button>
+                        <span class="ab-unit">captures</span>
+                      </div>
+                    </div>
+                    <div class="ab-row">
+                      <label class="ab-row-text" for="setMaxMB">
+                        <b>Skip responses larger than</b>
+                        <span>Bigger responses aren't stored, to keep the local database small.</span>
+                      </label>
+                      <div class="ab-stepper">
+                        <button type="button" class="ab-stepbtn" data-step="setMaxMB" data-dir="-1" aria-label="Smaller limit">−</button>
+                        <input id="setMaxMB" type="number" min="1" step="1" inputmode="numeric" />
+                        <button type="button" class="ab-stepbtn" data-step="setMaxMB" data-dir="1" aria-label="Larger limit">+</button>
+                        <span class="ab-unit">MB</span>
+                      </div>
+                    </div>
+                    <!-- Email for updates (0.81.0): the one asked for on the welcome
+                         page; changed or removed here. Applies at once. -->
+                    <div class="ab-row ab-email-row" id="setEmailRow">
+                      <label class="ab-row-text" for="setEmail">
+                        <b>Email for updates</b>
+                        <span id="setEmailState">Only for news about CitoSkeleton's updates and offers. Never shared with anyone else.</span>
+                      </label>
+                      <div class="ab-email">
+                        <input id="setEmail" type="email" autocomplete="email" placeholder="you@example.com" />
+                        <button type="button" id="setEmailSave" class="btn sm">Save</button>
+                        <button type="button" id="setEmailRemove" class="btn sm ghost" hidden>Remove</button>
+                      </div>
+                      <p class="ab-email-msg" id="setEmailMsg" role="status"></p>
+                    </div>
+                    <!-- Built-in AI (0.70.0): an open-source model run on this
+                         computer. Applies at once, outside Save / Undo
+                         (ui/aiSettings.js; the model lives in src/aiService.js). -->
+                    </details>
+                    <details class="ab-group" id="setGroupAi" data-group="ai" open>
+                    <summary class="ab-group-h"><b>Built-in AI</b><span>The AI that runs on this computer</span></summary>
+                    <div class="ai-card" id="setAi"></div>
+                    </details>
+                    <details class="ab-group" id="setGroupCapture" data-group="capture" open>
+                    <summary class="ab-group-h"><b>Reading and capture</b><span>Cited pages, Continue in… chats, the capture debugger</span></summary>
+                    <div class="ab-row">
+                      <label class="ab-row-text" for="setPages">
+                        <b>Read the cited pages</b>
+                        <span>After each answer, read the pages it cited, on this computer, to see which brands each page really names. This is the only time the extension makes requests of its own, and only to those pages. Chrome asks you to allow site access the first time.</span>
+                        <span class="ab-row-note" id="setPagesNote" hidden></span>
+                      </label>
+                      <label class="ab-switch">
+                        <input type="checkbox" id="setPages" role="switch" />
+                        <span class="ab-switch-track" aria-hidden="true"><span class="ab-switch-knob"></span></span>
+                        <span class="ab-switch-text" id="setPagesText">Off</span>
+                      </label>
+                    </div>
+                    <div class="ab-row">
+                      <label class="ab-row-text" for="setHandoffKeep">
+                        <b>Capture "Continue in…" chats</b>
+                        <span>Chats opened with Continue in… are you talking about your own data, so they aren't kept as engine answers. Turn this on to keep them too.</span>
+                      </label>
+                      <label class="ab-switch">
+                        <input type="checkbox" id="setHandoffKeep" role="switch" />
+                        <span class="ab-switch-track" aria-hidden="true"><span class="ab-switch-knob"></span></span>
+                        <span class="ab-switch-text" id="setHandoffKeepText">Off</span>
+                      </label>
+                    </div>
+                    <div class="ab-row">
+                      <label class="ab-row-text" for="setDebug">
+                        <b>Capture debugger</b>
+                        <span>Logs every network event the extension sees. Leave it off unless you're asked to turn it on.</span>
+                      </label>
+                      <label class="ab-switch">
+                        <input type="checkbox" id="setDebug" role="switch" />
+                        <span class="ab-switch-track" aria-hidden="true"><span class="ab-switch-knob"></span></span>
+                        <span class="ab-switch-text" id="setDebugText">Off</span>
+                      </label>
+                    </div>
+                    </details>
+                  </div>
+                  <div class="ab-savebar">
+                    <span id="setStatus" class="ab-status" role="status"></span>
+                    <button type="button" id="setUndo" class="btn sm ghost">Undo changes</button>
+                    <button type="button" id="setSave" class="btn sm primary">Save settings</button>
+                  </div>
                 </div>
               </div>
-              <div class="setting-row">
-                <label class="setting-label" for="setDebug">
-                  Capture debugger
-                  <span class="muted small">Verbose logging of every observed network event. Off by default.</span>
-                </label>
-                <div class="setting-field">
-                  <label class="chk"><input type="checkbox" id="setDebug" /> Enabled</label>
+
+              <!-- Account (0.82.0): sign in with an emailed code, a name for
+                   what you share, the campaigns you've shared. Built by
+                   renderAccount(). -->
+              <div class="ab-sec" data-sec="account" id="abAccount"></div>
+
+              <div class="ab-sec" data-sec="data">
+                <div class="card ab-card">
+                  <div class="ab-head ab-tab-only">
+                    <div>
+                      <h2 class="ab-title">Data &amp; tools</h2>
+                      <p class="ab-sub">Housekeeping on what's already stored. None of these touch your campaigns.</p>
+                    </div>
+                  </div>
+                  <div class="ab-tool">
+                    <div class="ab-tool-text">
+                      <b>Reprocess all captures</b>
+                      <span>Re-reads everything already captured with the current version. Run it after an update so fixes to brand detection, citation links and the like apply to old data too.</span>
+                      <span id="reprocessStatus" class="ab-done" role="status"></span>
+                    </div>
+                    <button type="button" id="reprocess" class="btn sm ghost">Reprocess</button>
+                  </div>
+                  <div class="ab-tool">
+                    <div class="ab-tool-text">
+                      <b>Sample data <span id="demoStatus" class="ab-chip"></span></b>
+                      <span>One example capture, so every screen has something to show. It's labelled as a sample and never counted in your numbers. Removing it leaves your own captures alone.</span>
+                    </div>
+                    <button type="button" id="demoToggle" class="btn sm ghost">Load sample</button>
+                  </div>
+                  <div class="ab-tool">
+                    <div class="ab-tool-text">
+                      <b>Welcome guide</b>
+                      <span>What each part is for, in pictures: the same guide shown on first install.</span>
+                    </div>
+                    <button type="button" id="replayTour" class="btn sm ghost">Open the guide</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="ab-sec" data-sec="diagnostics">
+                <div class="ab-buildline" id="abBuildFull" role="status"></div>
+                <!-- The capture check (0.73.1): is each engine being captured,
+                     and if not, which step failed. Built by renderCaptureCheck(). -->
+                <div class="card ab-card" id="capCheck">
+                  <div class="ab-head">
+                    <div>
+                      <h2 class="ab-title">Capture check</h2>
+                      <p class="ab-sub">Is each engine being captured, and if not, where it stops. Ask a question on the engine first, then check.</p>
+                    </div>
+                    <button type="button" class="btn sm" id="capCheckRun">Check again</button>
+                  </div>
+                  <div class="cap-rows" id="capCheckRows" role="status"></div>
+                  <div class="cap-foot">
+                    <button type="button" class="btn sm" id="capCheckCopy">Copy capture report</button>
+                    <span class="cap-note" id="capCheckNote">Addresses, counts and reasons only — no prompts or answers.</span>
+                  </div>
+                </div>
+                <div class="card ab-card">
+                  <div class="ab-head">
+                    <div>
+                      <h2 class="ab-title">Report a problem</h2>
+                      <p class="ab-sub">The first two contain no prompts, answers, links or brand names. The third does, and says so.</p>
+                    </div>
+                  </div>
+                  <div class="ab-report">
+                    <div class="ab-report-item">
+                      <span class="ab-num" aria-hidden="true">1</span>
+                      <div class="ab-tool-text">
+                        <b>Diagnostic report</b>
+                        <span>Storage counts, plus each run's timing and failure reasons. You see the whole text before anything is copied.</span>
+                      </div>
+                      <button type="button" id="diagReport" class="btn sm ghost">Copy diagnostic report</button>
+                    </div>
+                    <div class="ab-report-item">
+                      <span class="ab-num" aria-hidden="true">2</span>
+                      <div class="ab-tool-text">
+                        <b>Campaign diagnostics</b>
+                        <span>One .zip with the log, every capture for the campaign and its run-by-run numbers.</span>
+                      </div>
+                      <div class="ab-export">
+                        <label class="ab-sr" for="diagExportProfile">Campaign</label>
+                        <select id="diagExportProfile" class="filter"></select>
+                        <button type="button" id="diagExportBtn" class="btn sm ghost">Export .zip</button>
+                      </div>
+                    </div>
+                    <div class="ab-report-item">
+                      <span class="ab-num" aria-hidden="true">3</span>
+                      <div class="ab-tool-text">
+                        <b>Payloads it couldn't read</b>
+                        <span>With Debug capture on, what Gemini sent that CitoSkeleton can't read yet. These hold your prompt and the answer: open the .zip before you send it.</span>
+                      </div>
+                      <button type="button" id="probeSave" class="btn sm ghost">Save .zip</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="card ab-card">
+                  <div class="ab-head">
+                    <div>
+                      <h2 class="ab-title">Activity log</h2>
+                      <p class="ab-sub">Errors, captures and each prompt's outcome, newest first. Kept on this device only.</p>
+                    </div>
+                    <div class="ab-head-actions">
+                      <button type="button" id="diagCopy" class="btn sm ghost">Copy log</button>
+                      <button type="button" id="diagClear" class="btn sm ghost danger">Clear log</button>
+                    </div>
+                  </div>
+                  <div class="ab-chips" id="diagChips" role="group" aria-label="Show"></div>
+                  <div id="diagLog" class="ab-log"></div>
                 </div>
               </div>
             </div>
-            <div class="settings-actions">
-              <button id="setSave" class="btn sm primary">Save settings</button>
-              <span id="setStatus" class="muted small"></span>
-            </div>
-            <div id="storageInfo" class="muted small settings-storage"></div>
-          </div>
-
-          <div class="card">
-            <div class="card-header"><h3>Maintenance</h3></div>
-            <div class="maint-row">
-              <div>
-                <b>Reprocess all captures</b>
-                <div class="muted small">Re-runs the current extraction logic over everything already captured. Use this after an extension update to pick up adapter fixes — brand detection, citation links and so on — on old data.</div>
-              </div>
-              <button id="reprocess" class="btn sm ghost">↻ Reprocess</button>
-            </div>
-            <!-- Sample data + tour. Placed with Reprocess because both are
-                 "housekeeping on what's stored" rather than settings. The
-                 remove button is scoped to demo rows only, so a user with
-                 real captures can clear the samples without risk. -->
-            <div class="setting-row">
-              <div>
-                <b>Sample data &amp; tour</b>
-                <div class="muted small">Loads one example capture so every screen has something to show. It's clearly labelled and never mixed into your real numbers — removing it leaves your own captures untouched.</div>
-                <div id="demoStatus" class="muted small"></div>
-              </div>
-              <div style="display:flex; gap:6px; flex-shrink:0;">
-                <button id="replayTour" class="btn sm ghost">▶ Replay tour</button>
-                <button id="demoToggle" class="btn sm ghost">Load sample</button>
-              </div>
-            </div>
-            <!-- Error log, above the capture debugger deliberately: this is the
-                 one a user needs when something has gone wrong, and unlike the
-                 debugger it is always recording and survives a browser
-                 restart. Open by default when it has entries (set in JS). -->
-            <details class="about-details" id="errLogBox">
-              <summary>Error log <span id="errLogCount" class="muted small"></span></summary>
-              <p class="muted small">
-                Everything that has failed, newest first, grouped so one repeating problem
-                reads as one line. Recorded on this device only, and deliberately free of
-                prompt text, answers, URLs and brand names — so it is safe to copy and share
-                when reporting a problem.
-              </p>
-              <div class="ft-actions" style="margin-bottom: 10px;">
-                <button id="errLogRefresh" class="btn sm ghost">Refresh</button>
-                <button id="errLogCopy" class="btn sm ghost">Copy log</button>
-                <button id="errLogClear" class="btn sm ghost danger">Clear log</button>
-              </div>
-              <div id="errLog" class="dbglog"></div>
-            </details>
-
-            <details class="about-details">
-              <summary>Capture debugger log</summary>
-              <p class="muted small">Observed network events and payloads across the supported engines. Only useful when the debugger above is enabled.</p>
-              <div class="ft-actions" style="margin-bottom: 10px;">
-                <button id="dbgRefresh" class="btn sm ghost">Refresh log</button>
-                <button id="dbgClear" class="btn sm ghost danger">Clear log</button>
-              </div>
-              <div id="dbgLog" class="dbglog"></div>
-            </details>
           </div>
         </section>
 

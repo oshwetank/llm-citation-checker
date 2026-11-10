@@ -50,7 +50,20 @@ function extractDomToMarkdown(source) {
   }
   return "const domToMarkdown = (n) => (n && (n.innerText || n.textContent)) || \"\";";
 }
-const DOM2MD = extractDomToMarkdown(src);
+// The reader also needs grokPromptText (pulled from source like the rest)
+// and a page that has sent a prompt: from 0.62.1 it only runs after one
+// (engineSubmit, set by content-main.js's engine-submit).
+function extractGrokPromptText(source) {
+  const at = source.indexOf("function grokPromptText(el) {");
+  if (at === -1) return "const grokPromptText = (el) => String((el && el.textContent) || \"\").trim();";
+  let d = 0;
+  for (let i = source.indexOf("{", at); i < source.length; i++) {
+    if (source[i] === "{") d++;
+    else if (source[i] === "}") { d--; if (d === 0) return source.slice(at, i + 1); }
+  }
+  return "";
+}
+const DOM2MD = extractDomToMarkdown(src) + "\nconst engineSubmit = { at: 1 };\n" + extractGrokPromptText(src);
 
 // tryHarvest also calls harvestPerplexitySteps(), another enclosing-scope
 // sibling. Same rule as domToMarkdown: hand the body the REAL one, pulled
@@ -206,6 +219,10 @@ if (body) {
       document: doc,
       location: { href: "https://perplexity.ai/thread/1" },
       setTimeout: (fn) => { scheduled.push(fn); return scheduled.length; },
+      // The follow-up goes through the harvester's scheduleHarvest (a due time
+      // the run's clock also checks, so a throttled page timer can't strand
+      // it) — record it the same way a bare setTimeout was recorded before.
+      scheduleHarvest: (ms) => { scheduled.push(ms); },
       chrome: { runtime: { sendMessage: (msg) => sent.push(msg), get lastError() { return undefined; } } },
     };
     const sent = [];

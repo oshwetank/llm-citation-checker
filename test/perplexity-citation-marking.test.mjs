@@ -57,7 +57,20 @@ function extractDomToMarkdown(source) {
   }
   return "const domToMarkdown = (n) => (n && (n.innerText || n.textContent)) || \"\";";
 }
-const DOM2MD = extractDomToMarkdown(src);
+// The reader also needs grokPromptText (pulled from source like the rest)
+// and a page that has sent a prompt: from 0.62.1 it only runs after one
+// (engineSubmit, set by content-main.js's engine-submit).
+function extractGrokPromptText(source) {
+  const at = source.indexOf("function grokPromptText(el) {");
+  if (at === -1) return "const grokPromptText = (el) => String((el && el.textContent) || \"\").trim();";
+  let d = 0;
+  for (let i = source.indexOf("{", at); i < source.length; i++) {
+    if (source[i] === "{") d++;
+    else if (source[i] === "}") { d--; if (d === 0) return source.slice(at, i + 1); }
+  }
+  return "";
+}
+const DOM2MD = extractDomToMarkdown(src) + "\nconst engineSubmit = { at: 1 };\n" + extractGrokPromptText(src);
 
 // tryHarvest also calls harvestPerplexitySteps(), another enclosing-scope
 // sibling. Same rule as domToMarkdown: hand the body the REAL one, pulled

@@ -17,12 +17,16 @@
  *   fan-out   : Flash-Lite app grounding does NOT expose sub-queries; we scan for
  *               a query array and otherwise report none (searched still true).
  */
+import { PRICE_RE } from "../lib/money.js";
+// "· ₹200-₹400", "$10–20", "€€ · 15–25 €": any currency, either side.
+const PRICE_RANGE_RE = new RegExp(`(?:${PRICE_RE.source})\\s*[-–—]\\s*\\S*\\d|\\d[\\d.,]*\\s*[-–—]\\s*(?:${PRICE_RE.source})`, "u");
 
 import { makeRecord, makeSource } from "../schema.js";
 import { walk, isHttpUrl, domainOf } from "../lib/deep.js";
 import { detectBrands } from "../lib/brands.js";
+import { isChannelText, readGeminiChannel, channelPrompt } from "../lib/geminiChannel.js";
 
-export const ADAPTER_VERSION = "gemini@0.2.0";
+export const ADAPTER_VERSION = "gemini@0.4.0";
 
 const FAVICON_RE = /gstatic\.com|googleusercontent|favicon-tbn/i;
 
@@ -201,7 +205,7 @@ function extractPrompt(reqBody) {
 function collectProducts(payload) {
   const out = [];
   const seen = new Set();
-  const PRICE = /(?:₹|Rs\.?|\$|€)\s?[\d,]+(?:\.\d+)?/;
+  const PRICE = PRICE_RE;
   walk({ payload }, (v) => {
     if (!Array.isArray(v) || v.length < 14) return;
     const hasShop = v.some((x) => typeof x === "string" && /google\.com\/search\?q=.*prds=/.test(x));
@@ -260,7 +264,7 @@ function collectPlaces(payload) {
     const website = v.find((x) => typeof x === "string" && /^https?:\/\/(?!maps\.google|www\.google)/.test(x)) || null;
     const mapsUrl = v.find((x) => typeof x === "string" && /^https?:\/\/maps\.google/.test(x)) || null;
     const latLng = v.find((x) => Array.isArray(x) && x.length === 2 && typeof x[0] === "number" && Math.abs(x[0]) <= 90);
-    const priceRange = v.find((x) => typeof x === "string" && /₹[\d,]+\s*[-–—]\s*₹?[\d,]+/.test(x));
+    const priceRange = v.find((x) => typeof x === "string" && x.length < 40 && PRICE_RANGE_RE.test(x));
     const hoursArr = v.find(
       (x) => Array.isArray(x) && x.length === 7 && x[0] === true && Array.isArray(x[1])
     );
@@ -287,10 +291,78 @@ function collectPlaces(payload) {
   return records;
 }
 
+// Hotels: Gemini answers a stay question with a Google Hotels card. Each
+// hotel is an array [name, [photo urls], rating, review count, class ("3-star
+// hotel"), description, ?, google.com/travel link, price]; the card around
+// them names the search it ran: [hotels, ?, [placeholder, ?, "Budget hotels
+// in X · <dates> · <guests>", …, ["Google Hotels", logo, ?, "hotels"]],
+// query, check-in, check-out, ?, ?, guests]. The google.com/travel link is the
+// signal, as the Shopping link is for products. Before this was read, a hotel
+// answer had no places, no search and was labelled "From memory".
+const TRAVEL_RE = /^https:\/\/www\.google\.com\/travel\//;
+function isHotel(v) {
+  return Array.isArray(v) && typeof v[0] === "string" && v[0].length < 120 && typeof v[2] === "number" && v.some((x) => typeof x === "string" && TRAVEL_RE.test(x));
+}
+function collectHotels(payload) {
+  const hotels = [];
+  const searches = [];
+  const seen = new Set();
+  walk({ payload }, (v) => {
+    if (!Array.isArray(v) || !Array.isArray(v[0]) || !v[0].length || !v[0].every(isHotel)) return;
+    for (const h of v[0]) {
+      if (seen.has(h[0])) continue;
+      seen.add(h[0]);
+      const photos = Array.isArray(h[1]) ? h[1].filter((x) => typeof x === "string" && isHttpUrl(x)) : [];
+      hotels.push({
+        name: h[0],
+        category: (typeof h[4] === "string" && h[4]) || "Hotel",
+        rating: h[2] >= 0 && h[2] <= 5 ? h[2] : null,
+        reviews: typeof h[3] === "number" && h[3] > 0 ? h[3] : null,
+        priceRange: typeof h[8] === "string" && h[8].length < 30 ? h[8] : null,
+        description: typeof h[5] === "string" && h[5] ? h[5] : null,
+        listingUrl: h.find((x) => typeof x === "string" && TRAVEL_RE.test(x)) || null,
+        image: photos[0] || null,
+        phone: null, address: null, website: null, mapsUrl: null, lat: null, lng: null, hours: null,
+      });
+    }
+    const head = Array.isArray(v[2]) ? v[2] : [];
+    const provider = (head.find((x) => Array.isArray(x) && typeof x[0] === "string") || [])[0] || "Google Hotels";
+    const query = typeof v[3] === "string" && v[3] ? v[3] : typeof head[2] === "string" ? head[2].split(" · ")[0] : null;
+    if (query && !searches.some((q) => q.query === query)) {
+      searches.push({
+        query,
+        round: 1,
+        tool: provider,
+        checkIn: typeof v[4] === "string" ? v[4] : null,
+        checkOut: typeof v[5] === "string" ? v[5] : null,
+        guests: typeof v[8] === "string" ? v[8] : null,
+      });
+    }
+  });
+  return { hotels, searches };
+}
+
+// Where a card sits in the answer, Gemini's text holds a placeholder address
+// (http://googleusercontent.com/hotel_content/<id>; also map_, image_ and
+// youtube_ kinds). It is not text anyone reads, and printed raw it looked
+// like a broken link at the foot of the answer. Taken out of the text; the
+// card it stood for is kept by kind and position.
+const CARD_PLACEHOLDER_RE = /\n*[ \t]*https?:\/\/googleusercontent\.com\/([a-z]+)_content\/\d+[ \t]*/g;
+export function stripCardPlaceholders(text) {
+  const cards = [];
+  let removed = 0;
+  const clean = String(text || "").replace(CARD_PLACEHOLDER_RE, (m, kind, offset) => {
+    cards.push({ kind, at: offset - removed });
+    removed += m.length;
+    return "";
+  });
+  return { text: clean.replace(/\s+$/, ""), cards };
+}
+
 // Best-effort fan-out extraction. In standard chat Gemini masks search sub-queries,
 // but in Flash Thinking / Deep Research mode reasoning blocks explicitly formulate search intents.
-function extractFanout(_payload, diag, reasoning) {
-  const search = [];
+function extractFanout(_payload, diag, reasoning, cardSearches = []) {
+  const search = [...cardSearches];
   if (reasoning) {
     const qMatches = reasoning.match(/(?:searching for|search(?:\s+query)?(?:\s+is)?:\s*|formulating search:\s*)["']([^"'\n]+)["']/gi);
     if (qMatches) {
@@ -312,8 +384,89 @@ function extractFanout(_payload, diag, reasoning) {
 export const FANOUT_UNSUPPORTED_NOTE =
   "fanout: Gemini masks search sub-queries in standard chat; recovered when Thinking mode exposes formulation.";
 
+// The prompt of a WebChannel answer: from the upload, else the page's ?q=
+// (Gemini opens /app?q=… when a prompt is sent from the address bar or a
+// campaign).
+function channelUserPrompt(rawCapture) {
+  const up = channelPrompt(rawCapture.reqBody);
+  if (up) return up;
+  try { const q = new URL(rawCapture.pageUrl).searchParams.get("q"); if (q && q.trim()) return q.trim(); } catch (_) { /* no address */ }
+  return null;
+}
+
+// 0.66.0: Gemini's answer over its WebChannel (lib/geminiChannel.js has the
+// field map). Sources are the pages under "Searched the web"; Gemini shows
+// them as the answer's sources, so they count as cited.
+async function adaptChannel(rawCapture, opts, diag) {
+  const r = readGeminiChannel(rawCapture.raw);
+  if (!r) {
+    diag.usedFallback = true;
+    diag.notes.push("webchannel: no answer in the frames (a status frame, or the stream was cut)");
+  }
+  const { text: answer, cards } = stripCardPlaceholders(r ? r.answer : "");
+  const sources = (r ? r.sources : []).map((s) => makeSource({
+    url: s.url,
+    domain: domainOf(s.url),
+    title: s.title,
+    outcome: "cited",
+    type: "citation",
+    platformSpecific: s.via ? { via: s.via } : {},
+  }));
+  const products = (r ? r.products : []).map((p) => ({
+    name: p.name,
+    price: p.price,
+    brand: p.brand,
+    rating: p.rating,
+    merchant: p.merchant,
+    url: p.shoppingUrl,
+    ...(p.description ? { description: p.description.slice(0, 600) } : {}),
+    ...(p.offers.length ? { offers: p.offers } : {}),
+    ...(p.images.length ? { images: p.images } : {}),
+  }));
+  const userPrompt = channelUserPrompt(rawCapture);
+  const brandMentions = await extractBrandMentions(answer, { products, places: [], sources, tracked: opts.tracked, prompt: userPrompt });
+  const seenE = new Set();
+  const entities = [];
+  const addE = (t, c) => { const k = c + "|" + (t || "").toLowerCase(); if (t && !seenE.has(k)) { seenE.add(k); entities.push({ text: t, category: c }); } };
+  products.forEach((p) => { addE(p.name, "Product"); if (p.merchant) addE(p.merchant, "Retailer"); });
+  brandMentions.forEach((b) => addE(b.brand, b.category === "place" ? "Place" : "Brand"));
+  const searched = !!(r && (r.sources.length || r.searchLabels.length || r.products.length));
+  if (r && !r.searchLabels.length) diag.notes.push(FANOUT_UNSUPPORTED_NOTE);
+  return makeRecord({
+    captureId: rawCapture.captureId,
+    platform: "gemini",
+    model: r && r.model ? `Gemini ${r.model}` : "gemini",
+    capturedAt: rawCapture.capturedAt,
+    pageUrl: rawCapture.pageUrl,
+    rawRef: rawCapture.captureId,
+    userPrompt,
+    // The reply id ties the stream's repeated hand-overs to one answer (sameAnswer.js).
+    ...(r && r.responseId ? { turnId: r.responseId } : {}),
+    ...(r && r.conversationId ? { conversationId: r.conversationId } : {}),
+    searched,
+    turnUseCase: products.length ? "shopping" : sources.length ? "web" : "general",
+    fanout: { search: [], shopping: [], image: [] },
+    sources,
+    products,
+    places: [],
+    entities,
+    brandMentions,
+    answerChars: answer.length,
+    answerText: answer,
+    platformSpecific: {
+      transport: "webchannel",
+      ...(cards.length ? { cards } : {}),
+      ...(r && r.searchLabels.length ? { searchLabels: r.searchLabels } : {}),
+      ...(r && r.location ? { location: r.location } : {}),
+      ...(r && r.country ? { country: r.country } : {}),
+    },
+    _extraction: diag,
+  });
+}
+
 export async function adapt(rawCapture, opts = {}) {
   const diag = { adapterVersion: ADAPTER_VERSION, usedFallback: false, notes: [] };
+  if (isChannelText(rawCapture.raw)) return adaptChannel(rawCapture, opts, diag);
   const payloads = parseStreamGenerate(rawCapture.raw || "");
 
   // Use the largest (most complete) streamed frame for everything — model,
@@ -331,7 +484,8 @@ export async function adapt(rawCapture, opts = {}) {
 
   const cites = bestPayload ? collectCitations(bestPayload) : [];
   const products = bestPayload ? collectProducts(bestPayload) : [];
-  const places = bestPayload ? collectPlaces(bestPayload) : [];
+  const hotelCard = bestPayload ? collectHotels(bestPayload) : { hotels: [], searches: [] };
+  const places = [...(bestPayload ? collectPlaces(bestPayload) : []), ...hotelCard.hotels];
   const groundingClaims = bestPayload ? collectGroundingClaims(bestPayload) : [];
 
   const sources = cites.map((c) =>
@@ -353,7 +507,7 @@ export async function adapt(rawCapture, opts = {}) {
     ? extractAnswerAndReasoning(bestPayload)
     : { answer: "", reasoning: null };
 
-  const fanout = bestPayload ? extractFanout(bestPayload, diag, reasoning) : { search: [], shopping: [], image: [] };
+  const fanout = bestPayload ? extractFanout(bestPayload, diag, reasoning, hotelCard.searches) : { search: [], shopping: [], image: [] };
   if (!sources.length && !products.length && !places.length) {
     diag.usedFallback = true;
     diag.notes.push("no citations, products, or places found — StreamGenerate shape may have drifted");
@@ -374,7 +528,7 @@ export async function adapt(rawCapture, opts = {}) {
   // Prefer the structural slot; keep the shape scan as a fallback so a future
   // payload reshuffle degrades to the old behaviour instead of to nothing.
   const pathAnswer = extractAnswerFromFrames(payloads);
-  const answer = pathAnswer || heuristicAnswer;
+  const { text: answer, cards } = stripCardPlaceholders(pathAnswer || heuristicAnswer);
   if (!pathAnswer && heuristicAnswer) {
     diag.notes.push("answer: stable slot missing, fell back to a shape scan (payload may have drifted)");
   }
@@ -421,6 +575,7 @@ export async function adapt(rawCapture, opts = {}) {
     platformSpecific: {
       ...(reasoning ? { reasoning: reasoning.slice(0, 4000) } : {}),
       ...(groundingClaims.length ? { groundingClaims: groundingClaims.slice(0, 50) } : {}),
+      ...(cards.length ? { cards } : {}),
     },
     _extraction: diag,
   });
