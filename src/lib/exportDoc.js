@@ -26,6 +26,7 @@ import { ANSWER_TEXT_CAP } from "../schema.js";
 import { computeSearchFunnel } from "./funnel-omitted.js";
 import { analyzeFanout } from "./fanout.js";
 import { normalizeMentions } from "./mention-list.js";
+import { hrefOf } from "./safeUrl.js";
 
 /* Placeholder delimiters for inline HTML spliced back in after the markdown
  * pass (footnote links, bolded entity names).
@@ -558,7 +559,7 @@ function renderSourcesSection(model) {
     const rows = model.footnotes
       .map(
         ({ n, source }) => `<li id="fn-${model.captureId}-${n}"><span class="fn-num">[${n}]</span>
-          <a href="${esc(source.url)}" target="_blank" rel="noreferrer">${escText(source.title || source.domain)}</a>
+          <a href="${esc(hrefOf(source.url))}" target="_blank" rel="noreferrer">${escText(source.title || source.domain)}</a>
           <span class="muted"> — ${escText(source.domain)}</span>${source.snippet ? `<div class="snippet">${escText(source.snippet)}</div>` : ""}
         </li>`
       )
@@ -567,7 +568,7 @@ function renderSourcesSection(model) {
     const others = model.sources.filter((s) => !citedUrls.has(s.url));
     const othersHtml = others.length
       ? `<h4>Also fetched (not cited in the answer)</h4><ul class="src-list muted">${others
-          .map((s) => `<li><a href="${esc(s.url)}" target="_blank" rel="noreferrer">${escText(s.title || s.domain)}</a> — ${escText(s.domain)}</li>`)
+          .map((s) => `<li><a href="${esc(hrefOf(s.url))}" target="_blank" rel="noreferrer">${escText(s.title || s.domain)}</a> — ${escText(s.domain)}</li>`)
           .join("")}</ul>`
       : "";
     return `<h3>Sources</h3><ol class="src-list">${rows}</ol>${othersHtml}`;
@@ -593,11 +594,11 @@ function renderSourcesSection(model) {
   const cited = model.sources.filter((s) => s.outcome === "cited");
   const rest = model.sources.filter((s) => s.outcome !== "cited");
   const detailed = (s) =>
-    `<li><a href="${esc(s.url)}" target="_blank" rel="noreferrer">${escText(s.title || s.domain)}</a>
+    `<li><a href="${esc(hrefOf(s.url))}" target="_blank" rel="noreferrer">${escText(s.title || s.domain)}</a>
       <span class="muted"> — ${escText(s.domain)}</span>${s.snippet ? `<div class="snippet">${escText(s.snippet)}</div>` : ""}
     </li>`;
   const compact = (s) =>
-    `<li><a href="${esc(s.url)}" target="_blank" rel="noreferrer">${escText(s.title || s.domain)}</a> — ${escText(s.domain)}</li>`;
+    `<li><a href="${esc(hrefOf(s.url))}" target="_blank" rel="noreferrer">${escText(s.title || s.domain)}</a> — ${escText(s.domain)}</li>`;
   const citedHtml = cited.length ? `<ol class="src-list">${cited.map(detailed).join("\n")}</ol>` : "";
   const restLabel = cited.length ? "Also fetched (not cited in the answer)" : "Fetched";
   const restHtml = rest.length
@@ -775,7 +776,7 @@ function renderBrandsSection(model) {
 // container keeps the layout stable either way.
 function imgTag(url, alt) {
   if (!url) return "";
-  return `<img class="thumb" src="${esc(url)}" alt="${escText(alt || "")}" loading="lazy" onerror="this.style.display='none'">`;
+  return `<img class="thumb" src="${esc(hrefOf(url))}" alt="${escText(alt || "")}" loading="lazy" onerror="${EXPORT_IMG_HANDLER}">`;
 }
 
 function renderProductsSection(model) {
@@ -977,6 +978,24 @@ const DOC_STYLE = `
  * models. `withPrintBar` adds a "Print / Save as PDF" button (used by
  * ui/export.html, not the direct .html download).
  */
+/*
+ * What the saved report may do when it is opened (0.84.1).
+ *
+ * The file opens from disk, outside the extension, so none of the
+ * extension's own protections are around it, and it is made from text that
+ * came off the web or out of a shared campaign. Until now it carried no
+ * policy at all: in the 10 Nov 2026 audit an imported source address of
+ * "javascript:alert(document.domain)" was a working link in it. Addresses
+ * are now checked where they are written (hrefOf); this is the second lock.
+ * Nothing loads but pictures, nothing is sent anywhere, and the only script
+ * allowed is the two one-line handlers this file writes itself, each named
+ * by its hash: the Print button and "hide a picture that didn't load".
+ * A "javascript:" link is script too, and matches neither.
+ */
+export const EXPORT_PRINT_HANDLER = "window.print()";
+export const EXPORT_IMG_HANDLER = "this.style.display='none'";
+export const EXPORT_CSP = "default-src 'none'; img-src https: http: data:; style-src 'unsafe-inline'; script-src 'unsafe-hashes' 'sha256-MguIPR6qNR8D3B+eAlK+bIRTZe8t3wkOY4B/56Me9FU=' 'sha256-pwQduWxX3Cm7lLbQmAos7n73RLP4QrsCDFejmsBdZ78='; base-uri 'none'; form-action 'none'";
+
 export function renderStandaloneHtml(models, { docTitle, withPrintBar = false } = {}) {
   const single = models.length === 1;
   const title = docTitle || (single ? models[0].prompt : `${models.length} conversations`);
@@ -989,7 +1008,7 @@ export function renderStandaloneHtml(models, { docTitle, withPrintBar = false } 
 
   const printBar = withPrintBar
     ? `<div class="print-bar">
-        <button id="printBtn" onclick="window.print()">🖨️ Print / Save as PDF</button>
+        <button id="printBtn" onclick="${EXPORT_PRINT_HANDLER}">🖨️ Print / Save as PDF</button>
         <span class="muted small">Tip: in the print dialog, uncheck "Headers and footers" for a clean PDF (Chrome adds its own page URL/date otherwise).</span>
       </div>`
     : "";
@@ -1007,6 +1026,7 @@ export function renderStandaloneHtml(models, { docTitle, withPrintBar = false } 
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="${EXPORT_CSP}">
 <title>${esc(title)}</title>
 <style>${DOC_STYLE}</style>
 </head>

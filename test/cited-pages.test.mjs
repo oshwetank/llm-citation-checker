@@ -67,9 +67,9 @@ const PORT = server.address().port;
 
 const fixture = (name) => {
   const txt = readFileSync(path.join(HERE, "fixtures", name), "utf8")
-    .replaceAll("https://phonereview.example", `http://127.0.0.1:${PORT}/phonereview`)
-    .replaceAll("https://mobilelab.example", `http://localhost:${PORT}/mobilelab`)
-    .replaceAll("https://technews.example", `http://localhost:${PORT}/technews`);
+    .replaceAll("https://phonereview.example", `http://phonereview.example:${PORT}/phonereview`)
+    .replaceAll("https://mobilelab.example", `http://mobilelab.example:${PORT}/mobilelab`)
+    .replaceAll("https://technews.example", `http://technews.example:${PORT}/technews`);
   const lines = txt.split(/\r?\n/);
   return { raw: lines.filter((l) => !l.startsWith("# ")).join("\n"), reqBody: (lines.find((l) => l.startsWith("# reqBody:")) || "").replace("# reqBody: ", "") };
 };
@@ -84,7 +84,10 @@ const fixture = (name) => {
 rmSync(PROFILE_BASE, { recursive: true, force: true });
 const context = await chromium.launchPersistentContext(PROFILE_BASE, {
   headless: false,
-  args: [`--disable-extensions-except=${EXT_PATH}`, `--load-extension=${EXT_PATH}`, "--headless=new", "--no-sandbox"],
+  // The made-up sites keep their public-looking names and are pointed at this
+  // machine by the browser (0.84.1): the reader now refuses localhost and
+  // 127.0.0.1 themselves, as it should, so the test can't cite those.
+  args: [`--disable-extensions-except=${EXT_PATH}`, `--load-extension=${EXT_PATH}`, "--headless=new", "--no-sandbox", "--host-resolver-rules=MAP *.example 127.0.0.1"],
 });
 try {
   let sw = context.serviceWorkers()[0];

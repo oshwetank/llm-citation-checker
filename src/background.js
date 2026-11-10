@@ -36,6 +36,8 @@ import { makeCloud, cloudReady, CLOUD_SESSION_KEY } from "./lib/cloud.js";
 import { CLOUD } from "./lib/cloudConfig.js";
 import { checkEmail } from "./lib/emailCheck.js";
 import { citedUrls, pageVerdict, pageSummary, wordCount, PAGE_TTL_MS } from "./lib/pageText.js";
+import { isPublicHttpUrl } from "./lib/safeUrl.js";
+import { mayHandle, onEngineSite } from "./lib/senderGate.js";
 import { appendRing } from "./lib/netlog.js";
 import { offersFrom, attachOffers, productUpdateFrom, productPanelFrom, formChoicesFrom, cardIndexFor } from "./lib/offers.js";
 import { searchAnswers } from "./lib/answerSearch.js";
@@ -189,8 +191,14 @@ async function handoffOpen({ engine, text, autoSend = true }) {
   await setHandoffTab(tab.id, true);
   return { ok: true, tabId: tab.id };
 }
-chrome.tabs.onUpdated.addListener((tabId, info) => {
+chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
   if (info.status !== "complete" || !handoffJobs.has(tabId)) return;
+  // Only while the tab is still on the AI site it was opened for (0.84.1,
+  // lib/senderGate.js onEngineSite). A tab redirected elsewhere keeps its
+  // message waiting: the script goes in if it comes back.
+  const job = handoffJobs.get(tabId);
+  const engine = HANDOFF_ENGINES[job.engine];
+  if (!engine || !onEngineSite((tab && tab.url) || "", engine.url)) return;
   chrome.scripting.executeScript({ target: { tabId }, files: ["src/handoff.js"] }).catch((e) => logErr("handoff:inject", e));
 });
 chrome.tabs.onRemoved.addListener((tabId) => { handoffJobs.delete(tabId); setHandoffTab(tabId, false); });
@@ -907,6 +915,9 @@ async function fetchPage(url) {
   const timer = setTimeout(() => ctl.abort(), PAGE_FETCH_MS);
   try {
     const res = await fetch(url, { credentials: "omit", redirect: "follow", signal: ctl.signal });
+    // A public address can answer with a redirect to a private one; what
+    // came back from there is not kept (0.84.1).
+    if (res.url && !isPublicHttpUrl(res.url)) return { status: "failed", error: "redirected to a private address" };
     const type = res.headers.get("content-type") || "";
     if (!res.ok) return { status: "failed", httpStatus: res.status };
     if (!/html|xml|text\/plain/i.test(type)) return { status: "not-html", httpStatus: res.status };
@@ -953,13 +964,28 @@ function readInTab(url) {
   return p;
 }
 
-async function readOnePage(url, { force = false } = {}) {
+/*
+ * 0.84.1, from the 10 Nov 2026 security audit. Two limits on what is read:
+ *
+ *   - Public sites only (lib/safeUrl.js). citedUrls already leaves private
+ *     addresses out; this is the same check where the reading happens, so
+ *     no other caller can skip it.
+ *   - The hidden-tab reading only when the person asked for this answer's
+ *     pages themselves (`manual`: the "Read pages" button). The plain fetch
+ *     sends no cookies; a tab is the user's own browser, signed in to
+ *     whatever they are signed in to. Run automatically on every capture, a
+ *     cited address that points at a signed-in page (webmail, a dashboard)
+ *     would have had that page's text saved here and carried into exports
+ *     and shared campaigns, with nobody having chosen to open it.
+ */
+async function readOnePage(url, { force = false, manual = false } = {}) {
+  if (!isPublicHttpUrl(url)) return { url, fetchedAt: Date.now(), status: "failed", method: "fetch", httpStatus: null, title: "", lang: null, words: 0, text: "", error: "not a public address" };
   const cached = await db.get("pages", url).catch(() => null);
   if (!force && cached && cached.status === "ok" && Date.now() - (cached.fetchedAt || 0) < PAGE_TTL_MS) return cached;
   let page = await fetchPage(url);
   let method = "fetch";
   if (page.status === "blocked" || page.status === "thin" || page.status === "failed") {
-    const canScript = !!(chrome.scripting && (await chrome.permissions.contains({ origins: ["<all_urls>"] }).catch(() => false)));
+    const canScript = manual && !!(chrome.scripting && (await chrome.permissions.contains({ origins: ["<all_urls>"] }).catch(() => false)));
     if (canScript) {
       const viaTab = await readInTab(url);
       if (viaTab.status === "ok" || (page.status !== "ok" && wordCount(viaTab.text) > wordCount(page.text))) { page = viaTab; method = "tab"; }
@@ -987,7 +1013,7 @@ async function readCitedPages(captureId, { force = false, manual = false } = {})
   pagesInFlight.add(captureId);
   try {
     const queue = [...urls];
-    const work = async () => { while (queue.length) { const u = queue.shift(); try { await readOnePage(u, { force }); } catch (e) { logErr("pages", e, { url: u.slice(0, 120) }); } } };
+    const work = async () => { while (queue.length) { const u = queue.shift(); try { await readOnePage(u, { force, manual }); } catch (e) { logErr("pages", e, { url: u.slice(0, 120) }); } } };
     await Promise.all([work(), work(), work()]);
     const current = await db.get("derived", captureId);
     if (!current) return { ok: false, error: "capture removed" };
@@ -3250,7 +3276,16 @@ function toLight(r) {
   return { ...rest, platformSpecific: psLight, hasAnswerText: !!(answerText && answerText.length) };
 }
 
+const EXT_BASE = chrome.runtime.getURL("");
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // A script inside a web page may send only what those scripts really
+  // send (0.84.1, lib/senderGate.js): never "give me a stored answer" or
+  // "delete everything".
+  if (!mayHandle(msg, sender, EXT_BASE)) {
+    logEvent("message:refused", "capture", "a page script sent a message only the extension's own pages may send", { type: String((msg && msg.type) || "").slice(0, 40) });
+    try { sendResponse({ ok: false, error: "not allowed from a web page" }); } catch (_) { /* closed */ }
+    return false;
+  }
   (async () => {
     try {
       switch (msg?.type) {
@@ -3260,7 +3295,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         case "handoff-claim": {
           const tid = sender && sender.tab && sender.tab.id;
-          const job = tid != null ? handoffJobs.get(tid) : null;
+          let job = tid != null ? handoffJobs.get(tid) : null;
+          // The text is given only to the AI site it was meant for (0.84.1).
+          if (job && !onEngineSite((sender && sender.url) || "", (HANDOFF_ENGINES[job.engine] || {}).url || "")) job = null;
           if (job) handoffJobs.delete(tid);
           sendResponse(job ? { ok: true, text: job.text, autoSend: job.autoSend, engine: job.engine } : { ok: false });
           break;

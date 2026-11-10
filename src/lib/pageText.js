@@ -14,6 +14,7 @@
  * offscreen document that runs Mozilla Readability and the hidden-tab
  * fallback are in background.js and ui/offscreen.js.
  */
+import { isPublicHttpUrl } from "./safeUrl.js";
 import { wordRe } from "./textMatch.js";
 import { buildBrandVocabulary, extractBrandsFromText } from "./funnel-omitted.js";
 
@@ -26,7 +27,10 @@ export function citedUrls(rec, max = MAX_PAGES) {
   const seen = new Set();
   const out = [];
   for (const s of (rec && rec.sources) || []) {
-    if (s.outcome !== "cited" || !/^https?:\/\//i.test(s.url || "")) continue;
+    // Public sites only (0.84.1, lib/safeUrl.js): a cited address is chosen
+    // by whoever wrote the page the engine read, and before this check
+    // http://localhost or 192.168.1.1 would have been fetched like any other.
+    if (s.outcome !== "cited" || !isPublicHttpUrl(s.url)) continue;
     const key = s.url.replace(/#.*$/, "");
     if (seen.has(key)) continue;
     seen.add(key);
