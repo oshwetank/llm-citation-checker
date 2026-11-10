@@ -12,7 +12,7 @@ import {
   isTracked, partitionRecords, selectTracked,
   normName, domainOfUrl, domainMatches, bucketKey, runDue, runVolume,
   allTags, availableEngines, ENGINES, MAX_PROFILES,
-  hasSignal, countCompletedForRun,
+  hasSignal, turnAnswered, usageLimitOf, countCompletedForRun,
 } from "../src/lib/geo.js";
 import { adapt as adaptChatGpt } from "../src/adapters/chatgpt.js";
 import { makeRecord } from "../src/schema.js";
@@ -41,6 +41,40 @@ function rec({ answerText = "", brands = [], sources = [], geo = null, at = Date
   };
 }
 const G = (extra = {}) => ({ profileId: "p1", runId: "r1", promptId: "q1", tags: [], ...extra });
+
+/* ---------------- tags: any or all (0.67.0) ---------------- */
+console.log("a group of tags: prompts with any of them, or all of them");
+{
+  const t = (id, tags) => ({ ...rec({ geo: G({ promptId: id, tags }), at: 1 }), answerChars: 100 });
+  const recs = [t("a", ["buying"]), t("b", ["buying", "tv"]), t("c", ["tv"]), t("d", ["watches"])];
+  const ids = (o) => selectTracked(recs, { profileId: "p1", tags: ["buying", "tv"], ...o }).map((r) => r.geo.promptId).sort().join(",");
+  check("any of them, by default", ids({}) === "a,b,c", ids({}));
+  check("all of them, when asked", ids({ tagMode: "all" }) === "b", ids({ tagMode: "all" }));
+  check("one tag is the same either way", selectTracked(recs, { profileId: "p1", tags: ["tv"], tagMode: "all" }).length === 2);
+}
+
+/* ---------------- one capture per prompt ---------------- */
+console.log("one capture per prompt, per engine, per run");
+{
+  const src = (n) => Array.from({ length: n }, (_, i) => ({ url: `https://s${i}.example/` }));
+  const a = { ...rec({ geo: G(), sources: src(1), at: 1 }), answerChars: 900 };
+  const b = { ...rec({ geo: G(), sources: src(3), at: 2 }), answerChars: 400 };
+  const c = { ...rec({ geo: G(), sources: src(3), at: 3 }), answerChars: 800 };
+  const other = { ...rec({ geo: G({ promptId: "q2" }), at: 4 }), answerChars: 10 };
+  const gem = { ...rec({ geo: G(), platform: "gemini", at: 5 }), answerChars: 10 };
+  const run2 = { ...rec({ geo: G({ runId: "r2" }), at: 6 }), answerChars: 10 };
+  const old = { ...rec({ geo: { profileId: "p1" }, at: 7 }), answerChars: 10 };
+  const picked = selectTracked([a, b, c, other, gem, run2, old], { profileId: "p1" });
+  const same = picked.filter((r) => r.platform === "chatgpt" && r.geo.runId === "r1" && r.geo.promptId === "q1");
+  check("three captures of one prompt count once", same.length === 1, same.length);
+  check("the kept one has the most sources, then the longest answer", same[0] === c, same[0] && same[0].capturedAt);
+  check("another prompt, engine or run is its own capture", picked.includes(other) && picked.includes(gem) && picked.includes(run2));
+  check("a capture with no run or prompt is kept as it is", picked.includes(old));
+  check("allCaptures keeps every copy, for diagnostics",
+    selectTracked([a, b, c], { profileId: "p1", allCaptures: true }).length === 3);
+  const m = computeMetrics(picked, { brand: { name: "Acme" }, competitors: [] });
+  check("metrics count the prompt once", m.totalResponses === picked.length && picked.length === 5, `${m.totalResponses}/${picked.length}`);
+}
 
 /* ---------------- normalisation ---------------- */
 console.log("normalisation helpers");
@@ -102,9 +136,11 @@ console.log("\nisolation: tracking data and ad-hoc browsing data never mix");
     selectTracked(mixed, {}).every(isTracked));
 
   const tagged = [
-    rec({ geo: G({ tags: ["brand", "top-funnel"] }) }),
-    rec({ geo: G({ tags: ["competitor"] }) }),
-    rec({ geo: G({ tags: [] }) }),
+    // Tags belong to tracked prompts, so differently tagged records are
+    // different prompts.
+    rec({ geo: G({ promptId: "q-brand", tags: ["brand", "top-funnel"] }) }),
+    rec({ geo: G({ promptId: "q-comp", tags: ["competitor"] }) }),
+    rec({ geo: G({ promptId: "q-none", tags: [] }) }),
   ];
   check("selectTracked filters by tag", selectTracked(tagged, { tags: ["competitor"] }).length === 1);
   check("selectTracked matches ANY supplied tag",
@@ -455,6 +491,32 @@ console.log("\nbrand presence still finds a brand after mergeAiNames upgrades it
   check("an unknown/missing runId counts nothing", countCompletedForRun(records, null, "chatgpt") === 0);
   check("a run with zero completions counts as zero",
     countCompletedForRun(records, "run-C", "chatgpt") === 0);
+}
+
+// 0.55.0: setup's "What this campaign should measure". Saving a campaign
+// goes through makeProfile, which used to drop the choice on the floor.
+console.log("\nwhat a campaign measures survives a save");
+{
+  const p = makeProfile({ name: "M", measure: { citations: true, products: 1, images: false, local: false, junk: true } });
+  check("the choice is kept", p.measure && p.measure.citations === true && p.measure.products === true && p.measure.images === false && p.measure.local === false, JSON.stringify(p.measure));
+  check("only the known views, as booleans", p.measure && Object.keys(p.measure).join() === "citations,products,images,local", JSON.stringify(p.measure));
+  check("a campaign from before the choice has none (every view offered)", makeProfile({ name: "Old" }).measure === null);
+  check("a save of an old campaign doesn't invent one", makeProfile({ ...makeProfile({ name: "Old" }), locked: true }).measure === null);
+}
+
+console.log("\nwhen a campaign turn is answered (0.62.2)");
+{
+  const gw = (ps, extra = {}) => ({ platform: "grok", userPrompt: "best phone", sources: [{ url: "https://a.example" }], platformSpecific: { transport: "gateway", ...ps }, ...extra });
+  check("a Grok gateway capture with only the prompt and search results is not an answer", hasSignal(gw({})) && !turnAnswered(gw({})));
+  check("nor one Grok cut off", !turnAnswered(gw({ gatewayStatus: "incomplete" }, { answerChars: 0 })));
+  check("one Grok completed, with text, is", turnAnswered(gw({ gatewayStatus: "completed" }, { answerChars: 900 })));
+  check("other engines keep the old rule", turnAnswered({ platform: "perplexity", userPrompt: "q", answerChars: 10 }));
+  // 0.69.0: Gemini's stream went quiet while it searched; that hand-over has
+  // the prompt and no answer, and finished the turn on an empty answer.
+  const gem = (chars) => ({ platform: "gemini", userPrompt: "best linen shirt", platformSpecific: { transport: "webchannel" }, answerChars: chars });
+  check("a Gemini stream with no answer yet doesn't finish the turn", hasSignal(gem(0)) && !turnAnswered(gem(0)));
+  check("with its answer it does", turnAnswered(gem(1400)));
+  check("Grok's usage limit is read off the capture", usageLimitOf(gw({ gatewayError: "usage_limit_reached" })) === "usage_limit_reached" && usageLimitOf(gw({ gatewayError: "stream_error" })) === null);
 }
 
 console.log(failures ? `\nFAILED (${failures})` : "\nALL PASSED");

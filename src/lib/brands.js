@@ -21,6 +21,7 @@
  * only to label what was detected as `own` / `competitor`, so share-of-voice can
  * be reported. Detection stays automatic.
  */
+import { wordRe } from "./textMatch.js";
 
 const PUA_OPEN = String.fromCodePoint(0xe200);
 const PUA_MID = String.fromCodePoint(0xe202);
@@ -51,9 +52,21 @@ const NOISE = new Set([
   "honorable", "notable", "runner", "runners", "bonus", "also", "similar", "related",
   "comparison", "compare", "quickly", "specs", "features", "price", "pricing", "cost",
   "how", "what", "when", "where", "who", "which", "should", "consider", "considerations",
+  // Verbs and fillers that open a bullet or a bold lead ("**Buy the OnePlus
+  // …**", "**Choose the realme …**", "**ANC:** Up to 55dB"); reported as
+  // brands in a ChatGPT answer (0.62.1).
+  "buy", "choose", "save", "get", "go", "skip", "avoid", "opt", "prefer", "stretch",
+  "spend", "pay", "look", "check", "try", "use", "want", "need", "up", "to", "with",
+  "without", "under", "around", "about", "only", "both", "either", "here", "there",
+  "then", "yes", "no", "not", "it", "its", "they", "you", "we",
 ]);
 
-const isNoise = (w) => !w || NOISE.has(w.toLowerCase());
+// Spec terms that read like names in a table cell or after a bullet label:
+// ratings (IP55, IPX4), feature acronyms (AI, ANC, ENC), "Dual-driver"-style
+// counts. Shapes, not industry nouns, so they hold for any vertical.
+const SPEC_TOKEN = /^(?:ip[x\d]\d|ipx|ai|anc|enc|enx|tws|usb|bt|nfc|hdr|oled|amoled|lcd|led|[2-6]g|wi-?fi|(?:single|dual|triple|quad|multi|hybrid)-[a-z]+)$/i;
+
+const isNoise = (w) => !w || NOISE.has(w.toLowerCase()) || SPEC_TOKEN.test(w);
 
 // entity[] markers come in (at least) two shapes:
 //   ["company","Zerodha","Indian stock broker"]        — category + name + description
@@ -184,8 +197,28 @@ const SEPARATOR_CELL = /^:?-+:?$/;
 // already cover most comparison tables regardless of topic) — a much
 // stronger signal than guessing from position when it's present, and
 // harmless when it isn't (falls straight back to the old rule below).
-const NAME_HEADER_RE = /^(phones?|products?|items?|models?|devices?|names?|brands?|picks?|winners?|recommendations?|options?|choices?)$/i;
+const NAME_HEADER_RE = /^(phones?|products?|items?|models?|devices?|names?|brands?|picks?|winners?|recommendations?|options?|choices?|hotels?|hostels?|resorts?|homestays?|stays?|propert(?:y|ies)|accommodations?|lodg(?:e|es|ings?)|places?|restaurants?|cafes?|venues?|stores?|shops?|showrooms?|dealers?|sellers?|retailers?|merchants?|compan(?:y|ies)|providers?|vendors?|apps?|tools?|services?|platforms?|software|schools?|colleges?|universit(?:y|ies)|institutes?|courses?|clinics?|hospitals?|doctors?|banks?|cards?|brokers?|funds?|insurers?|plans?|policies|cars?|bikes?|scooters?|laptops?|airlines?|operators?|agenc(?:y|ies)|websites?|sites?)$/i;
 const cleanHeaderCell = (s) => String(s || "").replace(/[*_`]/g, "").trim();
+// "Hotel / Stay", "Hotel name", "Property (area)": the header names its
+// column when any one of its words does.
+const headerNamesColumn = (h) => {
+  const c = cleanHeaderCell(h).replace(/\([^)]*\)/g, " ");
+  if (NAME_HEADER_RE.test(c)) return true;
+  return c.split(/\s*(?:\/|&|\bor\b|,)\s*|\s+name\b/i).map((x) => x.trim()).filter(Boolean).some((x) => NAME_HEADER_RE.test(x));
+};
+// Columns that are about something else (where, how much, why). Reported on
+// a hotel table: with no header the code knew, the AREA column (the town's
+// neighbourhoods and its main road) won the prose vote over the hotel names
+// and every neighbourhood was reported as a brand. Such a column is never the names.
+const NOT_NAME_HEADER_RE = /\b(areas?|locations?|localit(?:y|ies)|neighbou?rhoods?|address(?:es)?|cit(?:y|ies)|regions?|distance|near|price|prices|pricing|rates?|cost|costs|fees?|tariff|budget|ratings?|reviews?|stars?|why|reason|notes?|highlights?|amenities|features?|pros|cons|best for|good for|ideal for|verdict|type|kind|category|specs?|size|duration|timings?|hours|contact|phone|website|link|book(?:ing)?)\b/i;
+
+// A table cell's name: ChatGPT writes some names as entity markers
+// (entity["turn0business4","Hotel Pinecrest"]), whose name is what the
+// prose repeats.
+function cellName(cell) {
+  const m = String(cell || "").match(/\u{E200}entity\u{E202}\[\s*"[^"]*"\s*,\s*"([^"]+)"/u);
+  return cleanHeaderCell(m ? m[1] : cell);
+}
 
 // Returns the first-column text of every DATA row (header/separator rows
 // excluded) in every real table found in `text`. Previously this signal was
@@ -223,13 +256,14 @@ function parseTableCells(text) {
           for (let k = i + 2; k < lines.length && lines[k].trim() && lines[k].includes("|"); k++) {
             rows.push(splitTableRow(lines[k]));
           }
-          let nameColIdx = headerCells.findIndex((h) => NAME_HEADER_RE.test(cleanHeaderCell(h)));
+          let nameColIdx = headerCells.findIndex((h) => headerNamesColumn(h));
           if (nameColIdx === -1) {
             let bestScore = 0;
             for (let c = 0; c < headerCells.length; c++) {
+              if (NOT_NAME_HEADER_RE.test(cleanHeaderCell(headerCells[c]))) continue;
               let score = 0;
               for (const cells of rows) {
-                const cell = cleanHeaderCell(cells[c] || "");
+                const cell = cellName(cells[c] || "");
                 if (cell && namedInProse(text, cell)) score++;
               }
               if (score > bestScore) { bestScore = score; nameColIdx = c; }
@@ -332,18 +366,31 @@ export function structuralCandidates(answerText) {
 }
 
 /* ---------- 4. cited domains ---------- */
-const MARKETPLACE_DOMAINS = new Set([
+export const MARKETPLACE_DOMAINS = new Set([
   "amazon.com", "amazon.in", "amazon.co.uk", "amazon.ae", "amazon.de", "amazon.ca",
   "flipkart.com", "myntra.com", "meesho.com", "snapdeal.com", "shopclues.com",
   "ebay.com", "ebay.in", "walmart.com", "aliexpress.com", "alibaba.com", "etsy.com",
   "jiomart.com", "olx.in", "olx.com", "quikr.com",
   "indiamart.com", "tradeindia.com", "exportersindia.com", "justdial.com",
   "dhgate.com", "made-in-china.com", "wish.com", "rakuten.com",
+  // Marketplaces in other markets (0.69.0): the tool is used everywhere.
+  "amazon.fr", "amazon.it", "amazon.es", "amazon.nl", "amazon.se", "amazon.pl", "amazon.com.be", "amazon.co.jp",
+  "amazon.com.au", "amazon.com.br", "amazon.com.mx", "amazon.sg", "amazon.sa", "amazon.eg", "amazon.com.tr",
+  "ebay.co.uk", "ebay.de", "ebay.fr", "ebay.it", "ebay.es", "ebay.com.au", "ebay.ca",
+  "mercadolibre.com", "mercadolibre.com.mx", "mercadolibre.com.ar", "mercadolibre.com.co", "mercadolibre.cl",
+  "mercadolivre.com.br", "rakuten.co.jp", "rakuten.fr", "rakuten.de", "allegro.pl", "bol.com", "zalando.com",
+  "zalando.de", "zalando.fr", "otto.de", "cdiscount.com", "kaufland.de", "coupang.com", "shopee.com",
+  "shopee.co.id", "shopee.com.my", "shopee.ph", "shopee.sg", "shopee.co.th", "shopee.vn", "shopee.com.br",
+  "lazada.com", "lazada.co.id", "lazada.com.my", "lazada.com.ph", "lazada.sg", "lazada.co.th", "lazada.vn",
+  "tokopedia.com", "bukalapak.com", "noon.com", "jumia.com", "jumia.com.ng", "jumia.co.ke", "takealot.com",
+  "temu.com", "shein.com", "trendyol.com", "hepsiburada.com", "ozon.ru", "wildberries.ru", "avito.ru",
+  "marktplaats.nl", "leboncoin.fr", "wallapop.com", "gumtree.com", "craigslist.org", "kijiji.ca",
+  "trademe.co.nz", "catch.com.au", "qoo10.com", "mercari.com", "yahoo.co.jp", "daraz.pk", "daraz.com.bd",
 ]);
 
 // Publishers, news outlets, tech portals, aggregators, price comparison sites, and social platforms that
 // produce citations or host discussions, NOT product brands being reviewed.
-const EDITORIAL_DOMAINS = new Set([
+export const EDITORIAL_DOMAINS = new Set([
   "digit.in", "gadgets01.com", "91mobiles.com", "gsmarena.com", "techradar.com",
   "theverge.com", "tomsguide.com", "cnet.com", "androidauthority.com", "androidcentral.com",
   "smartprix.com", "mysmartprice.com", "bgr.in", "gadgets360.com", "gizmochina.com",
@@ -357,6 +404,19 @@ const EDITORIAL_DOMAINS = new Set([
   // for the deeper structural fix — that bug alone was enough to make ANY
   // cited domain self-match, so this list is defense-in-depth, not the fix).
   "mobileburn.com", "bhalophone.com", "goalmoneytrack.com",
+  // International news, reviews and buying guides (0.69.0).
+  "nytimes.com", "wsj.com", "washingtonpost.com", "bbc.com", "bbc.co.uk", "theguardian.com", "reuters.com",
+  "apnews.com", "bloomberg.com", "ft.com", "economist.com", "forbes.com", "businessinsider.com", "cnbc.com",
+  "techcrunch.com", "wired.com", "engadget.com", "arstechnica.com", "zdnet.com", "pcmag.com", "pcworld.com",
+  "macworld.com", "9to5mac.com", "9to5google.com", "macrumors.com", "digitaltrends.com", "trustedreviews.com",
+  "expertreviews.co.uk", "which.co.uk", "consumerreports.org", "rtings.com", "wirecutter.com", "nerdwallet.com",
+  "bankrate.com", "investopedia.com", "healthline.com", "webmd.com", "mayoclinic.org", "goodhousekeeping.com",
+  "g2.com", "capterra.com", "trustradius.com", "getapp.com", "softwareadvice.com", "clutch.co", "producthunt.com",
+  "trustpilot.com", "yelp.com", "tripadvisor.com", "lemonde.fr", "lefigaro.fr", "spiegel.de", "chip.de",
+  "computerbild.de", "heise.de", "elpais.com", "xataka.com", "tecmundo.com.br", "tudocelular.com", "globo.com",
+  "uol.com.br", "infobae.com", "nikkei.com", "itmedia.co.jp", "kakaku.com", "impress.co.jp", "sina.com.cn",
+  "sohu.com", "163.com", "chosun.com", "aljazeera.com", "alarabiya.net", "scmp.com", "straitstimes.com",
+  "smh.com.au", "abc.net.au", "cbc.ca", "news.com.au", "ndtv.com", "thehindu.com", "economictimes.indiatimes.com",
 ]);
 
 function isMarketplaceDomain(domain) {
@@ -416,7 +476,7 @@ function alwaysAttributed(text, hits) {
 // string ("Amazon.in", "PNG Jewellers", "Mia by Tanishq"), not a URL. Only
 // the leading word is checked, since that's what identifies the seller.
 const MARKETPLACE_NAME_RE =
-  /^(amazon|flipkart|myntra|meesho|snapdeal|shopclues|ebay|walmart|aliexpress|alibaba|etsy|jiomart|olx|quikr|indiamart|tradeindia|exportersindia|justdial|dhgate|wish|rakuten)\b/i;
+  /^(amazon|flipkart|myntra|meesho|snapdeal|shopclues|ebay|walmart|aliexpress|alibaba|etsy|jiomart|olx|quikr|indiamart|tradeindia|exportersindia|justdial|dhgate|wish|rakuten|mercado ?libre|mercado ?livre|allegro|bol\.com|zalando|otto|cdiscount|coupang|shopee|lazada|tokopedia|noon|jumia|takealot|temu|shein|trendyol|ozon|wildberries|kaufland|daraz|qoo10)\b/i;
 function isMarketplaceName(name) {
   return MARKETPLACE_NAME_RE.test(String(name || "").trim());
 }
@@ -549,6 +609,12 @@ const GENERIC_SPEC_NOUNS = new Set([
   // "**Setup**: 200MP main...", the same spec-sheet-row-label shape as
   // Battery/Charging above) reached a real answer's brand list.
   "setup", "hardware",
+  // Reported on a ChatGPT card answer (0.60.1): "Around" (its bold price
+  // line, "**Around ₹34,999**") and "Triple" ("Triple rear cameras: …", a
+  // bullet's first word) reached the brand list. Price qualifiers and camera
+  // counts head a line the way a one-word brand does.
+  "around", "about", "approx", "approximately", "under", "from", "starting", "only", "just", "upto",
+  "single", "dual", "triple", "quad", "penta",
 ]);
 export function looksLikeProperName(phrase) {
   const words = String(phrase || "").trim().split(/\s+/);
@@ -615,7 +681,24 @@ const PROMPT_STOPWORDS = new Set([
   "recommend", "recommendations", "compare", "buy", "buying", "get", "need",
   "want", "looking", "help", "please", "right", "now", "currently", "available",
   "india", "indian", "usa", "us", "uk", "global", "market", "money", "rs", "inr",
+  // Currencies and markets anywhere (0.69.0): "Best laptops in Brazil" must
+  // not make "Brazil" a brand. Country names come from Intl below.
+  "dollar", "dollars", "euro", "euros", "pound", "pounds", "yen", "yuan", "rupee", "rupees", "real", "reais",
+  "peso", "pesos", "won", "dirham", "dirhams", "riyal", "riyals", "franc", "francs", "krona", "kronor",
+  "krone", "lira", "rand", "naira", "ringgit", "rupiah", "baht", "dong", "zloty", "usd", "eur", "gbp",
+  "europe", "european", "asia", "asian", "africa", "african", "america", "american", "latam", "emea", "apac",
+  "worldwide", "international", "nationwide", "local", "online", "near",
 ]);
+// Every country's English name ("Brazil", "United Kingdom", "Côte d’Ivoire"),
+// one word or the whole name, from the browser's own list.
+try {
+  const dn = new Intl.DisplayNames(["en"], { type: "region", fallback: "none" });
+  const A = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  for (const a of A) for (const b of A) {
+    const n = dn.of(a + b);
+    if (n) PROMPT_STOPWORDS.add(n.toLowerCase());
+  }
+} catch (_) { /* no Intl region names: the fixed words above still apply */ }
 
 /**
  * The subject words a prompt was phrased in, minus question scaffolding and
@@ -671,7 +754,7 @@ export function namedInProse(text, name) {
   const n = String(name || "").trim();
   if (!t || !n) return false;
   const wanted = n.split(/\s+/);
-  const re = new RegExp(`\\b${escapeRegExp(n)}\\b`, "gi");
+  const re = wordRe(n, "gi");
   let m;
   while ((m = re.exec(t))) {
     const lineStart = t.lastIndexOf("\n", Math.max(0, m.index - 1)) + 1;
@@ -873,7 +956,27 @@ function isEditorialOrReviewDomain(domain) {
   return false;
 }
 
+// A cited site's name counts as a mention only where the answer writes it as
+// a name: "Booking.com" or "Booking", not "the current booking listings";
+// "Hotels.com", not "budget hotels". Any capital letter will do ("boAt").
+function writtenAsName(text, h) {
+  const word = text.slice(h.start, h.end);
+  if (/[A-Z0-9]/.test(word) || /[^\x00-\x7F]/.test(word)) return true;
+  return /^\.(com|in|co|net|org|io|ai|app)\b/i.test(text.slice(h.end, h.end + 6));
+}
+
+// Places people stay, eat, shop or are treated at. A name with one of these
+// in it is kept whole; the word alone is only the category.
+const VENUE_WORD_RE = /\b(hotels?|hostels?|inns?|guest ?houses?|resorts?|home ?stays?|lodges?|motels?|villas?|cottages?|camps?|retreats?|residency|suites|b&b|bnb|cafes?|café|restaurants?|dhaba|bakery|bistro|pub|clinics?|hospitals?|schools?|colleges?|academy|institute|salon|spa|gym|studio|stores?|mart|showroom|jewell?ers?|pharmacy)\b/i;
+const GENERIC_VENUE_RE = /^(the\s+)?(hotels?|hostels?|inns?|guest ?houses?|resorts?|home ?stays?|lodges?|motels?|cafes?|restaurants?|clinics?|hospitals?|stores?|stays?)$/i;
+
+// Markdown links keep their text: "**[Hotel Summit 9](https://…)**" is the
+// name Hotel Summit 9 in bold, not a 120-character label with a URL in it.
+const unlinkMarkdown = (s) => String(s || "").replace(/\[([^\]\n]+)\]\((?:https?:\/\/|www\.)[^)\s]*\)/g, "$1");
+
 export function detectBrands(answerText, plainText, ctx = {}) {
+  answerText = answerText ? unlinkMarkdown(answerText) : answerText;
+  plainText = plainText ? unlinkMarkdown(plainText) : plainText;
   const text = plainText || answerText || "";
   if (!text) return { brands: [], entities: [] };
 
@@ -910,6 +1013,11 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     if (!n || n.length < 2 || n.length > cap) return;
     if (isNoise(n) || isNoise(n.split(/\s+/)[0])) return;
     if (trust !== "trusted" && isComponentOrChip(n)) return;
+    // A name read off the answer's layout is written as a name: "near",
+    // "hotels" and "the jetty" are table fragments, not brands.
+    if (trust === "structural" && /^[a-z][a-z\s'’.-]*$/.test(n)) return;
+    // "Hotel" on its own is the category, never the business.
+    if (trust !== "trusted" && GENERIC_VENUE_RE.test(n)) return;
     const k = n.toLowerCase();
     const prev = candidates.get(k);
     const keepWhole = trust === "trusted";
@@ -998,6 +1106,9 @@ export function detectBrands(answerText, plainText, ctx = {}) {
       // in every table whose products the prose never re-narrates.
       const needsProse = weak;
       if (looksLikeProperName(part)) { addCand(part, null, null, "structural", false, weak, needsProse); continue; }
+      // A venue is named whole: "Trekkers Hostel 12" and "Hotel Summit 9"
+      // are businesses, not the maker "Trekkers" plus a model number.
+      if (VENUE_WORD_RE.test(part) && /[A-Z]/.test(part)) { addCand(part, null, null, "structural", false, weak, needsProse); continue; }
       const hasDigit = /\d/.test(part);
       // vendorFromProductName only makes sense on a multi-word phrase — it
       // extracts the LEADING token of a longer name ("Vivo V70" → "Vivo"). On
@@ -1099,8 +1210,8 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     const hits = isDomain
       ? matchCompressedLabel(text, cand.name).filter(
           (h) => !claimed.some(([cs, ce]) => h.start >= cs && h.end <= ce)
-        )
-      : [...text.matchAll(new RegExp(`\\b${escapeRegExp(cand.name)}\\b`, "gi"))]
+        ).filter((h) => writtenAsName(text, h))
+      : [...text.matchAll(wordRe(cand.name, "gi"))]
           .map((m) => ({ start: m.index, end: m.index + cand.name.length }))
           .filter((h) => !claimed.some(([cs, ce]) => h.start >= cs && h.end <= ce));
     // A cited domain whose every mention reads as an attribution is the

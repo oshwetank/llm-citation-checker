@@ -9,7 +9,7 @@
  */
 
 const DB_NAME = "lcfc";
-const DB_VERSION = 5;
+const DB_VERSION = 8;
 
 let dbPromise = null;
 
@@ -68,6 +68,45 @@ function openDb() {
         er.createIndex("at", "at", { unique: false });
         er.createIndex("where", "where", { unique: false });
       }
+      // v6: the error log became the one unified diagnostics log — entries
+      // now carry a `kind` ("error" | "capture" | "turn", folding in what
+      // used to be the separate in-memory DEBUG ring buffer plus per-turn
+      // outcome history) and a `runId` so a campaign export can pull every
+      // entry for its runs in one indexed query instead of a full scan.
+      // The store already exists for any install that ran v5, so this adds
+      // the index onto it rather than recreating it — `contains` above only
+      // covers a fresh install.
+      {
+        const er = e.target.transaction.objectStore("errors");
+        if (!er.indexNames.contains("runId")) {
+          er.createIndex("runId", "context.runId", { unique: false });
+        }
+      }
+      // v7: the cited pages read on this computer (0.62.0, "Read the cited
+      // pages"), one row per address: its readable text, when and how it was
+      // read. Kept apart from the records so a reprocess re-matches brands
+      // against the same text without fetching anything again.
+      if (!db.objectStoreNames.contains("pages")) {
+        const pg = db.createObjectStore("pages", { keyPath: "url" });
+        pg.createIndex("fetchedAt", "fetchedAt", { unique: false });
+      }
+      // Also v7: what ChatGPT loaded after an answer (a product card's stores,
+      // 0.62.0), one row per reply, tied to the capture it followed.
+      if (!db.objectStoreNames.contains("interactions")) {
+        const it = db.createObjectStore("interactions", { keyPath: "id" });
+        it.createIndex("captureId", "captureId", { unique: false });
+      }
+      // v8 (0.70.0): the built-in AI's checks, keyed by the answer's text,
+      // the model and the prompt version, so a duplicate answer is checked
+      // once and a reprocess never runs the model again; and the answers
+      // waiting for a check, so a browser restart loses none.
+      if (!db.objectStoreNames.contains("ai")) {
+        const ai = db.createObjectStore("ai", { keyPath: "key" });
+        ai.createIndex("captureId", "captureId", { unique: false });
+      }
+      if (!db.objectStoreNames.contains("aiQueue")) {
+        db.createObjectStore("aiQueue", { keyPath: "captureId" });
+      }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -106,6 +145,10 @@ export const db = {
   },
   getAll(store) {
     return tx(store, "readonly", (os) => reqToPromise(os.getAll()));
+  },
+  // Every row whose index `index` equals `value` (e.g. a capture's interactions).
+  getAllByIndex(store, index, value) {
+    return tx(store, "readonly", (os) => reqToPromise(os.index(index).getAll(value)));
   },
   getAllKeys(store) {
     return tx(store, "readonly", (os) => reqToPromise(os.getAllKeys()));
@@ -155,6 +198,21 @@ export const db = {
         };
         req.onerror = () => reject(req.error);
       });
+    });
+  },
+
+  // Records captured between two times, via the capturedAt index. Used to
+  // find other copies of the same answer (lib/sameAnswer.js) without loading
+  // the whole store.
+  getByTimeRange(store, from, to) {
+    return tx(store, "readonly", (os) => {
+      let idx;
+      try {
+        idx = os.index("capturedAt");
+      } catch (_) {
+        return Promise.resolve([]);
+      }
+      return reqToPromise(idx.getAll(IDBKeyRange.bound(from, to)));
     });
   },
 

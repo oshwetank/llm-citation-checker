@@ -247,7 +247,9 @@ try {
   await page.waitForTimeout(3000);
   drain();
 
-  const TABS = ["analyze", "dashboard", "loader", "compare", "about"];
+  // Compare left the top menu in 0.47.0 (it opens from an answer instead);
+  // compare-tab.test.mjs renders it that way.
+  const TABS = ["analyze", "dashboard", "loader", "ask", "about"];
   /* The interactive surface each tab MUST have once data exists.
    *
    * Without this, a tab that silently rendered its empty state satisfied
@@ -258,9 +260,12 @@ try {
    */
   const MIN_CONTROLS = {
     analyze: { buttons: 6, selects: 0 },
-    dashboard: { buttons: 4, selects: 2 },
+    // Since 0.49.0 the period is a row of buttons and Sort the one select.
+    dashboard: { buttons: 12, selects: 1 },
     loader: { buttons: 3, selects: 0 },
     compare: { buttons: 0, selects: 3 },
+    // Ask with the built-in AI off: the setup button (ask-ui covers the chat).
+    ask: { buttons: 1, selects: 0 },
     about: { buttons: 2, selects: 0 },
   };
   console.log("\nEvery tab renders with content and without throwing");
@@ -313,11 +318,14 @@ try {
     const selects = await page.evaluate((t) => {
       const root = document.getElementById(t);
       return [...root.querySelectorAll("select")].map((s, i) => ({
-        i, id: s.id || `(select ${i})`, options: s.options.length,
+        i, id: s.id || `(select ${i})`, options: s.options.length, reloads: s.dataset.reloads === "1",
       }));
     }, tab);
     for (const s of selects) {
       if (s.options < 2) continue;
+      // The interface language reloads the page by design (0.71.0); it has
+      // its own test (i18n-ui).
+      if (s.reloads) continue;
       const res = await page.evaluate(async ({ t, i }) => {
         const root = document.getElementById(t);
         const sel = [...root.querySelectorAll("select")][i];
@@ -363,8 +371,8 @@ try {
   /* The path a user actually takes: Dashboard -> click a saved conversation ->
    * Analyze opens on that capture. The first cut looked for `tbody tr`, found
    * zero, and reported "clicked 0 without error" — a green line for a
-   * drilldown that was never tested. Saved conversations are .capture-prompt
-   * divs with an onclick, so that is what gets clicked.
+   * drilldown that was never tested. Since 0.49.0 each Dashboard row's prompt
+   * is a .db-prompt button, so that is what gets clicked.
    */
   console.log("\nDrilldowns open without throwing");
   await page.reload();
@@ -374,14 +382,14 @@ try {
   await page.waitForTimeout(1800);
 
   const rowCount = await page.evaluate(() =>
-    document.getElementById("dashboard").querySelectorAll(".capture-prompt").length);
-  check("the dashboard lists saved conversations to drill into", rowCount > 0, `${rowCount} rows`);
+    document.getElementById("dashboard").querySelectorAll(".db-prompt").length);
+  check("the dashboard lists prompts to drill into", rowCount > 0, `${rowCount} rows`);
 
   for (let i = 0; i < Math.min(rowCount, 3); i++) {
     const opened = await page.evaluate(async (idx) => {
       document.querySelector('[data-tab="dashboard"]')?.click();
       await new Promise((r) => setTimeout(r, 500));
-      const rows = [...document.getElementById("dashboard").querySelectorAll(".capture-prompt")];
+      const rows = [...document.getElementById("dashboard").querySelectorAll(".db-prompt")];
       if (!rows[idx]) return { clicked: false };
       const label = rows[idx].innerText.trim().slice(0, 40);
       rows[idx].click();
@@ -394,23 +402,38 @@ try {
       };
     }, i);
     const errs = drain();
-    check(`opening saved conversation ${i + 1} lands on a populated Analyze`,
+    check(`opening Dashboard prompt ${i + 1} lands on a populated Analyze`,
       opened.clicked && opened.onAnalyze && opened.len > 200 && errs.length === 0,
       `${JSON.stringify(opened).slice(0, 180)} errors=${errs.join(" | ")}`);
   }
 
-  // Brand and URL drilldown modals, reached from the campaign view.
-  console.log("\nCampaign brand/URL drilldown modals open and close");
-  for (const sel of [".brand-name-link", ".geo-brand-row", ".url-row-link", ".geo-url-row"]) {
+  // Brand and source drill-downs, reached from the campaign's results board
+  // in Campaigns (0.50.0): a brand opens its detail in place of the board, a
+  // domain opens a modal.
+  console.log("\nCampaign brand/source drill-downs open and close");
+  await page.evaluate(() => document.querySelector('[data-tab="loader"]')?.click());
+  await page.waitForTimeout(2500);
+  drain();
+  check("the campaign's results show in Campaigns", await page.evaluate(() => !!document.querySelector("#loader #campaignResults #cv-overview")));
+  // 0.64.0's board: a rival, the full comparison, a domain, a citation row,
+  // the citations' engine switch and a prompt.
+  // 0.67.0: each behind its section's tab, opened first; and the tabs
+  // themselves.
+  for (const sel of ["#cv-brands .cb-brand-btn", "#cv-compare .cv-more", "#cv-compare .cv-chip", "#cb-sources td.td-domain button", "#cv-sources .cv-doms .cv-link", "#cv-citations .cv-rowbtn", "#cv-citations .cv-seg button:nth-child(2)", "#cv-prompts .cv-ptoggle", "#cv-signals .loader-history-row"]) {
+    const sec = sel.startsWith("#cb-sources") ? "cv-sources" : sel.slice(1).split(" ")[0];
+    await page.evaluate(async (id) => { document.querySelector(`.cv-tab[data-section="${id}"]`)?.click(); await new Promise((r) => setTimeout(r, 1200)); }, sec);
     const found = await page.evaluate((s) => document.querySelectorAll(s).length, sel);
+    check(`${sel} is there`, found > 0);
     if (!found) continue;
     await page.evaluate(async (s) => {
       const n = document.querySelector(s);
-      if (n) { n.click(); await new Promise((r) => setTimeout(r, 1200)); }
-      document.querySelector(".modal-backdrop, .backdrop")?.remove();
+      if (n) { n.click(); await new Promise((r) => setTimeout(r, 1500)); }
+      document.querySelector(".modal-backdrop, .backdrop, #url-modal-backdrop")?.remove();
+      const back = document.querySelector(".cb-detail-head .analyze-context-back");
+      if (back) { back.click(); await new Promise((r) => setTimeout(r, 1500)); }
     }, sel);
     const errs = drain();
-    check(`${sel} drilldown opens cleanly`, errs.length === 0, errs.join(" | "));
+    check(`${sel} opens cleanly`, errs.length === 0, errs.join(" | "));
   }
 
   /* ---------- 5. exports ---------- */

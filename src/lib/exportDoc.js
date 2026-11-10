@@ -46,6 +46,11 @@ import { normalizeMentions } from "./mention-list.js";
 const PLACEHOLDER_OPEN = "⟦P";
 const PLACEHOLDER_CLOSE = "⟧";
 const PLACEHOLDER_RE = /⟦P(\d+)⟧/g;
+const LINK_OPEN = "⟦L";
+const LINK_RE = /⟦L(\d+)⟧/g;
+// [label](http(s)://address), one level of parentheses allowed inside the
+// address (Wikipedia's "…_(disambiguation)").
+const MD_LINK_RE = /\[([^\[\]\n]{1,300})\]\((https?:\/\/[^\s()]+(?:\([^\s()]*\)[^\s()]*)*)\)/g;
 
 // Display name per engine. Kept in one place so a new engine can never again
 // inherit another engine's label by default — see the note on `model` in
@@ -102,6 +107,19 @@ function fmtDate(ts) {
  */
 function markdownToHtml(raw, placeholders) {
   let text = esc(raw).replace(/\r\n?/g, "\n");
+  // Links, "[Hotel Pinecrest](https://www.google.com/travel/…)": Gemini links
+  // every hotel it names. Left as text they printed as the bracket, the name
+  // and a 200-character address, which is not the answer as it was shown
+  // (reported: "the format in which the answer came, it was not captured").
+  // Only http(s) addresses become links; the text is already escaped, so
+  // neither part can open a tag or leave the attribute. Each link is set
+  // aside before the emphasis passes, which would otherwise read the "_" and
+  // "*" inside an address as markup.
+  const links = [];
+  text = text.replace(MD_LINK_RE, (_, label, url) => {
+    links.push(`<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`);
+    return `${LINK_OPEN}${links.length - 1}${PLACEHOLDER_CLOSE}`;
+  });
   text = text.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
   text = text.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");
   // Underscore emphasis (ChatGPT sometimes uses _x_ instead of *x*) — require a
@@ -217,6 +235,7 @@ function markdownToHtml(raw, placeholders) {
   flushPara();
 
   let html = blocks.join("\n");
+  if (links.length) html = html.replace(LINK_RE, (_, n) => links[Number(n)] ?? "");
   if (placeholders && placeholders.length) {
     html = html.replace(PLACEHOLDER_RE, (_, n) => placeholders[Number(n)] ?? "");
   }
@@ -244,6 +263,79 @@ function renderChatGptAnswer(record) {
     placeholders.push(html);
     return tok;
   };
+
+  // One piece of answer text to markdown-ready raw, with its citations
+  // numbered in the same footnote list as the rest of the answer.
+  const convert = (text) => {
+    let out = "";
+    for (const seg of tokenizeAnswerMarkup(text || "")) {
+      if (seg.type === "text") out += seg.value;
+      else if (seg.type === "entity" || seg.type === "product") out += place(`<strong>${esc(seg.name)}</strong>`);
+      else if (seg.type === "cite") out += citeHtml(seg.ids);
+    }
+    return out;
+  };
+  const citeHtml = (ids) => {
+    const nums = [];
+    for (const id of ids) {
+      const src = markerToSource.get(id);
+      if (!src) { unresolvedCitations = true; continue; }
+      let n = footnoteBySourceUrl.get(src.url);
+      if (!n) {
+        n = footnotes.length + 1;
+        footnoteBySourceUrl.set(src.url, n);
+        footnotes.push({ n, source: src });
+      }
+      if (!nums.includes(n)) nums.push(n);
+    }
+    return nums.length ? place(nums.map((n) => `<sup class="fn"><a href="#fn-${record.captureId}-${n}">[${n}]</a></sup>`).join("")) : "";
+  };
+
+  // A generative-UI answer (lib/genui.js, 0.60.2) is drawn as ChatGPT drew
+  // it: text, then cards with the picture on the left, a badge, the product
+  // name, its titles and notes, then the form with ChatGPT's own choices
+  // selected. Reported: the answer "as ChatGPT showed it" was a column of
+  // plain text, nothing like the page.
+  const blocks = record.platformSpecific && Array.isArray(record.platformSpecific.genUiBlocks) ? record.platformSpecific.genUiBlocks : null;
+  if (blocks && blocks.length) {
+    // One line of a card. A leading "2. " would be read as a list and
+    // renumbered "1.", so the space after the number is kept from the
+    // list pass with a zero-width joiner.
+    const line = (t) => markdownToHtml(convert(String(t).replace(/^(\d+\.)\s+/, "$1\u200d ")), placeholders).replace(/^<p>([\s\S]*)<\/p>$/, "$1").replace(/\u200d /g, " ");
+    const html = blocks.map((b) => {
+      if (b.type === "md") return markdownToHtml(convert(b.text), placeholders);
+      if (b.type === "card") {
+        const pic = b.image && /^https:\/\//.test(b.image.url)
+          ? `<div class="gu-pic"><img src="${esc(b.image.url)}" alt="${escText(b.name || "")}" loading="lazy" referrerpolicy="no-referrer"></div>`
+          : `<div class="gu-pic gu-pic-none"></div>`;
+        // Bullets that follow each other are one list, as on the page.
+        const merged = [];
+        (b.parts || []).forEach((p) => {
+          const prev = merged[merged.length - 1];
+          if (p.kind === "md" && /^[-*]\s+/.test(p.text) && prev && prev.kind === "md" && /^[-*]\s+/.test(prev.text)) prev.text += "\n" + p.text;
+          else merged.push({ ...p });
+        });
+        const parts = merged.map((p) => {
+          if (p.kind === "badge") return `<span class="gu-badge${p.tone ? ` tone-${esc(p.tone)}` : ""}">${line(p.text)}</span>`;
+          if (p.kind === "name") return `<div class="gu-name">${line(p.text)}</div>`;
+          if (p.kind === "title") return `<div class="gu-title gu-${esc(p.size || "md")}">${line(p.text)}</div>`;
+          if (p.kind === "text") return `<div class="gu-text${p.size === "sm" ? " gu-sm" : ""}${p.tone ? ` tone-${esc(p.tone)}` : ""}">${line(p.text)}</div>`;
+          return markdownToHtml(convert(p.text), placeholders);
+        }).join("");
+        return `<div class="gu-card">${pic}<div class="gu-body">${parts}</div></div>`;
+      }
+      if (b.type === "form") {
+        const groups = (b.groups || []).map((g) =>
+          (g.label ? `<div class="gu-q">${escText(g.label)}</div>` : "") +
+          g.options.map((o) => `<div class="gu-opt${o === g.selected ? " on" : ""}"><span class="gu-radio" aria-hidden="true"></span>${escText(o)}</div>`).join("")).join('<div class="gu-sep"></div>');
+        const checks = (b.checks || []).map((c) => `<div class="gu-opt gu-check${c.checked ? " on" : ""}"><span class="gu-box" aria-hidden="true"></span>${escText(c.label)}</div>`).join("");
+        const btn = b.button ? `<div class="gu-btn">${escText(b.button)}</div>` : "";
+        return `<div class="gu-form" role="group" aria-label="The follow-up form ChatGPT showed">${groups}${checks}${btn}</div>`;
+      }
+      return "";
+    }).join("\n");
+    return { bodyHtml: html, footnotes, unresolvedCitations };
+  }
 
   for (const seg of segs) {
     if (seg.type === "text") {
@@ -668,7 +760,14 @@ function renderBrandsSection(model) {
       return `<li><span class="ord">${esc(ord)}</span><strong>${escText(b.brand)}</strong> <span class="muted">— ${badge}</span>${models}</li>`;
     })
     .join("\n");
-  return `<h3>Brand mentions <span class="muted">(in order of first appearance)</span></h3><ul class="brand-list">${rows}</ul>`;
+  // Explicitly scoped: this is every brand the engine named, ranked by where
+  // each first appears — NOT the campaign's own "avg position" metric, which
+  // ranks only the brands you're actually tracking against each other. The
+  // same brand can legitimately read #4 here (fourth brand named overall)
+  // and #1 on a Dashboard campaign card (first among just your tracked
+  // competitors) — two different, both-correct questions, easy to conflate
+  // without this line making the scope explicit.
+  return `<h3>Brand mentions <span class="muted">(every brand named, in order of first appearance)</span></h3><p class="muted small">Ranked against every brand the engine named in this answer — not just the brands you track. See Campaign metrics for your rank among your own tracked competitors.</p><ul class="brand-list">${rows}</ul>`;
 }
 
 // A broken/expired external image degrades to just hiding the <img> (via
@@ -803,6 +902,28 @@ const DOC_STYLE = `
   .answer table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13.5px; }
   .answer th, .answer td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; vertical-align: top; }
   .answer th { background: #f5f5f5; }
+  .gu-card { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 14px; align-items: start; padding: 14px 0; break-inside: avoid; }
+  .gu-card + .gu-card { border-top: 1px solid var(--line-soft, rgba(127,127,127,.22)); }
+  .gu-pic { width: 96px; aspect-ratio: 3 / 4; border-radius: 12px; overflow: hidden; background: var(--bg-subtle, rgba(127,127,127,.12)); border: 1px solid var(--line-soft, rgba(127,127,127,.18)); }
+  .gu-pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .gu-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .gu-body p { margin: 0; }
+  .gu-badge { align-self: flex-start; padding: 1px 8px; border-radius: 6px; font-size: 0.82em; font-weight: 500; background: var(--bg-subtle, rgba(127,127,127,.14)); }
+  .gu-badge.tone-success { background: var(--green-bg, #e3f5e9); color: var(--green-fg, #17663a); }
+  .gu-name { font-weight: 500; text-decoration: underline; text-decoration-color: var(--line-soft, rgba(127,127,127,.5)); text-underline-offset: 3px; }
+  .gu-title.gu-lg { font-size: 1.15em; font-weight: 600; }
+  .gu-title.gu-md { font-weight: 600; }
+  .gu-text.gu-sm { font-size: 0.86em; }
+  .gu-text.tone-secondary { color: var(--fg-secondary, #6b7280); }
+  .gu-form { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 12px; padding: 12px 14px; border: 1px solid var(--line-soft, rgba(127,127,127,.25)); border-radius: 14px; break-inside: avoid; }
+  .gu-q { font-weight: 600; margin-top: 2px; }
+  .gu-sep { height: 1px; margin: 6px 0; background: var(--line-soft, rgba(127,127,127,.2)); }
+  .gu-opt { display: flex; align-items: center; gap: 10px; }
+  .gu-radio, .gu-box { flex: 0 0 auto; width: 16px; height: 16px; border: 1.5px solid var(--fg-secondary, #9ca3af); border-radius: 50%; }
+  .gu-box { border-radius: 4px; }
+  .gu-opt.on .gu-radio { border: 5px solid var(--fg, #111); }
+  .gu-opt.on .gu-box { background: var(--fg, #111); border-color: var(--fg, #111); }
+  .gu-btn { margin-top: 8px; padding: 8px 14px; border-radius: 999px; text-align: center; font-weight: 600; background: var(--fg, #111); color: var(--bg, #fff); }
   .answer ul, .answer ol { margin: 0 0 12px; padding-left: 22px; }
   tr { break-inside: avoid; } /* don't split a table row across a page boundary */
   .fn a { text-decoration: none; color: #0b5fff; font-size: 0.75em; }

@@ -90,7 +90,8 @@ console.log("\nonboarding: wiring");
   check("clearing removes only demo rows", /filter\(isDemoRecord\)/.test(clearBlock));
   check("clearing never clears the whole store", !/db\.clear\(/.test(clearBlock));
 
-  check("the tour exists and is replayable", /function runTour/.test(panel) && /replayTour/.test(panel));
+  // 0.81.0: the guide is a page of its own (ui/welcome.html), re-opened from About.
+  check("the guide exists and can be opened again", /welcome\.html/.test(panel) && /replayTour/.test(panel));
   check("first-run runs once, guarded by a persisted flag", /TOUR_SEEN_KEY/.test(panel));
   check("sample data is shown with a visible banner", /demo-banner/.test(panel));
   check("About exposes load/remove and replay controls",

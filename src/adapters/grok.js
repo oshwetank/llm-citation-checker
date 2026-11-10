@@ -15,7 +15,7 @@ import { makeRecord, makeSource } from "../schema.js";
 import { isHttpUrl, domainOf, stripCiteMarkers } from "../lib/deep.js";
 import { detectBrands } from "../lib/brands.js";
 
-export const ADAPTER_VERSION = "grok@0.2.0";
+export const ADAPTER_VERSION = "grok@0.3.0";
 
 function parseFrames(raw) {
   if (!raw || typeof raw !== "string") return [];
@@ -48,6 +48,165 @@ function parseFrames(raw) {
     } catch (_) {}
   }
   return nodes;
+}
+
+/* grok.com's WebSocket gateway (wss://grok.com/ws/mgw/).
+ *
+ * grok.com moved its web text chat off the REST stream this adapter was
+ * written for (rest/app-chat/conversations/new) onto a WebSocket gateway. Two
+ * independent open-source bridges for authenticated grok.com sessions
+ * document it: anojndr/grok.com-to-openai (grok_gateway.py) and the
+ * "Align Grok web chat with grok2api Gateway websocket" change in
+ * stabey/Aether-upstream-fork ("REST conversations/new is no longer used for
+ * text chat"). Every frame is an envelope {session_id?, event: {type, ...}}:
+ *
+ *   sent:     conversation.item.create  item.x_grok.input_chunks[].text.text
+ *             response.create
+ *   received: response.chunk            chunk.text.{text, channel}
+ *             response.output_text.delta / response.reasoning_text.delta
+ *             response.grok.output      output.{tool_usage_card, stream_error}
+ *             response.search.result    result.{web_results|webpages|results}
+ *             response.done             response.status
+ *
+ * None of that has a top-level message/token field, so every gateway capture
+ * read as empty and was dropped as "0-signal" — Grok recorded nothing at all
+ * in any campaign. The frames are folded into ONE node in the REST shape the
+ * rest of this file already reads (message, cardAttachmentsJson,
+ * webSearchResults, queries), so answer text, citation markers, sources and
+ * fan-out all go through the same, already-tested code as before.
+ */
+const GW_RESULT_KEYS = ["web_results", "webSearch_results", "webpages", "results"];
+const GW_WEB_SEARCH_KEYS = ["webpages", "results", "web_results"];
+const GW_TOOL_KEYS = ["web_search_results", "web_results", "webpages", "results"];
+
+const isGatewayFrame = (n) =>
+  !!(n && typeof n === "object" && n.event && typeof n.event === "object" && typeof n.event.type === "string");
+
+// The prompt text of a conversation.item.create (the frame the page SENT),
+// or of the server's echo of it. Chunks are concatenated in order; a
+// file-mention chunk has no text and contributes nothing.
+function gatewayItemText(item) {
+  if (!item || typeof item !== "object") return "";
+  const chunks = item.x_grok && item.x_grok.input_chunks;
+  if (Array.isArray(chunks)) {
+    return chunks.map((c) => (c && c.text && typeof c.text.text === "string" ? c.text.text : "")).join("").trim();
+  }
+  if (Array.isArray(item.content)) {
+    return item.content.map((c) => (c && typeof c.text === "string" ? c.text : "")).join("").trim();
+  }
+  return "";
+}
+
+function gatewayPrompt(reqBody, frames) {
+  if (reqBody && typeof reqBody === "string") {
+    try {
+      const p = JSON.parse(reqBody);
+      const text = gatewayItemText(p && p.event && p.event.item);
+      if (text) return text;
+    } catch (_) {}
+  }
+  for (const f of frames) {
+    const ev = f.event;
+    if (ev.type === "conversation.item.added" && ev.item && ev.item.role === "user") {
+      const text = gatewayItemText(ev.item);
+      if (text) return text;
+    }
+  }
+  return "";
+}
+
+function gatewayCardQuery(card) {
+  const ws = card && typeof card === "object" && card.web_search;
+  if (!ws || typeof ws !== "object") return null;
+  const q = ws.args && typeof ws.args.query === "string" ? ws.args.query : ws.query;
+  return typeof q === "string" && q.trim() ? q.trim() : null;
+}
+
+function readGateway(nodes, reqBody) {
+  const frames = nodes.filter(isGatewayFrame);
+  if (!frames.length) return null;
+
+  const chunkText = [];
+  const deltaText = [];
+  const thoughts = [];
+  const queries = [];
+  const cards = [];
+  const results = [];
+  let status = null;
+  let error = null;
+  let model = null;
+
+  const addList = (list, sink) => {
+    if (!Array.isArray(list)) return;
+    for (const it of list) if (it && typeof it === "object" && typeof it.url === "string") sink.push(it);
+  };
+  // Where the bridges find citations: the envelope, its event, and each of
+  // those's output/chunk — card attachments (the inline citation cards the
+  // answer's <grok:render> tags point at), search results, and tool results.
+  const scan = (c) => {
+    if (!c || typeof c !== "object") return;
+    if (c.card_attachment && typeof c.card_attachment === "object") addList([c.card_attachment], cards);
+    if (c.result && typeof c.result === "object") for (const k of GW_RESULT_KEYS) addList(c.result[k], results);
+    const tr = c.tool_result;
+    if (tr && typeof tr === "object") {
+      if (tr.web_search && typeof tr.web_search === "object") for (const k of GW_WEB_SEARCH_KEYS) addList(tr.web_search[k], results);
+      for (const k of GW_TOOL_KEYS) addList(tr[k], results);
+    }
+  };
+
+  for (const f of frames) {
+    const ev = f.event;
+    for (const c of [f, f.output, f.chunk, ev, ev.output, ev.chunk]) scan(c);
+    for (const holder of [ev.chunk, ev.output]) {
+      const q = holder && gatewayCardQuery(holder.tool_usage_card);
+      if (q) queries.push(q);
+    }
+    if (ev.type === "response.chunk") {
+      const info = (ev.chunk && ev.chunk.text) || {};
+      const value = typeof info.text === "string" ? info.text : "";
+      const channel = String(info.channel || "");
+      if (!value || channel.includes("NOTETAKER_HEADER")) continue; // title chrome, not answer
+      if (channel.includes("THINKING") || channel.includes("NOTETAKER")) thoughts.push(value);
+      else chunkText.push(value);
+    } else if (ev.type === "response.output_text.delta") {
+      if (typeof ev.delta === "string") deltaText.push(ev.delta);
+    } else if (ev.type === "response.reasoning_text.delta") {
+      if (typeof ev.delta === "string") thoughts.push(ev.delta);
+    } else if (ev.type === "response.grok.output") {
+      const se = ev.output && ev.output.stream_error;
+      if (se && typeof se === "object") error = String(se.kind || se.message || "stream_error").slice(0, 60);
+    } else if (ev.type === "response.done") {
+      const r = ev.response || {};
+      status = typeof r.status === "string" ? r.status : "completed";
+      if (typeof r.model === "string" && r.model) model = r.model;
+    } else if (ev.type === "error") {
+      const e = ev.error || {};
+      error = String(e.code || e.type || e.message || "error").slice(0, 60);
+    } else if (ev.type === "session.created" && ev.session && typeof ev.session.model === "string") {
+      model = model || ev.session.model;
+    }
+  }
+
+  // The chunk and delta channels carry the same answer on different gateway
+  // builds; the bridge that reads both would double the text if a build ever
+  // sent both, so one is used — chunks when there are any.
+  const message = (chunkText.length ? chunkText : deltaText).join("");
+  const node = {
+    sender: "assistant",
+    message,
+    cardAttachmentsJson: cards,
+    webSearchResults: results,
+    queries,
+  };
+  if (model) node.model = model;
+  if (thoughts.length) node.thought = thoughts.join("");
+  return {
+    node,
+    prompt: gatewayPrompt(reqBody, frames),
+    status,
+    error,
+    eventTypes: [...new Set(frames.map((f) => f.event.type))].slice(0, 12),
+  };
 }
 
 function extractPrompt(reqBody, nodes) {
@@ -314,9 +473,34 @@ function extractFanoutAndThoughts(nodes) {
   return { search, thoughts };
 }
 
+/* A copy content-iso.js read off the page's text (harvestSource "dom").
+ * Until 0.62.1 grok.com's user message carried a hidden "You" label that the
+ * reader took as part of the prompt ("Youbest good quality…"), and the answer
+ * opened with Grok's own "## Grok / Worked for 19s" lines. Copies made since
+ * are cleaned at the source and say so (promptClean); older ones are cleaned
+ * here, so a reprocess repairs what's already stored. */
+const GROK_UI_LINE = /^(?:#{1,3}\s*)?(?:Grok|(?:Worked|Thought|Thinking) for \d+(?:\.\d+)?\s*s(?:econds?)?)\s*$/i;
+export function cleanPageCopy({ prompt, answer, promptClean }) {
+  let p = String(prompt || "").trim();
+  if (!promptClean) p = p.replace(/^You(?=\S)/, "").trim();
+  const lines = String(answer || "").split("\n");
+  while (lines.length && (!lines[0].trim() || GROK_UI_LINE.test(lines[0].trim()))) lines.shift();
+  return { prompt: p, answer: lines.join("\n").trim() };
+}
+
 export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, options = {}) {
-  const nodes = parseFrames(raw);
-  const userPrompt = extractPrompt(reqBody, nodes);
+  const frames = parseFrames(raw);
+  const gateway = readGateway(frames, reqBody);
+  // A gateway capture is read through its folded node alone: the raw
+  // envelopes carry nothing the REST readers below understand.
+  const nodes = gateway ? [gateway.node] : frames;
+  const pageCopy = !gateway && frames.length === 1 && frames[0] && frames[0].harvestSource === "dom";
+  if (pageCopy) {
+    const c = cleanPageCopy({ prompt: frames[0].query, answer: frames[0].text, promptClean: frames[0].promptClean });
+    nodes[0] = { ...frames[0], query: c.prompt, text: c.answer };
+    reqBody = JSON.stringify({ query: c.prompt });
+  }
+  const userPrompt = (gateway && gateway.prompt) || extractPrompt(reqBody, nodes);
   // Converted to [[cite:URL]] here, in the STORED answerText — not just a
   // detection-only copy — matching how Perplexity's own <grok:render>
   // equivalent already works: content-iso.js's DOM harvester writes
@@ -360,6 +544,11 @@ export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, op
       adapterVersion: ADAPTER_VERSION,
       socialCitations,
       thoughts: thoughts.length ? thoughts : undefined,
+      transport: gateway ? "gateway" : pageCopy ? "page" : "rest",
+      pageCopy: pageCopy || undefined,
+      gatewayStatus: gateway ? gateway.status : undefined,
+      gatewayError: gateway && gateway.error ? gateway.error : undefined,
+      gatewayEvents: gateway ? gateway.eventTypes : undefined,
     },
   });
 }

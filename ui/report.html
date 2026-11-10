@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CitoSkeleton report</title>
+    <!-- The PDF reports (0.53.0). Opened from the export dialog (a campaign's
+         run) or from Analyze (one answer); the browser prints it and "Save
+         as PDF" in its print dialog writes the file. No remote fonts or
+         scripts: fonts.css loads the bundled IBM Plex. -->
+    <link rel="stylesheet" href="fonts.css" />
+    <link rel="stylesheet" href="report.css" />
+  </head>
+  <body>
+    <div class="toolbar" id="toolbar" hidden>
+      <span><b id="tbTitle">Report</b> · <span id="tbPages"></span></span>
+      <span class="tb-note">In the print dialog, choose “Save as PDF”.</span>
+      <button type="button" id="printBtn">Print / Save as PDF</button>
+    </div>
+    <div id="pages"><div class="state" id="state">Building the report…</div></div>
+    <script type="module" src="report.js"></script>
+  </body>
+</html>

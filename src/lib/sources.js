@@ -41,6 +41,7 @@ function emptyRow(key, extra = {}) {
     fetched: 0,             // pulled in as a source but never credited
     citedResponses: 0,      // responses citing it at least once — reach
     responses: 0,           // responses where it appeared at all
+    citedRate: 0,           // citedResponses ÷ responses, 0-100
     citedPromptIds: new Set(),
     promptIds: new Set(),
     urls: new Set(),
@@ -131,15 +132,21 @@ export function aggregateSources(promptRuns, promptTextById = new Map()) {
   // Every row carries the denominator it was computed against, so a row
   // handed to a drill-down on its own can still say "5 of 10" rather than
   // just a bare percentage the reader has to take on trust.
-  for (const row of domains.values()) {
+  //
+  // Cited rate is the other reach question: of the answers that pulled this
+  // source in at all, how many credited it. Counted per answer on both sides
+  // — citations count every occurrence and read-only counts pages, so
+  // dividing one by the sum of the two mixes units.
+  const rates = (row) => {
     row.totalResponses = totalResponses;
     row.visibility = totalResponses ? (row.citedResponses / totalResponses) * 100 : 0;
+    row.citedRate = row.responses ? (row.citedResponses / row.responses) * 100 : 0;
+  };
+  for (const row of domains.values()) {
+    rates(row);
     row.urlList = [...row.urls].map((u) => urls.get(u)).filter(Boolean);
   }
-  for (const row of urls.values()) {
-    row.totalResponses = totalResponses;
-    row.visibility = totalResponses ? (row.citedResponses / totalResponses) * 100 : 0;
-  }
+  for (const row of urls.values()) rates(row);
 
   return { domains, urls, totalResponses };
 }

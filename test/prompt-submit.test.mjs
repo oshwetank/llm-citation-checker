@@ -53,33 +53,69 @@ const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] }
 
 // Runs the REAL content-iso.js against a mock page shaped like one engine.
 // The page records every submission it receives so the count can be asserted.
-async function run(html, { gemini = false, waitMs = 9000 } = {}) {
+async function run(html, { gemini = false, grok = false, waitMs = 9000, throttle = false, throttleMs = 60000, workerClock = true, clockMs = 0 } = {}) {
   const page = await browser.newPage();
-  const host = gemini ? "https://gemini.google.com" : "https://chatgpt.com";
+  const host = gemini ? "https://gemini.google.com" : grok ? "https://grok.com" : "https://chatgpt.com";
   await page.route("**/*", (r) => r.fulfill({ status: 200, contentType: "text/html", body: `<body>${html}</body>` }));
   await page.goto(`${host}/mock?q=${encodeURIComponent(PROMPT)}&lcfc=1&lcfctok=T1`);
-  const res = await page.evaluate(async ({ iso, waitMs }) => {
+  const res = await page.evaluate(async ({ iso, waitMs, throttle, throttleMs, workerClock, clockMs }) => {
     const t0 = Date.now();
     window.__t0 = t0;
     const events = [];
-    window.chrome = {
-      runtime: {
-        lastError: null,
-        sendMessage: (m, cb) => { events.push(JSON.parse(JSON.stringify(m))); if (cb) cb({ ok: true }); },
-        onMessage: { addListener() {} },
-      },
-      storage: { local: { get: (_k, cb) => cb && cb({}) } },
+    // Unthrottled timers, kept for the harness itself and for standing in for
+    // the service worker — which is exactly what isn't throttled in reality.
+    const realSetInterval = window.setInterval.bind(window);
+    const realClearInterval = window.clearInterval.bind(window);
+    const realSetTimeout = window.setTimeout.bind(window);
+    if (throttle) {
+      // Chrome's throttling of a hidden page's timers: once a second from the
+      // moment it's hidden, once a MINUTE after five minutes (the default
+      // here). Real browsers can't be made to do this under Playwright, which
+      // keeps every page it drives "visible".
+      window.setInterval = (fn, ms, ...a) => realSetInterval(fn, Math.max(ms || 0, throttleMs), ...a);
+      window.setTimeout = (fn, ms, ...a) => realSetTimeout(fn, Math.max(ms || 0, throttleMs), ...a);
+    }
+    let onMsg = null;
+    const runtime = {
+      lastError: null,
+      sendMessage: (m, cb) => { events.push(JSON.parse(JSON.stringify(m))); if (cb) cb({ ok: true }); },
+      onMessage: { addListener(fn) { onMsg = fn; } },
     };
+    if (workerClock && throttle) {
+      // The service worker's side of startClock: ticks at the asked-for rate,
+      // from a clock the page's throttling doesn't touch.
+      runtime.connect = () => {
+        const fns = [];
+        let iv = null;
+        return {
+          onMessage: { addListener: (fn) => fns.push(fn) },
+          onDisconnect: { addListener() {} },
+          // clockMs runs the clock faster than asked, to reach tick counts
+          // that take a minute in real time.
+          postMessage: (m) => { if (m && m.everyMs && !iv) iv = realSetInterval(() => fns.forEach((f) => f(1)), clockMs || m.everyMs); },
+          disconnect: () => { if (iv) realClearInterval(iv); },
+        };
+      };
+    }
+    window.chrome = { runtime, storage: { local: { get: (_k, cb) => cb && cb({}) } } };
     eval(iso); // eslint-disable-line no-eval
-    await new Promise((r) => setTimeout(r, waitMs));
+    await new Promise((r) => realSetTimeout(r, waitMs));
+    // What the run's watchdog would be told if it asked now (see
+    // probeLoaderTab in background.js).
+    let probe = null;
+    if (onMsg) onMsg({ type: "loader-probe", token: "T1" }, {}, (r) => { probe = r; });
+    let locks = [];
+    try { locks = ((await navigator.locks.query()).held || []).map((l) => l.name); } catch (_) {}
     return {
       events,
+      probe,
+      locks,
       submits: window.__submits || 0,
       submitAt: window.__submitAt === undefined ? null : window.__submitAt,
       text: window.__lastText || null,
       url: location.pathname + location.search,
     };
-  }, { iso: ISO, waitMs });
+  }, { iso: ISO, waitMs, throttle, throttleMs, workerClock, clockMs });
   await page.close();
   return {
     ...res,
@@ -135,6 +171,29 @@ console.log("\nChatGPT: page pre-fills the composer from ?q= but never submits")
   check("the prompt is not doubled", r.text === PROMPT, JSON.stringify(r.text));
 }
 
+console.log("\nChatGPT: the page fills ?q= in just after the script typed (0.62.2)");
+{
+  // The owner's Motorola run sent 13 of 30 ChatGPT prompts doubled
+  // ("Best gaming phones under 30000Best gaming phones under 30000"): the
+  // page's own ?q= fill landed on top of the typed prompt. Here it lands
+  // right after the first input the script makes, once.
+  const r = await run(`
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <button id="composer-submit-button">send</button><div id="convo"></div>
+    <script>${RECORD_CHATGPT}
+      const box=document.getElementById('prompt-textarea');
+      let filled=false;
+      box.addEventListener('input',()=>{ if(filled||!box.textContent.trim()) return; filled=true;
+        const q=new URLSearchParams(location.search).get('q');
+        setTimeout(()=>{ box.textContent=box.textContent+q; },0); });
+      document.getElementById('composer-submit-button').addEventListener('click',()=>{
+        if(!box.innerText.trim()) return;
+        const t=box.innerText; box.innerHTML=''; window.__record(t); });
+    </script>`);
+  check("submitted once", r.submits === 1, `submits=${r.submits}`);
+  check("with the prompt once, not twice", r.text === PROMPT, JSON.stringify(r.text));
+}
+
 console.log("\nChatGPT: send button present but inert via aria-disabled (Enter must save it)");
 {
   const r = await run(`
@@ -147,6 +206,127 @@ console.log("\nChatGPT: send button present but inert via aria-disabled (Enter m
     </script>`);
   check("submitted exactly once via Enter", r.submits === 1, `submits=${r.submits}`);
   check("the prompt text is correct", r.text === PROMPT, JSON.stringify(r.text));
+}
+
+/* Hidden-tab throttling.
+ *
+ * A campaign's engine tabs are always hidden, and Chrome throttles a hidden
+ * page's timers — to once a MINUTE after five minutes. Two real runs, in two
+ * browsers, stopped succeeding at 4.96 and 4.97 minutes on every engine at
+ * once, and not one of 57 failures carried a trace: the page-timer-driven
+ * loop never got far enough to report. The loop now runs on ticks the
+ * service worker supplies over a port. The first scenario is the control — it
+ * proves this harness's throttle is real, so the second isn't passing by luck.
+ */
+const ENTER_PAGE = `
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <button id="composer-submit-button" aria-disabled="true">send</button><div id="convo"></div>
+    <script>${RECORD_CHATGPT}
+      const box=document.getElementById('prompt-textarea');
+      box.addEventListener('keydown',e=>{ if(e.key==='Enter'&&box.innerText.trim()){
+        const t=box.innerText; box.innerHTML=''; window.__record(t); }});
+    </script>`;
+
+console.log("\nControl: page timers throttled to once a minute, and only the page's clock to run on");
+{
+  const r = await run(ENTER_PAGE, { throttle: true, workerClock: false });
+  check("nothing is submitted — the throttle this harness applies is real", r.submits === 0, `submits=${r.submits}`);
+}
+
+console.log("\nPage timers throttled to once a minute, ticks supplied by the service worker");
+{
+  const r = await run(ENTER_PAGE, { throttle: true });
+  check("the prompt is still submitted, exactly once", r.submits === 1, `submits=${r.submits}`);
+  check("in about the time an unthrottled tab takes, not minutes", r.submitAt !== null && r.submitAt < 8000, `submitAt=${r.submitAt}ms`);
+  check("the prompt text is correct", r.text === PROMPT, JSON.stringify(r.text));
+  // What the watchdog would record if this turn's answer then never arrived.
+  const p = r.probe || {};
+  check("a probe reports the turn as sent, and how that was confirmed",
+    p.stage === "sent" && !!p.sentWhy, JSON.stringify({ stage: p.stage, sentWhy: p.sentWhy }));
+  check("it reports the worker's clock, ticking at its intended rate",
+    p.clock === "worker" && p.maxTickGap > 0 && p.maxTickGap < 900, JSON.stringify({ clock: p.clock, maxTickGap: p.maxTickGap }));
+  check("it carries the turn's event trace", typeof p.trace === "string" && /\bsent\b/.test(p.trace), p.trace);
+  // Chrome 133+ freezes CPU-busy hidden tabs under Energy Saver; holding a
+  // Web Lock is a documented exemption. Whether Chrome honours it can't be
+  // driven from this harness — that the turn holds one while in flight can.
+  check("a turn in flight holds the Web Lock that exempts its tab from freezing",
+    r.locks.some((n) => n === "citoskeleton-turn-T1"), JSON.stringify(r.locks));
+}
+
+/* The lock has to outlast the send. In a real v0.45.3 run every turn still
+ * waiting at about a minute was frozen, and never answered again: Chrome's
+ * page-load tracker calls a busy page "loaded" at most a minute after it
+ * stops loading (kWaitingForIdleTimeout), and from then on a hidden tab with
+ * no freeze exemption is frozen. The lock was released when the post-send
+ * watch ended — ~150 ticks, one minute — so a slow answer lost its exemption
+ * exactly then. The clock here runs 80x fast to get past those ticks.
+ */
+console.log("\nA sent turn keeps its freeze exemption after the post-send watch ends");
+{
+  const r = await run(ENTER_PAGE, { throttle: true, clockMs: 5, waitMs: 4000 });
+  check("the prompt was submitted, exactly once", r.submits === 1, `submits=${r.submits}`);
+  // The loop stops ticking when the watch ends, so a count past 150 says
+  // it has ended, not how long ago.
+  check("the ~150-tick post-send watch has ended", (r.probe || {}).ticks > 150, String((r.probe || {}).ticks));
+  check("the turn still holds its Web Lock while it waits for the answer",
+    r.locks.some((n) => n === "citoskeleton-turn-T1"), JSON.stringify(r.locks));
+}
+
+console.log("\nPage timers at Chrome's once-a-second hidden-tab rate, no worker clock");
+{
+  // The rate every campaign tab gets from the moment it's hidden, before the
+  // five-minute cliff. The loop still limps along — but the probe must show
+  // the throttling plainly, so an export can say so.
+  const r = await run(ENTER_PAGE, { throttle: true, throttleMs: 1000, workerClock: false, waitMs: 6000 });
+  const p = r.probe || {};
+  check("the probe says the page's own clock was driving the turn", p.clock === "page", JSON.stringify(p.clock));
+  check("and that its ticks were ~1s apart instead of 400ms — throttling, measured",
+    p.maxTickGap >= 900, JSON.stringify({ maxTickGap: p.maxTickGap, ticks: p.ticks }));
+}
+
+console.log("\nChatGPT: send button only mounts after a real pointer interaction with the composer");
+{
+  // Reported: "send control never accepted the prompt" on Gemini, Grok and
+  // ChatGPT alike, traced to pick(sel.send) finding nothing at all — not an
+  // inert button, an ABSENT one. Some composer UIs only render their send
+  // control once the textarea has registered a genuine pointer interaction,
+  // not just programmatic .focus(). This mimics that: the button doesn't
+  // exist in the DOM until a real mousedown fires on the composer.
+  const r = await run(`
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <div id="btn-host"></div><div id="convo"></div>
+    <script>${RECORD_CHATGPT}
+      const box=document.getElementById('prompt-textarea');
+      box.addEventListener('mousedown',()=>{
+        if(document.getElementById('composer-submit-button')) return;
+        const b=document.createElement('button'); b.id='composer-submit-button'; b.textContent='send';
+        b.addEventListener('click',()=>{ if(!box.innerText.trim()) return;
+          const t=box.innerText; box.innerHTML=''; window.__record(t); });
+        document.getElementById('btn-host').appendChild(b);
+      });
+    </script>`);
+  check("submitted exactly once — the pointer interaction woke the send control up", r.submits === 1, `submits=${r.submits}`);
+  check("no failure reported", r.gaveUp.length === 0, r.gaveUp.join(","));
+}
+
+console.log("\nChatGPT: send button stays inert for 12s before becoming usable");
+{
+  // Pins the widened retry window (MAX_SEND_TICKS 20 -> 45, ~8s -> ~18s):
+  // a button that takes this long to become usable used to be abandoned as
+  // "send control never accepted the prompt" well before it ever had a
+  // chance to work.
+  const r = await run(`
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <button id="composer-submit-button" aria-disabled="true">send</button><div id="convo"></div>
+    <script>${RECORD_CHATGPT}
+      const box=document.getElementById('prompt-textarea');
+      const btn=document.getElementById('composer-submit-button');
+      btn.addEventListener('click',()=>{ if(btn.getAttribute('aria-disabled')==='true') return;
+        if(!box.innerText.trim()) return; const t=box.innerText; box.innerHTML=''; window.__record(t); });
+      setTimeout(()=>btn.removeAttribute('aria-disabled'), 12000);
+    </script>`, { waitMs: 20000 });
+  check("submitted exactly once once the button finally became usable", r.submits === 1, `submits=${r.submits}`);
+  check("no failure reported", r.gaveUp.length === 0, r.gaveUp.join(","));
 }
 
 console.log("\nChatGPT: composer mounts late (a cold SPA boot)");
@@ -369,6 +549,48 @@ console.log("\nProof of submission survives stale DOM selectors (the URL changes
     r.gaveUp.length === 0, JSON.stringify(r.gaveUp));
 }
 
+/* grok.com as it really is (v0.45.4 run, and grok-brain's selector map,
+ * verified on grok.com in 2026-09). Every Grok turn in the run read
+ * "composer … sent:url" and nothing was ever typed: the app routes a fresh
+ * ?q= page to /tos-gate and back to / in the SAME document, and a path that
+ * changed and got longer counted as proof the prompt went out. The page
+ * also carries a hidden, aria-hidden <textarea> placeholder'd "Ask Grok
+ * anything" — typing into it does nothing — beside the real composer, a
+ * Tiptap/ProseMirror contenteditable inside [data-testid="chat-input"]; the
+ * send control is [data-testid="chat-submit"], labelled "Submit".
+ */
+const GROK_PAGE = `
+    <textarea placeholder="Ask Grok anything" aria-hidden="true" tabindex="-1" style="height:14px"></textarea>
+    <div data-testid="chat-input"><div class="tiptap ProseMirror" contenteditable="true" role="textbox"></div></div>
+    <button data-testid="chat-submit" type="submit" aria-label="Submit">send</button><div id="convo"></div>
+    <script>
+      window.__submits=0;
+      const box=document.querySelector('.ProseMirror');
+      // The app's own bounce: /tos-gate and back, same document, ?q= gone.
+      setTimeout(()=>history.replaceState(null,'','/tos-gate'),300);
+      setTimeout(()=>history.replaceState(null,'','/'),600);
+      document.querySelector('[data-testid="chat-submit"]').addEventListener('click',()=>{
+        const t=box.innerText.trim(); if(!t) return;
+        box.innerHTML=''; window.__submits++; window.__lastText=t;
+        if(window.__submitAt===undefined) window.__submitAt=Date.now()-(window.__t0||Date.now());
+        const d=document.createElement('div'); d.setAttribute('data-testid','user-message'); d.textContent=t;
+        document.getElementById('convo').appendChild(d);
+        history.pushState(null,'','/c/6ca7034d-866d-404f-a776-72608a3113c6');
+      });
+    </script>`;
+
+console.log("\nGrok: the app hops through /tos-gate in the same page, beside a hidden decoy textarea");
+{
+  const r = await run(GROK_PAGE, { grok: true, waitMs: 12000 });
+  check("the prompt is typed and submitted, exactly once", r.submits === 1, `submits=${r.submits}`);
+  check("into the real composer, with the right text", r.text === PROMPT, JSON.stringify(r.text));
+  const tr = (r.probe || {}).trace || "";
+  check("the /tos-gate hop is not taken for a send — it comes after the typing",
+    tr.includes(":typed") && tr.indexOf(":sent") > tr.indexOf(":typed"), tr);
+  check("the send is confirmed by the conversation opening", (r.probe || {}).sentWhy === "url" || (r.probe || {}).sentWhy === "turn",
+    JSON.stringify(r.probe && r.probe.sentWhy));
+}
+
 console.log("\nA tab bounced to a login page says SO, instead of 'composer never appeared'");
 {
   const page = await browser.newPage();
@@ -394,6 +616,74 @@ console.log("\nNothing usable on the page: report the failure, never hang silent
   check("no submission happened", r.submits === 0, `submits=${r.submits}`);
   check("a failure reason was reported to the run", r.gaveUp.length === 1, JSON.stringify(r.gaveUp));
   check("the reason names the real problem", /composer never appeared/.test(r.gaveUp[0] || ""), r.gaveUp[0]);
+  // The freeze-exemption lock (see stopLoop in content-iso.js) belongs to a
+  // live turn only; one that's over must let go of it.
+  check("the turn's Web Lock is released once it has given up",
+    !r.locks.some((n) => n.startsWith("citoskeleton-turn-")), JSON.stringify(r.locks));
+}
+
+// Grok in a real run: the script typed, clicked, and then — with no URL
+// change, no stop button it recognised and no transcript entry it could
+// match — kept re-entering the prompt ("reenter", "recomposer") until it
+// gave up, possibly sending it several times. The page's own submit request
+// is proof on the wire; content-main.js reports it as "engine-submit". This
+// page shows NOTHING after a send except that report.
+console.log("\nA send confirmed only by the engine's own submit request");
+{
+  const r = await run(`
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <button id="composer-submit-button">send</button><div id="convo"></div>
+    <script>
+      document.documentElement.setAttribute('data-lcfc-ch', 'CH-TEST');
+      window.__submits = 0;
+      const box = document.getElementById('prompt-textarea');
+      document.getElementById('composer-submit-button').addEventListener('click', () => {
+        const t = box.innerText.trim(); if (!t) return;
+        window.__submits++; window.__lastText = t;
+        if (window.__submitAt === undefined) window.__submitAt = Date.now() - (window.__t0 || Date.now());
+        box.innerHTML = '';
+        // What content-main.js posts when the engine's submit request leaves.
+        window.postMessage({ __LCFC__: 'CH-TEST', type: 'engine-submit', via: 'ws' }, location.origin);
+      });
+    </script>`, { waitMs: 25000 });
+  check("the prompt went out exactly once — no re-entering it", r.submits === 1, `submits=${r.submits}`);
+  // The old code gave up on this prompt at ~22s — "send emptied the
+  // composer but the prompt never reached the conversation" — after it had
+  // gone out.
+  check("no failure reported", r.gaveUp.length === 0, r.gaveUp.join(","));
+  check("the turn reads as sent, confirmed on the wire", !!r.probe && r.probe.stage === "sent" && r.probe.sentWhy === "net",
+    JSON.stringify(r.probe && { stage: r.probe.stage, why: r.probe.sentWhy }));
+}
+
+// Gemini in a real run, in a hidden tab: a click or Enter was accepted but
+// acted on seconds later, and the loop — ticking every 400ms — clicked and
+// pressed Enter 8-10 times before the first request left. Every one of them
+// was a submission: up to nine new conversations for one prompt. This page
+// takes each click/Enter and submits what was in the composer 2.5s later,
+// showing nothing until then.
+console.log("\nA page that acts on a send seconds later gets one send, not a burst");
+{
+  const r = await run(`
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <button id="composer-submit-button">send</button><div id="convo"></div>
+    <script>
+      document.documentElement.setAttribute('data-lcfc-ch', 'CH-SLOW');
+      window.__submits = 0;
+      const box = document.getElementById('prompt-textarea');
+      const accept = () => {
+        const t = box.innerText.trim(); if (!t) return;
+        setTimeout(() => {
+          window.__submits++; window.__lastText = t;
+          if (window.__submitAt === undefined) window.__submitAt = Date.now() - (window.__t0 || Date.now());
+          box.innerHTML = '';
+          window.postMessage({ __LCFC__: 'CH-SLOW', type: 'engine-submit', via: 'xhr' }, location.origin);
+        }, 2500);
+      };
+      document.getElementById('composer-submit-button').addEventListener('click', accept);
+      box.addEventListener('keydown', (e) => { if (e.key === 'Enter') accept(); });
+    </script>`, { waitMs: 12000 });
+  check("the prompt was submitted once", r.submits === 1, `submits=${r.submits}`);
+  check("and reads as sent", !!r.probe && r.probe.stage === "sent", JSON.stringify(r.probe && r.probe.stage));
 }
 
 await browser.close();

@@ -30,6 +30,7 @@
  *                  fabricated 0-100 number in a measurement tool would be
  *                  worse than the honest gap. See SENTIMENT_NOTE.
  */
+import { wordRe } from "./textMatch.js";
 
 export const MAX_PROFILES = 3;
 
@@ -64,10 +65,13 @@ export const availableEngines = () => ENGINES.filter((e) => e.available);
 // Brand names are compared loosely (case, punctuation, spacing) because the
 // same company shows up as "Angel One" / "AngelOne" / "angel one" across
 // answers, and a tracking table that lists those as three brands is useless.
+// Letters and digits of any script (0.70.0): an ASCII-only key made every
+// non-Latin brand name "" and so never found.
 export function normName(s) {
   return String(s ?? "")
+    .normalize("NFC")
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/[^\p{L}\p{N}\p{M}]+/gu, " ")
     .trim();
 }
 
@@ -126,7 +130,84 @@ export function makeProfile(base = {}) {
     // Soft-delete: set to a timestamp instead of removing the profile outright,
     // so a campaign can be restored for a window before it's purged for real.
     deletedAt: base.deletedAt || null,
+    // What the campaign's board leads with (0.55.0): its headline views, set
+    // in setup. Brand mentions are always measured. null means the campaign
+    // predates the choice, so every view stays offered.
+    measure: base.measure && typeof base.measure === "object"
+      ? { citations: !!base.measure.citations, products: !!base.measure.products, images: !!base.measure.images, local: !!base.measure.local }
+      : null,
+    // What was changed after the campaign was locked (0.77.0), newest last:
+    // {at, kind, name?, detail?}. A locked campaign can be edited without
+    // unlocking it; this is how the board marks where numbers stop being
+    // directly comparable.
+    changes: Array.isArray(base.changes) ? base.changes.filter((c) => c && c.kind).slice(-MAX_CHANGES) : [],
   };
+}
+
+const MAX_CHANGES = 300;
+
+/* ---------------- editing a locked campaign (0.77.0) ----------------
+ * The owner: "I don't want to open and enable the editing of the campaign …
+ * the process to make changes in the campaign is tedious". Only the brand
+ * and its website still need an explicit unlock, because they change every
+ * number; prompts, tags, competitors, engines and what the board measures
+ * are edited in place, and each change is logged. */
+
+/** Whether saving `next` over a locked `existing` needs the explicit unlock. */
+export function needsUnlock(existing, next) {
+  if (!existing || !existing.locked) return false;
+  const a = existing.brand || {}, b = (next && next.brand) || a;
+  return normName(a.name || "") !== normName(b.name || "") || String(a.url || "").trim().toLowerCase() !== String(b.url || "").trim().toLowerCase();
+}
+
+/** The change-log entries between two versions of a campaign. */
+export function profileChanges(before, after, at = Date.now()) {
+  if (!before) return [];
+  const out = [];
+  const names = (p) => new Map((p.competitors || []).map((c) => [normName(c.name), c.name]));
+  const was = names(before), now = names(after);
+  for (const [k, n] of now) if (!was.has(k)) out.push({ at, kind: "competitor-added", name: n });
+  for (const [k, n] of was) if (!now.has(k)) out.push({ at, kind: "competitor-removed", name: n });
+  const e1 = [...(before.engines || [])].sort().join(), e2 = [...(after.engines || [])].sort().join();
+  if (e1 !== e2) out.push({ at, kind: "engines", detail: `${(before.engines || []).join(", ")} → ${(after.engines || []).join(", ")}` });
+  const m = (p) => JSON.stringify(p.measure || null);
+  if (m(before) !== m(after)) out.push({ at, kind: "measure" });
+  const b1 = before.brand || {}, b2 = after.brand || {};
+  if ((b1.name || "") !== (b2.name || "") || (b1.url || "") !== (b2.url || "")) out.push({ at, kind: "brand", detail: `${b1.name || ""} (${b1.url || ""}) → ${b2.name || ""} (${b2.url || ""})` });
+  return out;
+}
+
+/** Adds one competitor; never the own brand, never twice. */
+export function addCompetitor(profile, { name, url = "" } = {}, at = Date.now()) {
+  const n = String(name || "").trim();
+  if (!n) return { error: "No brand given." };
+  const key = normName(n);
+  if (key === normName(profile?.brand?.name || "")) return { error: "That's your own brand — it's tracked already." };
+  if ((profile.competitors || []).some((c) => normName(c.name) === key)) return { profile, added: false };
+  const next = makeProfile({
+    ...profile,
+    competitors: [...(profile.competitors || []), { name: n, url: String(url || "").trim() }],
+    // Adding a brand undoes leaving it out.
+    excludedBrands: (profile.excludedBrands || []).filter((x) => normName(x) !== key),
+    changes: profile.locked ? [...(profile.changes || []), { at, kind: "competitor-added", name: n }] : profile.changes,
+  });
+  return { profile: next, added: true };
+}
+
+/** Human words for a change-log entry. */
+export function changeText(c) {
+  switch (c.kind) {
+    case "competitor-added": return `Added competitor ${c.name}`;
+    case "competitor-removed": return `Removed competitor ${c.name}`;
+    case "engines": return `Engines changed: ${c.detail}`;
+    case "measure": return "Changed what the board measures";
+    case "brand": return `Brand changed: ${c.detail}`;
+    case "prompts-added": return `Added ${c.count} prompt${c.count === 1 ? "" : "s"}`;
+    case "prompt-removed": return `Removed a prompt: "${c.name}"`;
+    case "prompt-edited": return `Edited a prompt: "${c.name}"`;
+    case "tags": return `Changed tags on "${c.name}"`;
+    default: return c.kind;
+  }
 }
 
 export function makeTrackedPrompt(base = {}) {
@@ -177,9 +258,67 @@ export function partitionRecords(records) {
   return { tracked, adhoc };
 }
 
-/** Records for one profile, optionally narrowed by engine / tags / time. */
-export function selectTracked(records, { profileId, engines, tags, since, until, runId } = {}) {
+/* One capture per prompt, per engine, per run.
+ *
+ * An engine can deliver several captures for one prompt: Gemini's answer
+ * arrives as several StreamGenerate responses, Perplexity is captured both
+ * from its answer stream and from the page, and a send that was accepted
+ * more than once (see RETRY_GAP_MS in content-iso.js) produces several
+ * answers. Every metric divides by the number of records — a real run
+ * stored 30 Gemini records for 7 prompts and 27 Perplexity records for 10 —
+ * so each prompt counted as many responses as it had captures, and a
+ * brand's visibility shifted with how many copies happened to arrive. The
+ * copy kept is the most complete: most sources, then longest answer, then
+ * earliest. A record without a run or prompt (older captures) is kept as is.
+ */
+const moreComplete = (a, b) => {
+  const sa = (a.sources || []).length;
+  const sb = (b.sources || []).length;
+  if (sa !== sb) return sa > sb;
+  const la = a.answerChars || 0;
+  const lb = b.answerChars || 0;
+  if (la !== lb) return la > lb;
+  return (a.capturedAt || 0) < (b.capturedAt || 0);
+};
+const captureKey = (r) => (r.geo && r.geo.runId && r.geo.promptId ? `${r.geo.runId}|${r.platform}|${r.geo.promptId}` : null);
+export function oneCapturePerPrompt(records) {
+  const best = new Map();
+  for (const r of records || []) {
+    const k = captureKey(r);
+    if (k && (!best.has(k) || moreComplete(r, best.get(k)))) best.set(k, r);
+  }
   return (records || []).filter((r) => {
+    const k = captureKey(r);
+    return !k || best.get(k) === r;
+  });
+}
+
+/** Records for one profile, optionally narrowed by engine / tags / time.
+ * One capture per prompt per engine per run (see oneCapturePerPrompt);
+ * `allCaptures` keeps every copy, for the diagnostics export. */
+// tagMode "all" (0.67.0) keeps only prompts carrying every tag asked for;
+// the default, "any", keeps prompts carrying at least one.
+/**
+ * The newest answer for each prompt on each engine, across every run
+ * (0.80.0). A campaign run on ChatGPT on Monday and on Gemini on Tuesday is
+ * one picture: ChatGPT's answers from Monday beside Gemini's from Tuesday.
+ * Before, the board opened on the latest run alone, so running engines one
+ * at a time made each run hide the one before ("I end up losing my ChatGPT
+ * data"), and "all runs" counted a prompt asked twice twice.
+ */
+export function latestAnswers(records) {
+  const best = new Map();
+  for (const r of records || []) {
+    const g = r.geo || {};
+    const key = `${g.promptId || String(r.userPrompt || "").trim().toLowerCase()}|${r.platform}`;
+    const cur = best.get(key);
+    if (!cur || (r.capturedAt || 0) > (cur.capturedAt || 0)) best.set(key, r);
+  }
+  return [...best.values()];
+}
+
+export function selectTracked(records, { profileId, engines, tags, tagMode = "any", since, until, runId, allCaptures = false } = {}) {
+  const picked = (records || []).filter((r) => {
     if (!isTracked(r)) return false;
     if (profileId && r.geo.profileId !== profileId) return false;
     if (runId && r.geo.runId !== runId) return false;
@@ -188,10 +327,11 @@ export function selectTracked(records, { profileId, engines, tags, since, until,
     if (until && r.capturedAt > until) return false;
     if (tags && tags.length) {
       const rt = r.geo.tags || [];
-      if (!tags.some((t) => rt.includes(t))) return false;
+      if (tagMode === "all" ? !tags.every((t) => rt.includes(t)) : !tags.some((t) => rt.includes(t))) return false;
     }
     return true;
   });
+  return allCaptures ? picked : oneCapturePerPrompt(picked);
 }
 
 /* ---------------- per-record brand presence ---------------- */
@@ -262,7 +402,7 @@ export function brandPresence(rec, trackedBrands) {
       // tool, and this only ever runs when the detector found nothing.
       const name = String(b.name);
       const hasUpper = /[A-Z]/.test(name);
-      const re = new RegExp(`\\b${escapeRegExp(name)}\\b`, "gi");
+      const re = wordRe(name, "gi");
       let m;
       while ((m = re.exec(text))) {
         if (hasUpper && m[0] === m[0].toLowerCase()) continue;
@@ -564,6 +704,23 @@ export function isPrunableCapture(rec) {
   return !rec.geo;
 }
 
+/**
+ * Which manual captures to delete (0.73.1). The cap counts manual captures
+ * only: counting campaign captures too meant that once campaigns filled the
+ * cap, the one manual capture just stored was the whole excess and was
+ * deleted the moment it arrived, so a question asked by hand never appeared.
+ * The capture just stored is never chosen.
+ * @param {string[]} prunableOldestFirst  ids of manual captures, oldest first
+ * @param {number} limit  how many manual captures to keep
+ * @param {string} [keepId]  the capture just stored
+ */
+export function retentionVictims(prunableOldestFirst, limit, keepId) {
+  const ids = prunableOldestFirst || [];
+  const excess = ids.length - Math.max(1, limit || 0);
+  if (excess <= 0) return [];
+  return ids.filter((id) => id !== keepId).slice(0, excess);
+}
+
 /** Submissions a run will make — surfaced in the UI before the user commits. */
 export function runVolume(prompts, engines) {
   const active = (prompts || []).filter((p) => p.active !== false).length;
@@ -602,6 +759,40 @@ export function hasSignal(r) {
     r.places?.length ||
     r.answerChars
   );
+}
+
+/**
+ * Whether a capture finishes a campaign turn (0.62.2). hasSignal() is enough
+ * for most engines, but Grok's gateway hands over what it has whenever its
+ * socket goes quiet: the prompt, then the search results, then the answer.
+ * In the owner's Motorola run every Grok turn was counted on the first of
+ * those, the tab moved on, and none of the 30 answers was ever captured. A
+ * gateway turn is done only once Grok says the response completed and there
+ * is answer text.
+ */
+// The statuses a signed-out answer carries while it's still being written
+// ("pending", "streaming"); "resolved" and "complete" are done. Matched whole
+// (0.79.0): the old pattern also matched finished words such as
+// "stream_complete" or "generated", and such a capture waited out the turn.
+const STILL_WRITING_RE = /^(?:in_?progress|streaming|pending|running|generating|queued)$/i;
+
+export function turnAnswered(r) {
+  if (!hasSignal(r)) return false;
+  const ps = (r && r.platformSpecific) || {};
+  if (r.platform === "grok" && ps.transport === "gateway") return ps.gatewayStatus === "completed" && (r.answerChars || 0) > 0;
+  // Gemini's stream is handed over whenever it goes quiet, which can be
+  // while it is still searching (0.69.0): done only with answer text.
+  if (r.platform === "gemini" && ps.transport === "webchannel") return (r.answerChars || 0) > 0;
+  // ChatGPT signed out (0.69.0): handed over whenever its stream goes quiet,
+  // so a snapshot still being written doesn't count.
+  if (r.platform === "chatgpt" && ps.transport === "conversation-source") return (r.answerChars || 0) > 0 && !STILL_WRITING_RE.test(ps.status || "");
+  return true;
+}
+
+/** An engine-side limit the capture itself reports (Grok's stream_error). */
+export function usageLimitOf(r) {
+  const e = r && r.platformSpecific && r.platformSpecific.gatewayError;
+  return typeof e === "string" && /limit|rate|quota|too_many/i.test(e) ? e : null;
 }
 
 /**
@@ -745,4 +936,25 @@ export function brandSourceDomains(records, trackedBrands, name, limit = 10) {
     .sort((a, b) => b.citedResponses - a.citedResponses || b.citations - a.citations
       || a.domain.localeCompare(b.domain))
     .slice(0, Math.max(0, limit));
+}
+
+/* "Retry missing" (0.78.1): ask again only the prompts a finished run has no
+ * answer for, engine by engine, and add the answers to that same run. In the
+ * owner's 752-turn run, 101 turns had no answer (65 never accepted by the
+ * send button, 28 sent with no answer, ChatGPT's message limit on top). */
+export function missingTurns(run, prompts, records) {
+  const have = new Set();
+  for (const r of records || []) {
+    if (!r.geo || r.geo.runId !== run.id || !(r.answerChars > 0)) continue;
+    have.add(`${r.platform}|${r.geo.promptId}`);
+  }
+  const ids = new Set(run.promptIds || []);
+  const list = (prompts || []).filter((p) => ids.has(p.id));
+  const only = {};
+  let n = 0;
+  for (const e of run.engines || []) {
+    only[e] = [];
+    list.forEach((p, i) => { if (!have.has(`${e}|${p.id}`)) { only[e].push(i); n++; } });
+  }
+  return { prompts: list, only, count: n };
 }
