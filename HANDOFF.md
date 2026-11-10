@@ -44,6 +44,7 @@ Last updated 29 October 2026, at v0.84.0.
 6. **Don't `pkill -f` with a pattern that matches your own shell command.** Doing so killed the suite runner twice.
 7. **Match the code's style.** Comments explain *why*, with the evidence: which run, which export, which source. The existing ones are long on purpose, and new code should read like its neighbours.
 8. **Commits and PR text:** describe the change and the evidence. Don't put AI model names or identifiers in commits, PRs or code.
+9. **A browser test that launches on a fixed profile folder must empty that folder first.** Put `rmSync(PROFILE_BASE, { recursive: true, force: true })` right before `launchPersistentContext(PROFILE_BASE, …)`, with a comment saying why. Remove only the test's own folder, never a glob over `/tmp`. A test that launches on a fresh `${PROFILE_BASE}-${Date.now()}` folder each time doesn't need this. Rule 5 covers a full run, but a test re-run on its own skips that step. In that case a fixed folder keeps the previous run's IndexedDB, and the test reads it back as if it were new data. On 10 Nov 2026 `analyze-feedback` passed once and then failed on every later run on the same machine, master included: the old captures were merged into the answer, so `raw-capture.txt` held 4 copies instead of 2. CI never sees this because each runner starts clean. `campaign-share-ui` (in its `open()` helper) and `analyze-feedback` show the pattern.
 
 ## Running the tests
 
