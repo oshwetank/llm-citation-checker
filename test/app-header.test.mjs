@@ -15,6 +15,7 @@
  * none); Light / Dark is in About → Settings, and applies everywhere. On
  * 0.55.0 those checks fail: the button is there and Settings has no choice.
  */
+import { rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -43,6 +44,14 @@ try {
   process.exit(1);
 }
 
+// Start from an empty profile. This folder is fixed and outlives the run, so
+// without this a second run on the same machine reopens the first run's
+// storage. That is how analyze-feedback, which had the same fixed-folder
+// launch, failed on 10 Nov 2026: old captures were merged into the answer
+// (raw-capture.txt held 4 copies, not 2) on every run after the first, master
+// included. CI never sees it because each runner starts clean. Only this
+// test's own folder is removed.
+rmSync(PROFILE_BASE, { recursive: true, force: true });
 const context = await chromium.launchPersistentContext(PROFILE_BASE, {
   headless: false,
   args: [`--disable-extensions-except=${EXT_PATH}`, `--load-extension=${EXT_PATH}`, "--headless=new", "--no-sandbox"],
