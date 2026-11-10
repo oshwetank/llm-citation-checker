@@ -141,6 +141,30 @@ export function makeProfile(base = {}) {
     // unlocking it; this is how the board marks where numbers stop being
     // directly comparable.
     changes: Array.isArray(base.changes) ? base.changes.filter((c) => c && c.kind).slice(-MAX_CHANGES) : [],
+    // Its link to a copy saved on a profile (0.85.0), or null. Kept through
+    // every edit: without it a campaign saved from here would be saved as a
+    // new one the next time, and a copy opened here couldn't be updated.
+    //   id        the saved campaign on the server
+    //   localId   the campaign id it was first saved under (the owner's)
+    //   version   the save this computer last made or opened
+    //   mine      saved by the signed-in person (else shared with them)
+    //   copy      opened here from a profile, not made here
+    //   autoSave  save again after each finished run
+    cloud: cloudLink(base.cloud),
+  };
+}
+
+export function cloudLink(c) {
+  if (!c || typeof c !== "object" || !c.id) return null;
+  return {
+    id: String(c.id),
+    localId: String(c.localId || ""),
+    version: Number(c.version) || 0,
+    savedAt: Number(c.savedAt) || null,
+    mine: !!c.mine,
+    copy: !!c.copy,
+    autoSave: !!c.autoSave,
+    from: String(c.from || ""),
   };
 }
 

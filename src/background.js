@@ -51,7 +51,7 @@ import { adapt as adaptPerplexity } from "./adapters/perplexity.js";
 import { adapt as adaptGrok } from "./adapters/grok.js";
 import { adaptPageCopy, isPageCopy } from "./adapters/pageCopy.js";
 import {
-  MAX_PROFILES, TRASH_RETENTION_DAYS, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
+  MAX_PROFILES, TRASH_RETENTION_DAYS, makeProfile, cloudLink, makeTrackedPrompt, makeGeoRun, runVolume,
   needsUnlock, profileChanges, addCompetitor, autoCompetitorsFrom, missingTurns,
   selectTracked, latestAnswers, computeMetrics, computeSeries, brandPresence, normName,
   effectiveTrackedBrands, headToHead, brandSourceDomains, availableEngines,
@@ -276,11 +276,25 @@ async function openWelcomeOnce({ evenAutomated = false } = {}) {
 
 /* Accounts and update emails (0.82.0, lib/cloud.js). Off while
  * lib/cloudConfig.js is empty: nothing is sent and the panel says so. */
-const cloudOn = () => cloudReady(CLOUD);
-const cloud = makeCloud(CLOUD, {
+let cloudCfg = CLOUD;
+const cloudOn = () => cloudReady(cloudCfg);
+const cloudStore = {
   load: async () => (await chrome.storage.local.get(CLOUD_SESSION_KEY))[CLOUD_SESSION_KEY] || null,
   save: async (s) => (s ? chrome.storage.local.set({ [CLOUD_SESSION_KEY]: s }) : chrome.storage.local.remove(CLOUD_SESSION_KEY)),
-});
+};
+let cloud = makeCloud(cloudCfg, cloudStore);
+// Tests only (cloud-test-config): a stand-in server on this computer. Kept in
+// session storage, so a worker restart mid-test keeps it and a browser
+// restart forgets it.
+const CLOUD_TEST_KEY = "citoCloudTestConfig";
+const LOCAL_HOST_RE = /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/?$/;
+async function loadCloudTestConfig() {
+  try {
+    const t = (await chrome.storage.session.get(CLOUD_TEST_KEY))[CLOUD_TEST_KEY];
+    if (t && LOCAL_HOST_RE.test(t.apiBase) && LOCAL_HOST_RE.test(t.supabaseUrl)) { cloudCfg = t; cloud = makeCloud(cloudCfg, cloudStore); }
+  } catch (_) { /* no session storage */ }
+}
+const cloudTestReady = loadCloudTestConfig();
 
 // The email left on the welcome page or in Settings goes to the server once
 // there is one; what was sent, and its unsubscribe token, is kept apart from
@@ -312,7 +326,7 @@ chrome.runtime.onStartup?.addListener(() => { syncSignup(); });
 
 /* A campaign as a .cito file (0.82.0, lib/campaignBundle.js). Its raw
  * captures are read one by one, by key: the raw store can be large. */
-async function exportCampaignFile(profileId, { includeRaw = true } = {}) {
+async function exportCampaignFile(profileId, { includeRaw = true, keepRuns = 0 } = {}) {
   const profile = await db.get("profiles", profileId);
   if (!profile) return { ok: false, error: "Campaign not found." };
   const parts = campaignParts(profile.id, {
@@ -320,6 +334,14 @@ async function exportCampaignFile(profileId, { includeRaw = true } = {}) {
     runs: await db.getAll("geoRuns"),
     records: await db.getAll("derived"),
   });
+  // Only the latest runs (0.85.0, a profile copy over the size limit): the
+  // answers go with their runs.
+  const allRuns = parts.runs.length;
+  if (keepRuns > 0 && parts.runs.length > keepRuns) {
+    const keep = new Set(parts.runs.slice().sort((x, y) => (y.startedAt || 0) - (x.startedAt || 0)).slice(0, keepRuns).map((r) => r.id));
+    parts.runs = parts.runs.filter((r) => keep.has(r.id));
+    parts.records = parts.records.filter((r) => keep.has(r.geo.runId));
+  }
   if (includeRaw) {
     const ids = [...new Set(parts.records.flatMap((r) => [r.captureId, ...(r.mergedFrom || [])]))];
     for (const id of ids) { const row = await db.get("raw", id); if (row) parts.raws.push(row); }
@@ -328,14 +350,14 @@ async function exportCampaignFile(profileId, { includeRaw = true } = {}) {
   const bundle = makeBundle({ profile, ...parts, includeRaw, appVersion: chrome.runtime.getManifest().version, from: s && s.user && s.user.name ? { name: s.user.name } : null });
   try {
     const file = await encodeBundle(bundle);
-    return { ok: true, file, fileName: bundleFileName(profile), name: profile.name || "Campaign", counts: bundle.counts };
+    return { ok: true, file, fileName: bundleFileName(profile), name: profile.name || "Campaign", counts: bundle.counts, allRuns };
   } catch (e) {
     return { ok: false, error: e.message, tooLarge: true };
   }
 }
 
-async function importCampaignBundle(bundle, { from = "" } = {}) {
-  const live = (await db.getAll("profiles")).filter((p) => !p.deletedAt);
+async function importCampaignBundle(bundle, { from = "", link = null, replaces = null } = {}) {
+  const live = (await db.getAll("profiles")).filter((p) => !p.deletedAt && p.id !== replaces);
   if (live.length >= MAX_PROFILES) return { ok: false, error: `You can track at most ${MAX_PROFILES} campaigns. Delete one, then import this again.` };
   const taken = new Set(live.map((p) => (p.name || "").trim().toLowerCase()));
   const base = (bundle.profile.name || "Shared campaign").trim();
@@ -343,14 +365,91 @@ async function importCampaignBundle(bundle, { from = "" } = {}) {
   for (let i = 1; taken.has(name.toLowerCase()); i++) name = i === 1 ? `${base} (shared)` : `${base} (shared ${i})`;
   if (from && !(bundle.from && bundle.from.name)) bundle = { ...bundle, from: { name: from } };
   const out = readBundle(bundle, { name });
+  // A file or a code makes a campaign of your own; a copy opened from a
+  // profile (0.85.0) keeps its link, so it can be updated or saved over.
+  out.profile.cloud = link;
   for (const p of out.prompts) await db.put("trackedPrompts", p);
   for (const r of out.runs) await db.put("geoRuns", r);
   for (const r of out.raws) await db.put("raw", r);
   for (const r of out.records) await db.put("derived", r);
   // The campaign last, so a half-finished import never shows up as one.
   await db.put("profiles", out.profile);
+  if (replaces) await removeCampaignCopy(replaces);
   broadcast({ type: "capture-updated" });
   return { ok: true, profileId: out.profile.id, name: out.profile.name, counts: { prompts: out.prompts.length, runs: out.runs.length, answers: out.records.length } };
+}
+
+/* Campaigns saved to the profile (0.85.0). Prompts still run in this
+ * browser; the profile holds a copy (the .cito file without raw captures,
+ * which keeps it small) that its owner opens on any computer and the people
+ * they add open as theirs to read. The computer that runs a campaign saves
+ * it: saving again replaces the copy, opening again replaces the local copy.
+ * Nothing is merged, so nothing can be merged wrong. */
+async function saveCampaignToProfile(profileId, { autoSave } = {}) {
+  const profile = await db.get("profiles", profileId);
+  if (!profile || profile.deletedAt) return { ok: false, error: "Campaign not found." };
+  const link = profile.cloud || null;
+  // A copy of my own campaign, opened here, saves over that same campaign; a
+  // copy someone shared with me is saved as a campaign of my own.
+  const own = !!(link && link.mine);
+  const localId = own && link.localId ? link.localId : profile.id;
+  // A campaign whose history is past the file limit (about 7,000 answers:
+  // measured at ~3.5 KB an answer packed, so 1,000 prompts on four engines is
+  // ~14 MB a run) is saved with its latest runs that fit, and says so,
+  // rather than not saved at all. The runs stay on this computer.
+  let r = await exportCampaignFile(profileId, { includeRaw: false });
+  for (let keep = r.tooLarge ? Math.max(1, ((await db.getAll("geoRuns")).filter((x) => x.profileId === profileId).length) - 1) : 0; r.tooLarge && keep >= 1; keep = keep > 4 ? Math.floor(keep / 2) : keep - 1) {
+    r = await exportCampaignFile(profileId, { includeRaw: false, keepRuns: keep });
+  }
+  if (r.tooLarge) return { ok: false, error: "Even this campaign's latest run is over the 25 MB a profile copy can hold. Share it as a file instead (Download file)." };
+  if (!r.ok) return r;
+  const up = await cloud.profileSave(r.file, { localId, name: r.name, counts: r.counts });
+  const fresh = (await db.get("profiles", profileId)) || profile;
+  const next = cloudLink({
+    id: up.id, localId, version: up.version, savedAt: Date.parse(up.savedAt) || Date.now(), mine: true,
+    copy: own && !!link.copy, autoSave: autoSave === undefined ? own && !!link.autoSave : !!autoSave, from: "",
+  });
+  await db.put("profiles", { ...fresh, cloud: next });
+  broadcast({ type: "capture-updated" });
+  const partial = r.allRuns > r.counts.runs ? { savedRuns: r.counts.runs, allRuns: r.allRuns } : null;
+  return { ok: true, link: next, bytes: r.file.byteLength, counts: r.counts, partial };
+}
+
+// A local copy opened from a profile, gone: the campaign and everything
+// that belongs only to it. Only ever for a copy, which can be opened again.
+async function removeCampaignCopy(profileId) {
+  const p = await db.get("profiles", profileId);
+  if (!p || !(p.cloud && p.cloud.copy)) return;
+  for (const x of await db.getAll("trackedPrompts")) if (x.profileId === profileId) await db.delete("trackedPrompts", x.id);
+  for (const x of await db.getAll("geoRuns")) if (x.profileId === profileId) await db.delete("geoRuns", x.id);
+  for (const x of await db.getAll("derived")) if (x.geo && x.geo.profileId === profileId) await db.delete("derived", x.captureId);
+  await db.delete("profiles", profileId);
+}
+
+async function openProfileCampaign(id) {
+  const all = await db.getAll("profiles");
+  const here = all.find((p) => p.cloud && p.cloud.id === id && !p.deletedAt);
+  // The campaign itself lives here: nothing to open.
+  if (here && !here.cloud.copy) return { ok: true, profileId: here.id, name: here.name, already: true };
+  const got = await cloud.profileFetch(id);
+  const link = cloudLink({ id, localId: got.meta.localId, version: got.meta.version, savedAt: Date.parse(got.meta.savedAt) || null, mine: !!got.meta.mine, copy: true, from: got.meta.from || "" });
+  const bundle = await decodeBundle(got.bytes);
+  if (here) bundle.profile = { ...bundle.profile, name: here.name };
+  const r = await importCampaignBundle(bundle, { from: got.meta.from || "", link, replaces: here ? here.id : null });
+  return r.ok ? { ...r, updated: !!here, version: link.version } : r;
+}
+
+// After a run finishes on its own, the campaign is saved again if its owner
+// asked for that. Best-effort: a failure is logged and the run is untouched.
+async function autoSaveAfterRun(profileId) {
+  try {
+    if (!profileId || !cloudOn()) return;
+    const p = await db.get("profiles", profileId);
+    if (!p || !p.cloud || !p.cloud.autoSave || !p.cloud.mine) return;
+    if (!(await cloud.session())) return;
+    const r = await saveCampaignToProfile(profileId);
+    if (!r.ok) logErr("profile-autosave", new Error(r.error || "save failed"));
+  } catch (e) { logErr("profile-autosave", e); }
 }
 
 chrome.runtime.onInstalled.addListener((details) => {
@@ -2134,6 +2233,7 @@ async function notifyRateLimited(detail) {
 }
 
 async function notifyRunComplete() {
+  autoSaveAfterRun(loader.options && loader.options.geo && loader.options.geo.profileId);
   const total = loader.total;
   const done = loader.done;
   const errors = loader.errors;
@@ -3615,7 +3715,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             sendResponse({ ok: false, error: "Changing the brand or website needs the campaign unlocked first.", needsUnlock: true });
             break;
           }
-          const merged = { ...(existing || {}), ...msg.profile };
+          // The profile link (0.85.0) is only ever changed by the account
+          // calls: the panel's copy of the campaign can be older than a save.
+          const merged = { ...(existing || {}), ...msg.profile, cloud: existing ? existing.cloud || null : null };
           const logged = existing && existing.locked && merged.locked !== false ? profileChanges(existing, makeProfile(merged)) : [];
           const profile = makeProfile({ ...merged, changes: [...(existing?.changes || []), ...logged] });
           await db.put("profiles", profile);
@@ -3711,6 +3813,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // Accounts and shared codes (0.82.0). Each says plainly when accounts
         // aren't switched on, rather than failing somewhere later.
         case "cloud-status": {
+          await cloudTestReady;
           const s = cloudOn() ? await cloud.session().catch(() => null) : null;
           sendResponse({ ok: true, ready: cloudOn(), signedIn: !!s, user: s ? s.user : null });
           break;
@@ -3722,7 +3825,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "cloud-shares":
         case "cloud-share-revoke":
         case "campaign-share-upload":
-        case "campaign-share-open": {
+        case "campaign-share-open":
+        case "cloud-campaigns":
+        case "campaign-profile-save":
+        case "campaign-profile-open":
+        case "campaign-profile-people":
+        case "campaign-profile-autosave":
+        case "campaign-profile-remove": {
+          await cloudTestReady;
           if (!cloudOn()) { sendResponse({ ok: false, off: true, error: "Accounts aren't switched on yet. Share the campaign as a file instead." }); break; }
           try {
             if (msg.type === "cloud-request-code") {
@@ -3748,6 +3858,29 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               if (!r.ok) { sendResponse(r); break; }
               const up = await cloud.shareUpload(r.file, { name: r.name, counts: r.counts });
               sendResponse({ ok: true, code: up.code, expiresAt: up.expiresAt, bytes: r.file.byteLength });
+            } else if (msg.type === "cloud-campaigns") {
+              const list = await cloud.profileList();
+              // Which of them are on this computer, and as what.
+              const here = new Map((await db.getAll("profiles")).filter((p) => p.cloud && !p.deletedAt).map((p) => [p.cloud.id, { profileId: p.id, version: p.cloud.version, copy: p.cloud.copy, autoSave: p.cloud.autoSave }]));
+              const mark = (c) => ({ ...c, here: here.get(c.id) || null });
+              sendResponse({ ok: true, ...list, mine: (list.mine || []).map(mark), shared: (list.shared || []).map(mark) });
+            } else if (msg.type === "campaign-profile-save") {
+              sendResponse(await saveCampaignToProfile(msg.profileId, { autoSave: msg.autoSave }));
+            } else if (msg.type === "campaign-profile-open") {
+              sendResponse(await openProfileCampaign(String(msg.id || "")));
+            } else if (msg.type === "campaign-profile-people") {
+              const r = await cloud.profilePeople(String(msg.id || ""), Array.isArray(msg.emails) ? msg.emails : []);
+              sendResponse({ ok: true, people: r.people || [] });
+            } else if (msg.type === "campaign-profile-autosave") {
+              const p = await db.get("profiles", msg.profileId);
+              if (!p || !p.cloud || !p.cloud.mine) { sendResponse({ ok: false, error: "Save it to your profile first." }); break; }
+              await db.put("profiles", { ...p, cloud: cloudLink({ ...p.cloud, autoSave: !!msg.on }) });
+              sendResponse({ ok: true });
+            } else if (msg.type === "campaign-profile-remove") {
+              await cloud.profileRemove(String(msg.id || ""));
+              // The campaign stays on this computer, unlinked.
+              for (const p of await db.getAll("profiles")) if (p.cloud && p.cloud.id === msg.id && !p.cloud.copy) await db.put("profiles", { ...p, cloud: null });
+              sendResponse({ ok: true });
             } else {
               const got = await cloud.shareFetch(msg.code);
               sendResponse(await importCampaignBundle(await decodeBundle(got.bytes), { from: got.meta.from }));
@@ -4767,6 +4900,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "ai-set-labeller":
           sendResponse(await aiSvc.setLabeller(msg.labeller));
           break;
+        // Tests only: a stand-in account server on this computer (0.85.0).
+        case "cloud-test-config": {
+          const c = msg.config || {};
+          if (!LOCAL_HOST_RE.test(String(c.apiBase || "")) || !LOCAL_HOST_RE.test(String(c.supabaseUrl || ""))) { sendResponse({ ok: false, error: "local addresses only" }); break; }
+          cloudCfg = { apiBase: c.apiBase, supabaseUrl: c.supabaseUrl, supabaseAnonKey: String(c.supabaseAnonKey || "test") };
+          cloud = makeCloud(cloudCfg, cloudStore);
+          await chrome.storage.session.set({ [CLOUD_TEST_KEY]: cloudCfg });
+          sendResponse({ ok: true });
+          break;
+        }
+        // Tests only: what a run finishing does for the profile copy, without
+        // driving a whole run. Only while the stand-in server above is set.
+        case "profile-autosave-test": {
+          if (!LOCAL_HOST_RE.test(String(cloudCfg.apiBase || ""))) { sendResponse({ ok: false, error: "tests only" }); break; }
+          await autoSaveAfterRun(msg.profileId);
+          sendResponse({ ok: true });
+          break;
+        }
         // Tests only: a stand-in Laya bundle served from this computer.
         case "laya-test-model": {
           const host = String((msg.model || {}).host || "");

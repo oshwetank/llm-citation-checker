@@ -18,6 +18,11 @@ The extension works without it. Until `src/lib/cloudConfig.js` is filled in:
 | `GET /api/share?code=` | signed in | Returns a short-lived download address for that campaign. |
 | `GET /api/share` | signed in | Lists what I've shared. |
 | `DELETE /api/share?code=` | the owner | Stops sharing and deletes the file. |
+| `POST /api/campaigns` | signed in | Saves a campaign to the profile (0.85.0): returns an upload address that **replaces** the last save, then `?id=&done=1` confirms it. |
+| `GET /api/campaigns` | signed in | The campaigns on my profile, with who each is shared with, and the ones shared with me. |
+| `GET /api/campaigns?id=` | the owner, or a person it's shared with | A short-lived download address for the latest save. |
+| `PUT /api/campaigns?id=` | the owner | Replaces who it's shared with: `{emails: [...]}`, up to 25. |
+| `DELETE /api/campaigns?id=` | the owner | Removes it from the profile: the file and the sharing go. |
 
 Sign-in is Supabase Auth with an emailed code, and it has no password. The extension calls Supabase's `/auth/v1/otp` and `/auth/v1/verify` directly with the public anon key. Everything else goes through these functions, which hold the service key.
 
@@ -26,7 +31,10 @@ Files go straight to Storage because a Vercel function accepts at most 4.5 MB pe
 The limits:
 - 25 MB per campaign;
 - 50 live shares per person;
-- shares expire after 90 days.
+- shares expire after 90 days;
+- a profile holds up to 20 saved campaigns and 60 MB (0.85.0). Saved copies leave the raw captures out, ~3.5 KB an answer.
+
+**Updating from 0.82–0.84:** run `supabase/schema.sql` again in the SQL editor. Every statement is "if not exists", so it only adds the two 0.85.0 tables (`cloud_campaigns`, `campaign_people`).
 
 ## Set it up (the owner's steps)
 

@@ -124,6 +124,27 @@ export function makeCloud(cfg, { fetch = globalThis.fetch, now = () => Date.now(
       if (!res || !res.ok) throw new CloudError("The campaign couldn't be downloaded. Try again.", res ? res.status : 0, "download");
       return { meta, bytes: await res.arrayBuffer() };
     },
+    // Campaigns saved to the profile (0.85.0): the same three steps as a
+    // share, but the address replaces the last save, so whoever opens it
+    // gets the latest copy.
+    async profileSave(bytes, { localId, name = "", counts = null } = {}) {
+      const start = await authed("/api/campaigns", { method: "POST", body: JSON.stringify({ localId, name, bytes: bytes.byteLength, counts }) });
+      let put;
+      try { put = await fetch(start.uploadUrl, { method: "PUT", headers: { "content-type": "application/octet-stream", "x-upsert": "true" }, body: bytes }); } catch (_) { put = null; }
+      if (!put || !put.ok) throw new CloudError("The upload didn't finish. Try again.", put ? put.status : 0, "upload");
+      const done = await authed(`/api/campaigns?id=${encodeURIComponent(start.id)}&done=1`, { method: "POST", body: "{}" });
+      return { id: start.id, version: done.version, savedAt: done.savedAt };
+    },
+    async profileList() { return authed("/api/campaigns"); },
+    async profileFetch(id) {
+      const meta = await authed(`/api/campaigns?id=${encodeURIComponent(id)}`);
+      let res;
+      try { res = await fetch(meta.downloadUrl); } catch (_) { res = null; }
+      if (!res || !res.ok) throw new CloudError("The campaign couldn't be downloaded. Try again.", res ? res.status : 0, "download");
+      return { meta, bytes: await res.arrayBuffer() };
+    },
+    async profilePeople(id, emails) { return authed(`/api/campaigns?id=${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify({ emails }) }); },
+    async profileRemove(id) { return authed(`/api/campaigns?id=${encodeURIComponent(id)}`, { method: "DELETE" }); },
     async shareList() { return (await authed("/api/share")).shares || []; },
     async shareRevoke(code) { return authed(`/api/share?code=${encodeURIComponent(normCode(code))}`, { method: "DELETE" }); },
     // Update news: no account needed.

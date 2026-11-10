@@ -10,16 +10,23 @@ brand's visibility against competitors over time.
 Everything is stored **locally in your browser**. The extension makes **no network requests
 of its own**, except, if you turn on **Read the cited pages**, to the pages an answer cited;
 if you download the **built-in AI**, a one-time download of the model's files from
-Hugging Face; and, once accounts are switched on, when you sign in, share a campaign by
-code, open a code, or leave an email for updates. Nothing you capture ever leaves your
+Hugging Face; and, once accounts are switched on, when you sign in, save a campaign to
+your profile or open one from it, share a campaign by code, open a code, or leave an email
+for updates. Nothing you capture ever leaves your
 device unless you choose to share that campaign: the AI runs on your computer.
 
-> **v0.84.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.85.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **Your campaigns on your profile, shared with the people you choose** (0.85.0).
+>   - **Save to my profile.** Campaigns → ⋯ → Share campaign… → **On your profile**. Signed in (About → Account, a code sent by email), a campaign is saved to your profile and opens on any computer you sign in on, from About → Account → On your profile. Prompts still run in your own browser: only the results are saved.
+>   - **Save after every run.** Tick it and each run that finishes on this computer replaces the copy on your profile.
+>   - **Share with people.** Add their email addresses. Each signs in with that address and finds the campaign under About → Account → **Shared with you**, always as last saved. **Update copy** replaces their copy with your newest save, rather than adding a second one. Only you save over it; if they save their copy, it becomes a campaign of their own.
+>   - **Small and free to keep.** The copy leaves out the raw captures: about 3.5 KB an answer, so 300 prompts on four engines is ~4 MB a run. A profile holds up to 20 campaigns and 60 MB; a campaign over 25 MB is saved with its latest runs that fit, and says so.
+>   - **Nothing changes signed out.** Share as a file and by code work as before.
 > - **Models as switches, and capture that holds when a site changes** (0.84.0).
 >   - **Models in Ask.** Ask → Models on this computer: one switch for the AI model and one for Laya. On downloads it; off stops a download or removes the model. The popup has Ask too. The download's progress shows in the app bar.
 >   - **Uninstalling removes them.** The models are kept in the extension's own storage, which Chrome deletes with the extension. Gemini Nano is Chrome's own and stays.

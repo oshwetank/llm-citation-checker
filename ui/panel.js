@@ -8637,8 +8637,10 @@ async function openShareDialog(profile) {
   const status = el("p", { className: "sh-status", role: "status", id: "shStatus" });
   const fileBtn = el("button", { className: "btn primary", type: "button", id: "shFile" }, "Download file (.cito)");
   const codeBox = el("div", { className: "sh-code-box", id: "shCodeBox" });
+  const profileBox = el("div", { className: "sh-code-box", id: "shProfileBox" });
   modal.append(el("div", { className: "modal-body sh-body" },
-    el("label", { className: "sh-check" }, raw, el("span", {}, el("b", {}, "Include the raw captures"), el("span", { className: "muted small" }, " · larger, and lets them re-read the answers with a newer CitoSkeleton"))),
+    el("div", { className: "sh-way sh-profile" }, el("h4", { className: "sh-h" }, "On your profile"), profileBox),
+    el("label", { className: "sh-check" }, raw, el("span", {}, el("b", {}, "Include the raw captures"), el("span", { className: "muted small" }, " · for the file and the code: larger, and lets them re-read the answers with a newer CitoSkeleton"))),
     el("div", { className: "sh-way" }, el("h4", { className: "sh-h" }, "As a file"), el("p", { className: "muted small" }, "Send it any way you like. They open it from Campaigns → Import."), fileBtn),
     el("div", { className: "sh-way" }, el("h4", { className: "sh-h" }, "By code"), codeBox),
     status));
@@ -8656,6 +8658,7 @@ async function openShareDialog(profile) {
   });
 
   const cs = await send({ type: "cloud-status" });
+  renderProfileShare(profile, profileBox, cs, { close, status });
   if (!cs || !cs.ready) {
     codeBox.append(el("p", { className: "muted small" }, "Accounts aren't switched on yet, so sharing by code isn't available. The file works the same."));
   } else if (!cs.signedIn) {
@@ -8675,6 +8678,68 @@ async function openShareDialog(profile) {
       status.textContent = "";
     });
   }
+}
+
+/* The Share dialog's "On your profile" (0.85.0): save the campaign to the
+ * signed-in profile, so it opens on any computer you sign in on, save it
+ * again after every run, and the people who see it. Asked: "share it and
+ * make it visible across a group of people … multiple devices, multiple
+ * accounts". Prompts still run in this browser; only the results are saved,
+ * without the raw captures, which keeps the copy small. */
+function renderProfileShare(profile, box, cs, { close, status }) {
+  const say = (t, cls = "") => { status.textContent = t; status.className = `sh-status ${cls}`; };
+  if (!cs || !cs.ready) { box.replaceChildren(el("p", { className: "muted small" }, "Accounts aren't switched on yet. The file works the same.")); return; }
+  if (!cs.signedIn) {
+    const go = el("button", { className: "btn sm ghost", type: "button", id: "shProfileSignIn" }, "Sign in…");
+    go.onclick = () => { close(); openAccount(); };
+    box.replaceChildren(el("p", { className: "muted small" }, "Sign in to keep this campaign on your profile: open it on any computer, and choose who else sees it."), go);
+    return;
+  }
+  const link = profile.cloud || null;
+  const own = !!(link && link.mine);
+  const when = (t) => (t ? new Date(t).toLocaleString(uiLang(), { dateStyle: "medium", timeStyle: "short" }) : "");
+  const state = el("p", { className: "muted small", id: "shProfileState" },
+    own ? `Saved to your profile · version ${link.version}${link.savedAt ? ` · ${when(link.savedAt)}` : ""}.`
+      : link && link.copy ? `A copy ${link.from ? `${link.from} shared with you` : "shared with you"}. Saving it puts a copy of your own on your profile.`
+        : "Not on your profile yet. Saved without the raw captures, which keeps it small.");
+  const saveBtn = el("button", { className: "btn primary", type: "button", id: "shProfileSave" }, own ? "Save again" : "Save to my profile");
+  const auto = el("input", { type: "checkbox", id: "shAutoSave", checked: own && !!link.autoSave, disabled: !own });
+  const autoRow = el("label", { className: "sh-check" }, auto, el("span", {}, el("b", {}, "Save after every run"), el("span", { className: "muted small" }, " · when a run finishes here, the copy on your profile is replaced")));
+  const people = el("textarea", { id: "shPeople", className: "filter sh-people", rows: 3, placeholder: "ravi@company.com, mei@client.com", disabled: !own });
+  const peopleBtn = el("button", { className: "btn sm ghost", type: "button", id: "shPeopleSave", disabled: !own }, "Save people");
+  const peopleBox = el("div", { className: "sh-people-box" },
+    el("label", { className: "ab-label", for: "shPeople" }, "Who else sees it"),
+    el("p", { className: "muted small" }, "Their email addresses, separated by commas or new lines. Each signs in with that address and finds it under About → Account → Shared with you, always as last saved. They can read it and run a copy; only you save over it."),
+    people, peopleBtn);
+  box.replaceChildren(state, saveBtn, autoRow, peopleBox);
+  if (own) {
+    send({ type: "cloud-campaigns" }).then((r) => {
+      const me = r && r.ok && (r.mine || []).find((c) => c.id === link.id);
+      if (me && !people.value) people.value = (me.people || []).join(", ");
+    });
+  }
+  saveBtn.onclick = withBusy(saveBtn, "Saving…", async () => {
+    const r = await send({ type: "campaign-profile-save", profileId: profile.id });
+    if (!r || !r.ok) return say((r && r.error) || "Couldn't save it.", "bad");
+    profile.cloud = r.link;
+    say(r.partial
+      ? `Saved to your profile · version ${r.link.version} · ${fmtMB(r.bytes)}. Only the latest ${plural(r.partial.savedRuns, "run")} of ${r.partial.allRuns} fit the 25 MB limit; every run stays on this computer.`
+      : `Saved to your profile · version ${r.link.version} · ${fmtMB(r.bytes)}.`, "ok");
+    renderProfileShare(profile, box, cs, { close, status });
+  });
+  auto.onchange = async () => {
+    const r = await send({ type: "campaign-profile-autosave", profileId: profile.id, on: auto.checked });
+    if (!r || !r.ok) { auto.checked = !auto.checked; return say((r && r.error) || "Couldn't change it.", "bad"); }
+    if (profile.cloud) profile.cloud.autoSave = auto.checked;
+    say(auto.checked ? "It's saved again after every run." : "Saved only when you press Save again.", "ok");
+  };
+  peopleBtn.onclick = withBusy(peopleBtn, "Saving…", async () => {
+    const emails = people.value.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
+    const r = await send({ type: "campaign-profile-people", id: link.id, emails });
+    if (!r || !r.ok) return say((r && r.error) || "Couldn't save who sees it.", "bad");
+    people.value = r.people.join(", ");
+    say(r.people.length ? `Shared with ${plural(r.people.length, "person", "people")}.` : "Only you see it now.", "ok");
+  });
 }
 
 async function openImportDialog() {
@@ -8836,6 +8901,16 @@ function renderCampaignHead(profile) {
     actions));
 
   const notes = [];
+  // A copy opened from a profile (0.85.0): whose it is, and where the newer
+  // save is picked up.
+  if (profile.cloud && profile.cloud.copy) {
+    const acct = el("button", { className: "btn sm ghost", type: "button", id: "cpCopyAccount" }, "About → Account");
+    acct.onclick = () => openAccount();
+    notes.push(el("div", { className: "geo-due cp-copy-note", id: "cpCopyNote" },
+      el("span", {}, profile.cloud.mine
+        ? `Your profile's copy, version ${profile.cloud.version}. Saving it here replaces the copy on your profile. `
+        : `${profile.cloud.from || "Someone"} shared this with you · version ${profile.cloud.version}. Their newer saves are picked up from `), acct));
+  }
   if (due && vol.submissions) notes.push(el("div", { className: "geo-due" }, `Today's run hasn't happened yet — last run ${profile.lastRunAt ? new Date(profile.lastRunAt).toLocaleDateString() : "never"}.`));
   if (vol.submissions > 60) notes.push(el("div", { className: "warn-box" }, el("span", {}, `${vol.submissions} automated submissions in one run is a lot of activity on one account. Consider splitting your prompts across campaigns or pausing some, and keep an eye on the run rather than leaving it unattended.`)));
   head.append(...notes);
@@ -11414,7 +11489,7 @@ async function renderAccount() {
   const box = $("#abAccount");
   if (!box) return;
   const card = el("div", { className: "card ab-card ac-card" },
-    el("div", { className: "ab-head ab-tab-only" }, el("div", {}, el("h2", { className: "ab-title" }, "Account"), el("p", { className: "ab-sub" }, "Only needed to share campaigns by code. Your captures stay on this computer either way."))));
+    el("div", { className: "ab-head ab-tab-only" }, el("div", {}, el("h2", { className: "ab-title" }, "Account"), el("p", { className: "ab-sub" }, "Keep campaigns on your profile, open them on any computer, and share them with the people you choose. Prompts still run in this browser, and other captures stay on this computer."))));
   box.replaceChildren(card);
   const st = await send({ type: "cloud-status" });
   const msg = el("p", { className: "ab-email-msg", role: "status", id: "acMsg" });
@@ -11457,10 +11532,16 @@ async function renderAccount() {
   const out = el("button", { className: "btn sm ghost", type: "button", id: "acSignOut" }, "Sign out");
   out.onclick = withBusy(out, "Signing out…", async () => { await send({ type: "cloud-sign-out" }); renderAccount(); });
   const list = el("div", { className: "ac-shares", id: "acShares" }, el("p", { className: "muted small" }, "Loading…"));
+  const mineBox = el("div", { className: "ac-shares", id: "acMine" }, el("p", { className: "muted small" }, "Loading…"));
+  const sharedBox = el("div", { className: "ac-shares", id: "acSharedWithMe" }, el("p", { className: "muted small" }, "Loading…"));
+  const space = el("p", { className: "muted small", id: "acSpace" });
   card.append(
     el("div", { className: "ac-who" }, glyphEl("user", 18), el("b", { id: "acWho" }, u.email || ""), out),
     el("label", { className: "ab-label", for: "acName" }, "Name on what you share"), el("div", { className: "ac-row" }, name, saveName), msg,
-    el("h3", { className: "ab-h3" }, "Campaigns you've shared"), list);
+    el("h3", { className: "ab-h3" }, "On your profile"), space, mineBox,
+    el("h3", { className: "ab-h3" }, "Shared with you"), sharedBox,
+    el("h3", { className: "ab-h3" }, "Campaigns you've shared by code"), list);
+  renderProfileCampaigns({ mineBox, sharedBox, space, say });
   const r = await send({ type: "cloud-shares" });
   list.textContent = "";
   if (!r || !r.ok) { list.append(el("p", { className: "muted small" }, (r && r.error) || "Couldn't load them.")); return; }
@@ -11475,6 +11556,62 @@ async function renderAccount() {
     list.append(el("div", { className: "ac-share" },
       el("div", {}, el("b", {}, s.name), el("span", { className: "muted small" }, ` · ${s.code.slice(0, 5)}-${s.code.slice(5)} · ${fmtMB(s.bytes || 0)} · opened ${plural(s.downloads || 0, "time")} · until ${new Date(s.expires_at).toLocaleDateString(uiLang())}`)),
       stop));
+  }
+}
+
+/* About → Account's two lists (0.85.0): the campaigns on your profile and
+ * the ones shared with you, each opened on this computer as a campaign, or
+ * updated when a newer save is there. A campaign opened from a profile is a
+ * copy: opening it again replaces the copy, nothing else. */
+async function renderProfileCampaigns({ mineBox, sharedBox, space, say }) {
+  const r = await send({ type: "cloud-campaigns" });
+  if (!r || !r.ok) {
+    const t = (r && r.error) || "Couldn't load them.";
+    mineBox.replaceChildren(el("p", { className: "muted small" }, t));
+    sharedBox.replaceChildren();
+    return;
+  }
+  space.textContent = `${fmtMB(r.usedBytes || 0)} of ${fmtMB(r.maxBytes || 0)} used · up to ${r.maxCampaigns || 0} campaigns.`;
+  const when = (t) => (t ? new Date(t).toLocaleDateString(uiLang(), { dateStyle: "medium" }) : "");
+  const counts = (c) => (c.counts ? ` · ${plural(c.counts.prompts || 0, "prompt")}, ${plural(c.counts.answers || 0, "answer")}` : "");
+  const openBtn = (c) => {
+    const here = c.here;
+    const behind = here && here.copy && here.version < c.version;
+    if (here && !here.copy) return el("span", { className: "muted small" }, "On this computer");
+    if (here && !behind) return el("span", { className: "muted small" }, "Up to date here");
+    const b = el("button", { className: "btn sm ghost", type: "button", "data-open": c.id }, behind ? "Update copy" : "Open here");
+    b.onclick = withBusy(b, behind ? "Updating…" : "Opening…", async () => {
+      const x = await send({ type: "campaign-profile-open", id: c.id });
+      if (!x || !x.ok) return say((x && x.error) || "Couldn't open it.", "bad");
+      showToast(x.updated ? `${x.name} updated to version ${x.version}.` : `Opened ${x.name}: ${plural(x.counts.prompts, "prompt")}, ${plural(x.counts.answers, "answer")}.`);
+      geoActiveId = x.profileId;
+      campaignManageOpen = false;
+      loadGeo();
+      renderProfileCampaigns({ mineBox, sharedBox, space, say });
+    });
+    return b;
+  };
+  mineBox.replaceChildren();
+  if (!(r.mine || []).length) mineBox.append(el("p", { className: "muted small" }, "None yet. Save one from Campaigns → ⋯ → Share campaign… → Save to my profile."));
+  for (const c of r.mine || []) {
+    const rm = el("button", { className: "btn sm ghost danger", type: "button" }, "Remove");
+    rm.onclick = withBusy(rm, "Removing…", async () => {
+      if (!confirm(`Remove ${c.name} from your profile? It stays on the computers it's on, and the people you shared it with lose it.`)) return;
+      const x = await send({ type: "campaign-profile-remove", id: c.id });
+      if (!x || !x.ok) return say((x && x.error) || "Couldn't remove it.", "bad");
+      renderProfileCampaigns({ mineBox, sharedBox, space, say });
+    });
+    const ppl = (c.people || []).length;
+    mineBox.append(el("div", { className: "ac-share", "data-cloud": c.id },
+      el("div", {}, el("b", {}, c.name), el("span", { className: "muted small" }, ` · version ${c.version} · ${when(c.savedAt)}${counts(c)} · ${fmtMB(c.bytes || 0)} · ${ppl ? `shared with ${plural(ppl, "person", "people")}` : "only you"}`)),
+      el("div", { className: "ac-actions" }, openBtn(c), rm)));
+  }
+  sharedBox.replaceChildren();
+  if (!(r.shared || []).length) sharedBox.append(el("p", { className: "muted small" }, "Nothing yet. When someone adds your email to a campaign, it shows up here."));
+  for (const c of r.shared || []) {
+    sharedBox.append(el("div", { className: "ac-share", "data-cloud": c.id },
+      el("div", {}, el("b", {}, c.name), el("span", { className: "muted small" }, ` · from ${c.from || "someone"} · version ${c.version} · ${when(c.savedAt)}${counts(c)}`)),
+      el("div", { className: "ac-actions" }, openBtn(c))));
   }
 }
 
