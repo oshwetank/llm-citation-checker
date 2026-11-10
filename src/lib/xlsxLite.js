@@ -252,6 +252,28 @@ export function rowsToPrompts(rows) {
     if (tIdx === -1 && promptIdx + 1 < header.length) tIdx = promptIdx + 1;
   }
 
+  // Two tag columns (0.77.0): "Primary tag" and "Secondary tag". The primary
+  // goes first in tags[], which is what makes it the primary everywhere.
+  const PRIMARY = ["primary tag", "primary", "primary tags", "main tag"];
+  const SECONDARY = ["secondary tag", "secondary tags", "secondary", "other tags"];
+  const priIdx = promptIdx === -1 ? -1 : header.findIndex((h) => PRIMARY.includes(h));
+  const secIdx = promptIdx === -1 ? -1 : header.findIndex((h) => SECONDARY.includes(h));
+  const split = (v) => String(v ?? "").split(/[,;|]/).map((t) => t.trim()).filter(Boolean);
+  if (priIdx !== -1 || secIdx !== -1) {
+    const out2 = [];
+    for (const row of rows.slice(1)) {
+      const text = String(row[pIdx] ?? "").trim();
+      if (!text) continue;
+      const pri = priIdx === -1 ? [] : split(row[priIdx]);
+      const sec = secIdx === -1 ? [] : split(row[secIdx]);
+      // A "Tags" column beside them is read too, after both.
+      const more = tIdx !== -1 && tIdx !== priIdx && tIdx !== secIdx && TAG_HEADER_PRIORITY.includes(header[tIdx]) ? split(row[tIdx]) : [];
+      const tags = [...new Set([...pri, ...sec, ...more])];
+      out2.push({ text, tags, ...(pri.length ? { primary: pri[0] } : {}) });
+    }
+    return out2;
+  }
+
   const out = [];
   rows.slice(startRow).forEach((row, i) => {
     const text = String(row[pIdx] ?? "").trim();

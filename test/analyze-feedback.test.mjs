@@ -13,6 +13,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { inflateRawSync } from "node:zlib";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const EXT_PATH = path.resolve(HERE, "..");
@@ -76,6 +77,16 @@ try {
           type: "raw-conversation",
           payload: { raw, reqBody, pageUrl: "https://chatgpt.com/", capturedAt: Date.now() },
         }, resolve);
+      }),
+      { raw, reqBody: reqLine ? reqLine.slice("# reqBody: ".length) : "{}" }
+    );
+    await seed.waitForTimeout(300);
+    // A second copy of the same answer, a few seconds later: stored as one
+    // answer that holds both raw copies (lib/sameAnswer.js). The bundle must
+    // carry both (0.62.1).
+    await seed.evaluate(
+      ({ raw, reqBody }) => new Promise((resolve) => {
+        chrome.runtime.sendMessage({ type: "raw-conversation", payload: { raw, reqBody, pageUrl: "https://chatgpt.com/", capturedAt: Date.now() + 4000 } }, resolve);
       }),
       { raw, reqBody: reqLine ? reqLine.slice("# reqBody: ".length) : "{}" }
     );
@@ -219,6 +230,20 @@ try {
       }) : Buffer.alloc(0);
       check("the saved file is a non-trivial zip archive",
         bytes.length > 200 && bytes[0] === 0x50 && bytes[1] === 0x4b, `${bytes.length} bytes`);
+      // Read raw-capture.txt out of the archive (local headers, stored or deflated).
+      const rawText = (() => {
+        let at = 0;
+        while (at + 30 < bytes.length && bytes.readUInt32LE(at) === 0x04034b50) {
+          const method = bytes.readUInt16LE(at + 8), size = bytes.readUInt32LE(at + 18), nameLen = bytes.readUInt16LE(at + 26), extra = bytes.readUInt16LE(at + 28);
+          const name = bytes.slice(at + 30, at + 30 + nameLen).toString();
+          const data = bytes.slice(at + 30 + nameLen + extra, at + 30 + nameLen + extra + size);
+          if (name === "raw-capture.txt") return (method === 8 ? inflateRawSync(data) : data).toString("utf8");
+          at += 30 + nameLen + extra + size;
+        }
+        return "";
+      })();
+      const copies = (rawText.match(/^# CitoSkeleton raw capture /gm) || []).length;
+      check("raw-capture.txt holds every copy the answer was merged from", copies === 2, `${copies} copies`);
       // The reporter's own words have to survive into the file, or the whole
       // exercise is just a data dump.
       check("the reporter's note is in the archive",

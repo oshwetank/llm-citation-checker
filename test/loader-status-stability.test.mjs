@@ -119,6 +119,7 @@ try {
     const real = chrome.runtime.sendMessage.bind(chrome.runtime);
     chrome.runtime.sendMessage = (msg, cb) => {
       if (msg && msg.type === "loader-status") { if (cb) cb(s); return; }
+      if (msg && msg.type === "loader-resume") { window.__resumed = (window.__resumed || 0) + 1; if (cb) cb(s); return; }
       return real(msg, cb);
     };
   }, status);
@@ -155,6 +156,16 @@ try {
   });
   check("the cooldown banner is showing", anim !== null);
   check("a refreshed banner doesn't animate again", anim === "none", `animation-name: ${anim}`);
+
+  // 0.66.0: "Resume Now" threw "refresh is not defined" (the owner's
+  // diagnostics) and never resumed.
+  console.log("\nResume Now on the cooldown banner resumes");
+  const resumed = await page.evaluate(async () => {
+    document.querySelector(".cooldown-banner button")?.click();
+    await new Promise((r) => setTimeout(r, 400));
+    return window.__resumed || 0;
+  });
+  check("it asks the runner to resume", resumed === 1, String(resumed));
 
   check("no uncaught page errors", pageErrors.length === 0, pageErrors.join(" | "));
 } finally {

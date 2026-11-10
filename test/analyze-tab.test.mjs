@@ -18,7 +18,7 @@
  * "the new layout has not completily and properly been implemented at all": an "at a
  * glance" card (brands named, pages cited, searches it ran) heads it; product
  * cards are a table with where to buy beside it; every named brand gets a row
- * in "what backs each brand" with a verdict and "what to do"; Details is a
+ * in "what backs each brand" with what backs it (no advice since 0.59.0); Details is a
  * switch between technical tiles, the grounding check, the page behind each
  * part and every page it read. The page keeps the canvas's narrow gutters.
  * On 0.53.0 the "at a glance", products, backing and Details checks fail:
@@ -67,6 +67,13 @@ try {
   let sw = context.serviceWorkers()[0];
   if (!sw) sw = await context.waitForEvent("serviceworker", { timeout: 20000 });
   const extId = sw.url().split("/")[2];
+  // The engines' image hosts, answered with a small stand-in picture so the
+  // product and image tiles can be checked for an actual loaded image
+  // (0.58.0). gstatic is where an images.openai.com thumbnail's original lives.
+  await context.route(/images\.openai\.com|gstatic\.com/, (r) => r.fulfill({
+    status: 200, contentType: "image/svg+xml",
+    body: '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="#89a"/></svg>',
+  }));
 
   // Seed, all with made-up prompts (a fixture's prompt comes from the request
   // body, as on the engines' own pages):
@@ -115,7 +122,7 @@ try {
   };
   await open(ids.shop);
 
-  console.log("\nTwo columns: the analysis on the left, the answer on the right");
+  console.log("\nThree columns (0.60.0): the rail of sections, the analysis, the answer");
   {
     const r = await page.evaluate(() => {
       const grid = document.querySelector("#analyze .at-grid");
@@ -135,7 +142,7 @@ try {
     check("the full tab uses the two-column layout", !!r, "no .at-grid / #at-answer");
     if (r) {
       check("the answer sits beside the analysis, not under it", r.side, JSON.stringify(r.widths));
-      check("both columns get real width", r.widths[0] >= 700 && r.widths[1] >= 380, JSON.stringify(r.widths));
+      check("both columns get real width", r.widths[0] >= 600 && r.widths[1] >= 380, JSON.stringify(r.widths));
       check("not the popup layout, not the old single column", !r.popup && !r.oldColumn);
       check("nothing scrolls sideways", !r.hscroll);
       check("it rendered without an error", !r.error, r.error);
@@ -165,8 +172,75 @@ try {
     check("it lists the brands, the cited pages and the searches", r.brands === 5 && r.pages === 2 && r.searches > 0, `${r.brands} brands, ${r.pages} pages, ${r.searches} searches`);
     check("every search is under how the answer was built", r.built === r.searches, `${r.built} vs ${r.searches}`);
     check("no search is cut off there", r.cut.length === 0, r.cut.join(" | "));
-    check("then products, what backs each brand, how it was built, Details",
-      ["at-products", "at-backing", "at-built", "at-details"].every((id) => r.order.includes(id)) && r.order.indexOf("at-products") < r.order.indexOf("at-backing") && r.order.indexOf("at-backing") < r.order.indexOf("at-built") && r.order.at(-1) === "at-details", r.order.join(" > "));
+    // 0.60.0, the approved canvas order: what led the answer (products,
+    // pictures), then where it came from, every site it read, the searches,
+    // since last time, and Details last.
+    const want = ["at-glance", "at-products", "at-images", "at-backing", "at-sites", "at-built", "at-changes", "at-details"];
+    check("then the canvas's order: products, pictures, where it came from, sites, searches, since last time, Details",
+      want.every((id) => r.order.includes(id)) && want.every((id, i) => i === 0 || r.order.indexOf(want[i - 1]) < r.order.indexOf(id)) && r.order.at(-1) === "at-details", r.order.join(" > "));
+  }
+
+  console.log("\nNothing in the glance card is cut off (0.58.0)");
+  {
+    const r = await page.evaluate(() => {
+      const g = document.getElementById("at-glance");
+      const qs = [...g.querySelectorAll(".at-glance-qt")];
+      return {
+        more: [...g.querySelectorAll(".at-glance-more")].map((x) => x.textContent),
+        cut: [...qs, ...g.querySelectorAll(".at-glance-name, .at-glance-kind")].filter((x) => x.scrollWidth > x.clientWidth + 1 || getComputedStyle(x).textOverflow === "ellipsis").map((x) => x.textContent),
+        searches: qs.length,
+      };
+    });
+    check("no “+ N more” in place of brands, pages or searches", r.more.length === 0, r.more.join(" | "));
+    check("no search, brand or site is ellipsised", r.searches > 0 && r.cut.length === 0, r.cut.join(" | "));
+  }
+
+  console.log("\nSites it used: every domain, cited first, each with its pages (0.58.0)");
+  {
+    const r = await page.evaluate(() => {
+      const sec = document.getElementById("at-sites");
+      const rows = sec ? [...sec.querySelectorAll(".site-row")] : [];
+      const cited = rows.map((x) => x.classList.contains("is-cited"));
+      return {
+        rows: rows.length,
+        citedFirst: cited.indexOf(false) === -1 || !cited.slice(cited.indexOf(false)).includes(true),
+        citedOpen: rows.filter((x) => x.classList.contains("is-cited")).every((x) => x.open),
+        readClosed: rows.filter((x) => !x.classList.contains("is-cited")).every((x) => !x.open),
+        citedRows: cited.filter(Boolean).length,
+        pages: sec ? sec.querySelectorAll(".site-pages li").length : 0,
+        links: sec ? [...sec.querySelectorAll(".site-pages a")].filter((a) => /^https?:/.test(a.href)).length : 0,
+        glancePages: document.querySelectorAll("#at-glance .at-glance-page").length,
+      };
+    });
+    check("a row per site, more than the cited ones alone", r.rows > r.citedRows && r.citedRows > 0, `${r.rows} sites, ${r.citedRows} cited`);
+    check("cited sites first", r.citedFirst);
+    check("cited sites open on their pages, read-only ones closed", r.citedOpen && r.readClosed);
+    check("every page read is listed, each linked", r.pages > r.glancePages && r.links === r.pages, `${r.pages} pages, ${r.links} links`);
+    await page.evaluate(() => [...document.querySelectorAll("#at-sites .site-row:not(.is-cited) summary")][0]?.click());
+    await page.waitForTimeout(200);
+    const opened = await page.evaluate(() => {
+      const row = document.querySelector("#at-sites .site-row:not(.is-cited)");
+      return !!row && row.open && !row.querySelector(".site-pages").hidden && row.querySelectorAll(".site-pages li").length > 0;
+    });
+    check("a read-only site opens to its pages", opened);
+  }
+
+  console.log("\nPictures: product tiles and the Images section show the image (0.58.0)");
+  {
+    await page.evaluate(() => document.querySelectorAll("#analyze img").forEach((i) => { i.loading = "eager"; }));
+    await page.waitForTimeout(1200);
+    const r = await page.evaluate(() => ({
+      thumbs: document.querySelectorAll("#at-products .at-thumb").length,
+      loaded: document.querySelectorAll("#at-products .at-thumb.img-loaded img").length,
+      washed: [...document.querySelectorAll("#at-products .at-thumb, .at-ans-thumb, .at-img-thumb")].filter((x) => /gradient/.test(getComputedStyle(x).backgroundImage)).length,
+      answerCards: document.querySelectorAll("#at-answer .at-ans-thumb.img-loaded img").length,
+      images: !!document.getElementById("at-images"),
+      imageTiles: document.querySelectorAll("#at-images .at-img-thumb.img-loaded img").length,
+    }));
+    check("every product row shows its picture", r.thumbs > 0 && r.loaded === r.thumbs, `${r.loaded} of ${r.thumbs}`);
+    check("so do the answer panel's product cards", r.answerCards === r.thumbs, `${r.answerCards}`);
+    check("no tile is a colour wash", r.washed === 0, `${r.washed} with a gradient`);
+    check("a shopping answer's images show in the full tab", r.images && r.imageTiles > 0, `${r.imageTiles} images`);
   }
 
   console.log("\nThe canvas's spacing: narrow gutters, a wide analysis column");
@@ -179,39 +253,41 @@ try {
     });
     // 0.53.0 left ~70px a side and a 740px column; the canvas has 20px.
     check("the page's side margins are narrow", r.left <= 30 && r.right <= 40, JSON.stringify(r));
-    check("the analysis column gets most of the width", r.main >= 760, JSON.stringify(r));
-    check("the answer panel is as wide as the canvas's", r.ans >= 540, JSON.stringify(r));
+    // Three columns since 0.60.0: the canvas gives the analysis ~600px and
+    // the answer ~440px beside a 230px rail at this width.
+    check("the analysis column gets the most width", r.main >= 600 && r.main > r.ans, JSON.stringify(r));
+    check("the answer panel is as wide as the canvas's", r.ans >= 440, JSON.stringify(r));
   }
 
-  console.log("\nProduct cards: a table, with where to buy beside it");
+  console.log("\nProducts and where to buy (0.60.0): stores in order, the pages naming each card");
   {
     const r = await page.evaluate(() => {
       const sec = document.getElementById("at-products");
       const rows = sec ? [...sec.querySelectorAll(".at-prod-row:not(.at-th)")] : [];
-      const t = sec?.querySelector(".at-prod-table")?.getBoundingClientRect();
-      const buy = sec?.querySelector(".at-buy")?.getBoundingClientRect();
       return {
         rows: rows.length,
         thumbs: sec ? sec.querySelectorAll(".at-prod-row .at-thumb").length : 0,
         heads: sec ? [...sec.querySelectorAll(".at-prod-row.at-th > span")].map((x) => x.textContent).filter(Boolean) : [],
-        beside: !!(t && buy) && buy.left >= t.right - 1 && buy.top <= t.top,
-        buyFor: sec?.querySelector("#at-buy-h")?.textContent || "",
-        first: rows[0]?.querySelector(".at-prod-name b")?.textContent || "",
-        second: rows[1]?.querySelector(".at-prod-name b")?.textContent || "",
-        stores: sec ? sec.querySelectorAll(".at-store:not(.more)").length : 0,
+        stores: rows.map((x) => [...x.querySelectorAll(".at-store-chip")].map((c) => c.textContent.trim())),
+        pages: rows.map((x) => x.querySelector(".at-prod-pages")?.textContent || ""),
+        facts: sec ? sec.querySelector(".at-prod-facts")?.innerText || "" : "",
       };
     });
     check("one row per card, each with a picture tile", r.rows === 5 && r.thumbs === 5, `${r.rows} rows, ${r.thumbs} tiles`);
-    check("the canvas's columns", r.heads.join("|") === "#|Product|Price|Rating|Card leads to|Image from", r.heads.join("|"));
-    check("where to buy sits beside the table", r.beside);
-    check("it starts on the first card, with its stores", r.buyFor === r.first && r.stores > 0, `${r.buyFor} / ${r.first} · ${r.stores} stores`);
-    await page.evaluate(() => document.querySelectorAll("#at-products .at-prod-row:not(.at-th)")[1]?.click());
-    await page.waitForTimeout(500);
-    const after = await page.evaluate(() => ({ h: document.getElementById("at-buy-h")?.textContent || "", on: document.querySelectorAll("#at-products .at-prod-row.on").length }));
-    check("clicking a card shows where to buy that one", after.h === r.second && after.on === 1, `${after.h} (${after.on} selected)`);
+    // 0.62.1: "Pages naming it" moved under each brand in "Where it came
+    // from" (asked: the two said the same thing); the brand links there.
+    check("the columns, with the brand linking to where it came from", r.heads.join("|") === "#|Product|Price|Rating|Brand|Where to buy", r.heads.join("|"));
+    check("each card's stores, numbered in the card's order", r.stores.every((x) => x.length > 0 && /^1 /.test(x[0])), JSON.stringify(r.stores));
+    const moved = await page.evaluate(() => ({
+      links: document.querySelectorAll("#at-products .at-brand-link").length,
+      nested: [...document.querySelectorAll("#at-backing .at-backing-products")].map((x) => x.textContent),
+    }));
+    check("each card's brand is a link", moved.links === 5, String(moved.links));
+    check("and each brand's row in Where it came from lists its products, with the pages naming each or that none does", moved.nested.length >= 3 && moved.nested.every((t) => /named on|no cited page names this product/.test(t)), JSON.stringify(moved.nested));
+    check("where the cards send buyers first, and the price per store stated as not captured", /First store on each card/i.test(r.facts) && /Not captured/i.test(r.facts) && /store’s own price/.test(r.facts), r.facts);
   }
 
-  console.log("\nWhat backs each brand: a verdict per brand, then what to do");
+  console.log("\nWhat backs each brand: what backs each one, and no advice");
   {
     const r = await page.evaluate(() => {
       const sec = document.getElementById("at-backing");
@@ -221,11 +297,15 @@ try {
         verdicts: rows.map((x) => x.querySelector(".ap-pill")?.textContent || ""),
         firstName: rows[0]?.querySelector(".at-backing-name")?.textContent || "",
         todo: sec?.querySelector(".at-todo")?.textContent || "",
+        advice: /what to do|get onto|drop out|keep their place|matter most/i.test(document.getElementById("analyze").innerText),
       };
     });
     check("a row for each named brand, in order", r.rows === 5 && r.firstName === "OnePlus", `${r.rows} rows, first ${r.firstName}`);
-    check("each with a plain verdict", r.verdicts.every((v) => /^(Backed by independent pages|Backed only by its own site|Read, not cited|Nothing behind it|From memory)$/.test(v)), r.verdicts.join(" | "));
-    check("and a 'what to do' line", /^What to do/.test(r.todo) && r.todo.length > 30, r.todo);
+    check("each with a plain verdict", r.verdicts.every((v) => /^(Backed by independent pages|Backed only by its own site|Read, not cited|No cited page names it|Not in what the engine sent|Nothing cited|From memory)$/.test(v)), r.verdicts.join(" | "));
+    // 0.59.0: the owner asked for the data without the advice ("we are not
+    // spoonfeeding here"). Until then the section closed with a "What to do"
+    // line and the page opened with what "matters most".
+    check("no 'what to do' line, and no advice anywhere in Analyze", !r.todo && !r.advice, r.todo || "advice text found");
   }
 
   console.log("\nThe answer, as the engine showed it, with brands and citations marked");
@@ -314,6 +394,25 @@ try {
     await page.evaluate(() => [...document.querySelectorAll("#at-answer .at-hl-btn")].find((b) => b.textContent === "Brands")?.click());
   }
 
+  console.log("\nScrolling a little doesn't make the page shake (0.60.1)");
+  {
+    // Reported on 0.60.0: two or three inches of scroll and "the entire
+    // layout starts glitching". Shrinking the header moved the scroll
+    // position back above the point that shrinks it, every frame.
+    const flips = [];
+    for (const y of [150, 230, 300, 120, 30, 10]) {
+      await page.evaluate((y) => window.scrollTo(0, y), y);
+      flips.push(await page.evaluate(() => new Promise((done) => {
+        const seen = []; let n = 0;
+        const tick = () => { seen.push(document.querySelector("#analyze .at-hero").classList.contains("compact")); if (++n < 30) requestAnimationFrame(tick); else done(seen.filter((c, i) => i && c !== seen[i - 1]).length); };
+        tick();
+      })));
+    }
+    check("the header changes size at most once per scroll, never back and forth", flips.every((f) => f <= 1), flips.join(","));
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.waitForTimeout(300);
+  }
+
   console.log("\nScrolling: the answer stays in view, the header shrinks to one line");
   {
     await page.evaluate(() => window.scrollTo(0, 0));
@@ -383,25 +482,54 @@ try {
 
   console.log("\nOne prompt, two engines: engine tabs and a comparison");
   {
-    const tabs = await page.evaluate(() => [...document.querySelectorAll("#analyze .at-engines .at-engine-tab")].map((b) => ({ label: b.querySelector(".at-engine-tab-label").textContent.trim(), on: b.classList.contains("on") })));
-    check("tabs: Compare, then one per engine", tabs.map((t) => t.label).join("|") === "Compare 2 engines|ChatGPT|Gemini", tabs.map((t) => t.label).join("|"));
+    // The canvas's answer strip (0.60.0): a card per engine, then the lenses.
+    const tabs = await page.evaluate(() => [...document.querySelectorAll("#analyze .at-engines .at-engine-tab")].map((b) => {
+      const l = b.querySelector(".at-engine-tab-label").cloneNode(true);
+      l.querySelector(".at-engine-model")?.remove();
+      return { label: l.textContent.trim(), on: b.classList.contains("on") };
+    }));
+    check("a card per engine, then Side by side and Over time", tabs.map((t) => t.label).join("|") === "ChatGPT|Gemini|Side by side|Over time", tabs.map((t) => t.label).join("|"));
     check("the engine on screen is the selected tab", tabs.find((t) => t.label === "ChatGPT")?.on === true);
     const overtime = await page.evaluate(() => document.querySelector("#analyze .at-overtime")?.textContent || "");
     check("every answer to the prompt is one click away", /All 3 answers to this prompt/.test(overtime), overtime);
 
     await page.evaluate(() => document.querySelector("#analyze .at-engine-tab.cmp")?.click());
     await page.waitForTimeout(900);
+    // 0.68.0: Side by side is tabs, one part at a time.
+    const pane = async (id) => { await page.evaluate((id) => document.querySelector(`#analyze .at-cmp-tabs [data-pane="${id}"]`)?.click(), id); await page.waitForTimeout(700); };
+    const tabsCmp = await page.evaluate(() => [...document.querySelectorAll("#analyze .at-cmp-tabs [role=tab]")].map((b) => b.dataset.pane));
+    check("Side by side is tabs: summary, brands, sources, products, searches", ["sum", "brands", "sources", "products", "searches"].every((x) => tabsCmp.includes(x)) && tabsCmp[0] === "sum", tabsCmp.join(" | "));
     const c = await page.evaluate(() => {
       const d = Object.fromEntries([...document.querySelectorAll("#at-cmp-diffs .at-diffs li")].map((x) => [x.querySelector(".at-diff-k")?.textContent.trim(), x.lastElementChild?.textContent.trim()]));
       return {
         diffs: d,
         rows: document.querySelectorAll("#at-cmp-table .at-tr:not(.at-th)").length,
-        brandRows: document.querySelectorAll("#at-cmp-brands [role=row]:has([role=rowheader])").length,
-        sites: document.querySelectorAll("#at-cmp-sites [role=row]:has([role=rowheader])").length,
+        heads: [...document.querySelectorAll("#at-cmp-table .at-th [role=columnheader]")].map((x) => x.textContent),
+        tiles: document.querySelectorAll("#at-cmp-diffs .cv-tile").length,
+        one: document.querySelectorAll("#analyze .at-main > section").length,
         ansTabs: [...document.querySelectorAll("#at-answer .at-ans-tabs [role=tab]")].map((b) => b.textContent.trim()),
         singleGone: !document.getElementById("at-glance") && !document.getElementById("at-backing"),
       };
     });
+    check("the summary: how far they agree, and each engine in numbers with mentions, products and site: searches", c.tiles === 5 && ["Mentions", "Products", "site:", "Answer"].every((x) => c.heads.includes(x)) && c.one === 2, JSON.stringify({ tiles: c.tiles, heads: c.heads, one: c.one }));
+    await pane("brands");
+    c.brandRows = await page.evaluate(() => document.querySelectorAll("#at-cmp-brands [role=row]:has([role=rowheader])").length);
+    await page.evaluate(() => [...document.querySelectorAll("#at-cmp-brands .cv-seg button")].find((b) => b.textContent === "Mentions")?.click());
+    await page.waitForTimeout(700);
+    const ment = await page.evaluate(() => [...document.querySelectorAll("#at-cmp-brands [role=cell].c")].map((x) => x.textContent).filter((t) => t !== "—"));
+    check("brands can be read by place, mentions or share", ment.length > 0 && ment.every((t) => /^×\d+$/.test(t)), ment.slice(0, 5).join(" "));
+    await pane("sources");
+    const src = await page.evaluate(() => ({
+      sites: document.querySelectorAll("#at-cmp-sites [role=row]:has([role=rowheader])").length,
+      kinds: document.querySelectorAll("#at-cmp-kinds .at-cmp-kindrow").length,
+      cites: document.querySelectorAll("#at-cmp-cites .at-cmp-cite").length,
+      kindCol: !!document.querySelector("#at-cmp-sites .cv-pill"),
+    }));
+    c.sites = src.sites;
+    check("sources: kinds of site per engine, every cited page in order, and the site grid with each site's kind", src.kinds === 2 && src.cites > 0 && src.kindCol, JSON.stringify(src));
+    await pane("products");
+    check("product cards are lined up across engines", await page.evaluate(() => !!document.getElementById("at-cmp-products")));
+    await pane("sum");
     check("how the answers differ, in sentences", /ChatGPT named OnePlus first/.test(c.diffs["Who came first"] || ""), JSON.stringify(c.diffs).slice(0, 200));
     check("each engine in numbers", c.rows === 2, c.rows);
     check("where each brand came", c.brandRows >= 5, c.brandRows);
@@ -423,31 +551,214 @@ try {
   // 0.56.0, from the canvas: the app bar holds "Find a captured prompt" and
   // Newer / Older. Until then the pager sat in the prompt header and there
   // was no way to find a capture without going back to the Dashboard.
-  console.log("\nFind a captured prompt, and page through them, from the top bar");
+  console.log("\nThe rail of sections (0.60.0)");
+  await open(ids.shop);
+  {
+    const r = await page.evaluate(() => {
+      const rail = document.getElementById("at-rail");
+      const items = rail ? [...rail.querySelectorAll(".at-rail-item[data-target]")] : [];
+      const secs = [...document.querySelectorAll("#analyze .at-main > section[id]")].map((x) => x.id);
+      return { items: items.map((b) => b.dataset.target), labels: items.map((b) => b.querySelector(".t").textContent), secs, on: items.filter((b) => b.classList.contains("on")).map((b) => b.dataset.target) };
+    });
+    check("one rail row per section, in the page's order", r.items.length > 5 && r.items.join() === r.secs.join(), `${r.items.join()} vs ${r.secs.join()}`);
+    check("named as on the canvas", r.labels.includes("At a glance") && r.labels.includes("Where it came from") && r.labels.includes("Every site it read") && r.labels.includes("Details"), r.labels.join(" | "));
+    check("the section in view is lit", r.on.join() === "at-glance", r.on.join());
+    await page.evaluate(() => document.querySelector('#at-rail [data-target="at-sites"]').click());
+    await page.waitForTimeout(1200);
+    const after = await page.evaluate(() => {
+      const hero = document.querySelector("#analyze .at-hero").getBoundingClientRect();
+      const sec = document.getElementById("at-sites").getBoundingClientRect();
+      return { top: Math.round(sec.top), heroBottom: Math.round(hero.bottom), on: [...document.querySelectorAll("#at-rail .at-rail-item.on")].map((b) => b.dataset.target).join() };
+    });
+    check("clicking a row brings its section to the top, below the header", after.top >= after.heroBottom - 2 && after.top < after.heroBottom + 120, JSON.stringify(after));
+    check("and lights that row", after.on === "at-sites", after.on);
+  }
+
+  console.log("\nThe rail folds to icons and opens on hover; a pin keeps it open (0.62.1)");
+  await page.evaluate(() => localStorage.removeItem("cito-rail-pinned"));
+  await open(ids.shop);
+  {
+    const measure = () => page.evaluate(() => {
+      const rail = document.getElementById("at-rail");
+      const main = document.querySelector("#analyze .at-main");
+      const t = rail.querySelector(".at-rail-item .t");
+      return { rail: Math.round(rail.getBoundingClientRect().width), mainLeft: Math.round(main.getBoundingClientRect().left), mainW: Math.round(main.getBoundingClientRect().width), label: getComputedStyle(t).display };
+    });
+    const folded = await measure();
+    check("folded, the rail is a strip of icons", folded.rail <= 60 && folded.label === "none", JSON.stringify(folded));
+    await page.hover("#at-rail");
+    await page.waitForTimeout(400);
+    const open1 = await measure();
+    check("hovering opens it with the section names", open1.rail >= 200 && open1.label !== "none", JSON.stringify(open1));
+    check("over the page, without moving the analysis", open1.mainLeft === folded.mainLeft, `${folded.mainLeft} → ${open1.mainLeft}`);
+    await page.mouse.move(1300, 850);
+    await page.evaluate(() => document.querySelector("#at-rail .at-rail-pin").click());
+    await page.waitForTimeout(500);
+    await page.mouse.move(1300, 850);
+    const pinned = await measure();
+    check("pinned, it stays open beside the page", pinned.rail >= 150 && pinned.label !== "none" && pinned.mainLeft > folded.mainLeft, JSON.stringify(pinned));
+    await open(ids.shop);
+    const again = await measure();
+    check("and stays pinned on the next capture", again.rail >= 150, JSON.stringify(again));
+    await page.evaluate(() => document.querySelector("#at-rail .at-rail-pin").click());
+    await page.waitForTimeout(400);
+    await page.mouse.move(1300, 850);
+    check("unpinning folds it again", (await measure()).rail <= 60);
+  }
+
+  console.log("\nWhich page backs each part: in Details only; site: searches stated (0.62.1)");
+  await open(ids.gem);
+  {
+    const r = await page.evaluate(() => ({
+      inMain: !!document.querySelector("#analyze .at-main > #at-parts"),
+      rail: [...document.querySelectorAll("#at-rail .at-rail-item .t")].map((t) => t.textContent),
+      tabs: [...document.querySelectorAll("#at-details .at-seg [role=tab]")].map((t) => t.textContent),
+    }));
+    check("not a section of the page, nor a rail row", !r.inMain && !r.rail.some((t) => /each part/i.test(t)), r.rail.join(" | "));
+    check("still a tab of Details", r.tabs.includes("Page behind each part"), r.tabs.join(" | "));
+  }
+  // The sections below read the shopping answer.
+  await open(ids.shop);
+  {
+    const scoped = await page.evaluate(() => document.querySelector("#at-built .at-scoped")?.textContent || "");
+    check("Searches it ran says whether any search was limited to a site", /site:/.test(scoped), scoped || "no line");
+  }
+
+  console.log("\nWhere it came from (0.60.0): each page with its place in the results and its date");
+  {
+    const r = await page.evaluate(() => {
+      const sec = document.getElementById("at-backing");
+      return {
+        title: sec?.querySelector(".at-h")?.textContent || "",
+        lead: sec?.querySelector(".at-backing-lead")?.textContent || "",
+        matrix: sec ? sec.querySelectorAll(".at-matrix [role=row]").length : 0,
+        sitesMeta: [...document.querySelectorAll("#at-sites .site-page-meta")].map((x) => x.textContent),
+        filters: [...document.querySelectorAll("#at-sites .at-filter")].map((b) => b.textContent),
+      };
+    });
+    check("headed as on the canvas, with how backing is counted", r.title === "Where it came from" && /counts as backed/.test(r.lead) && /#N/.test(r.lead), r.title);
+    check("which sources name which brands, as a grid", r.matrix >= 2, r.matrix);
+    check("every page read shows where it came in ChatGPT's results", r.sitesMeta.some((t) => /#\d+ in its results/.test(t)), r.sitesMeta.slice(0, 4).join(" | "));
+    check("filters for cited and read-only sites", r.filters.some((t) => /^All \d+/.test(t)) && r.filters.some((t) => /^Cited \d+/.test(t)) && r.filters.some((t) => /^Read only \d+/.test(t)), r.filters.join(" | "));
+    await page.evaluate(() => [...document.querySelectorAll("#at-sites .at-filter")].find((b) => /^Read only/.test(b.textContent)).click());
+    await page.waitForTimeout(200);
+    const shown = await page.evaluate(() => [...document.querySelectorAll("#at-sites .site-row")].filter((x) => !x.hidden).map((x) => x.classList.contains("is-cited")));
+    check("'Read only' leaves only the sites it read without citing", shown.length > 0 && shown.every((c) => !c), JSON.stringify(shown));
+  }
+
+  console.log("\nHide the answer, and bring it back by picking a brand (0.60.0)");
+  {
+    const before = await page.evaluate(() => Math.round(document.querySelector("#analyze .at-main").getBoundingClientRect().width));
+    await page.evaluate(() => document.querySelector("#at-rail .at-split-btn").click());
+    await page.waitForTimeout(700);
+    const hidden = await page.evaluate(() => ({ ans: !!document.getElementById("at-answer"), w: Math.round(document.querySelector("#analyze .at-main").getBoundingClientRect().width), label: document.querySelector("#at-rail .at-split-btn").textContent, kept: localStorage.getItem("cito-at-split") }));
+    check("the answer goes and the analysis takes its width", !hidden.ans && hidden.w > before + 300, JSON.stringify({ before, ...hidden }));
+    check("the button offers it back, and the choice is kept", /Read the answer beside/.test(hidden.label) && hidden.kept === "0", JSON.stringify(hidden));
+    await page.evaluate(() => document.querySelector('#at-glance [data-focus-brand="OnePlus"]').click());
+    await page.waitForTimeout(900);
+    const back = await page.evaluate(() => ({ ans: !!document.getElementById("at-answer"), lit: [...document.querySelectorAll("#at-answer .at-mark.focus")].map((m) => m.dataset.brand) }));
+    check("picking a brand brings the answer back, with that brand lit", back.ans && back.lit.length > 0 && back.lit.every((b) => b === "OnePlus"), JSON.stringify(back));
+  }
+
+  console.log("\nSimple and Expert (0.60.0)");
+  {
+    const simple = await page.evaluate(() => ({
+      raw: [...document.querySelectorAll("#at-details .at-seg-btn")].some((b) => b.textContent === "Raw"),
+      xs: [...document.querySelectorAll("#analyze .x-only")].filter((x) => x.offsetParent).length,
+      seg: [...document.querySelectorAll("#headerPage .at-detail-switch")].map((b) => `${b.textContent}:${b.getAttribute("aria-checked")}`).join(),
+      segW: Math.round(document.querySelector("#headerPage .at-detail-switch")?.getBoundingClientRect().width || 0),
+    }));
+    check("Simple by default: no Raw tab, no expert-only detail shown", !simple.raw && simple.xs === 0, JSON.stringify(simple));
+    check("the switch sits in the top bar, one small Expert switch, off", simple.seg === "Expert:false" && simple.segW > 0 && simple.segW <= 90, JSON.stringify(simple));
+    await page.evaluate(() => document.querySelector('#headerPage .at-detail-switch[aria-checked="false"]').click());
+    await page.waitForTimeout(700);
+    await page.evaluate(() => [...document.querySelectorAll("#at-details .at-seg-btn")].find((b) => b.textContent === "Raw")?.click());
+    await page.waitForTimeout(500);
+    const expert = await page.evaluate(() => {
+      let raw = null;
+      try { raw = JSON.parse(document.querySelector("#at-details .at-raw")?.textContent || "null"); } catch (_) {}
+      return { attr: document.documentElement.getAttribute("data-detail"), kept: localStorage.getItem("cito-detail"), raw, refs: [...document.querySelectorAll("#at-sites .site-page-meta.x-only")].filter((x) => x.textContent).length };
+    });
+    check("Expert is applied and kept", expert.attr === "expert" && expert.kept === "expert", JSON.stringify(expert));
+    check("Details gets a Raw tab with the fields the capture read", !!expert.raw && expert.raw.platform === "chatgpt" && Array.isArray(expert.raw.sources) && expert.raw.sources.length > 0, JSON.stringify(expert.raw || {}).slice(0, 120));
+    check("each page shows its ref ids", expert.refs > 0, expert.refs);
+
+    // The raw payload breakdown (0.60.1): under the prompt, Expert only,
+    // closed until opened, and nothing fetched before that.
+    check("Simple hides the raw payload breakdown", simple.xs === 0);
+    // The header used to print "null" after "Ad-hoc" (0.60.0): a null handed
+    // to the DOM's own append() is written out as text.
+    const stray = await page.evaluate(() => {
+      const w = document.createTreeWalker(document.getElementById("analyze"), NodeFilter.SHOW_TEXT);
+      const bad = [];
+      while (w.nextNode()) if (/^\s*(null|undefined)\s*$/.test(w.currentNode.nodeValue)) bad.push(w.currentNode.parentElement.className);
+      return bad;
+    });
+    check("no stray null or undefined text on the page", stray.length === 0, JSON.stringify(stray));
+    const rx0 = await page.evaluate(() => {
+      const d = document.getElementById("at-rawx");
+      const main = document.querySelector("#analyze .at-main");
+      return { there: !!d && !!d.offsetParent, open: d && d.open, first: main && main.firstElementChild === d, rows: d ? d.querySelectorAll(".at-rawx-sec").length : -1 };
+    });
+    check("Expert shows it first, under the prompt, closed, with nothing read yet", rx0.there && rx0.open === false && rx0.first && rx0.rows === 0, JSON.stringify(rx0));
+    await page.evaluate(() => document.querySelector("#at-rawx > summary").click());
+    await page.waitForFunction(() => document.querySelectorAll("#at-rawx .at-rawx-sec").length > 0, null, { timeout: 8000 }).catch(() => {});
+    const rx1 = await page.evaluate(() => ({
+      meta: document.querySelector("#at-rawx .at-rawx-meta")?.textContent || "",
+      secs: [...document.querySelectorAll("#at-rawx .at-rawx-sec")].map((s) => s.dataset.section),
+      drawn: document.querySelectorAll('#at-rawx .at-rawx-sec:not([data-section="other"]) .at-rawx-field').length,
+      types: document.querySelectorAll("#at-rawx .at-rawx-types .at-page-chip").length,
+      // 0.78.0: fields no rule knows are open from the start, with their count.
+      other: (() => { const o = document.querySelector('#at-rawx .at-rawx-sec[data-section="other"]'); return o ? { open: o.open, n: Number(o.querySelector("summary .n")?.textContent || 0), rows: o.querySelectorAll(".at-rawx-field").length } : null; })(),
+    }));
+    check("\"Not recognised\" (when there is any) is open, with its count and its fields", !rx1.other || (rx1.other.open && rx1.other.n > 0 && rx1.other.rows > 0), JSON.stringify(rx1.other));
+    check("opening it reads the stored response into sections", /^sse · .* fields in \d+ sections$/.test(rx1.meta) && ["answer", "sources", "searches", "request"].every((s) => rx1.secs.includes(s)), JSON.stringify(rx1));
+    check("the other sections stay closed and undrawn until opened", rx1.drawn === 0 && rx1.types > 0, JSON.stringify(rx1));
+    await page.evaluate(() => document.querySelector('#at-rawx .at-rawx-sec[data-section="sources"] > summary').click());
+    await page.waitForTimeout(300);
+    const rx2 = await page.evaluate(() => {
+      const rows = [...document.querySelectorAll('#at-rawx .at-rawx-sec[data-section="sources"] .at-rawx-field')];
+      return { n: rows.length, url: rows.some((r) => /https:\/\//.test(r.textContent)), wide: document.documentElement.scrollWidth <= window.innerWidth };
+    });
+    check("a section lists its fields with samples, without widening the page", rx2.n > 3 && rx2.url && rx2.wide, JSON.stringify(rx2));
+    // Values wrap instead of being cut, and "Show all" opens them in full (0.60.2).
+    await page.evaluate(() => document.querySelector('#at-rawx .at-rawx-sec[data-section="searches"] > summary').click());
+    await page.waitForTimeout(300);
+    const rx3 = await page.evaluate(() => {
+      const sec = document.querySelector('#at-rawx .at-rawx-sec[data-section="searches"]');
+      const v = sec.querySelector(".at-rawx-val");
+      const btn = sec.querySelector(".at-rawx-more");
+      const nowrap = [...document.querySelectorAll("#at-rawx .at-rawx-val")].some((x) => getComputedStyle(x).whiteSpace === "nowrap" || getComputedStyle(x).textOverflow === "ellipsis");
+      btn && btn.click();
+      const pre = sec.querySelector(".at-rawx-full pre");
+      return { val: v ? v.textContent : "", nowrap, pre: pre ? pre.textContent : "", expanded: btn && btn.getAttribute("aria-expanded") };
+    });
+    check("search values wrap, uncut, and Show all opens them in full", rx3.val && !rx3.val.endsWith("…") && !rx3.nowrap && rx3.pre.length >= rx3.val.length - 2 && rx3.expanded === "true", JSON.stringify(rx3).slice(0, 300));
+    await page.evaluate(() => document.querySelector('#headerPage .at-detail-switch[aria-checked="true"]').click());
+    await page.waitForTimeout(300);
+    check("back in Simple it is hidden again", await page.evaluate(() => !document.getElementById("at-rawx")?.offsetParent));
+    await page.evaluate(() => document.querySelector('#headerPage .at-detail-switch[aria-checked="false"]').click());
+    await page.waitForTimeout(300);
+    await page.evaluate(() => document.querySelector('#headerPage .at-detail-switch[aria-checked="true"]').click());
+    await page.waitForTimeout(500);
+  }
+
+  console.log("\nPage through captures from the top bar (no search box since 0.60.2)");
   {
     await open(ids.shop);
     const bar = await page.evaluate(() => {
       const slot = document.getElementById("headerPage");
       return {
-        find: !!slot?.querySelector('input[type="search"][placeholder="Find a captured prompt"]'),
+        find: !!slot?.querySelector('input[type="search"]'),
         paging: slot?.querySelector(".ap-paging")?.textContent || "",
         inHero: !!document.querySelector("#analyze .at-hero .ap-paging"),
       };
     });
-    check("the search box is in the top bar", bar.find, JSON.stringify(bar));
-    check("with the pager beside it, not in the prompt header", /^\d+ of 5$/.test(bar.paging) && !bar.inHero, JSON.stringify(bar));
-    await page.fill("#headerPage .at-find-input", "jewellery wedding");
-    await page.waitForTimeout(200);
-    const hits = await page.evaluate(() => [...document.querySelectorAll("#headerPage .at-find-item .at-find-text")].map((x) => x.textContent));
-    check("typing lists the captures whose prompt has those words", hits.length === 1 && /jewellery shops near me/.test(hits[0]), hits.join(" | "));
-    await page.press("#headerPage .at-find-input", "Enter");
-    await page.waitForTimeout(1500);
-    const now = await page.evaluate(() => ({ prompt: document.querySelector("#analyze .at-prompt")?.textContent || "", kind: document.querySelector("#analyze .at-hero .ap-kind")?.textContent }));
-    check("Enter opens it", /jewellery shops near me/.test(now.prompt) && now.kind === "Local", JSON.stringify(now));
-    await page.fill("#headerPage .at-find-input", "no such prompt anywhere");
-    await page.waitForTimeout(200);
-    check("and says so when nothing matches", await page.evaluate(() => /No captured prompt matches/.test(document.querySelector("#headerPage .at-find-list")?.textContent || "")));
-    await page.press("#headerPage .at-find-input", "Escape");
+    check("no search box on Analyze (reported: it made no sense there)", !bar.find, JSON.stringify(bar));
+    // Five seeded captures, plus the built-in sample when it lands first on a
+    // fresh install (CI saw "2 of 6").
+    const of = Number((/^\d+ of (\d+)$/.exec(bar.paging) || [])[1]);
+    check("the pager is in the bar, not in the prompt header", of >= 5 && !bar.inHero, JSON.stringify(bar));
     const p0 = await page.evaluate(() => document.querySelector("#headerPage .ap-paging")?.textContent);
     await page.evaluate(() => document.querySelector('#headerPage [aria-label="Older capture"]')?.click());
     await page.waitForTimeout(1500);
@@ -455,10 +766,10 @@ try {
     check("Older moves one capture on", p0 && p1 && Number(p1.split(" ")[0]) === Number(p0.split(" ")[0]) + 1, `${p0} → ${p1}`);
     await page.evaluate(() => document.querySelector('[data-tab="dashboard"]').click());
     await page.waitForTimeout(500);
-    check("the tools leave the bar with the page", await page.evaluate(() => !document.querySelector("#headerPage .at-find")));
+    check("the tools leave the bar with the page", await page.evaluate(() => !document.querySelector("#headerPage .at-pager")));
     await page.evaluate(() => document.querySelector('[data-tab="analyze"]').click());
     await page.waitForTimeout(500);
-    check("and come back with it", await page.evaluate(() => !!document.querySelector("#headerPage .at-find")));
+    check("and come back with it", await page.evaluate(() => !!document.querySelector("#headerPage .at-pager")));
   }
 
   console.log("\nA long, paragraph-length prompt");

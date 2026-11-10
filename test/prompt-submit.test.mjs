@@ -171,6 +171,29 @@ console.log("\nChatGPT: page pre-fills the composer from ?q= but never submits")
   check("the prompt is not doubled", r.text === PROMPT, JSON.stringify(r.text));
 }
 
+console.log("\nChatGPT: the page fills ?q= in just after the script typed (0.62.2)");
+{
+  // The owner's Motorola run sent 13 of 30 ChatGPT prompts doubled
+  // ("Best gaming phones under 30000Best gaming phones under 30000"): the
+  // page's own ?q= fill landed on top of the typed prompt. Here it lands
+  // right after the first input the script makes, once.
+  const r = await run(`
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <button id="composer-submit-button">send</button><div id="convo"></div>
+    <script>${RECORD_CHATGPT}
+      const box=document.getElementById('prompt-textarea');
+      let filled=false;
+      box.addEventListener('input',()=>{ if(filled||!box.textContent.trim()) return; filled=true;
+        const q=new URLSearchParams(location.search).get('q');
+        setTimeout(()=>{ box.textContent=box.textContent+q; },0); });
+      document.getElementById('composer-submit-button').addEventListener('click',()=>{
+        if(!box.innerText.trim()) return;
+        const t=box.innerText; box.innerHTML=''; window.__record(t); });
+    </script>`);
+  check("submitted once", r.submits === 1, `submits=${r.submits}`);
+  check("with the prompt once, not twice", r.text === PROMPT, JSON.stringify(r.text));
+}
+
 console.log("\nChatGPT: send button present but inert via aria-disabled (Enter must save it)");
 {
   const r = await run(`

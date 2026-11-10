@@ -106,5 +106,16 @@ console.log("\nHow the answers differ, in sentences");
   check("your brand's line", d.Zento === "Named by 3 of 4; first in 2.", d.Zento);
 }
 
+console.log("\nads in the comparison (0.60.0)");
+{
+  const ad = { advertiser: "Kovo", targetDomain: "kovo.com" };
+  const cv2 = compareView([{ ...chatgpt, ads: [ad] }, gemini, perplexity]);
+  const row = cv2.diffs.find((d) => d.k === "Ads");
+  check("a line says which engine showed an ad, from whom", row && /ChatGPT showed an ad from Kovo\./.test(row.v), row && row.v);
+  check("and that the others have no ad format, not 'no ad'", row && /Gemini and Perplexity have no ad format\./.test(row.v), row && row.v);
+  check("each engine carries its advertisers", cv2.engines[0].ads.join() === "Kovo" && cv2.engines[1].ads.length === 0 && cv2.engines[1].adFormat === false);
+  check("no ads anywhere: no ads line", !compareView([chatgpt, gemini]).diffs.some((d) => d.k === "Ads"));
+}
+
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
 process.exit(failures ? 1 : 0);

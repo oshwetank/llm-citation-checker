@@ -136,6 +136,21 @@ console.log("\nmodern Gemini grounding claims & Chrome text-fragment decoding");
 // Wait for any async fs promise
 await new Promise(r => setTimeout(r, 100));
 
+console.log("\na shopping card priced in pounds is kept (0.69.0: any currency, not only ₹ $ €)");
+{
+  const card = (name, price) => {
+    const v = new Array(30).fill(null);
+    v[1] = "https://www.google.com/search?q=" + encodeURIComponent(name) + "&prds=abc";
+    v[10] = name; v[13] = price; v[16] = "4.5"; v[20] = name.split(" ")[0]; v[27] = "Lumi Store";
+    return v;
+  };
+  const p = withAnswer(ANSWER);
+  p[6] = [card("Lumi Kettle 2", "£49.99"), card("Kovo Toaster", "2.499 kr"), card("Zento Fan", "₩89,000")];
+  const rec = await adapt({ raw: frame(p), pageUrl: "https://gemini.google.com/app", captureId: "g-gbp" });
+  const names = (rec.products || []).map((x) => x.name + " " + x.price);
+  check("£, kr and ₩ cards all read", names.length === 3 && names[0] === "Lumi Kettle 2 £49.99", JSON.stringify(names));
+}
+
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
 process.exit(failures ? 1 : 0);
 

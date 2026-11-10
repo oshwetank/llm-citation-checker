@@ -200,7 +200,8 @@ export function computeSearchIntentGraph(records = []) {
       .concat(r.fanout?.search || [], r.fanout?.shopping || [], r.fanout?.image || []);
 
     for (const q of allQ) {
-      const trimmed = String(q || "").trim();
+      // A capture keeps each search as { query }; older shapes are strings.
+      const trimmed = String((q && typeof q === "object" ? q.query : q) || "").trim();
       if (!trimmed || seenQueries.has(trimmed.toLowerCase())) continue;
       seenQueries.add(trimmed.toLowerCase());
       const lower = trimmed.toLowerCase();

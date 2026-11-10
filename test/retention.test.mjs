@@ -15,7 +15,7 @@
  * arithmetic of "how many would be deleted" against a realistic mixed store,
  * because that arithmetic is what decides whether a run survives.
  */
-import { isPrunableCapture } from "../src/lib/geo.js";
+import { isPrunableCapture, retentionVictims } from "../src/lib/geo.js";
 
 let failures = 0;
 const check = (label, cond, detail) => {
@@ -110,6 +110,28 @@ console.log("\na store made up ONLY of campaign captures");
   check("nothing is selected for deletion", selected.length === 0, String(selected.length));
   check("the walk terminates rather than looping (all 120 records inspected, none taken)",
     selected.length === 0 && store.length === 120);
+}
+
+console.log("\na question asked by hand when campaigns already fill the cap (0.73.1)");
+{
+  // The owner's report: "nothing appears at all". 60 campaign captures, cap
+  // 50, then one manual capture. The old selection took (count - cap) = 11
+  // prunable records, oldest first — and the only prunable record was the
+  // capture just stored, so it was deleted on arrival.
+  const CAP = 50;
+  const store = [];
+  for (let i = 0; i < 60; i++) store.push({ captureId: `run-${i}`, capturedAt: i, geo: { runId: "r1" } });
+  store.push({ captureId: "manual-new", capturedAt: 61, geo: null });
+  const prunable = store.filter(isPrunableCapture).map((r) => r.captureId);
+  const old = prunable.slice(0, store.length - CAP);
+  check("(the old selection deleted the new manual capture)", old.includes("manual-new"));
+  check("the new manual capture is kept", retentionVictims(prunable, CAP, "manual-new").length === 0);
+  // 55 older manual captures + the new one: the cap counts manual ones only,
+  // so 6 go, oldest first, never the new one.
+  const many = [...Array.from({ length: 55 }, (_, i) => `m-${i}`), "manual-new"];
+  const v = retentionVictims(many, CAP, "manual-new");
+  check("over the cap with manual captures: the oldest go, the new one stays", v.length === 6 && v[0] === "m-0" && !v.includes("manual-new"), v.join(","));
+  check("under the cap: nothing goes", retentionVictims(["a", "b"], CAP, "b").length === 0);
 }
 
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");

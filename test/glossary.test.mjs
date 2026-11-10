@@ -50,8 +50,13 @@ console.log("\nevery entry has the same shape");
     && (typeof g.note !== "string" || !g.note.trim()));
   check("a note, where present, is real text", !badNote.length, badNote.map((g) => g.key).join(", "));
 
-  const badHowToUse = entries.filter((g) => !g.howToUse || typeof g.howToUse !== "string" || !g.howToUse.trim());
-  check("every term carries actionable howToUse guidance", !badHowToUse.length, badHowToUse.map((g) => g.key).join(", "));
+  // 0.59.0: the glossary defines terms and says how they are counted; it no
+  // longer tells the reader what to do about them. On 0.58.0 every entry had
+  // a `howToUse` line of advice, so this fails there.
+  const advice = entries.filter((g) => "howToUse" in g);
+  check("no term carries advice (howToUse) any more", !advice.length, advice.map((g) => g.key).join(", "));
+  const adviceWords = entries.filter((g) => /\b(aim for|you should|target prompts|opportunit|blind spot)/i.test(`${g.what} ${g.formula || ""} ${g.note || ""}`));
+  check("and none slips advice into its definition or note", !adviceWords.length, adviceWords.map((g) => g.key).join(", "));
 }
 
 console.log("\nthe reference list is grouped, because names legitimately repeat");

@@ -1,0 +1,224 @@
+# LCFC raw capture 00000000-0000-4000-8000-000000000060
+# url: https://chatgpt.com/backend-api/f/conversation
+# reqBody: {"action":"next","messages":[{"id":"u-1","author":{"role":"user"},"content":{"content_type":"text","parts":["best camera phone under 30000"]}}],"model":"auto","supported_encodings":["v1"]}
+
+event: delta_encoding
+data: "v1"
+
+data: {"type":"resume_conversation_token","kind":"topic","token":"synthetic"}
+
+data: {"p":"","o":"add","v":{"message":{"id":"m-sys","author":{"role":"system","name":null,"metadata":{}},"create_time":null,"content":{"content_type":"text","parts":[""]},"status":"in_progress","metadata":{},"recipient":"all","channel":null}},"c":0}
+
+data: {"v":{"message":{"id":"m-user","author":{"role":"user","name":null,"metadata":{}},"create_time":null,"content":{"content_type":"text","parts":[""]},"status":"in_progress","metadata":{},"recipient":"all","channel":null}},"c":1}
+
+data: {"type":"search_model_queries","queries":["best camera phone under 30000","Kovo Edge 5 Pro camera review"]}
+
+data: {"p":"","o":"add","v":{"message":{"id":"m-parent","author":{"role":"assistant","name":null,"metadata":{}},"create_time":null,"content":{"content_type":"text","parts":[""]},"status":"in_progress","metadata":{},"recipient":"all","channel":"final"}},"c":2}
+
+data: {"p":"","o":"add","v":{"message":{"id":"m-answer","author":{"role":"assistant","name":null,"metadata":{}},"create_time":null,"content":{"content_type":"text","parts":[""]},"status":"in_progress","metadata":{"streaming_parent_patch":{"parent_id":"m-parent"}},"recipient":"all","channel":"final"}},"c":3}
+
+data: {"type":"message_marker","message_id":"m-answer","marker":"first_visible_token"}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"If you want the best camera under ₹30","c":2}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"If you want the best camera under ₹30","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":",000, these three stand out for photo","c":2}
+
+data: {"p":"/message/content/parts/0","o":"append","v":",000, these three stand out for photo","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"s in low light and steady video. <Cit","c":2}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"s in low light and steady video. <Cit","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"e refs={[\"turn7search0\",\"turn7search1","c":2}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"e refs={[\"turn7search0\",\"turn7search1","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"\"]}/>\n\n","c":2}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"\"]}/>\n\n","c":3}
+
+data: {"p":"","o":"add","v":{"message":{"id":"m-think","author":{"role":"assistant","name":null,"metadata":{}},"create_time":null,"content":{"content_type":"thoughts","parts":[""]},"status":"in_progress","metadata":{},"recipient":"all","channel":null}},"c":4}
+
+data: {"v":[{"p":"/message/metadata/search_result_groups","o":"append","v":[{"type":"search_result_group","domain":"phonereview.example","entries":[{"type":"search_result","url":"https://phonereview.example/best-camera-phones-30000","title":"Best camera phones under 30000","snippet":"Zento Nova 8 leads our camera tests.","ref_id":{"turn_index":7,"ref_type":"search","ref_index":0},"pub_date":1792000000,"attribution":"phonereview.example"}]},{"type":"search_result_group","domain":"mobilelab.example","entries":[{"type":"search_result","url":"https://mobilelab.example/lumora-pix-3-review","title":"Lumora Pix 3 review","snippet":"A single camera that holds up at night.","ref_id":{"turn_index":7,"ref_type":"search","ref_index":1},"attribution":"mobilelab.example"},{"type":"search_result","url":"https://mobilelab.example/kovo-edge-5-pro-review","title":"Kovo Edge 5 Pro review","snippet":"Portraits with natural tones.","ref_id":{"turn_index":7,"ref_type":"search","ref_index":2},"attribution":"mobilelab.example"}]},{"type":"search_result_group","domain":"technews.example","entries":[{"type":"search_result","url":"https://technews.example/2026/10/phone-launches","title":"October phone launches","snippet":"New phones this month.","ref_id":{"turn_index":7,"ref_type":"news","ref_index":4},"pub_date":1792100000,"attribution":"technews.example"}]}]}],"c":4}
+
+data: {"p":"","o":"add","v":{"message":{"id":"m-web","author":{"role":"assistant","name":null,"metadata":{"real_author":"tool:web"}},"create_time":null,"content":{"content_type":"text","parts":[""]},"status":"in_progress","metadata":{"continuation_message_id":"m-answer"},"recipient":"all","channel":"final"}},"c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"<row align=start gap={3}>\n<AsyncImage que","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"<row align=start gap={3}>\n<AsyncImage que","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ry=\"Zento Nova 8 phone product photo\" asp","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ry=\"Zento Nova 8 phone product photo\" asp","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ectRatio=\"3:4\" maxWidth=\"124px\"/>\n<box>\n<","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ectRatio=\"3:4\" maxWidth=\"124px\"/>\n<box>\n<","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"title size=\"lg\">1. <Entity category=\"prod","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"title size=\"lg\">1. <Entity category=\"prod","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"uct\" value=\"Zento Nova 8\"/></title>\n<titl","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"uct\" value=\"Zento Nova 8\"/></title>\n<titl","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"e size=\"md\">Around ₹27,999</title>\n<text ","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"e size=\"md\">Around ₹27,999</title>\n<text ","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"size=\"sm\" tone=\"secondary\">Best overall c","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"size=\"sm\" tone=\"secondary\">Best overall c","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"amera</text>\n- Triple 50MP rear cameras w","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"amera</text>\n- Triple 50MP rear cameras w","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ith a periscope\n- Steady 4K video at 60fp","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ith a periscope\n- Steady 4K video at 60fp","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"s\n<Cite refs={[\"turn7search0\"]}/>\n</box>\n","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"s\n<Cite refs={[\"turn7search0\"]}/>\n</box>\n","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"</row>\n<divider/>\n<row align=start gap={3","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"</row>\n<divider/>\n<row align=start gap={3","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"}>\n<AsyncImage query=\"Kovo Edge 5 Pro pho","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"}>\n<AsyncImage query=\"Kovo Edge 5 Pro pho","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ne product photo\" aspectRatio=\"3:4\" maxWi","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ne product photo\" aspectRatio=\"3:4\" maxWi","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"dth=\"124px\"/>\n<box>\n<title size=\"lg\">2. <","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"dth=\"124px\"/>\n<box>\n<title size=\"lg\">2. <","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"Entity ref=\"turn7product3\" value=\"Kovo Ed","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"Entity ref=\"turn7product3\" value=\"Kovo Ed","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ge 5 Pro\"/></title>\n<title size=\"md\">₹28,","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ge 5 Pro\"/></title>\n<title size=\"md\">₹28,","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"499</title>\n<text size=\"sm\" tone=\"seconda","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"499</title>\n<text size=\"sm\" tone=\"seconda","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ry\">Best portraits</text>\n- Edge-to-edge ","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ry\">Best portraits</text>\n- Edge-to-edge ","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"curved display\n- Natural skin tones in po","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"curved display\n- Natural skin tones in po","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"rtraits\n<Cite refs={[\"turn7product3\"]}/>\n","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"rtraits\n<Cite refs={[\"turn7product3\"]}/>\n","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"</box>\n</row>\n<divider/>\n<row align=start","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"</box>\n</row>\n<divider/>\n<row align=start","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":" gap={3}>\n<AsyncImage query=\"Lumora Pix 3","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":" gap={3}>\n<AsyncImage query=\"Lumora Pix 3","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":" phone product photo\" aspectRatio=\"3:4\" m","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":" phone product photo\" aspectRatio=\"3:4\" m","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"axWidth=\"124px\"/>\n<box>\n<title size=\"lg\">","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"axWidth=\"124px\"/>\n<box>\n<title size=\"lg\">","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"3. <Entity category=\"product\" value=\"Lumo","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"3. <Entity category=\"product\" value=\"Lumo","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ra Pix 3\"/></title>\n<title size=\"md\">Arou","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"ra Pix 3\"/></title>\n<title size=\"md\">Arou","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"nd ₹24,990</title>\n<text size=\"sm\" tone=\"","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"nd ₹24,990</title>\n<text size=\"sm\" tone=\"","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"secondary\">Best value</text>\n- Single 64M","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"secondary\">Best value</text>\n- Single 64M","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"P main camera that does well at night\n<Ci","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"P main camera that does well at night\n<Ci","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"te refs={[\"turn7search1\"]}/>\n</box>\n</row","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"te refs={[\"turn7search1\"]}/>\n</box>\n</row","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":">\n<divider/>\n<box>\n<radio-group value={us","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":">\n<divider/>\n<box>\n<radio-group value={us","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"e} onChange={setUse}>\n<radio value=\"photo","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"e} onChange={setUse}>\n<radio value=\"photo","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"s\">Mostly photos</radio>\n<radio value=\"vi","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"s\">Mostly photos</radio>\n<radio value=\"vi","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"deo\">Mostly video</radio>\n</radio-group>\n","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"deo\">Mostly video</radio>\n</radio-group>\n","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"<checkbox checked={newOnly} onChange={set","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"<checkbox checked={newOnly} onChange={set","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"NewOnly}>Only phones from 2026</checkbox>","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"NewOnly}>Only phones from 2026</checkbox>","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"\n<button onClick={() => GenUI.issueNewTur","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"\n<button onClick={() => GenUI.issueNewTur","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"n(\"Pick the best camera phone for me: \" +","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"n(\"Pick the best camera phone for me: \" +","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":" use)}>Find my best camera phone</button>","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":" use)}>Find my best camera phone</button>","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"\n</box>\n{@body const [use, setUse] = DIL.","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"\n</box>\n{@body const [use, setUse] = DIL.","c":3}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"useState(\"photos\")}\n","c":5}
+
+data: {"p":"/message/content/parts/0","o":"append","v":"useState(\"photos\")}\n","c":3}
+
+data: {"v":[{"p":"/message/metadata","o":"append","v":{"genui_components":[{"type":"cite","component_resolution_id":"cite-intro","entities":[{"entity_type":"search","ref":"turn7search0"},{"entity_type":"search","ref":"turn7search1"}]}]}},{"p":"/message/metadata/genui_components","o":"append","v":[{"type":"async_image","component_resolution_id":"0a1b2c3d-0000-5000-8000-00000000a001","genui_attributes":{"aspectRatio":"3:4"}},{"type":"async_image","component_resolution_id":"0a1b2c3d-0000-5000-8000-00000000a002","genui_attributes":{"aspectRatio":"3:4"}},{"type":"entity","component_resolution_id":"ent-kovo"},{"type":"async_image","component_resolution_id":"0a1b2c3d-0000-5000-8000-00000000a003","genui_attributes":{"aspectRatio":"3:4"}}]},{"p":"/message/metadata/model_dil_v2/appData/opGenui/componentResults","o":"append","v":{"ent-kovo":{"status":"resolved","componentName":"Entity","state":{"value":"Kovo Edge 5 Pro","action_payload":{"query":"Kovo Edge 5 Pro","category":"product","extraParams":{"product":{"id":"kovo-edge-5-pro","title":"Kovo Edge 5 Pro","url":"","price":"₹28,499","merchants":"Kovo Store + others","image_urls":["https://images.openai.com/thumbnails/url/kovo-listing.jpg"],"rating":4.4,"num_reviews":212,"cite":"turn7product3"}}}}}}}],"c":3}
+
+data: {"p":"/message/metadata/model_dil_v2/appData/opGenui/componentResults/0a1b2c3d-0000-5000-8000-00000000a001/state/images","o":"append","v":[{"url":"https://shop1.example/0a1b2c3d-0000-5000-8000-00000000a001","content_url":"https://images.openai.com/static-rsc-4/0a1b2c3d-0000-5000-8000-00000000a001-1.jpg?purpose=fullsize","thumbnail_url":"https://images.openai.com/thumbnails/0a1b2c3d-0000-5000-8000-00000000a001-1.jpg","title":"Zento Nova 8 photo 1"},{"url":"https://shop2.example/0a1b2c3d-0000-5000-8000-00000000a001","content_url":"https://images.openai.com/static-rsc-4/0a1b2c3d-0000-5000-8000-00000000a001-2.jpg?purpose=fullsize","thumbnail_url":"https://images.openai.com/thumbnails/0a1b2c3d-0000-5000-8000-00000000a001-2.jpg","title":"Zento Nova 8 photo 2"}],"c":3}
+
+data: {"p":"/message/metadata/model_dil_v2/appData/opGenui/componentResults/0a1b2c3d-0000-5000-8000-00000000a002/state/images","o":"append","v":[{"url":"https://shop1.example/0a1b2c3d-0000-5000-8000-00000000a002","content_url":"https://images.openai.com/static-rsc-4/0a1b2c3d-0000-5000-8000-00000000a002-1.jpg?purpose=fullsize","thumbnail_url":"https://images.openai.com/thumbnails/0a1b2c3d-0000-5000-8000-00000000a002-1.jpg","title":"Kovo Edge 5 Pro photo 1"},{"url":"https://shop2.example/0a1b2c3d-0000-5000-8000-00000000a002","content_url":"https://images.openai.com/static-rsc-4/0a1b2c3d-0000-5000-8000-00000000a002-2.jpg?purpose=fullsize","thumbnail_url":"https://images.openai.com/thumbnails/0a1b2c3d-0000-5000-8000-00000000a002-2.jpg","title":"Kovo Edge 5 Pro photo 2"}],"c":3}
+
+data: {"p":"/message/metadata/model_dil_v2/appData/opGenui/componentResults/0a1b2c3d-0000-5000-8000-00000000a003/state/images","o":"append","v":[{"url":"https://shop1.example/0a1b2c3d-0000-5000-8000-00000000a003","content_url":"https://images.openai.com/static-rsc-4/0a1b2c3d-0000-5000-8000-00000000a003-1.jpg?purpose=fullsize","thumbnail_url":"https://images.openai.com/thumbnails/0a1b2c3d-0000-5000-8000-00000000a003-1.jpg","title":"Lumora Pix 3 photo 1"},{"url":"https://shop2.example/0a1b2c3d-0000-5000-8000-00000000a003","content_url":"https://images.openai.com/static-rsc-4/0a1b2c3d-0000-5000-8000-00000000a003-2.jpg?purpose=fullsize","thumbnail_url":"https://images.openai.com/thumbnails/0a1b2c3d-0000-5000-8000-00000000a003-2.jpg","title":"Lumora Pix 3 photo 2"}],"c":3}
+
+data: {"p":"/message/status","o":"replace","v":"finished_successfully","c":3}
+
+data: {"type":"message_stream_complete","conversation_id":"00000000-0000-4000-8000-000000000060"}
+
+data: [DONE]

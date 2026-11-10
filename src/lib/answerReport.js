@@ -102,8 +102,8 @@ export function answerReport(rec, { previous = null, profiles = [], generatedAt 
     pickedFor: extractBrandAspects(passagesOf(b.name)).slice(0, 2).join(", "),
     backing: { label: b.backing.label, tone: b.backing.tone, verdict: b.backing.verdict },
   })).sort((a, b) => (a.position || 99) - (b.position || 99));
-  const weak = brandRows.find((b) => b.position && b.position <= 3 && (b.backing.verdict === "own" || b.backing.verdict === "none"));
-  const brandNote = weak ? `${weak.name} was named ${weak.position === 1 ? "first" : ORD(weak.position)} with ${weak.backing.verdict === "own" ? "only its own site" : "nothing it cited"} behind it — easy to lose next time.` : "";
+  const weak = brandRows.find((b) => b.position && b.position <= 3 && (b.backing.verdict === "own" || b.backing.verdict === "none" || b.backing.verdict === "nocited"));
+  const brandNote = weak ? `${weak.name} was named ${weak.position === 1 ? "first" : ORD(weak.position)} with ${weak.backing.verdict === "own" ? "only its own site" : "no cited page"} behind it.` : "";
 
   // Every page the engine opened, cited first.
   const matrix = computeBrandMatrix(rec);
@@ -122,7 +122,7 @@ export function answerReport(rec, { previous = null, profiles = [], generatedAt 
     ["Captured", dateTime(rec.capturedAt)],
     ["Engine", `${engine}${rec.model ? ` · ${rec.model}` : ""}`],
     ["Kind of answer", kind.label],
-    ["Answer length", words ? `${words.toLocaleString("en-US")} words` : "not captured"],
+    ["Answer length", words ? `${words.toLocaleString(undefined)} words` : "not captured"],
     ["Searched the web", rec.searched || sources.length ? "yes" : "no"],
     ["Pages opened", `${sources.length} (${cited.length} cited)`],
     rec.geo && own && own.campaign ? ["Campaign", own.campaign] : null,
@@ -148,4 +148,4 @@ export function answerReport(rec, { previous = null, profiles = [], generatedAt 
   };
 }
 
-function dateTime(t) { const d = new Date(t); return `${dayLabel(t)}, ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}`; }
+function dateTime(t) { const d = new Date(t); return `${dayLabel(t)}, ${d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`; }

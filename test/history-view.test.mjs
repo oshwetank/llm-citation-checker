@@ -10,7 +10,7 @@
  * Every prompt, brand and page is made up; the domains are public sites.
  */
 import {
-  historyRows, historyView, isTaskPrompt, searchTokens, highlightRuns, groupRows, dayDiff, weekStart,
+  historyRows, historyView, rangeLabel, isTaskPrompt, searchTokens, highlightRuns, groupRows, dayDiff, weekStart,
 } from "../src/lib/historyView.js";
 import { normPrompt } from "../src/lib/analyzeView.js";
 import { answerSnippet, searchAnswers } from "../src/lib/answerSearch.js";
@@ -40,7 +40,7 @@ const records = [
   cap("gemini", HEAD, at(0, 9), { geo: { profileId: "p1", runId: "r2", promptId: "q1" }, sources: [src("91mobiles.com")], brandMentions: [m("Kovo"), m("Lumi")] }),
   cap("perplexity", HEAD + ".", at(0, 9), { geo: { profileId: "p1", runId: "r2", promptId: "q1" }, fanout: { search: q("headphones under 4000 reddit"), shopping: [], image: [] }, sources: [src("reddit.com")], brandMentions: [m("Zento")] }),
   cap("chatgpt", "best headphones under 4000", at(7, 9), { geo: { profileId: "p1", runId: "r1", promptId: "q1" } }),
-  cap("chatgpt", "best  headphones under 4000", at(14, 9)),
+  cap("chatgpt", "best  headphones under 4000", at(14, 9), { geo: { profileId: "p1", runId: "r0", promptId: "q1" } }),
   // ad-hoc, single engine
   cap("perplexity", "how does active noise cancellation work", at(0, 11), { fanout: { search: q("how does anc work", "feedforward vs feedback ANC"), shopping: [], image: [] }, sources: [src("rtings.com"), src("wikipedia.org")] }),
   cap("gemini", "best cafe to work from in Indiranagar", at(1, 18), { places: [{ name: "Cafe One" }, { name: "Cafe Two" }], sources: [src("zomato.com")] }),
@@ -52,9 +52,29 @@ const records = [
 ];
 const profiles = [{ id: "p1", name: "Budget headphones" }];
 
+console.log("\ncampaign prompts: grouped, left out, or alone (0.68.0)");
+{
+  // Asked for: "in the normal dashboard the campaign prompts should be
+  // grouped and there should be an option to look at the dashboard data
+  // without them".
+  const mixed = [...records, cap("chatgpt", HEAD, at(2, 9))];
+  const rs = historyRows(mixed, { profiles });
+  const heads = rs.filter((r) => normPrompt(r.text) === normPrompt(HEAD));
+  check("the same words asked by hand and by a campaign are two rows", heads.length === 2 && heads.filter((r) => r.fromCampaign).length === 1 && heads.find((r) => !r.fromCampaign).captures === 1, heads.map((r) => `${r.fromCampaign}:${r.captures}`).join(" "));
+  const all = { scope: { prompts: true, answers: true, fan: true }, period: "all" };
+  const g = historyView(rs, all, { now: NOW });
+  const last = g.groups[g.groups.length - 1];
+  check("by default a campaign's prompts are one block of their own, after the rest", last.campaign && last.label === "Budget headphones" && last.rows.length === 1 && g.groups.slice(0, -1).every((x) => !x.campaign && x.rows.every((r) => !r.fromCampaign)), g.groups.map((x) => `${x.label}(${x.rows.length})`).join(" | "));
+  const hid = historyView(rs, { ...all, campaigns: "hide" }, { now: NOW });
+  check("left out, none of a campaign's prompts count anywhere", hid.list.every((r) => !r.fromCampaign) && hid.list.length === rs.length - 1 && !hid.groups.some((x) => x.campaign), String(hid.list.length));
+  const only = historyView(rs, { ...all, campaigns: "only" }, { now: NOW });
+  check("or only them", only.list.length === 1 && only.groups.length === 1 && only.groups[0].campaign, String(only.list.length));
+}
+
 console.log("\nhistoryRows: one row per prompt");
 const rows = historyRows(records, { profiles });
-const row = (t) => rows.find((r) => r.key === normPrompt(t));
+// A campaign's prompt is keyed by its campaign too (0.68.0).
+const row = (t) => rows.find((r) => r.key === normPrompt(t) || r.key.endsWith(`|${normPrompt(t)}`));
 {
   check("prompts that differ only in case, spacing or a full stop are one row", rows.length === 8 && row(HEAD).captures === 5, rows.map((r) => r.text).join(" | "));
   const h = row(HEAD);
@@ -117,7 +137,7 @@ console.log("\nEngines, toggles and kinds");
   check("an engine switched off hides prompts only it answered", g.list.length === 2 && g.list.every((r) => r.engines.includes("gemini")), g.list.map((r) => r.text).join(" | "));
   check("engine counts don't depend on the engine filter", g.engineCounts.chatgpt === 4 && g.engineCounts.gemini === 2, JSON.stringify(g.engineCounts));
   const rep = historyView(rows, { ...base, repeat: true }, { now: NOW });
-  check("asked more than once", rep.list.length === 1 && rep.list[0].key === normPrompt(HEAD), rep.list.length);
+  check("asked more than once", rep.list.length === 1 && rep.list[0].key === row(HEAD).key, rep.list.length);
   const camp = historyView(rows, { ...base, campaign: true }, { now: NOW });
   check("from a campaign", camp.list.length === 1, camp.list.length);
   const k = historyView(rows, { ...base, kinds: { shopping: true } }, { now: NOW });
@@ -138,7 +158,7 @@ console.log("\nWeeks, totals, groups and sort");
   check("grouped Today, Yesterday, then earlier", g[0].label === "Today" && g[1].label === "Yesterday" && g[0].rows.length === 2, g.map((x) => `${x.label}:${x.rows.length}`).join(" "));
   check("older prompts are grouped by month", g.some((x) => x.label === "August"), g.map((x) => x.label).join());
   const s = historyView(rows, { ...base, sort: "asked" }, { now: NOW });
-  check("sort by asked most often", s.list[0].key === normPrompt(HEAD) && s.groups.length === 1, s.list[0].text);
+  check("sort by asked most often", s.list[0].key === row(HEAD).key && s.groups.length === 1, s.list[0].text);
 }
 
 console.log("\nSearches the engines ran");
@@ -167,6 +187,63 @@ console.log("\nSearching inside answers (done in the background)");
     { captureId: "c", capturedAt: 3 },
   ], "kovo battery");
   check("only answers holding every word come back", hits.length === 1 && hits[0].captureId === "a", JSON.stringify(hits));
+}
+
+console.log("\nSites and ads across your history (0.61.0)");
+{
+  const ad = (advertiser, targetDomain) => ({ advertiser, targetDomain, label: "Sponsored" });
+  const recs = [
+    cap("chatgpt", "best phones under 30000", at(0), { sources: [src("smartprix.com"), src("phonekart.example", "fetched")], brandMentions: [m("Kovo")], ads: [ad("Phonekart", "phonekart.example")] }),
+    cap("chatgpt", "best phones under 30000", at(2), { sources: [src("smartprix.com")], brandMentions: [m("Phonekart")], ads: [ad("Phonekart", "phonekart.example")] }),
+    cap("chatgpt", "best laptop for students", at(1), { sources: [src("smartprix.com", "fetched"), src("phonekart.example")], ads: [ad("Phonekart", "phonekart.example"), ad("Lapzone", "lapzone.example")] }),
+    cap("gemini", "how does anc work", at(1), { sources: [src("rtings.com")] }),
+  ];
+  const rws = historyRows(recs, {});
+  const v = historyView(rws, { period: "all" }, { now: NOW });
+  const smart = v.sites.find((x) => x.domain === "smartprix.com");
+  check("a site counts the prompts it showed up for, and those that cited it", smart.prompts === 2 && smart.cited === 1 && smart.citedShare === 50, JSON.stringify(smart));
+  check("sites most used first", v.sites[0].domain === "smartprix.com" || v.sites[0].prompts >= v.sites[1].prompts, v.sites.map((x) => x.domain).join());
+  const pk = v.ads.find((x) => x.advertiser === "Phonekart");
+  check("an advertiser counts every time it was shown, across prompts", pk.times === 3 && pk.prompts.length === 2 && pk.domains.join() === "phonekart.example", JSON.stringify(pk));
+  check("first and last seen", pk.first === at(2) && pk.last === at(0), `${pk.first} ${pk.last}`);
+  check("how often the same answer named it, or cited its site", pk.named === 1 && pk.cited === 1, `${pk.named}/${pk.cited}`);
+  check("advertisers most shown first", v.ads.map((x) => x.advertiser).join() === "Phonekart,Lapzone", v.ads.map((x) => x.advertiser).join());
+  const only = historyView(rws, { period: "all", ads: true }, { now: NOW });
+  check("'Has an ad' keeps only prompts that had one", only.list.length === 2 && only.list.every((r) => r.ads.length), only.list.map((r) => r.text).join(" | "));
+  check("and the count of prompts with an ad", v.withAds === 2, v.withAds);
+}
+
+console.log("\nA custom span of days (0.60.2)");
+{
+  // Asked for: "on the time line filter I'd like to add a custom option so
+  // the user can select a duration as per their need".
+  const recs = [0, 3, 5, 9, 40].map((d) => cap("chatgpt", `prompt ${d} days ago`, at(d, 23)));
+  const rws = historyRows(recs, {});
+  const ymd = (daysAgo) => { const d = new Date(at(daysAgo)); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  const pick = (from, to) => historyView(rws, { period: "custom", from, to }, { now: NOW }).list.map((r) => r.text).sort();
+  check("both days are included, the last one until midnight", JSON.stringify(pick(ymd(5), ymd(3))) === JSON.stringify(["prompt 3 days ago", "prompt 5 days ago"]), JSON.stringify(pick(ymd(5), ymd(3))));
+  check("dates picked the wrong way round still work", JSON.stringify(pick(ymd(3), ymd(5))) === JSON.stringify(pick(ymd(5), ymd(3))));
+  check("only a start date: everything from then on", pick(ymd(9), "").length === 4);
+  check("only an end date: everything up to then", JSON.stringify(pick("", ymd(9))) === JSON.stringify(["prompt 40 days ago", "prompt 9 days ago"]), JSON.stringify(pick("", ymd(9))));
+  check("the span reads as dates", rangeLabel("2026-09-27", "2026-10-02", NOW) === "27 Sep – 2 Oct" && rangeLabel("2025-12-30", "2026-01-02", NOW) === "30 Dec 2025 – 2 Jan", rangeLabel("2025-12-30", "2026-01-02", NOW));
+}
+
+console.log("\nlanguage and market (0.70.0)");
+{
+  const rs = historyRows([
+    cap("chatgpt", "mejor banco digital", at(0), { answerLang: "es", ai: { lang: "es-MX", market: { country: "MX" } } }),
+    cap("gemini", "melhor banco digital", at(0), { answerLang: "pt" }),
+    cap("chatgpt", "best digital bank", at(1), { answerLang: "en", ai: { lang: "en", market: { country: "GB" } } }),
+    cap("perplexity", "best budget laptop", at(1)),
+  ]);
+  const v = historyView(rs, { period: "all" }, { now: NOW });
+  check("languages counted, the AI's reading first, as base codes", JSON.stringify(v.langCounts) === JSON.stringify([{ code: "en", n: 1 }, { code: "es", n: 1 }, { code: "pt", n: 1 }]), JSON.stringify(v.langCounts));
+  check("markets counted from the AI's check", v.marketCounts.map((x) => x.code).join() === "GB,MX", JSON.stringify(v.marketCounts));
+  const es = historyView(rs, { period: "all", lang: "es" }, { now: NOW });
+  check("filter by language", es.list.length === 1 && es.list[0].text === "mejor banco digital", es.list.map((r) => r.text).join());
+  const gb = historyView(rs, { period: "all", market: "GB" }, { now: NOW });
+  check("filter by market", gb.list.length === 1 && gb.list[0].text === "best digital bank");
+  check("the counts don't shrink when one is picked", es.langCounts.length === 3);
 }
 
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");

@@ -17,20 +17,34 @@
          request leaves the browser for it; analyze-popup.test.mjs checks. -->
     <link rel="stylesheet" href="fonts.css" />
     <link rel="stylesheet" href="panel.css" />
+    <!-- Sets the theme (Studio or Classic, light or dark) on <html> before the
+         first paint. panel.js is a module and runs after the body, so leaving
+         it to panel.js flashed the light Studio page on every open for anyone
+         who picked dark or Classic. A plain script, not inline: an extension
+         page's CSP refuses inline script. -->
+    <script src="theme-boot.js"></script>
+    <script src="display-boot.js"></script>
   </head>
   <body>
     <div class="app-wrapper">
       <header class="app-header">
         <div class="header-brand">
           <div class="brand-logo-group">
-            <div class="brand-icon">
-              <img src="../icons/icon48.png" width="24" height="24" style="object-fit: contain; display: block;" alt="Logo" />
-            </div>
+            <!-- 0.78.0: the logo opens the web page, the name the Dashboard. -->
+            <button type="button" class="brand-icon" id="brandIcon" aria-label="CitoSkeleton on the web (opens a new tab)">
+              <img src="../icons/icon48.png" width="24" height="24" style="object-fit: contain; display: block;" alt="" />
+            </button>
             <div class="brand-text">
-              <span class="brand-title">CitoSkeleton</span>
-              <span class="version-badge">v0.57.0</span>
+              <button type="button" class="brand-title" id="brandTitle">CitoSkeleton</button>
+              <span class="version-badge">v0.84.0</span>
               <span class="brand-sub">ChatGPT, Gemini, Perplexity &amp; Grok</span>
             </div>
+            <!-- Pause capture (0.66.0), in the popup and the tab. -->
+            <button id="capToggle" class="cap-toggle" type="button" role="switch" aria-checked="true" title="Capturing your engine chats. Click to pause.">
+              <span class="cap-dot" aria-hidden="true"></span><span class="cap-label">Capturing</span>
+            </button>
+            <!-- A model downloading (0.84.0): seen from every page, opens Ask. -->
+            <button id="modelDl" class="model-dl" type="button" hidden title="An AI model is downloading. Open Ask to see it, or to cancel."><span class="model-dl-ring" aria-hidden="true"></span><span class="model-dl-pct">0%</span></button>
           </div>
           <!-- Pop-out to the full tab: a square icon in the popup's one-row bar
                (0.55.0), hidden in the tab itself. Tab wiring keys off
@@ -56,6 +70,12 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"></path><line x1="4" y1="22" x2="4" y2="3"></line></svg>
             <span>Campaigns</span>
           </button>
+          <!-- Ask (0.73.0): questions about your captures, answered by the
+               built-in AI. The full tab only; the popup is too small for it. -->
+          <button class="nav-tab tab" data-tab="ask">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+            <span>Ask</span>
+          </button>
           <button class="nav-tab tab" data-tab="about">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
             <span>About</span>
@@ -67,9 +87,13 @@
       </header>
 
       <main class="app-content">
+        <!-- An answer asked by hand that never arrived (0.84.0): said here,
+             on whichever page is open, instead of missed in silence. -->
+        <div id="missedBanner" class="missed-banner" role="alert" hidden></div>
         <section id="analyze" class="panel active"></section>
         <section id="dashboard" class="panel"></section>
         <section id="loader" class="panel"></section>
+        <section id="ask" class="panel"></section>
 
         <!-- Compare left the top menu in 0.47.0: comparing answers to one prompt
              starts from the answer itself (Analyze → "All N answers to this
@@ -85,8 +109,7 @@
             <p class="muted">
               Pick one prompt you have captured more than once. You get each run's own
               profile (fan-out, cited vs. fetched, answer length), a per-engine split,
-              and matrices showing every brand, domain, page and sub-query across runs —
-              so you can see not just <i>that</i> something moved, but what moved it.
+              and matrices showing every brand, domain, page and sub-query across runs.
             </p>
             <div class="proj-row cmp-pickers">
               <!-- Typing here filters the dropdown below. A bare <select> is
@@ -165,19 +188,92 @@
                   </div>
                   <div class="ab-meter" id="storageInfo"></div>
                   <div class="ab-rows">
+                    <!-- Settings in groups (0.78.0, asked: "group and hide them under
+                         a thing like display settings"). Display starts closed;
+                         each group remembers whether it was open (cito-settings-open). -->
+                    <details class="ab-group" id="setGroupDisplay" data-group="display">
+                    <summary class="ab-group-h"><b>Display</b><span>Theme, light or dark, typeface, sizes, density and motion</span></summary>
                     <!-- Appearance (0.56.0): moved here from the top bar, which the
                          canvas keeps to the logo, the pages and pop-out. It applies
                          at once, so it sits outside Save / Undo. -->
+                    <!-- Theme (0.59.0): Studio, the new design and the default, or
+                         Classic, the look from 0.47.0 to 0.58.0. Like Light / Dark it
+                         applies at once, outside Save / Undo, in both views. -->
+                    <div class="ab-row ab-row-theme">
+                      <div class="ab-row-text" id="setStyleLabel">
+                        <b>Theme</b>
+                        <span>Studio is the current design. Classic is the earlier look, kept for anyone who prefers it.</span>
+                      </div>
+                      <div class="ab-style" role="radiogroup" aria-labelledby="setStyleLabel" id="setStyle">
+                        <button type="button" role="radio" class="ab-style-card" data-style-pick="studio" aria-checked="false">
+                          <span class="ab-style-swatch studio" aria-hidden="true"><i></i><i></i><i></i></span>
+                          <span class="ab-style-name">Studio</span>
+                          <span class="ab-style-sub">Warm page · white cards · indigo</span>
+                        </button>
+                        <button type="button" role="radio" class="ab-style-card" data-style-pick="classic" aria-checked="false">
+                          <span class="ab-style-swatch classic" aria-hidden="true"><i></i><i></i><i></i></span>
+                          <span class="ab-style-name">Classic</span>
+                          <span class="ab-style-sub">Glass cards · blue</span>
+                        </button>
+                      </div>
+                    </div>
                     <div class="ab-row">
                       <div class="ab-row-text" id="setThemeLabel">
                         <b>Appearance</b>
-                        <span>Applies straight away, in the popup and the full tab.</span>
+                        <span>Light or dark. Applies straight away, in the popup and the full tab.</span>
                       </div>
                       <div class="ab-seg" role="radiogroup" aria-labelledby="setThemeLabel" id="setTheme">
                         <button type="button" role="radio" class="ab-seg-btn" data-theme-pick="light" aria-checked="false">Light</button>
                         <button type="button" role="radio" class="ab-seg-btn" data-theme-pick="dark" aria-checked="false">Dark</button>
                       </div>
                     </div>
+                    <!-- Motion (0.78.0): the transitions and the small animations that
+                         make the interface feel alive, on or off. Off also when the
+                         system asks for reduced motion. Applied before paint by
+                         display-boot.js (cito-motion → data-motion on <html>). -->
+                    <div class="ab-row">
+                      <div class="ab-row-text" id="setMotionLabel">
+                        <b>Motion</b>
+                        <span>Smooth transitions and small animations. Off keeps everything still.</span>
+                      </div>
+                      <div class="ab-seg" role="radiogroup" aria-labelledby="setMotionLabel" id="setMotion">
+                        <button type="button" role="radio" class="ab-seg-btn" data-motion-pick="on" aria-checked="false">On</button>
+                        <button type="button" role="radio" class="ab-seg-btn" data-motion-pick="off" aria-checked="false">Off</button>
+                      </div>
+                    </div>
+                    <div class="ds" id="setDisplay" aria-labelledby="setDisplayLabel"></div>
+                    </details>
+                    <details class="ab-group" id="setGroupLang" data-group="lang" open>
+                    <summary class="ab-group-h"><b>Language and detail</b><span>The interface's language, and how much technical detail it shows</span></summary>
+                    <!-- Level of detail (0.60.0): Expert adds the engine's raw ids,
+                         indexes and refs, and a Raw tab in Analyze's Details.
+                         Applies at once, outside Save / Undo, like the theme. -->
+                    <div class="ab-row">
+                      <div class="ab-row-text" id="setDetailLabel">
+                        <b>Level of detail</b>
+                        <span>Expert adds each page's index and ref ids, the listing feeds and a Raw tab.</span>
+                      </div>
+                      <div class="ab-seg" role="radiogroup" aria-labelledby="setDetailLabel" id="setDetail">
+                        <button type="button" role="radio" class="ab-seg-btn" data-detail-pick="simple" aria-checked="false">Simple</button>
+                        <button type="button" role="radio" class="ab-seg-btn" data-detail-pick="expert" aria-checked="false">Expert</button>
+                      </div>
+                    </div>
+                    <!-- Language (0.71.0): the interface's language. "Same as the
+                         browser" follows Chrome's. Applies at once (the page
+                         reloads); translations are drafts for review. -->
+                    <div class="ab-row">
+                      <label class="ab-row-text" for="setLang">
+                        <b>Language</b>
+                        <span>The interface's language. Answers are read in any language, whatever you pick here.</span>
+                      </label>
+                      <select id="setLang" class="ab-select" data-reloads="1"></select>
+                    </div>
+                    <!-- Display (0.63.0): typeface, text size, brightness, contrast,
+                         line spacing and density. Applies at once, outside Save /
+                         Undo, in both views (ui/display-boot.js; drawn by panel.js). -->
+                    </details>
+                    <details class="ab-group" id="setGroupData" data-group="data" open>
+                    <summary class="ab-group-h"><b>Data and capture</b><span>What's kept on this computer, and what's read</span></summary>
                     <div class="ab-row">
                       <label class="ab-row-text" for="setRetention">
                         <b>Captures to keep</b>
@@ -202,6 +298,53 @@
                         <span class="ab-unit">MB</span>
                       </div>
                     </div>
+                    <!-- Email for updates (0.81.0): the one asked for on the welcome
+                         page; changed or removed here. Applies at once. -->
+                    <div class="ab-row ab-email-row" id="setEmailRow">
+                      <label class="ab-row-text" for="setEmail">
+                        <b>Email for updates</b>
+                        <span id="setEmailState">Only for news about CitoSkeleton's updates and offers. Never shared with anyone else.</span>
+                      </label>
+                      <div class="ab-email">
+                        <input id="setEmail" type="email" autocomplete="email" placeholder="you@example.com" />
+                        <button type="button" id="setEmailSave" class="btn sm">Save</button>
+                        <button type="button" id="setEmailRemove" class="btn sm ghost" hidden>Remove</button>
+                      </div>
+                      <p class="ab-email-msg" id="setEmailMsg" role="status"></p>
+                    </div>
+                    <!-- Built-in AI (0.70.0): an open-source model run on this
+                         computer. Applies at once, outside Save / Undo
+                         (ui/aiSettings.js; the model lives in src/aiService.js). -->
+                    </details>
+                    <details class="ab-group" id="setGroupAi" data-group="ai" open>
+                    <summary class="ab-group-h"><b>Built-in AI</b><span>The AI that runs on this computer</span></summary>
+                    <div class="ai-card" id="setAi"></div>
+                    </details>
+                    <details class="ab-group" id="setGroupCapture" data-group="capture" open>
+                    <summary class="ab-group-h"><b>Reading and capture</b><span>Cited pages, Continue in… chats, the capture debugger</span></summary>
+                    <div class="ab-row">
+                      <label class="ab-row-text" for="setPages">
+                        <b>Read the cited pages</b>
+                        <span>After each answer, read the pages it cited, on this computer, to see which brands each page really names. This is the only time the extension makes requests of its own, and only to those pages. Chrome asks you to allow site access the first time.</span>
+                        <span class="ab-row-note" id="setPagesNote" hidden></span>
+                      </label>
+                      <label class="ab-switch">
+                        <input type="checkbox" id="setPages" role="switch" />
+                        <span class="ab-switch-track" aria-hidden="true"><span class="ab-switch-knob"></span></span>
+                        <span class="ab-switch-text" id="setPagesText">Off</span>
+                      </label>
+                    </div>
+                    <div class="ab-row">
+                      <label class="ab-row-text" for="setHandoffKeep">
+                        <b>Capture "Continue in…" chats</b>
+                        <span>Chats opened with Continue in… are you talking about your own data, so they aren't kept as engine answers. Turn this on to keep them too.</span>
+                      </label>
+                      <label class="ab-switch">
+                        <input type="checkbox" id="setHandoffKeep" role="switch" />
+                        <span class="ab-switch-track" aria-hidden="true"><span class="ab-switch-knob"></span></span>
+                        <span class="ab-switch-text" id="setHandoffKeepText">Off</span>
+                      </label>
+                    </div>
                     <div class="ab-row">
                       <label class="ab-row-text" for="setDebug">
                         <b>Capture debugger</b>
@@ -213,6 +356,7 @@
                         <span class="ab-switch-text" id="setDebugText">Off</span>
                       </label>
                     </div>
+                    </details>
                   </div>
                   <div class="ab-savebar">
                     <span id="setStatus" class="ab-status" role="status"></span>
@@ -221,6 +365,11 @@
                   </div>
                 </div>
               </div>
+
+              <!-- Account (0.82.0): sign in with an emailed code, a name for
+                   what you share, the campaigns you've shared. Built by
+                   renderAccount(). -->
+              <div class="ab-sec" data-sec="account" id="abAccount"></div>
 
               <div class="ab-sec" data-sec="data">
                 <div class="card ab-card">
@@ -247,21 +396,37 @@
                   </div>
                   <div class="ab-tool">
                     <div class="ab-tool-text">
-                      <b>Guided tour</b>
-                      <span>A short walk through each tab, the same one shown on first install.</span>
+                      <b>Welcome guide</b>
+                      <span>What each part is for, in pictures: the same guide shown on first install.</span>
                     </div>
-                    <button type="button" id="replayTour" class="btn sm ghost">Replay tour</button>
+                    <button type="button" id="replayTour" class="btn sm ghost">Open the guide</button>
                   </div>
                 </div>
               </div>
 
               <div class="ab-sec" data-sec="diagnostics">
                 <div class="ab-buildline" id="abBuildFull" role="status"></div>
+                <!-- The capture check (0.73.1): is each engine being captured,
+                     and if not, which step failed. Built by renderCaptureCheck(). -->
+                <div class="card ab-card" id="capCheck">
+                  <div class="ab-head">
+                    <div>
+                      <h2 class="ab-title">Capture check</h2>
+                      <p class="ab-sub">Is each engine being captured, and if not, where it stops. Ask a question on the engine first, then check.</p>
+                    </div>
+                    <button type="button" class="btn sm" id="capCheckRun">Check again</button>
+                  </div>
+                  <div class="cap-rows" id="capCheckRows" role="status"></div>
+                  <div class="cap-foot">
+                    <button type="button" class="btn sm" id="capCheckCopy">Copy capture report</button>
+                    <span class="cap-note" id="capCheckNote">Addresses, counts and reasons only — no prompts or answers.</span>
+                  </div>
+                </div>
                 <div class="card ab-card">
                   <div class="ab-head">
                     <div>
                       <h2 class="ab-title">Report a problem</h2>
-                      <p class="ab-sub">Send both of these. Neither contains your prompts, answers, links or brand names.</p>
+                      <p class="ab-sub">The first two contain no prompts, answers, links or brand names. The third does, and says so.</p>
                     </div>
                   </div>
                   <div class="ab-report">
@@ -284,6 +449,14 @@
                         <select id="diagExportProfile" class="filter"></select>
                         <button type="button" id="diagExportBtn" class="btn sm ghost">Export .zip</button>
                       </div>
+                    </div>
+                    <div class="ab-report-item">
+                      <span class="ab-num" aria-hidden="true">3</span>
+                      <div class="ab-tool-text">
+                        <b>Payloads it couldn't read</b>
+                        <span>With Debug capture on, what Gemini sent that CitoSkeleton can't read yet. These hold your prompt and the answer: open the .zip before you send it.</span>
+                      </div>
+                      <button type="button" id="probeSave" class="btn sm ghost">Save .zip</button>
                     </div>
                   </div>
                 </div>

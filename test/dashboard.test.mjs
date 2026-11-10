@@ -139,7 +139,25 @@ try {
     // innerText returns the transformed text.
     check("no Performance Overview, no Top Domains column", !/Performance Overview|Top Domains/i.test(r.text));
     check("no campaign picker on the Dashboard", !r.campaignPicker);
-    check("it says where the data lives", /stored on this computer/.test(r.text));
+    // Once, in the app bar (0.68.1: the card repeated it).
+    const where = await page.evaluate(() => ({ bar: document.getElementById("headerPage")?.innerText || "", inCard: /stored on this computer/.test(document.querySelector("#dashboard .db-top")?.innerText || "") }));
+    check("no \"stored on this computer\" line on the Dashboard (0.78.0)", !/stored on this computer/.test(where.bar) && !where.inCard, JSON.stringify(where));
+    const rows = await page.evaluate(() => [...document.querySelectorAll("#dashboard .db-fgrid .db-flabel")].map((x) => x.textContent));
+    check("the filters are labelled rows: Look in, Engines, When, Show", rows.join("|") === "Look in|Engines|When|Show", rows.join("|"));
+    // 0.78.0, asked: the history started 60–70% down the page.
+    const lay = await page.evaluate(() => ({
+      list: Math.round(document.querySelector("#dashboard .db-list")?.getBoundingClientRect().top || 9999),
+      open: !document.getElementById("dbFilters")?.hidden,
+      btn: !!document.getElementById("dbFiltersBtn"),
+      recentShown: [...document.querySelectorAll("#dashboard .db-recent")].some((x) => x.offsetParent !== null),
+    }));
+    check("the history starts near the top: under 320px down", lay.list < 320, String(lay.list));
+    check("the filters sit behind a Filters button, closed", lay.btn && !lay.open, JSON.stringify(lay));
+    await page.click("#dbFiltersBtn");
+    await page.waitForTimeout(250);
+    check("which opens them", await page.evaluate(() => !document.getElementById("dbFilters").hidden && document.getElementById("dbFiltersBtn").getAttribute("aria-expanded") === "true"));
+    await page.click("#dbFiltersBtn");
+    await page.waitForTimeout(250);
   }
 
   console.log("\nOne row per prompt");
@@ -203,6 +221,38 @@ try {
     const w = await page.evaluate(() => ({ pressed: document.querySelector(".db-week:last-child")?.getAttribute("aria-pressed"), hint: document.querySelector(".db-when-box .db-muted")?.textContent || "" }));
     check("clicking this week's bar picks the week", w.pressed === "true" && /Week of/.test(w.hint), JSON.stringify(w));
     await page.evaluate(() => [...document.querySelectorAll(".db-week")].pop()?.click());
+
+    // A custom span of days (0.60.2, asked for).
+    await page.evaluate(() => [...document.querySelectorAll(".db-seg-btn")].find((b) => b.textContent === "Custom…")?.click());
+    await page.waitForTimeout(300);
+    const c0 = await page.evaluate(() => ({
+      fields: [...document.querySelectorAll(".db-range input[type=date]")].map((i) => i.value),
+      label: document.querySelector(".db-seg-btn.on")?.textContent || "",
+      dark: getComputedStyle(document.querySelector(".db-range input[type=date]") || document.body).colorScheme,
+    }));
+    check("Custom opens two date fields, the last 7 days to start with", c0.fields.length === 2 && c0.fields.every(Boolean) && /\d+ \w{3} – \d+ \w{3}/.test(c0.label), JSON.stringify(c0));
+    const today = await page.evaluate(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; });
+    const setRange = async (from, to) => {
+      await page.evaluate(([from, to]) => {
+        const [a, b] = document.querySelectorAll(".db-range input[type=date]");
+        a.value = from; a.dispatchEvent(new Event("change"));
+      }, [from, to]);
+      await page.waitForTimeout(250);
+      await page.evaluate(([from, to]) => {
+        const b = document.querySelectorAll(".db-range input[type=date]")[1];
+        b.value = to; b.dispatchEvent(new Event("change"));
+      }, [from, to]);
+      await page.waitForTimeout(300);
+    };
+    await setRange(today, today);
+    const c1 = ours(await rowsNow());
+    check("today to today keeps today's prompts", c1.length === 2, c1.length);
+    await setRange("2001-01-01", "2001-01-31");
+    const c2 = await page.evaluate(() => ({ rows: document.querySelectorAll(".db-row").length, label: document.querySelector(".db-seg-btn.on")?.textContent || "" }));
+    check("a span with nothing in it shows nothing, and says the span", c2.rows === 0 && /1 Jan 2001 – 31 Jan 2001/.test(c2.label), JSON.stringify(c2));
+    await page.evaluate(() => [...document.querySelectorAll(".db-seg-btn")].find((b) => b.textContent === "All time")?.click());
+    await page.waitForTimeout(300);
+    check("leaving Custom hides the date fields", await page.evaluate(() => !document.querySelector(".db-range")));
   }
 
   console.log("\nThe searches the engines ran");
@@ -211,6 +261,14 @@ try {
     await page.waitForTimeout(300);
     const r = await page.evaluate(() => ({ rows: document.querySelectorAll(".db-fan-row:not(.db-th)").length, head: document.querySelector(".db-fan-row.db-th")?.textContent || "" }));
     check("a table of every search, how often, which engines, for which prompt", r.rows > 0 && /Ran for your prompt/.test(r.head), JSON.stringify(r));
+    // "Ran for your prompt" was cut at 60 characters with the rest in a
+    // tooltip, and only the first prompt was a link (0.60.2).
+    const f = await page.evaluate(() => {
+      const prompts = new Set([...document.querySelectorAll(".db-fan-row:not(.db-th) .db-from-link")].map((b) => b.textContent));
+      const cells = [...document.querySelectorAll(".db-fan-row:not(.db-th) > span:last-child")];
+      return { links: prompts.size, cut: cells.some((c) => /…/.test(c.textContent)), styles: [...document.querySelectorAll(".db-from-link")].every((b) => getComputedStyle(b).whiteSpace !== "nowrap") };
+    });
+    check("every prompt is whole, wraps, and is its own link", f.links > 0 && !f.cut && f.styles, JSON.stringify(f));
     await page.evaluate(() => [...document.querySelectorAll(".db-view")].find((b) => /Prompts/.test(b.textContent))?.click());
     await page.waitForTimeout(300);
   }
@@ -301,7 +359,8 @@ try {
 
   console.log("\nCampaign results moved to Campaigns");
   {
-    const has = await page.evaluate(() => [...document.querySelectorAll("#dashboard select")].length <= 1 && !document.getElementById("geoMetrics"));
+    // The popup's "campaign prompts" menu (0.68.0) is a filter, not results.
+    const has = await page.evaluate(() => [...document.querySelectorAll("#dashboard select:not(.db-campsel)")].length <= 1 && !document.getElementById("geoMetrics"));
     check("the Dashboard holds no campaign results", has);
   }
 

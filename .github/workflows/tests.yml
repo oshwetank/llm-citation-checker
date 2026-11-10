@@ -52,8 +52,22 @@ jobs:
               echo "::error file=$f::$(head -3 /tmp/err | tr '\n' ' ')"
               fail=1
             fi
-          done < <(find src ui test -name '*.js' -o -name '*.mjs' | sort)
+          done < <(find src ui test server -name '*.js' -o -name '*.mjs' | sort)
           exit $fail
+
+      # The built-in AI's runtime ships inside the extension (0.70.0): its
+      # files must be exactly the vendored versions, and must not build code
+      # from strings.
+      - name: Check the vendored AI runtime
+        run: node scripts/vendor-transformers.mjs --check
+
+      # The Firefox build (0.72.0): Mozilla's own linter on dist/firefox.
+      # Warnings (Chrome-only calls behind checks, the vendored runtime) are
+      # expected; errors fail the job.
+      - name: Build and lint the Firefox version
+        run: |
+          node scripts/build-firefox.mjs
+          npx -y web-ext@8 lint --source-dir dist/firefox --self-hosted
 
       # A manifest that Chrome or the Web Store rejects is a shipping failure
       # the test suite never sees. The description limit is checked because a
@@ -61,7 +75,7 @@ jobs:
       - name: Validate manifest.json
         run: |
           node --input-type=module -e '
-            import { readFileSync } from "node:fs";
+            import { readFileSync, readdirSync } from "node:fs";
             const m = JSON.parse(readFileSync("manifest.json", "utf8"));
             const problems = [];
             const cap = (field, value, limit) => {
@@ -70,6 +84,13 @@ jobs:
               }
             };
             cap("description", m.description, 132);
+            // 0.71.0: the name and description come from _locales; each
+            // description in every language has the same cap.
+            for (const d of (m.default_locale ? readdirSync("_locales") : [])) {
+              const msgs = JSON.parse(readFileSync(`_locales/${d}/messages.json`, "utf8"));
+              cap(`_locales/${d} appDesc`, msgs.appDesc && msgs.appDesc.message, 132);
+              cap(`_locales/${d} appName`, msgs.appName && msgs.appName.message, 45);
+            }
             cap("name", m.name, 45);
             cap("action.default_title", m.action?.default_title, 75);
             if (m.manifest_version !== 3) problems.push("manifest_version must be 3");
@@ -106,13 +127,13 @@ jobs:
         run: |
           fail=0
           for f in test/about-view.test.mjs test/adapter.test.mjs test/ai-brands.test.mjs test/analyze-view.test.mjs test/auth-check.test.mjs \
-                   test/brand-context.test.mjs test/build-id.test.mjs test/chatgpt-retrieval.test.mjs test/compare-view.test.mjs test/history-view.test.mjs \
+                   test/brand-context.test.mjs test/build-id.test.mjs test/chatgpt-retrieval.test.mjs test/compare-view.test.mjs test/over-time-view.test.mjs test/history-view.test.mjs \
                    test/auto-competitors.test.mjs \
                    test/behaviour.test.mjs test/brands.test.mjs test/campaign-board.test.mjs test/campaign-xlsx.test.mjs test/pdf-report.test.mjs \
                    test/concurrency.test.mjs test/diagnostics-summary.test.mjs \
                    test/dom-harvest-multiturn.test.mjs test/engine-submit-signal.test.mjs test/errorlog.test.mjs \
                    test/fanout.test.mjs test/feedback-bundle.test.mjs \
-                   test/gemini-answer.test.mjs test/geo.test.mjs \
+                   test/gemini-answer.test.mjs test/gemini-channel.test.mjs test/geo.test.mjs \
                    test/grok-gateway.test.mjs test/grok-render-citation-tags.test.mjs \
                    test/interception-endpoints.test.mjs test/dom-harvest.test.mjs test/nano-stance.test.mjs \
                    test/onboarding.test.mjs \
@@ -126,9 +147,9 @@ jobs:
                    test/perplexity-ws-contamination.test.mjs \
                    test/glossary.test.mjs test/grounding-score.test.mjs test/multi-engine.test.mjs \
                    test/pacing.test.mjs test/retention.test.mjs \
-                   test/sources.test.mjs test/text-sanitize.test.mjs test/xlsxlite.test.mjs \
+                   test/image-url.test.mjs test/sources.test.mjs test/text-sanitize.test.mjs test/xlsxlite.test.mjs \
                    test/brands-local.test.mjs test/same-answer.test.mjs test/gemini-hotels.test.mjs \
-                   test/chatgpt-ads.test.mjs test/answer-links.test.mjs; do
+                   test/chatgpt-ads.test.mjs test/chatgpt-genui.test.mjs test/raw-breakdown.test.mjs test/page-text.test.mjs test/offers.test.mjs test/netlog.test.mjs test/proto-strings.test.mjs test/answer-links.test.mjs test/campaign-view.test.mjs test/display.test.mjs test/chatgpt-signed-out.test.mjs test/money.test.mjs test/site-kind.test.mjs test/text-has.test.mjs test/ai-check.test.mjs test/hardware-tier.test.mjs test/i18n.test.mjs test/firefox-build.test.mjs test/assistant.test.mjs test/context-pack.test.mjs test/campaign-edit.test.mjs test/retry-missing.test.mjs test/capture-health.test.mjs test/run-compare.test.mjs test/email-check.test.mjs test/campaign-bundle.test.mjs test/cloud.test.mjs test/server-api.test.mjs test/laya.test.mjs test/ai-bench.test.mjs test/insights.test.mjs test/ask-knowledge.test.mjs test/training-gen.test.mjs; do
             echo "── $f"
             if ! node "$f"; then
               echo "::error file=$f::unit test failed"
@@ -146,6 +167,9 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          # upgrade-capture installs an older release from history first.
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -177,7 +201,8 @@ jobs:
                    test/run-interrupted.test.mjs \
                    test/saved-conversations-engine.test.mjs test/source-pipeline-ui.test.mjs test/tab-management.test.mjs \
                    test/timeout-diagnostics.test.mjs \
-                   test/ui-visibility.test.mjs test/same-answer-store.test.mjs test/answer-extras-ui.test.mjs; do
+                   test/ui-visibility.test.mjs test/same-answer-store.test.mjs test/answer-extras-ui.test.mjs \
+                   test/theme-style.test.mjs test/genui-answer-ui.test.mjs test/cited-pages.test.mjs test/network-recorder.test.mjs test/page-copy.test.mjs test/campaign-view-ui.test.mjs test/display-settings.test.mjs test/gemini-channel-ui.test.mjs test/capture-pause.test.mjs test/builtin-ai.test.mjs test/i18n-ui.test.mjs test/screens-ui.test.mjs test/ask-ui.test.mjs test/capture-real-page.test.mjs test/ai-engines.test.mjs test/panel-refresh.test.mjs test/handoff-ui.test.mjs test/campaign-edit-ui.test.mjs test/chatgpt-stream-end.test.mjs test/limit-resume.test.mjs test/chatgpt-page-copy.test.mjs test/campaign-combined-ui.test.mjs test/tour-once.test.mjs test/campaign-share-ui.test.mjs test/laya-ui.test.mjs test/capture-format-change.test.mjs test/upgrade-capture.test.mjs; do
             echo "── $f"
             if ! node "$f"; then
               echo "::error file=$f::browser test failed"

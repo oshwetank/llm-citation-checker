@@ -36,6 +36,7 @@
  *      later; nothing currently calls it.
  *   C. brands.js alone. Always computed first, always the fallback.
  */
+import { wordRe } from "./textMatch.js";
 import { detectBrands, escapeRegExp } from "./brands.js";
 import { isNanoAvailable, extractEntitiesWithNano, classifyBrandStanceWithNano } from "./nano.js";
 
@@ -120,7 +121,7 @@ function mergeAiNames(base, aiNames, plainText) {
     // the AI hallucinated or paraphrased it — skip rather than trust
     // blindly, since this whole layer's safety property depends on never
     // inventing a mention that isn't really there.
-    const hits = [...plainText.matchAll(new RegExp(`\\b${escapeRegExp(name)}\\b`, "gi"))];
+    const hits = [...plainText.matchAll(wordRe(name, "gi"))];
     if (!hits.length) continue;
     const entry = {
       brand: name,

@@ -163,7 +163,15 @@ try {
   console.log(`\nseeded: ${seeded.answers} answers to ${seeded.prompts} prompts (and 40 never reached), two runs; own brand "${seeded.own}"`);
 
   const external = [];
-  context.on("request", (r) => { if (!/^(chrome-extension|data|blob):/.test(r.url())) external.push(r.url()); });
+  // Requests made by the report pages themselves. Since 0.58.0 the Analyze
+  // tab the answer report is opened from loads the engine's product images
+  // (the popup already did), which is that page's doing, not the report's.
+  context.on("request", (r) => {
+    if (/^(chrome-extension|data|blob):/.test(r.url())) return;
+    let from = "";
+    try { from = r.frame().page().url(); } catch (_) {}
+    if (/\/ui\/report\.html/.test(from)) external.push(r.url());
+  });
   const page = await context.newPage();
   const pageErrors = [];
   page.on("pageerror", (e) => pageErrors.push(String(e)));
@@ -187,7 +195,9 @@ try {
     file: document.querySelector(".ex-file")?.textContent, go: document.getElementById("ex-go")?.textContent,
   }));
   check("it reports on one run, the latest picked", d.runs.length === 2 && /^Run 2 .*\(latest\) \*$/.test(d.runs[0]) && /^Run 1 /.test(d.runs[1]), d.runs.join(" | "));
-  check("with the seven pages to choose from", d.pages.join(",") === "summary,brands,prompts,sources,products,searches,actions", d.pages.join(","));
+  // 0.59.0: the last page is "Method" (definitions, runs, prompts); the
+  // advice it used to open with ("Where to act next") is gone.
+  check("with the seven pages to choose from", d.pages.join(",") === "summary,brands,prompts,sources,products,searches,method", d.pages.join(","));
   check("and a file named after the campaign and the run", d.file === "citoskeleton-report-test-run2.pdf" && d.go === "Open PDF report", `${d.file} · ${d.go}`);
   await page.evaluate(() => document.querySelector('.ex-table[data-page="searches"]').click());
   const [rep] = await Promise.all([context.waitForEvent("page"), page.evaluate(() => document.getElementById("ex-go").click())]);
@@ -198,7 +208,7 @@ try {
   let r = await inspect(rep);
   check("and opens the print dialog once it is laid out", r.printed === 1, `print called ${r.printed} times`);
   check("Save as PDF suggests the same file name", r.title === "citoskeleton-report-test-run2", r.title);
-  check("the pages left in, and not the one left out", ["Brands", "Prompts", "Sources", "Kinds of answer and products", "Actions and method"].every((e) => r.eyebrows.some((x) => x.toLowerCase().startsWith(e.toLowerCase()))) && !r.eyebrows.some((x) => /engine searches/i.test(x)), r.eyebrows.join(" | "));
+  check("the pages left in, and not the one left out", ["Brands", "Prompts", "Sources", "Kinds of answer and products", "Method"].every((e) => r.eyebrows.some((x) => x.toLowerCase().startsWith(e.toLowerCase()))) && !r.eyebrows.some((x) => /engine searches/i.test(x)), r.eyebrows.join(" | "));
   check("the long prompt table carries over onto a continuation page", r.eyebrows.some((x) => /^prompts.*continued/i.test(x)), r.eyebrows.join(" | "));
   {
     // The prompt-by-prompt table is the one headed "ID".

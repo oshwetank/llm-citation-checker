@@ -19,6 +19,7 @@ import { normalizeMentions } from "./mention-list.js";
 import { sameBrand } from "./funnel-omitted.js";
 import { normPrompt, knownVendors, answerKind } from "./analyzeView.js";
 import { searchTokens, matchesTokens } from "./answerSearch.js";
+import { normDomain, siteKindOf } from "./siteKind.js";
 
 export const ENGINE_ORDER = ["chatgpt", "gemini", "perplexity", "grok"];
 
@@ -29,7 +30,25 @@ export const PERIODS = [
   { id: "7d", label: "7 days", phrase: "in the last 7 days" },
   { id: "30d", label: "30 days", phrase: "in the last 30 days" },
   { id: "all", label: "All time", phrase: "in all your history" },
+  // Any span of days (0.60.2, asked for): f.from / f.to, "YYYY-MM-DD",
+  // both days included, local time.
+  { id: "custom", label: "Custom…", phrase: "between the dates you picked" },
 ];
+
+/** Local midnight of a "YYYY-MM-DD" day, or null. */
+export function dayStart(ymd) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd || ""));
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime() : null;
+}
+/** "12 Oct – 17 Oct" for a custom span, the year added when it isn't this one. */
+export function rangeLabel(from, to, now = Date.now()) {
+  const a = dayStart(from), b = dayStart(to);
+  if (a == null && b == null) return "Custom…";
+  const y = new Date(now).getFullYear();
+  const fmt = (t) => { const d = new Date(t); return `${dayMon(d)}${d.getFullYear() !== y ? ` ${d.getFullYear()}` : ""}`; };
+  if (a != null && b != null) return a === b ? fmt(a) : `${fmt(Math.min(a, b))} – ${fmt(Math.max(a, b))}`;
+  return a != null ? `From ${fmt(a)}` : `Until ${fmt(b)}`;
+}
 
 // The kinds of answer, in the canvas's order. "task" is a prompt that asked
 // for work (an email, a summary) rather than information: nothing to track.
@@ -72,12 +91,19 @@ const namedBrands = (rec) => normalizeMentions(rec.brandMentions || [], knownVen
  * @param {object[]} records  light capture rows
  * @param {{ profiles?: object[] }} opts  campaigns, to name a campaign's prompts
  */
+const baseLang = (l) => (l ? String(l).toLowerCase().split(/[-_]/)[0] : null);
+
 export function historyRows(records, { profiles = [] } = {}) {
   const byKey = new Map();
   for (const r of records || []) {
     if (!r || !r.captureId) continue;
-    const key = normPrompt(r.userPrompt);
-    if (!key) continue;
+    const norm = normPrompt(r.userPrompt);
+    if (!norm) continue;
+    // A campaign's prompt is its own row (0.68.0): the Dashboard
+    // groups a campaign's prompts together and can leave them out, so the
+    // same words asked by hand stay a row of their own.
+    const pid = r.geo && r.geo.profileId;
+    const key = pid ? `${pid}|${norm}` : norm;
     if (!byKey.has(key)) byKey.set(key, []);
     byKey.get(key).push(r);
   }
@@ -104,6 +130,28 @@ export function historyRows(records, { profiles = [] } = {}) {
     const fan = [];
     caps.forEach((c) => queriesOf(c).forEach((q) => { if (!fan.some((x) => x.text.toLowerCase() === q.text.toLowerCase())) fan.push(q); }));
     const text = String(latest.userPrompt || "").trim();
+    // The sites every capture of this prompt read, cited if any cited them,
+    // and the ads shown with them (0.61.0: the Sites and Ads views).
+    const siteMap = new Map();
+    caps.forEach((c) => (c.sources || []).forEach((src) => {
+      const d = normDomain(src.domain || src.url);
+      if (!d) return;
+      const x = siteMap.get(d) || { domain: d, cited: false };
+      if (src.outcome === "cited") x.cited = true;
+      siteMap.set(d, x);
+    }));
+    const adHits = [];
+    caps.forEach((c) => (c.ads || []).forEach((a) => {
+      const advertiser = String(a.advertiser || a.targetDomain || "").trim();
+      if (!advertiser) return;
+      const domain = normDomain(a.targetDomain || a.advertiserUrl || "");
+      const label = domain.split(".")[0];
+      adHits.push({
+        advertiser, domain, at: c.capturedAt || 0, captureId: c.captureId, platform: c.platform,
+        named: namedBrands(c).some((b) => sameBrand(b, advertiser)),
+        cited: !!label && (c.sources || []).some((src) => src.outcome === "cited" && normDomain(src.domain || src.url).split(".")[0] === label),
+      });
+    }));
     rows.push({
       key, text, words: text.split(/\s+/).filter(Boolean).length,
       latestId: latest.captureId, latestAt: latest.capturedAt || 0, firstAt: caps[caps.length - 1].capturedAt || 0,
@@ -118,10 +166,17 @@ export function historyRows(records, { profiles = [] } = {}) {
       products: sum((c) => (c.products || []).length),
       places: sum((c) => (c.places || []).length),
       images: sum((c) => (c.images || []).length),
-      campaign, fromCampaign: profileIds.length > 0,
+      campaign, fromCampaign: profileIds.length > 0, profileId: profileIds[0] || null,
       // Sample answers loaded on a fresh install say so wherever they show.
       sample: caps.every((c) => c.isDemo || String(c.captureId).startsWith("demo-")),
       fan,
+      sites: [...siteMap.values()].map((x) => ({ domain: x.domain, cited: x.cited })),
+      ads: [...new Set(adHits.map((h) => h.advertiser))],
+      adHits,
+      // The answers' languages and markets (0.70.0): the built-in AI's
+      // reading when there is one, else Chrome's language detector.
+      langs: [...new Set(latestPer.map((c) => baseLang((c.ai && c.ai.lang) || c.answerLang)).filter(Boolean))],
+      markets: [...new Set(latestPer.map((c) => c.ai && c.ai.market && c.ai.market.country).filter(Boolean))],
     });
   }
   return rows.sort((a, b) => b.latestAt - a.latestAt);
@@ -141,12 +196,27 @@ export function weekStart(t) {
   d.setDate(d.getDate() - dow);
   return d.getTime();
 }
-const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const MONTH = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-const DOW = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-export const shortDate = (t) => { const d = new Date(t); return `${d.getDate()} ${MON[d.getMonth()]}`; };
+// Month and day names in the interface's language (0.71.0). English keeps
+// the "12 Oct" order it always had; other languages take Intl's.
+let LOC = null;
+export function setDateLocale(l) { LOC = l && !/^en\b/i.test(l) ? l : null; }
+const intl = (opts) => (t) => new Intl.DateTimeFormat(LOC, opts).format(new Date(t));
+const MON_EN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTH_EN = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const DOW_EN = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const dayMon = (d) => (LOC ? intl({ day: "numeric", month: "short" })(d) : `${d.getDate()} ${MON_EN[d.getMonth()]}`);
+const dayMonth = (d) => (LOC ? intl({ day: "numeric", month: "long" })(d) : `${d.getDate()} ${MONTH_EN[d.getMonth()]}`);
+const monthName = (d) => (LOC ? intl({ month: "long" })(d) : MONTH_EN[d.getMonth()]);
+const dowName = (d) => (LOC ? intl({ weekday: "long" })(d) : DOW_EN[d.getDay()]);
+export const shortDate = (t) => dayMon(new Date(t));
 
-function inPeriod(period, now, t) {
+function inPeriod(period, now, t, range) {
+  if (period === "custom") {
+    let a = dayStart(range && range.from), b = dayStart(range && range.to);
+    if (a != null && b != null && a > b) [a, b] = [b, a];
+    const end = b != null ? new Date(b).setDate(new Date(b).getDate() + 1) : null; // the whole of the last day
+    return (a == null || t >= a) && (end == null || t < end);
+  }
   const dd = dayDiff(now, t);
   switch (period) {
     case "today": return dd === 0;
@@ -171,15 +241,31 @@ export function groupRows(rows, now) {
   for (const r of rows) {
     const dd = dayDiff(now, r.latestAt);
     const d = new Date(r.latestAt);
-    if (dd === 0) put("today", "Today", `${DOW[d.getDay()]}, ${d.getDate()} ${MONTH[d.getMonth()]}`, r);
-    else if (dd === 1) put("yesterday", "Yesterday", `${DOW[d.getDay()]}, ${d.getDate()} ${MONTH[d.getMonth()]}`, r);
+    if (dd === 0) put("today", "Today", `${dowName(d)}, ${dayMonth(d)}`, r);
+    else if (dd === 1) put("yesterday", "Yesterday", `${dowName(d)}, ${dayMonth(d)}`, r);
     else if (r.latestAt >= thisWeek) put("week", "Earlier this week", "", r);
     else {
       const id = `${d.getFullYear()}-${d.getMonth()}`;
-      put(id, MONTH[d.getMonth()] + (d.getFullYear() !== nowYear ? ` ${d.getFullYear()}` : ""), "", r);
+      put(id, monthName(d) + (d.getFullYear() !== nowYear ? ` ${d.getFullYear()}` : ""), "", r);
     }
   }
   return groups;
+}
+
+/** One block per campaign, its most recent first; rows newest first within. */
+function campaignGroups(rows) {
+  const by = new Map();
+  for (const r of rows) {
+    const id = `campaign:${r.profileId || r.campaign}`;
+    if (!by.has(id)) by.set(id, { id, label: r.campaign || "A campaign", sub: "", rows: [], campaign: true, profileId: r.profileId || null, latestAt: 0 });
+    const g = by.get(id);
+    g.rows.push(r);
+    g.latestAt = Math.max(g.latestAt, r.latestAt || 0);
+  }
+  return [...by.values()].sort((a, b) => b.latestAt - a.latestAt).map((g) => {
+    const d = new Date(g.latestAt);
+    return { ...g, sub: `campaign · last asked ${dayMonth(d)}` };
+  });
 }
 
 /* ---------- search ---------- */
@@ -209,6 +295,10 @@ export function historyView(rows, f, { now = Date.now(), answerHits = new Map() 
   const toks = searchTokens(f.query);
   const hasQ = toks.length > 0;
   const engineOn = (e) => !f.engines || f.engines[e] !== false;
+  // Campaign prompts (0.68.0): "group" (each campaign's prompts in a block of
+  // their own, after the prompts asked by hand), "hide" or "only". The old
+  // campaign: true is "only".
+  const campaignsMode = f.campaigns || (f.campaign ? "only" : "group");
 
   // 1. the search
   const matched = rows.map((r) => {
@@ -222,14 +312,22 @@ export function historyView(rows, f, { now = Date.now(), answerHits = new Map() 
   // 2. engines, period, toggles
   const engineCounts = Object.fromEntries(ENGINE_ORDER.map((e) => [e, matched.filter((r) => r.engines.includes(e)).length]));
   const pre = matched.filter((r) => r.engines.some(engineOn)
-    && inPeriod(f.period || "all", now, r.latestAt)
+    && inPeriod(f.period || "all", now, r.latestAt, { from: f.from, to: f.to })
     && (!f.repeat || r.asked > 1)
-    && (!f.campaign || r.fromCampaign));
+    && (campaignsMode !== "only" || r.fromCampaign)
+    && (campaignsMode !== "hide" || !r.fromCampaign)
+    && (!f.ads || (r.ads || []).length > 0));
+  // Language and market (0.70.0), counted before they filter so the
+  // choices show how many prompts each one would leave.
+  const tally = (key) => { const m = new Map(); pre.forEach((r) => (r[key] || []).forEach((v) => m.set(v, (m.get(v) || 0) + 1))); return [...m.entries()].map(([code, n]) => ({ code, n })).sort((a, b) => b.n - a.n || a.code.localeCompare(b.code)); };
+  const langCounts = tally("langs");
+  const marketCounts = tally("markets");
+  const preLM = pre.filter((r) => (!f.lang || (r.langs || []).includes(f.lang)) && (!f.market || (r.markets || []).includes(f.market)));
 
   // 3. kind of answer
   const anyKind = !!f.kinds && Object.values(f.kinds).some(Boolean);
-  const kindCounts = Object.fromEntries(KINDS.map((k) => [k.id, pre.filter((r) => r.kind === k.id).length]));
-  const base = pre.filter((r) => !anyKind || f.kinds[r.kind]);
+  const kindCounts = Object.fromEntries(KINDS.map((k) => [k.id, preLM.filter((r) => r.kind === k.id).length]));
+  const base = preLM.filter((r) => !anyKind || f.kinds[r.kind]);
 
   // 4. the week picked on the chart
   const lastWeek = weekStart(now);
@@ -258,6 +356,37 @@ export function historyView(rows, f, { now = Date.now(), answerHits = new Map() 
   }
   const fan = [...fanMap.values()].sort((a, b) => b.n - a.n || a.text.localeCompare(b.text));
 
+  // 6. sites across these prompts (0.61.0): how many prompts each site
+  // showed up for, and in how many of those it was cited rather than read.
+  const siteAgg = new Map();
+  for (const r of list) for (const x of r.sites || []) {
+    const e = siteAgg.get(x.domain) || { domain: x.domain, prompts: 0, cited: 0 };
+    e.prompts++;
+    if (x.cited) e.cited++;
+    siteAgg.set(x.domain, e);
+  }
+  const sites = [...siteAgg.values()].map((e) => ({ ...e, kind: siteKindOf(e.domain, {}), citedShare: Math.round((e.cited / e.prompts) * 100) }))
+    .sort((a, b) => b.prompts - a.prompts || b.cited - a.cited || a.domain.localeCompare(b.domain));
+
+  // 7. ads across these prompts (0.61.0): who advertised, how often, for
+  // which prompts, first and last seen, and how often the same answer also
+  // named or cited the advertiser.
+  const adAgg = new Map();
+  for (const r of list) for (const h of r.adHits || []) {
+    const k = h.advertiser.toLowerCase();
+    const e = adAgg.get(k) || { advertiser: h.advertiser, times: 0, prompts: new Set(), domains: new Set(), first: h.at, last: h.at, named: 0, cited: 0, latestId: h.captureId };
+    e.times++;
+    e.prompts.add(r.text);
+    if (h.domain) e.domains.add(h.domain);
+    if (h.at < e.first) e.first = h.at;
+    if (h.at >= e.last) { e.last = h.at; e.latestId = h.captureId; }
+    if (h.named) e.named++;
+    if (h.cited) e.cited++;
+    adAgg.set(k, e);
+  }
+  const ads = [...adAgg.values()].map((e) => ({ ...e, prompts: [...e.prompts], domains: [...e.domains] }))
+    .sort((a, b) => b.times - a.times || b.last - a.last);
+
   const enginesUsed = ENGINE_ORDER.filter((e) => base.some((r) => r.engines.includes(e)));
   const times = base.map((r) => r.latestAt).sort((a, b) => a - b);
   const totals = {
@@ -270,7 +399,12 @@ export function historyView(rows, f, { now = Date.now(), answerHits = new Map() 
   };
 
   return {
-    tokens: toks, matched, pre, base, list, engineCounts, kindCounts, anyKind, weeks, fan, totals,
-    groups: f.sort && f.sort !== "newest" ? [{ id: "all", label: f.sort === "asked" ? "Asked most often" : "Most engines", sub: "", rows: list }] : groupRows(list, now),
+    tokens: toks, matched, pre, base, list, engineCounts, kindCounts, anyKind, weeks, fan, totals, sites, ads, langCounts, marketCounts,
+    withAds: matched.filter((r) => (r.ads || []).length).length,
+    groups: f.sort && f.sort !== "newest" ? [{ id: "all", label: f.sort === "asked" ? "Asked most often" : "Most engines", sub: "", rows: list }]
+      : campaignsMode === "group" || campaignsMode === "only"
+        ? [...groupRows(list.filter((r) => !r.fromCampaign), now), ...campaignGroups(list.filter((r) => r.fromCampaign))]
+        : groupRows(list, now),
+    campaignsMode,
   };
 }

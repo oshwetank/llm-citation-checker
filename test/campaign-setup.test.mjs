@@ -152,17 +152,24 @@ try {
   check("the brand box is no longer invalid", await page.$eval("#cs-brand", (n) => n.getAttribute("aria-invalid") !== "true"));
   check("its checklist item is done", (await reqStates(page)).brand === "done");
 
-  console.log("\nCompetitors don't push the AI engines down");
-  const enginesBefore = await docTop(page, "#cs-engines");
+  // 0.77.0, asked: "the competition adding option is so down that people
+  // may miss it". Competitors now come right after the brand.
+  console.log("\nCompetitors right after the brand, before the engines");
+  const order = await page.evaluate(() => {
+    const top = (q) => document.querySelector(q)?.getBoundingClientRect().top;
+    return { brand: top("#cs-brand"), comps: top(".cs-card-comps"), engines: top("#cs-engines"), inDetails: !!document.querySelector(".cs-card-details .cs-card-comps") };
+  });
+  check("inside the details card, under the brand and above the engines", order.inDetails && order.comps > order.brand && order.comps < order.engines, JSON.stringify(order));
+  check("the one-line explainers are tooltips now, not lines of text", await page.evaluate(() =>
+    !/Everything here is needed/.test(document.querySelector(".cs").textContent) && !!document.querySelector('.cs-card-comps [data-tip]') && !document.querySelector(".cs-card-details > .cs-card-head .cs-help")));
   for (const [n, s] of [["Contoso", "contoso.com"], ["Fabrikam", "fabrikam.com"], ["Litware", ""], ["Tailspin", "tailspin.com"], ["Adventure Works", "adventure-works.com"], ["Proseware", "proseware.com"]]) {
     await addCompetitor(page, n, s);
   }
-  const enginesAfter = await docTop(page, "#cs-engines");
   check("six competitors were added", (await page.$$(".cs-comp-chip")).length === 6);
-  check("the engine picker did not move", enginesBefore && enginesAfter && Math.abs(enginesBefore.top - enginesAfter.top) < 1,
-    `${enginesBefore && enginesBefore.top} → ${enginesAfter && enginesAfter.top}`);
   const compCard = await rect(page, ".cs-card-comps");
-  check("six competitors fit in a compact card", compCard && compCard.height < 330, compCard && compCard.height);
+  check("six competitors fit in a compact block", compCard && compCard.height < 260, compCard && compCard.height);
+  const engRow = await page.evaluate(() => [...document.querySelectorAll(".cs-engine")].map((n) => Math.round(n.getBoundingClientRect().top)));
+  check("the AI engines are one row of chips", engRow.length === 4 && engRow.every((t) => t === engRow[0]), JSON.stringify(engRow));
   await page.click('.cs-comp-chip:has-text("Litware") .cs-comp-remove');
   await page.waitForTimeout(80);
   check("a competitor can be removed", (await page.$$(".cs-comp-chip")).length === 5);
@@ -174,7 +181,7 @@ try {
   const pro = await rect(page, ".cs-card-prompts");
   const com = await rect(page, ".cs-card-comps");
   check("prompts are to the right of the details", det && pro && pro.left >= det.right, JSON.stringify({ det, pro }));
-  check("competitors sit under the details, in the same column", det && com && Math.abs(com.left - det.left) < 1 && com.top >= det.bottom);
+  check("competitors are inside the details column", det && com && com.left >= det.left && com.right <= det.right && com.top >= det.top && com.bottom <= det.bottom);
 
   console.log("\nTwo buttons for adding prompts");
   const up = await rect(page, '.cs-mode[data-mode="upload"]');
@@ -236,15 +243,38 @@ try {
   check("with the website saved", p && p.brand.url === "northwind.com");
   check("and the competitors", p && p.competitors.length === 5);
 
-  console.log("\nA locked campaign's setup opens read-only");
+  // 0.77.0, asked: "I don't want to open and enable the editing of the
+  // campaign". Everything but the brand and website edits in place.
+  console.log("\nA locked campaign's setup opens editable, and saves as you go");
+  await page.click("#cpHead .cp-more");
   await page.click('#cpHead button:has-text("Edit setup")');
   await page.waitForTimeout(300);
-  check("it uses the same layout, read-only", await page.evaluate(() => {
-    const cs = document.querySelector(".cs.cs-readonly");
-    return !!cs && document.querySelector("#cs-brand").disabled && document.querySelector("#cs-brand").value === "Northwind" &&
-      !cs.querySelector(".cs-save") && !cs.querySelector("#cs-comp-name") && !cs.querySelector(".cs-mode") &&
-      cs.querySelectorAll(".cs-comp-chip").length === 5 && /Unlock to edit/.test(cs.querySelector(".cs-bar").textContent);
+  check("editable, with no unlock step", await page.evaluate(() => {
+    const cs = document.querySelector(".cs");
+    return !!cs && !cs.classList.contains("cs-readonly") && !/Unlock to edit/.test(cs.querySelector(".cs-bar").textContent) &&
+      !!cs.querySelector("#cs-comp-name") && !!cs.querySelector(".cs-mode") && !cs.querySelector(".cs-save") &&
+      cs.querySelectorAll(".cs-comp-chip").length === 5 && !document.querySelector("#cs-name").disabled;
   }));
+  check("the brand and website ask first", await page.evaluate(() => document.querySelector("#cs-brand").disabled && document.querySelector("#cs-site").disabled && !!document.querySelector("#csBrandChange")));
+  await addCompetitor(page, "Woodgrove", "woodgrove.com");
+  await page.click('#cs-engines .cs-engine[data-value="perplexity"]').catch(() => {});
+  await page.waitForTimeout(1200);
+  p = (await profiles(page))[0];
+  check("a competitor added there is saved at once, and the campaign stays locked", p && p.locked === true && p.competitors.some((c) => c.name === "Woodgrove"), JSON.stringify(p && p.competitors));
+  check("and the change is logged", p && (p.changes || []).some((c) => c.kind === "competitor-added" && c.name === "Woodgrove"), JSON.stringify(p && p.changes));
+  check("the bar says it saved", /Saved/.test(await page.evaluate(() => document.querySelector("#csSaved")?.textContent || "")));
+  await page.click("#csBrandChange");
+  await page.waitForTimeout(150);
+  check("Change brand asks, then opens the brand fields", await page.evaluate(() => !document.querySelector("#cs-brand").disabled && !document.querySelector("#cs-site").disabled));
+  await page.fill("#cs-brand", "Northwind Labs");
+  await page.waitForTimeout(1200);
+  p = (await profiles(page))[0];
+  check("the new brand is saved, still locked, and logged", p && p.brand.name === "Northwind Labs" && p.locked && (p.changes || []).some((c) => c.kind === "brand"), JSON.stringify(p && p.brand));
+  const refused = await page.evaluate(() => new Promise((r) => chrome.runtime.sendMessage({ type: "geo-profile-list" }, (x) => {
+    const q = x.profiles[0];
+    chrome.runtime.sendMessage({ type: "geo-profile-save", profile: { ...q, brand: { name: "Other", url: "other.example" } } }, r);
+  })));
+  check("without the unlock, the service worker refuses a new brand", refused && !refused.ok && refused.needsUnlock, JSON.stringify(refused));
 
   /* ---------------- popup ---------------- */
   console.log("\nThe popup gets one aligned column, required things first");
@@ -260,16 +290,16 @@ try {
   const pd = await rect(pop, ".cs-card-details");
   const pp = await rect(pop, ".cs-card-prompts");
   const pc = await rect(pop, ".cs-card-comps");
-  check("details, then prompts, then competitors", pd && pp && pc && pd.bottom <= pp.top && pp.bottom <= pc.top, JSON.stringify({ pd, pp, pc }));
-  check("on one left edge and one width", pd && pp && pc && Math.abs(pd.left - pp.left) < 1 && Math.abs(pd.left - pc.left) < 1 &&
-    Math.abs(pd.width - pp.width) < 1 && Math.abs(pd.width - pc.width) < 1);
+  check("details (with competitors), then prompts", pd && pp && pc && pd.bottom <= pp.top && pc.top >= pd.top && pc.bottom <= pd.bottom, JSON.stringify({ pd, pp, pc }));
+  check("on one left edge and one width", pd && pp && Math.abs(pd.left - pp.left) < 1 && Math.abs(pd.width - pp.width) < 1);
   const lefts = await pop.evaluate(() => ["#cs-name", "#cs-brand", "#cs-site", "#cs-comp-name"].map((s) => document.querySelector(s)?.getBoundingClientRect().left));
   check("fields line up on the card's left edge", lefts.every((l) => l != null && Math.abs(l - lefts[0]) < 1), JSON.stringify(lefts));
   const brandR = await rect(pop, "#cs-brand");
   const siteR = await rect(pop, "#cs-site");
   check("brand name and website are stacked, not squeezed side by side", brandR && siteR && siteR.top >= brandR.bottom);
-  const tiles = await pop.evaluate(() => [...document.querySelectorAll(".cs-engine")].map((n) => n.getBoundingClientRect().left));
-  check("the AI engines are one per row", tiles.length === 4 && tiles.every((l) => Math.abs(l - tiles[0]) < 1), JSON.stringify(tiles));
+  const tiles = await pop.evaluate(() => [...document.querySelectorAll(".cs-engine")].map((n) => { const r = n.getBoundingClientRect(); return { l: r.left, r: r.right, h: r.height }; }));
+  const card = await rect(pop, ".cs-card-details");
+  check("the AI engines are compact chips that wrap inside the card", tiles.length === 4 && tiles.every((t) => t.h <= 40 && t.r <= card.right + 1), JSON.stringify(tiles));
   check("nothing overflows sideways", await pop.evaluate(() => {
     const c = document.querySelector(".app-content");
     const cr = c.getBoundingClientRect();

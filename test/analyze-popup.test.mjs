@@ -114,19 +114,23 @@ try {
 
   console.log("\nTop menu: Compare is gone, reached from the answer instead");
   {
-    const tabs = await page.evaluate(() => [...document.querySelectorAll(".nav-tabs [data-tab]")].map((b) => b.dataset.tab));
-    check("the menu is Analyze, Dashboard, Campaigns, About", tabs.join() === "analyze,dashboard,loader,about", tabs.join());
+    // Shown tabs only. Ask is in the popup too from 0.84.0: the model
+    // switches live there, so a new user finds them.
+    const tabs = await page.evaluate(() => [...document.querySelectorAll(".nav-tabs [data-tab]")].filter((b) => b.getBoundingClientRect().width > 0).map((b) => b.dataset.tab));
+    check("the menu is Analyze, Dashboard, Campaigns, Ask, About", tabs.join() === "analyze,dashboard,loader,ask,about", tabs.join());
   }
 
-  console.log("\nTypeface: IBM Plex, from inside the extension");
+  // Since 0.59.0 the default Studio theme sets Geist; Classic keeps IBM Plex.
+  // Both ship inside the extension (theme-style.test.mjs checks Classic).
+  console.log("\nTypeface: Geist (Studio, the default), from inside the extension");
   {
     const f = await page.evaluate(async () => {
       await document.fonts.ready;
       const body = getComputedStyle(document.body).fontFamily;
-      const loaded = [...document.fonts].filter((x) => /IBM Plex Sans/.test(x.family) && x.status === "loaded").map((x) => x.family + " " + x.weight);
-      return { body, loaded, check: document.fonts.check('500 12px "IBM Plex Sans"') };
+      const loaded = [...document.fonts].filter((x) => /^"?Geist"?$/.test(x.family) && x.status === "loaded").map((x) => x.family + " " + x.weight);
+      return { body, loaded, check: document.fonts.check('500 12px "Geist"') };
     });
-    check("the body's first font is IBM Plex Sans", /^"?IBM Plex Sans"?,/.test(f.body), f.body);
+    check("the body's first font is Geist", /^"?Geist"?,/.test(f.body), f.body);
     check("the face has actually loaded (not a silent fallback)", f.loaded.length > 0 && f.check, JSON.stringify(f.loaded));
     const fontReqs = requests.filter((u) => /\.woff2?(\?|$)|fonts\.(googleapis|gstatic)\.com/.test(u));
     check("font files came from the extension itself", fontReqs.length > 0 && fontReqs.every((u) => u.startsWith(`chrome-extension://${extId}/fonts/`)), fontReqs.join(" | "));
@@ -149,7 +153,7 @@ try {
     });
     check("the popup Analyze layout is in use", !!s);
     if (s) {
-      check("the searches are the first section after the prompt block", s.order[0] === "ap-head" && s.order[1] === "ap-searches", s.order.join(" > "));
+      check("the searches are the first section after the prompt block", /^ap-head\b/.test(s.order[0]) && s.order[1] === "ap-searches", s.order.join(" > "));
       check("searches are listed", s.rows > 0, s.heading);
       check("no search is cut off or ellipsised", s.cut.length === 0, s.cut.join(" | "));
     }
@@ -171,25 +175,35 @@ try {
     check("the popup scrolls rather than shrinking boxes", r.scrolls);
   }
 
-  console.log("\nMore information: every brand, every cited page, what changed");
+  console.log("\nMore information: every brand, every site and page, what changed");
   {
     const r = await page.evaluate(() => {
       const head = (id) => document.querySelector(`#${id} .ap-h`)?.textContent || "";
       return {
         brandHead: head("ap-brands"),
         brandRows: document.querySelectorAll("#ap-brands .ap-tr:not(.ap-th):not(.shown-only):not(.dropped)").length,
-        pagesHead: head("ap-pages"),
-        pageRows: document.querySelectorAll("#ap-pages .ap-page").length,
-        legend: document.querySelectorAll("#ap-pages .ap-legend span").length,
+        sitesHead: head("ap-sites"),
+        siteRows: document.querySelectorAll("#ap-sites .site-row").length,
+        citedSites: document.querySelectorAll("#ap-sites .site-row.is-cited").length,
+        pages: document.querySelectorAll("#ap-sites .site-pages li").length,
+        legend: document.querySelectorAll("#ap-sites .ap-legend span").length,
+        backedByColumn: [...document.querySelectorAll("#ap-brands .ap-th span")].some((x) => /Backed by/.test(x.textContent)),
+        backingRows: document.querySelectorAll("#ap-backing .ap-backing-row").length,
         changes: document.querySelectorAll("#ap-changes li").length,
         facts: document.querySelector(".ap-facts")?.textContent || "",
       };
     });
     const nBrands = Number((r.brandHead.match(/·\s*(\d+)/) || [])[1]);
     check("the brand list has every named brand its heading counts", nBrands > 0 && r.brandRows === nBrands, `${r.brandRows} rows, heading "${r.brandHead}"`);
-    const nCited = Number((r.pagesHead.match(/·\s*(\d+) of/) || [])[1]);
-    check("every cited page is listed", nCited > 0 && r.pageRows === nCited, `${r.pageRows} rows, heading "${r.pagesHead}"`);
+    // 0.58.0: "Pages cited" listed cited domains and put the rest on one line.
+    // Now every site, cited first, each holding every page read there.
+    const nSites = Number((r.sitesHead.match(/·\s*(\d+)/) || [])[1]);
+    check("every site is listed, as the heading counts", nSites > 0 && r.siteRows === nSites, `${r.siteRows} rows, heading "${r.sitesHead}"`);
+    check("including sites read but not cited", r.siteRows > r.citedSites && r.citedSites > 0, `${r.citedSites} of ${r.siteRows} cited`);
+    check("each site holds its pages", r.pages >= r.siteRows, `${r.pages} pages`);
     check("cited pages are broken down by kind of site", r.legend > 0);
+    check("the brand table no longer has a “Backed by” column", !r.backedByColumn);
+    check("what backs each brand has its own section", r.backingRows > 0, r.backingRows);
     check("what changed since the previous answer is shown", r.changes > 0, r.changes);
     check("the answer's facts line is there", /Model/.test(r.facts), r.facts);
   }
@@ -237,7 +251,7 @@ try {
 
   console.log("\nA local answer: the map leads, places are named");
   {
-    const ids = await page.evaluate(() => [...document.querySelectorAll(".nav-tabs [data-tab]")].length);
+    const ids = await page.evaluate(() => [...document.querySelectorAll(".nav-tabs [data-tab]")].filter((b) => b.getBoundingClientRect().width > 0).length);
     // Page to the older capture (the local one sits between the two shopping ones).
     await page.evaluate(() => [...document.querySelectorAll(".ap-head .ap-icon-btn")].find((b) => b.getAttribute("aria-label") === "Older capture")?.click());
     await page.waitForTimeout(900);
@@ -246,8 +260,41 @@ try {
       places: document.querySelectorAll("#ap-places .ap-place").length,
       brandsTitle: document.querySelector("#ap-brands .ap-h")?.textContent || "",
     }));
-    check("paging to the older capture works", ids === 4 && r.kind === "Local", r.kind);
+    check("paging to the older capture works", ids === 5 && r.kind === "Local", r.kind);
     check("its places are listed", r.places > 0, r.places);
+  }
+
+  console.log("\nTabs by kind of answer (0.60.0, the canvas's popup boards)");
+  {
+    const tabs = await page.evaluate(() => [...document.querySelectorAll(".ap-tabs [role=tab]")].map((b) => b.textContent));
+    check("a local answer: Overview, Places, Facts, Sources, Answer", tabs.join("|") === "Overview|Places|Facts|Sources|Answer", tabs.join("|"));
+    await page.evaluate(() => document.getElementById("ap-tab-facts").click());
+    await page.waitForTimeout(500);
+    const facts = await page.evaluate(() => document.getElementById("ap-view-facts")?.innerText || "");
+    check("Facts says what each card carries, and that the source of each field isn't captured", /Rating/.test(facts) && /not captured/.test(facts), facts.slice(0, 160));
+    await page.goto(`chrome-extension://${extId}/ui/panel.html?capture=${encodeURIComponent(shopNewest.id)}`);
+    await page.waitForTimeout(1500);
+    const shop = await page.evaluate(() => [...document.querySelectorAll(".ap-tabs [role=tab]")].map((b) => b.textContent));
+    check("a shopping answer: Overview, Products, Stores, Sources, Answer", shop.join("|") === "Overview|Products|Stores|Sources|Answer", shop.join("|"));
+    await page.evaluate(() => document.getElementById("ap-tab-products").click());
+    await page.waitForTimeout(500);
+    const prod = await page.evaluate(() => ({ cards: document.querySelectorAll("#ap-view-products .ap-pc").length, stores: document.querySelectorAll("#ap-view-products .at-store-chip").length, overview: !!document.getElementById("ap-searches") }));
+    check("Products: a card each, with its stores in order", prod.cards === 5 && prod.stores >= 5 && !prod.overview, JSON.stringify(prod));
+    await page.evaluate(() => document.getElementById("ap-tab-stores").click());
+    await page.waitForTimeout(500);
+    const stores = await page.evaluate(() => document.getElementById("ap-view-stores")?.innerText || "");
+    check("Stores: where the cards send buyers, the price per store not captured", /cards/.test(stores) && /not captured/.test(stores), stores.slice(0, 160));
+    await page.evaluate(() => document.getElementById("ap-tab-sources").click());
+    await page.waitForTimeout(500);
+    const src = await page.evaluate(() => ({ rows: document.querySelectorAll("#ap-view-sources .ap-page-row").length, pos: [...document.querySelectorAll("#ap-view-sources .ap-page-row .ap-muted")].some((x) => /#\d+/.test(x.textContent)) }));
+    check("Sources: every page, with its place in the results", src.rows >= 10 && src.pos, JSON.stringify(src));
+    await page.evaluate(() => document.getElementById("ap-tab-answer").click());
+    await page.waitForTimeout(500);
+    const ans = await page.evaluate(() => ({ words: (document.querySelector("#ap-view-answer")?.innerText || "").split(/\s+/).length, marks: document.querySelectorAll("#ap-view-answer mark.at-mark").length }));
+    check("Answer: the answer itself, brands marked", ans.words > 100 && ans.marks > 0, JSON.stringify(ans));
+    await page.evaluate(() => document.getElementById("ap-tab-overview").click());
+    await page.waitForTimeout(500);
+    check("Overview brings back the sections", await page.evaluate(() => !!document.getElementById("ap-searches")));
   }
 
   check("no page error anywhere above", pageErrors.length === 0, pageErrors.join(" | "));

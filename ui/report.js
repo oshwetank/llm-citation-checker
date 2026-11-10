@@ -16,6 +16,7 @@
  * continuation page, so nothing is ever cut off at the bottom.
  */
 
+import { formatMoney } from "../src/lib/money.js";
 import { answerReport } from "../src/lib/answerReport.js";
 import { dayLabel } from "../src/lib/campaignReport.js";
 
@@ -35,14 +36,15 @@ function html(strings, ...vals) {
 /* ---------- numbers ---------- */
 const P = (x) => (x == null ? "—" : `${Math.round(x)}%`);
 const D1 = (x) => (x == null ? "—" : Number(x).toFixed(1));
-const N = (x) => (x == null ? "—" : Number(x).toLocaleString("en-US"));
-const money = (x) => (x == null ? "—" : `₹${Math.round(x).toLocaleString("en-IN")}`);
+const N = (x) => (x == null ? "—" : Number(x).toLocaleString(undefined));
+// In the price's own currency, never assumed (money.js, 0.69.0).
+const money = (x, cur) => formatMoney(x == null ? null : Math.round(x), cur || null);
 
 /* ---------- colours ----------
  * The panel's categorical hues, in its fixed order: your brand is always
  * the blue, each rival keeps its colour on every chart in the report. */
 const RIVAL_COLORS = ["#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#64748b", "#c2410c"];
-const KIND_COLORS = { "Your site": "#2a78d6", "Rival brand sites": "#eb6834", "Review sites": "#1baf7a", "Retailers": "#eda100", "Forums & social": "#e87ba4", "Other": "#94a3b8" };
+const KIND_COLORS = { "Your site": "#2a78d6", "Rival brand sites": "#eb6834", "Review sites": "#1baf7a", "Retailers": "#eda100", "Forums & social": "#e87ba4", "Public & reference": "#0e7490", "Other": "#94a3b8" };
 let colorOf = () => "#64748b";
 function setBrandColors(model) {
   const map = new Map([[model.own.name.toLowerCase(), "#2a78d6"]]);
@@ -229,7 +231,7 @@ function productsPage(m, p) {
     blocks.push(blk(html`<div class="grid2">${card(`Product card share, ${run}`, barList(p.cardShare.map((b) => ({ label: b.name, value: b.share, color: colorOf(b.name), bold: b.isOwn })), { width: 300, labelW: 64 }), note(`Of ${N(p.cardsTotal)} product cards shown.`))}${card(`Where ${own}’s cards send buyers`, p.destinations.length
       ? html`${barList(p.destinations.map((d) => ({ label: d.name, value: d.pct, color: d.own ? "#2a78d6" : "#94a3b8" })), { width: 300, labelW: 110, max: 100 })}${note(`First store in each ${own} card’s store list. Blue = ${own}’s own store; grey = someone else’s.`)}`
       : note(`No product card in these answers is ${own}’s.`))}</div>`));
-    blocks.push(blk(card(`Products shown most, ${run}`, table(["Product", ["Cards", "n"], ["Avg card position", "n"], ["Avg price", "n"], "Card sends buyers to", ["Brand store offered", "c"]], p.products.map((x) => html`<tr${raw(x.isOwn ? ' class="you"' : "")}><td>${x.name}</td><td class="n">${N(x.cards)}</td><td class="n">${D1(x.avgPos)}</td><td class="n">${money(x.avgPrice)}</td><td>${x.dest || "—"}</td><td class="c">${P(x.brandStore)}</td></tr>`)))));
+    blocks.push(blk(card(`Products shown most, ${run}`, table(["Product", ["Cards", "n"], ["Avg card position", "n"], ["Avg price", "n"], "Card sends buyers to", ["Brand store offered", "c"]], p.products.map((x) => html`<tr${raw(x.isOwn ? ' class="you"' : "")}><td>${x.name}</td><td class="n">${N(x.cards)}</td><td class="n">${D1(x.avgPos)}</td><td class="n">${money(x.avgPrice, x.avgCurrency)}</td><td>${x.dest || "—"}</td><td class="c">${P(x.brandStore)}</td></tr>`)))));
   } else {
     blocks.push(blk(card(`Product cards, ${run}`, note("No answer in this run showed product cards."))));
   }
@@ -258,12 +260,11 @@ function searchesPage(m, p) {
   };
 }
 
-function actionsPage(m, p) {
+function methodPage(m, p) {
   const own = m.own.name;
   return {
-    titles: html`<div class="titles"><span class="eyebrow">Actions and method</span><h2>Where to act next</h2></div>`,
+    titles: html`<div class="titles"><span class="eyebrow">Method</span><h2>How this report is measured</h2></div>`,
     blocks: [
-      blk(html`<div class="card tint">${p.actions.length ? html`<ul class="find">${p.actions.map((a, i) => html`<li><b class="k">${String(i + 1)}</b><span><b>${a.head}</b> ${a.text}</span></li>`)}</ul>` : note("Nothing stands out to fix in this run.")}</div>`),
       blk(card("How these numbers are measured", html`<div class="defs">${p.definitions.map(([t, d]) => html`<div><b>${t}</b>${d}</div>`)}</div>`)),
       blk(card("Runs in this campaign", table(["Run", "Date", ["Answers", "n"], ["Searched web", "n"], [`${own} visibility`, "n"], ["Share of voice", "n"], ["Avg position", "n"], ["Source visibility", "n"]], p.runs.map((r) => html`<tr${raw(r.current ? ' class="you"' : "")}><td><b>${r.label}</b></td><td>${r.date}</td><td class="n">${N(r.answers)}</td><td class="n">${P(r.searched)}</td><td class="n">${P(r.visibility)}</td><td class="n">${P(r.shareOfVoice)}</td><td class="n">${D1(r.avgPosition)}</td><td class="n">${P(r.sourceVisibility)}</td></tr>`), { split: true })), { split: true }),
       blk(html`<div class="card"><h3>The prompts <span class="note" style="font-weight:400">· every row behind this report is in the Excel workbook</span></h3>${table(["ID", "Prompt, as sent", "Tags", "Main kind"], p.prompts.map((x) => html`<tr><td><b>${x.id}</b></td><td class="wrap">${x.text}</td><td class="small muted">${x.tags}</td><td class="small nw">${x.kind}</td></tr>`), { split: true })}</div>`, { split: true }),
@@ -367,7 +368,7 @@ function decorateAnswer(root, m) {
   });
 }
 
-const BUILDERS = { summary: summaryPage, brands: brandsPage, prompts: promptsPage, sources: sourcesPage, products: productsPage, searches: searchesPage, actions: actionsPage };
+const BUILDERS = { summary: summaryPage, brands: brandsPage, prompts: promptsPage, sources: sourcesPage, products: productsPage, searches: searchesPage, method: methodPage };
 
 /* ---------- pages ---------- */
 function pageShell(header, foot, titles) {
@@ -430,7 +431,7 @@ function paginate(page, header, foot, contTitle) {
   if (cont) paginate(cont, header, foot, contTitle);
 }
 
-const stamp = (t) => `${dayLabel(t)}, ${new Date(t).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}`;
+const stamp = (t) => `${dayLabel(t)}, ${new Date(t).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
 
 function render(model, root) {
   root.textContent = "";

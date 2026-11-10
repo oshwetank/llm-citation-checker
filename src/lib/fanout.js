@@ -122,7 +122,7 @@ export function parseQueryOperators(query) {
 const INTENT_RULES = [
   ["comparison", /\bvs\.?\b|\bversus\b|\bcompare[ds]?\b|\bdifference between\b|\bor\b\s+\w+\s*\?/i],
   ["commercial", /\bbest\b|\btop\s*\d*\b|\bcheapest\b|\brecommend(ed|ations?)?\b|\bworth (it|buying)\b/i],
-  ["pricing", /\bprice\b|\bpricing\b|\bcost\b|\bfees?\b|\bcharges?\b|\bunder\s*[₹$€£]?\s*[\d,]+|[₹$€£]\s*[\d,]+/i],
+  ["pricing", /\bprice\b|\bpricing\b|\bcost\b|\bfees?\b|\bcharges?\b|\bbudget\b|\bunder\s*[₹$€£¥₩]?\s*[\d,]+|[₹$€£¥₩₽₺₫₱฿₪₦]\s*[\d,]+|\b(?:usd|eur|gbp|inr|jpy|brl|aud|cad|chf|aed)\s*\d|\bprecio\b|\bpreço\b|\bprix\b|\bpreis\b|\bकीमत\b|価格|السعر/iu],
   ["review", /\breview[s]?\b|\brating[s]?\b|\bcomplaints?\b|\bpros and cons\b|\bfeedback\b|\bexperience\b/i],
   ["specs", /\bspec(s|ification)s?\b|\bbattery\b|\bprocessor\b|\bchipset\b|\bcamera\b|\bdisplay\b|\bram\b|\bstorage\b|\bmah\b/i],
   ["howto", /\bhow to\b|\bhow do(es)?\b|\bsteps? to\b|\bguide\b|\btutorial\b|\bsetup\b/i],

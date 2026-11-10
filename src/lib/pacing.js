@@ -84,15 +84,58 @@ export const INTER_PROMPT_MEAN_MS = (INTER_PROMPT_MIN_MS + INTER_PROMPT_MAX_MS) 
  * and slow turns genuinely are part of that sum. Using a median here would
  * quietly under-promise on exactly the runs that are running slow.
  */
+/* From measured pace, once there is one (0.79.0).
+ *
+ * The durations window holds successful turns only, so the old estimate left
+ * out every failed turn (a full turn budget each), every cooldown and the
+ * time the extension took to record an answer — on a run with ChatGPT
+ * failing, the time left fell further behind the clock with every prompt.
+ * `finishTimes` stamps every prompt that finished, answered or failed; the
+ * spacing between the last ones is what one prompt really costs, with all of
+ * that in it. Until THROUGHPUT_MIN_FINISHES have finished, the old sum of
+ * turn time and pacing gap stands in.
+ */
+export const THROUGHPUT_MIN_FINISHES = 3;
+export const THROUGHPUT_WINDOW = 11; // 10 gaps
+
+export function perPromptFromFinishes(finishTimes) {
+  const t = (finishTimes || []).filter((v) => typeof v === "number" && isFinite(v)).slice(-THROUGHPUT_WINDOW);
+  if (t.length < THROUGHPUT_MIN_FINISHES) return null;
+  const span = t[t.length - 1] - t[0];
+  return span > 0 ? span / (t.length - 1) : null;
+}
+
 export function legEta(p) {
   const durations = (p && p.durations) || [];
   const prompts = (p && p.prompts) || [];
   const idx = (p && typeof p.idx === "number") ? p.idx : 0;
   const remaining = Math.max(0, prompts.length - idx);
-  if (!durations.length) return null;
-  const avgTurnMs = durations.reduce((a, b) => a + b, 0) / durations.length;
+  const avgTurnMs = durations.length ? durations.reduce((a, b) => a + b, 0) / durations.length : null;
+  const measured = perPromptFromFinishes(p && p.finishTimes);
+  if (measured != null) return { avgTurnMs: avgTurnMs != null ? avgTurnMs : measured, perPromptMs: measured, remaining, remainingMs: measured * remaining, measured: true };
+  if (avgTurnMs == null) return null;
   const perPromptMs = avgTurnMs + INTER_PROMPT_MEAN_MS;
   return { avgTurnMs, perPromptMs, remaining, remainingMs: perPromptMs * remaining };
+}
+
+/* How long a finished run took: its working time when recorded (0.79.0),
+ * otherwise start to finish. */
+export function runTookMs(run) {
+  if (!run) return null;
+  if (typeof run.activeMs === "number" && run.activeMs >= 0) return run.activeMs;
+  return run.finishedAt && run.startedAt ? Math.max(0, run.finishedAt - run.startedAt) : null;
+}
+
+/* "45s", "3m 5s", "1h 42m", "2d 3h" — a 42-hour run read "2529m" before. */
+export function formatDuration(ms) {
+  if (ms == null || !isFinite(ms)) return null;
+  const s = Math.round(ms / 1000);
+  if (s < 1) return "<1s";
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+  if (d) return `${d}d ${h}h`;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m ${r}s`;
+  return `${r}s`;
 }
 
 /* Engines run concurrently, one tab each, so the run finishes when its
@@ -127,6 +170,16 @@ export function runEta(platforms) {
  * single tab's request rate look less human.
  */
 export const CONCURRENT_TABS_PER_ENGINE = 2;
+
+/* ChatGPT runs in one tab (0.79.0, the owner's choice). Its tabs share one
+ * session — one account signed in, one anonymous allowance signed out — so a
+ * second tab doesn't add capacity: it halves the time to ChatGPT's limit and
+ * puts two answer streams on one session at once. In runs next to Gemini,
+ * ChatGPT failed far more often than Gemini did. */
+export const TABS_PER_ENGINE = { chatgpt: 1 };
+export function tabsForEngine(plat) {
+  return TABS_PER_ENGINE[plat] || CONCURRENT_TABS_PER_ENGINE;
+}
 
 // Tabs are started this far apart rather than all at once, so the very first
 // submissions across tabs don't land in the same instant — a burst is a much

@@ -1,0 +1,65 @@
+{
+  "about": "Made-up answers for scripts/eval-llm.mjs (0.70.0): six languages, consumer, business, public-sector and local. Every brand is invented. `expect` is what a careful reader would label; `brands` are the names the rules would find, `missed` the ones they would not.",
+  "answers": [
+    {
+      "id": "en-b2c-phones", "prompt": "best phone under $500 in the US",
+      "answer": "For most people in the US, the **Zento Nova 8** ($449) is the pick: great battery and a clean camera. The Kovo Air 3 ($399) is cheaper but I wouldn't buy it for gaming. If you can stretch, look at the Lumi Pro from Orbix Labs, sold at Shopwell.",
+      "brands": ["Zento Nova 8", "Kovo Air 3"],
+      "expect": { "lang": "en", "country": "US", "currency": "USD", "intent": ["best_top", "price_value"], "audience": "consumer", "stances": { "Zento Nova 8": ["recommended", "positive"], "Kovo Air 3": ["advised_against", "negative", "neutral"] }, "missed": ["Lumi Pro", "Orbix Labs", "Shopwell"] }
+    },
+    {
+      "id": "en-b2b-payroll", "prompt": "Zento Payroll vs Kovo HR for a 50-person company",
+      "answer": "Both handle payroll for a 50-person company. Zento Payroll is stronger on compliance in the UK and EU, with automatic HMRC filing. Kovo HR is cheaper at £6 per employee per month but its reporting is basic. Lumi People, owned by Orbix Group, is an alternative if you also need recruiting.",
+      "brands": ["Zento Payroll", "Kovo HR"],
+      "expect": { "lang": "en", "country": "GB", "currency": "GBP", "intent": ["comparison"], "audience": "business", "stances": { "Zento Payroll": ["positive", "recommended"], "Kovo HR": ["neutral", "negative", "positive"] }, "missed": ["Lumi People", "Orbix Group"] }
+    },
+    {
+      "id": "es-local-dentist", "prompt": "dentista cerca de mí en Madrid",
+      "answer": "En el centro de Madrid, **Clínica Sonrisa Zento** tiene buenas reseñas y abre los sábados. Dental Kovo, en Chamberí, es más económica (limpieza desde 45 €). Evita reservar sin presupuesto previo.",
+      "brands": ["Clínica Sonrisa Zento", "Dental Kovo"],
+      "expect": { "lang": "es", "country": "ES", "currency": "EUR", "intent": ["local"], "audience": "consumer", "stances": { "Clínica Sonrisa Zento": ["recommended", "positive"], "Dental Kovo": ["positive", "neutral"] }, "missed": [] }
+    },
+    {
+      "id": "pt-br-bank", "prompt": "melhor banco digital para MEI",
+      "answer": "Para MEI no Brasil, o **Banco Zento** é a melhor opção: conta gratuita e emissão de boleto sem tarifa. O Kovo Bank cobra R$ 9,90 por mês, mas tem cartão com cashback. Evite o Lumi Pay, que tem muitas reclamações no Reclame Aqui.",
+      "brands": ["Banco Zento", "Kovo Bank"],
+      "expect": { "lang": "pt", "country": "BR", "currency": "BRL", "intent": ["best_top", "for_use"], "audience": "business", "stances": { "Banco Zento": ["recommended", "positive"], "Kovo Bank": ["neutral", "positive"] }, "missed": ["Lumi Pay", "Reclame Aqui"] }
+    },
+    {
+      "id": "hi-scooter", "prompt": "सबसे अच्छा इलेक्ट्रिक स्कूटर 1 लाख के अंदर",
+      "answer": "1 लाख रुपये के अंदर ज़ेंटो ई-राइड सबसे अच्छा विकल्प है, इसकी रेंज 120 किमी है। कोवो स्पार्क सस्ता है (₹89,999) लेकिन सर्विस नेटवर्क कमज़ोर है।",
+      "brands": ["ज़ेंटो ई-राइड", "कोवो स्पार्क"],
+      "expect": { "lang": "hi", "country": "IN", "currency": "INR", "intent": ["best_top", "price_value"], "audience": "consumer", "stances": { "ज़ेंटो ई-राइड": ["recommended", "positive"], "कोवो स्पार्क": ["neutral", "negative"] }, "missed": [] }
+    },
+    {
+      "id": "ja-laptop", "prompt": "大学生におすすめのノートパソコン",
+      "answer": "大学生には「ゼント エアー14」がおすすめです。軽くてバッテリーが長持ちします（約12万円）。安さ重視ならコヴォブックも候補ですが、画面は暗めです。",
+      "brands": ["ゼント エアー14", "コヴォブック"],
+      "expect": { "lang": "ja", "country": "JP", "currency": "JPY", "intent": ["best_top", "for_use"], "audience": "consumer", "stances": { "ゼント エアー14": ["recommended", "positive"], "コヴォブック": ["neutral", "negative"] }, "missed": [] }
+    },
+    {
+      "id": "ar-telecom", "prompt": "أفضل باقة إنترنت منزلي في دبي",
+      "answer": "في دبي، باقة زينتو فايبر هي الأفضل للعائلات بسرعة 500 ميغابت مقابل 389 درهم شهرياً. كوفو نت أرخص لكنها أبطأ في أوقات الذروة.",
+      "brands": ["زينتو فايبر", "كوفو نت"],
+      "expect": { "lang": "ar", "country": "AE", "currency": "AED", "intent": ["best_top"], "audience": "consumer", "stances": { "زينتو فايبر": ["recommended", "positive"], "كوفو نت": ["neutral", "negative"] }, "missed": [] }
+    },
+    {
+      "id": "en-gov-passport", "prompt": "how to renew a passport online",
+      "answer": "You can renew online through the national passport office website. You'll need a digital photo and your old passport number; the fee is shown before you pay. Third-party sites like Zento Visa Help charge extra and aren't needed.",
+      "brands": [],
+      "expect": { "lang": "en", "country": null, "currency": null, "intent": ["howto"], "audience": "consumer", "stances": {}, "missed": ["Zento Visa Help"] }
+    },
+    {
+      "id": "en-b2b-cloud", "prompt": "which cloud provider is most secure for healthcare data",
+      "answer": "For healthcare data, Zento Cloud has HIPAA and ISO 27001 certification and signs a BAA. Kovo Compute is also certified but its audit logs cost extra. Many hospitals pair either with Lumi Shield for encryption key management.",
+      "brands": ["Zento Cloud", "Kovo Compute"],
+      "expect": { "lang": "en", "country": "US", "currency": null, "intent": ["trust"], "audience": "business", "stances": { "Zento Cloud": ["positive", "recommended"], "Kovo Compute": ["neutral", "positive"] }, "missed": ["Lumi Shield"] }
+    },
+    {
+      "id": "fr-careers", "prompt": "travailler chez Zento : salaire et avis",
+      "answer": "Chez Zento, un développeur débutant gagne environ 42 000 € par an à Paris. Les avis sur Kovo Emploi sont positifs sur l'équilibre vie pro-perso, moins sur les promotions.",
+      "brands": ["Zento"],
+      "expect": { "lang": "fr", "country": "FR", "currency": "EUR", "intent": ["careers"], "audience": "consumer", "stances": { "Zento": ["neutral", "positive"] }, "missed": ["Kovo Emploi"] }
+    }
+  ]
+}

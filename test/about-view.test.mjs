@@ -113,5 +113,18 @@ console.log("\nThe Overview's words");
   check("what's new is written out", ABOUT_NEWS.length >= 3 && ABOUT_NEWS.every((n) => n.head && n.body));
 }
 
+console.log("\nwhat works in this browser (0.72.0)");
+{
+  const { browserSupport } = await import("../src/lib/aboutView.js");
+  const c = browserSupport({ offscreen: true, tabGroups: true, notifications: true, nano: true, webgpu: true, ua: "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 Chrome/141.0 Safari/537.36" });
+  check("Chrome: everything on", c.name === "Chrome" && c.all, JSON.stringify(c));
+  const f = browserSupport({ offscreen: false, tabGroups: false, notifications: true, nano: false, webgpu: false, ua: "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0" });
+  check("Firefox: named, no groups, no Nano, AI on the processor", f.name === "Firefox" && !f.rows.find((r) => r.id === "groups").on && !f.rows.find((r) => r.id === "nano").on && /processor/.test(f.rows.find((r) => r.id === "ai").note));
+  const s = browserSupport({ notifications: false, ua: "Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 Version/18.0 Safari/605.1.15" });
+  check("Safari: named, the run's end shown in the panel", s.name === "Safari" && /panel/.test(s.rows.find((r) => r.id === "notify").note));
+  const e = browserSupport({ ua: "Mozilla/5.0 AppleWebKit/537.36 Chrome/141.0 Safari/537.36 Edg/141.0" });
+  check("Edge is Edge", e.name === "Edge");
+}
+
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
 process.exit(failures ? 1 : 0);

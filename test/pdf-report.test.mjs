@@ -105,6 +105,8 @@ check("the lede names the engines and the prompts", R.lede === "How ChatGPT, Gem
 {
   const pr = page(R, "products");
   check("Zento's cards send buyers to Amazon.in and to zento.in, its own store", eq(pr.destinations.map((d) => [d.name, d.pct, d.own]), [["Amazon.in", 50, false], ["zento.in", 50, true]]), JSON.stringify(pr.destinations));
+  const zp = pr.products.find((x) => x.name === "Zento Pulse");
+  check("a product's average price keeps its currency, not assumed rupees (0.69.0)", zp && zp.avgPrice === 3499 && zp.avgCurrency === "INR", JSON.stringify(zp));
   check("kinds of answer: 2 shopping, 3 informational, 1 from memory", eq(pr.kinds.map((k) => [k.label, k.answers]), [["Shopping", 2], ["Informational", 3], ["From memory", 1]]), JSON.stringify(pr.kinds.map((k) => [k.label, k.answers])));
 }
 {
@@ -113,9 +115,12 @@ check("the lede names the engines and the prompts", R.lede === "How ChatGPT, Gem
   check("the search two engines ran is the most repeated", s.top[0].text === "best headphones under 4000 india 2026" && s.top[0].times === 2 && s.top[0].engines === "ChatGPT, Perplexity", JSON.stringify(s.top[0]));
 }
 {
-  const a = page(R, "actions");
-  check("actions: win back 2 answers, get onto rtings.com, list the store, watch Gemini", eq(a.actions.map((x) => x.head), ["Win back 2 missing answers.", "Get onto rtings.com.", "List the Zento store on product feeds.", "Watch Gemini."]), JSON.stringify(a.actions.map((x) => x.head)));
-  check("one card of two sends buyers elsewhere, in the singular", a.actions[2].text === "1 of 2 Zento cards in run 2 sends every buyer to someone else's store.", a.actions[2].text);
+  // 0.59.0: the last page is "Method". Until then it opened with four lines
+  // of advice ("Get onto rtings.com.", "Watch Gemini."); the owner asked for
+  // the data without the advice.
+  const a = page(R, "method");
+  check("the last page is the method, with no advice on it", !!a && a.title === "Method" && !("actions" in a), a && JSON.stringify(Object.keys(a)));
+  check("it keeps how the numbers are measured", Array.isArray(a.definitions) && a.definitions.length > 3);
   check("the runs table has both runs, run 2 marked as the one reported", eq(a.runs.map((r) => [r.label, r.answers, Math.round(r.visibility), r.current]), [["Run 1", 3, 33, false], ["Run 2", 6, 67, true]]), JSON.stringify(a.runs.map((r) => [r.label, r.answers, Math.round(r.visibility), r.current])));
 }
 
@@ -125,8 +130,10 @@ console.log("campaignReport: choices");
   check("run 1 has nothing before it: no changes on any tile", one.run.label === "Run 1" && one.run.previous === null && page(one, "summary").kpis.every((k) => k.delta === null));
   check("and the prompt page has no change column", page(one, "prompts").hasPrevious === false);
   check("a finding says who was named most when it wasn't Zento", page(one, "summary").findings[0] === "Zento was named in 33% of run 1 answers; Kovo was named most (100%).", page(one, "summary").findings[0]);
-  const some = campaignReport(bundle({ sections: ["prompts", "actions"] }));
-  check("left-out pages are left out; the summary always stays", eq(some.pages.map((p) => p.key), ["summary", "prompts", "actions"]));
+  const some = campaignReport(bundle({ sections: ["prompts", "method"] }));
+  check("left-out pages are left out; the summary always stays", eq(some.pages.map((p) => p.key), ["summary", "prompts", "method"]));
+  const old = campaignReport(bundle({ sections: ["prompts", "actions"] }));
+  check("a link from before 0.59.0 asking for 'actions' gets the method page", eq(old.pages.map((p) => p.key), ["summary", "prompts", "method"]));
   const gpt = campaignReport(bundle({ records: [...r2, ...r1].filter((r) => r.platform === "chatgpt"), engines: ["chatgpt"] }));
   check("one engine: only its column", eq(page(gpt, "prompts").engines, ["ChatGPT"]), JSON.stringify(page(gpt, "prompts").engines));
   const none = campaignReport(bundle({ records: [] }));
@@ -148,6 +155,12 @@ console.log("answerReport");
   check("every page opened, cited first", eq(A.opened.map((p) => [p.domain, p.cited]), [["zento.in", true], ["smartprix.com", true], ["reddit.com", false]]), JSON.stringify(A.opened.map((p) => [p.domain, p.cited])));
   check("the answer's text is in the report", A.answer.hasText && A.answer.html.includes("Zento Pulse"));
   const first = answerReport(r2[5], { previous: null, profiles: [profile] });
+  // "…named first with nothing it cited behind it — easy to lose next time"
+  // was still on the answer report in 0.60.1: a forecast, not a reading.
+  const bare = answerReport({ ...r2[0], sources: [] }, { previous: null, profiles: [profile] });
+  check("a brand named with no cited page behind it is said plainly", /^Zento was named first with no cited page behind it\.$/.test(bare.brandNote), bare.brandNote);
+  const words = JSON.stringify([A.brandNote, first.brandNote, bare.brandNote, A.chips, first.chips]);
+  check("no advice or forecasts on the answer report", !/easy to lose|next time|you should|consider|make sure|worth (?:targeting|pursuing)/i.test(words), words.slice(0, 200));
   check("an answer from memory: no search, no pages, and nothing to compare with", first.chips[1].text === "From memory · no search" && first.changes === null && first.opened.length === 0, JSON.stringify(first.chips));
 }
 

@@ -1,0 +1,2 @@
+# The extension zip (git archive) leaves the server out: it is deployed on its own (server/README.md).
+server export-ignore

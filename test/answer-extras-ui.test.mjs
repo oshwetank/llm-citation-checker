@@ -115,6 +115,17 @@ try {
     check("where it links, as a working link", r.href === "https://www.phonekart.example/deals/phones-under-50000?cip=123&oppref=gAAAAABTESTTOKEN" && /phonekart\.example/.test(r.card), r.href);
     check("what ties it to the answer", /Not named in the answer/.test(r.card) && /Its site not opened/.test(r.card), r.card);
     check("and the ad under the answer text, as ChatGPT showed it", r.after && /Phonekart/.test(r.inAnswer), r.inAnswer);
+    // 0.60.0: the ad in the page's summary and rail, and tied to the cards.
+    const r2 = await page.evaluate(() => ({
+      tile: document.querySelector("#at-glance .at-kpi-ad")?.innerText || "",
+      rail: [...document.querySelectorAll("#at-rail .at-rail-item")].map((b) => b.textContent),
+      cards: document.querySelector("#at-ads .ad-card")?.innerText || "",
+      gap: document.getElementById("at-ads")?.innerText || "",
+    }));
+    check("at a glance has an 'Ad shown' tile naming the advertiser", /Ad shown/.test(r2.tile) && /Phonekart/.test(r2.tile) && /not named in the answer/.test(r2.tile), r2.tile);
+    check("the rail lists the ad", r2.rail.some((t) => /^Ad shown/.test(t)), r2.rail.join(" | "));
+    check("the card says whether any product card lists the advertiser as a store", /Not a store on any card|A store on card/.test(r2.cards), r2.cards);
+    check("and what isn't captured about an ad", /Not captured: clicks, impressions/.test(r2.gap), r2.gap.slice(-160));
   }
 
   console.log("\nEvery page's address, in the full tab");

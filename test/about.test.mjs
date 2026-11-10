@@ -89,7 +89,7 @@ try {
   console.log("\na side menu, one page at a time");
   {
     const nav = await page.evaluate(() => [...document.querySelectorAll("#abNav .ab-nav-btn")].map((b) => b.querySelector(".ab-nav-label")?.textContent));
-    check("five pages in the side menu", nav.join("|") === "Overview|Metric glossary|Settings|Data & tools|Diagnostics", nav.join(" | "));
+    check("six pages in the side menu, Account among them (0.82.0)", nav.join("|") === "Overview|Metric glossary|Settings|Account|Data & tools|Diagnostics", nav.join(" | "));
     const s = await shown();
     check("it opens on the overview, and only the overview", s.ab === "overview" && s.visible.join() === "overview", JSON.stringify(s));
     const geo = await page.evaluate(() => {
@@ -117,7 +117,7 @@ try {
       };
     });
     check("the version comes from the build, so it can't go stale", o.badge === `v${VERSION}`, o.badge);
-    check("what stays private, in three plain facts", o.facts.join("|") === "No account|No server|No requests of its own", o.facts.join(" | "));
+    check("what stays private, in three plain facts", o.facts.join("|") === "Captures stay here|No account needed|Nothing sent unless you share", o.facts.join(" | "));
     check("the four engines it works with", o.engines.join("|") === "ChatGPT|Gemini|Perplexity|Grok", o.engines.join(" | "));
     check("how it works: four steps, three of them a tab", o.steps.length === 4 && o.steps.slice(1).map((s) => s.where).join("|") === "Analyze →|Dashboard →|Campaigns →", JSON.stringify(o.steps));
     check("and none of them is the Compare tab, which left the menu in 0.47.0", !/Compare/.test(o.steps.map((s) => s.where).join()));
@@ -151,7 +151,8 @@ try {
       return box && { title: box.querySelector(".ab-detail-title")?.textContent, group: box.querySelector(".ab-eyebrow")?.textContent, labels: [...box.querySelectorAll(".ab-label")].map((x) => x.textContent), on: document.querySelector(".ab-term-row.on")?.dataset.key };
     });
     check("picking a term shows it beside the list", d && d.title === "Cited %" && d.group === "Source metrics" && d.on === "citedRate", JSON.stringify(d));
-    check("with its formula, how to use it and what to keep in mind", d && d.labels.join("|") === "Formula|How to use it|Keep in mind", d && d.labels.join(" | "));
+    // 0.59.0: no "How to use it" advice; a term is defined, not prescribed.
+    check("with its formula and what to keep in mind, and no advice", d && d.labels.join("|") === "Formula|Keep in mind", d && d.labels.join(" | "));
 
     await page.fill("#abGlossSearch", "");
     await page.evaluate(() => [...document.querySelectorAll("#abGlossChips .ab-chip-btn")].find((c) => c.textContent.startsWith("Source metrics"))?.click());
@@ -190,7 +191,8 @@ try {
     const c = await st();
     check("Undo changes puts it back", c.keep === "2000" && c.status === "All settings saved" && !c.save, JSON.stringify(c));
     await page.fill("#setMaxMB", "0");
-    await page.evaluate(() => document.querySelector(".ab-switch").click());
+    // By id: from 0.62.0 "Read the cited pages" is the first switch on the page.
+    await page.evaluate(() => document.getElementById("setDebug").closest(".ab-switch").click());
     await settle(200);
     check("the debugger switch says what it's set to", (await st()).debug === "On");
     await page.evaluate(() => document.getElementById("setSave").click());
@@ -261,7 +263,7 @@ try {
     const h = await home();
     check("a first visit is welcomed", h.title === "Welcome to CitoSkeleton", h.title);
     check("with three steps to get started, none done", h.progress === "0 of 3 done" && h.steps.join() === "ask:todo,analyze:todo,campaign:todo", JSON.stringify(h));
-    check("then the pages, as a list", h.more.join("|") === "Metric glossary|Settings|Data & tools|Diagnostics|What’s new", h.more.join(" | "));
+    check("then the pages, as a list", h.more.join("|") === "Metric glossary|Settings|Account|Data & tools|Diagnostics|What’s new", h.more.join(" | "));
     check("no side menu in the popup", h.side === "none", h.side);
     check("and nothing wider than the popup", h.wide <= 0, `${h.wide}px`);
 

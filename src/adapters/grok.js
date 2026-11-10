@@ -473,12 +473,33 @@ function extractFanoutAndThoughts(nodes) {
   return { search, thoughts };
 }
 
+/* A copy content-iso.js read off the page's text (harvestSource "dom").
+ * Until 0.62.1 grok.com's user message carried a hidden "You" label that the
+ * reader took as part of the prompt ("Youbest good quality…"), and the answer
+ * opened with Grok's own "## Grok / Worked for 19s" lines. Copies made since
+ * are cleaned at the source and say so (promptClean); older ones are cleaned
+ * here, so a reprocess repairs what's already stored. */
+const GROK_UI_LINE = /^(?:#{1,3}\s*)?(?:Grok|(?:Worked|Thought|Thinking) for \d+(?:\.\d+)?\s*s(?:econds?)?)\s*$/i;
+export function cleanPageCopy({ prompt, answer, promptClean }) {
+  let p = String(prompt || "").trim();
+  if (!promptClean) p = p.replace(/^You(?=\S)/, "").trim();
+  const lines = String(answer || "").split("\n");
+  while (lines.length && (!lines[0].trim() || GROK_UI_LINE.test(lines[0].trim()))) lines.shift();
+  return { prompt: p, answer: lines.join("\n").trim() };
+}
+
 export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, options = {}) {
   const frames = parseFrames(raw);
   const gateway = readGateway(frames, reqBody);
   // A gateway capture is read through its folded node alone: the raw
   // envelopes carry nothing the REST readers below understand.
   const nodes = gateway ? [gateway.node] : frames;
+  const pageCopy = !gateway && frames.length === 1 && frames[0] && frames[0].harvestSource === "dom";
+  if (pageCopy) {
+    const c = cleanPageCopy({ prompt: frames[0].query, answer: frames[0].text, promptClean: frames[0].promptClean });
+    nodes[0] = { ...frames[0], query: c.prompt, text: c.answer };
+    reqBody = JSON.stringify({ query: c.prompt });
+  }
   const userPrompt = (gateway && gateway.prompt) || extractPrompt(reqBody, nodes);
   // Converted to [[cite:URL]] here, in the STORED answerText — not just a
   // detection-only copy — matching how Perplexity's own <grok:render>
@@ -523,7 +544,8 @@ export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, op
       adapterVersion: ADAPTER_VERSION,
       socialCitations,
       thoughts: thoughts.length ? thoughts : undefined,
-      transport: gateway ? "gateway" : "rest",
+      transport: gateway ? "gateway" : pageCopy ? "page" : "rest",
+      pageCopy: pageCopy || undefined,
       gatewayStatus: gateway ? gateway.status : undefined,
       gatewayError: gateway && gateway.error ? gateway.error : undefined,
       gatewayEvents: gateway ? gateway.eventTypes : undefined,

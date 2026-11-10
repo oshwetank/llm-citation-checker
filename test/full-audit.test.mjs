@@ -249,7 +249,7 @@ try {
 
   // Compare left the top menu in 0.47.0 (it opens from an answer instead);
   // compare-tab.test.mjs renders it that way.
-  const TABS = ["analyze", "dashboard", "loader", "about"];
+  const TABS = ["analyze", "dashboard", "loader", "ask", "about"];
   /* The interactive surface each tab MUST have once data exists.
    *
    * Without this, a tab that silently rendered its empty state satisfied
@@ -264,6 +264,8 @@ try {
     dashboard: { buttons: 12, selects: 1 },
     loader: { buttons: 3, selects: 0 },
     compare: { buttons: 0, selects: 3 },
+    // Ask with the built-in AI off: the setup button (ask-ui covers the chat).
+    ask: { buttons: 1, selects: 0 },
     about: { buttons: 2, selects: 0 },
   };
   console.log("\nEvery tab renders with content and without throwing");
@@ -316,11 +318,14 @@ try {
     const selects = await page.evaluate((t) => {
       const root = document.getElementById(t);
       return [...root.querySelectorAll("select")].map((s, i) => ({
-        i, id: s.id || `(select ${i})`, options: s.options.length,
+        i, id: s.id || `(select ${i})`, options: s.options.length, reloads: s.dataset.reloads === "1",
       }));
     }, tab);
     for (const s of selects) {
       if (s.options < 2) continue;
+      // The interface language reloads the page by design (0.71.0); it has
+      // its own test (i18n-ui).
+      if (s.reloads) continue;
       const res = await page.evaluate(async ({ t, i }) => {
         const root = document.getElementById(t);
         const sel = [...root.querySelectorAll("select")][i];
@@ -409,9 +414,16 @@ try {
   await page.evaluate(() => document.querySelector('[data-tab="loader"]')?.click());
   await page.waitForTimeout(2500);
   drain();
-  check("the campaign's results show in Campaigns", await page.evaluate(() => !!document.querySelector("#loader #campaignResults #cb-kpis")));
-  for (const sel of ["#cb-brands .cb-brand-btn", "#cb-sources td.td-domain button", "#cb-gaps .cb-tr", "#cb-kpis .cb-focus-tab:nth-child(3)"]) {
+  check("the campaign's results show in Campaigns", await page.evaluate(() => !!document.querySelector("#loader #campaignResults #cv-overview")));
+  // 0.64.0's board: a rival, the full comparison, a domain, a citation row,
+  // the citations' engine switch and a prompt.
+  // 0.67.0: each behind its section's tab, opened first; and the tabs
+  // themselves.
+  for (const sel of ["#cv-brands .cb-brand-btn", "#cv-compare .cv-more", "#cv-compare .cv-chip", "#cb-sources td.td-domain button", "#cv-sources .cv-doms .cv-link", "#cv-citations .cv-rowbtn", "#cv-citations .cv-seg button:nth-child(2)", "#cv-prompts .cv-ptoggle", "#cv-signals .loader-history-row"]) {
+    const sec = sel.startsWith("#cb-sources") ? "cv-sources" : sel.slice(1).split(" ")[0];
+    await page.evaluate(async (id) => { document.querySelector(`.cv-tab[data-section="${id}"]`)?.click(); await new Promise((r) => setTimeout(r, 1200)); }, sec);
     const found = await page.evaluate((s) => document.querySelectorAll(s).length, sel);
+    check(`${sel} is there`, found > 0);
     if (!found) continue;
     await page.evaluate(async (s) => {
       const n = document.querySelector(s);

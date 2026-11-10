@@ -73,6 +73,12 @@ if (noise) {
   check("NOISE_RE catches www.perplexity.ai/api/sse/autocomplete (contains /autocomplete)", NOISE_RE.test("https://www.perplexity.ai/api/sse/autocomplete"));
   check("NOISE_RE catches suggest.perplexity.ai/anything (hostname alone is enough)", NOISE_RE.test("https://suggest.perplexity.ai/anything"));
   check("NOISE_RE does NOT catch a real thread endpoint", !NOISE_RE.test("https://www.perplexity.ai/rest/sse/perplexity_ask"));
+  // 0.62.1, from the owner's network report: these were stored as captures.
+  check("NOISE_RE catches Perplexity's notification stream", NOISE_RE.test("https://www.perplexity.ai/rest/sse/notifications"));
+  check("NOISE_RE catches Perplexity's typeahead socket", NOISE_RE.test("wss://suggest.perplexity.ai/suggest/ws"));
+  check("NOISE_RE does NOT catch a thread's own reconnect stream", !NOISE_RE.test("https://www.perplexity.ai/rest/sse/0a1b2c3d-1111-2222-3333-444455556666"));
+  const pageSrc = readFileSync(new URL("../src/content-main.js", import.meta.url), "utf8");
+  check("the socket patch checks NOISE_RE before taking a socket", /const isTargetWs = !NOISE_RE\.test\(wsUrl\)/.test(pageSrc));
 }
 
 // background.js keeps an independent second copy of this same pattern (it
@@ -116,9 +122,22 @@ const ENGINES = {
     capture: [
       "https://chatgpt.com/backend-api/conversation",
       "https://chatgpt.com/backend-api/f/conversation",
+      // Signed out (0.66.0): the same stream on backend-anon.
+      "https://chatgpt.com/backend-anon/conversation",
+      "https://chatgpt.com/backend-anon/f/conversation",
+      // Signed out, the lighter app (0.69.0): the answer as ndjson.
+      "https://chatgpt.com/unauth-mweb/conversation/updates?lightweight_authenticated=1&operationId=abc",
+      // 0.73.1: an answer carried on after a hand-off.
+      "https://chatgpt.com/backend-api/f/conversation/resume",
+      "https://chatgpt.com/backend-api/conversation/updates?x=1",
+      "https://chatgpt.com/backend-api/f/conversation/stream",
     ],
     ignore: [
       "https://chatgpt.com/backend-api/conversations?offset=0", // history list, not a turn
+      "https://chatgpt.com/backend-api/conversation/0a1b2c3d-0000-5000-8000-000000000001", // loading an old chat
+      "https://chatgpt.com/backend-anon/conversations?offset=0",
+      "https://chatgpt.com/unauth-mweb/conversation/prepare?lightweight_authenticated=1",
+      "https://chatgpt.com/unauth-mweb/events/business",
       "https://chatgpt.com/_next/static/chunks/main.js",
     ],
   },

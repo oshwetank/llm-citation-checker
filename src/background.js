@@ -12,34 +12,50 @@
  * No network calls. Nothing leaves the device.
  */
 
+import { probeIsRead } from "./lib/geminiChannel.js";
+import { createAiService } from "./aiService.js";
 import { db } from "./lib/db.js";
 import {
-  turnBudgetMs, legEta, INTER_PROMPT_MIN_MS, INTER_PROMPT_MAX_MS,
-  CONCURRENT_TABS_PER_ENGINE, LEG_START_STAGGER_MS, shardPrompts,
+  turnBudgetMs, legEta, runTookMs, INTER_PROMPT_MIN_MS, INTER_PROMPT_MAX_MS,
+  CONCURRENT_TABS_PER_ENGINE, tabsForEngine, LEG_START_STAGGER_MS, shardPrompts,
   parseCooldownFromNotice, formatCooldown,
 } from "./lib/pacing.js";
 import { createErrorLog } from "./lib/errorlog.js";
+import { compareRuns } from "./lib/runCompare.js";
 import { BUILD } from "./lib/build.js";
-import { checkEnginesAuth, AUTH_COOKIES } from "./lib/auth-check.js";
+import { noteHealth, emptyHealth, healthReport, verdict, missedAnswers, ENGINES as HEALTH_ENGINES } from "./lib/captureHealth.js";
+import { checkEnginesAuth, checkEngineAuth, AUTH_COOKIES } from "./lib/auth-check.js";
 import { buildDemoRecords, isDemoRecord } from "./lib/demo-data.js";
 import { buildCampaignXlsx, campaignCsvFiles, campaignExportCounts } from "./lib/campaignXlsx.js";
 import { campaignReport } from "./lib/campaignReport.js";
 import { findPrevious } from "./lib/analyzeView.js";
 import { summarizeRunDiagnostics } from "./lib/diagnosticsSummary.js";
 import { gzipString, gunzipToString } from "./lib/gzip.js";
+import { campaignParts, makeBundle, encodeBundle, decodeBundle, readBundle, bundleFileName, bufToB64, b64ToBuf } from "./lib/campaignBundle.js";
+import { makeCloud, cloudReady, CLOUD_SESSION_KEY } from "./lib/cloud.js";
+import { CLOUD } from "./lib/cloudConfig.js";
+import { checkEmail } from "./lib/emailCheck.js";
+import { citedUrls, pageVerdict, pageSummary, wordCount, PAGE_TTL_MS } from "./lib/pageText.js";
+import { appendRing } from "./lib/netlog.js";
+import { offersFrom, attachOffers, productUpdateFrom, productPanelFrom, formChoicesFrom, cardIndexFor } from "./lib/offers.js";
 import { searchAnswers } from "./lib/answerSearch.js";
-import { answerKey, sameAnswer, mergeAnswers, SAME_ANSWER_WINDOW_MS } from "./lib/sameAnswer.js";
+import { answerKey, sameAnswer, mergeAnswers, SAME_ANSWER_WINDOW_MS, SAME_REPLY_WINDOW_MS } from "./lib/sameAnswer.js";
 import { campaignBoard, brandDetail } from "./lib/campaignBoard.js";
+import { campaignView } from "./lib/campaignView.js";
+import { campaignInsights } from "./lib/insights.js";
+import { ENGINES as HANDOFF_ENGINES } from "./lib/contextPack.js";
 import { adapt as adaptChatGpt, cleanPassage } from "./adapters/chatgpt.js";
 import { enrichBrandsWithAI, enrichBrandStance } from "./lib/ai-brands.js";
 import { adapt as adaptGemini } from "./adapters/gemini.js";
 import { adapt as adaptPerplexity } from "./adapters/perplexity.js";
 import { adapt as adaptGrok } from "./adapters/grok.js";
+import { adaptPageCopy, isPageCopy } from "./adapters/pageCopy.js";
 import {
   MAX_PROFILES, TRASH_RETENTION_DAYS, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
-  selectTracked, computeMetrics, computeSeries, brandPresence, normName,
+  needsUnlock, profileChanges, addCompetitor, autoCompetitorsFrom, missingTurns,
+  selectTracked, latestAnswers, computeMetrics, computeSeries, brandPresence, normName,
   effectiveTrackedBrands, headToHead, brandSourceDomains, availableEngines,
-  hasSignal, countCompletedForRun, countCompletedForLeg, isPrunableCapture,
+  hasSignal, turnAnswered, usageLimitOf, countCompletedForRun, countCompletedForLeg, isPrunableCapture, retentionVictims,
 } from "./lib/geo.js";
 export { hasSignal };
 
@@ -77,7 +93,22 @@ const DEFAULT_SETTINGS = {
   // URLs let cited domains be attributed to the right brand.
   myBrand: { name: "", url: "" },
   competitors: [], // [{ name, url }]
-  debugCapture: false, // diagnostic channel is OFF by default (it is chatty)
+  debugCapture: false,
+  // Pause capture (0.66.0): the switch at the top of the popup and the tab.
+  // While on, nothing from an engine page is stored: no answers, no
+  // after-answer requests, no probes, no network log. A campaign run's own
+  // tabs still record, since starting a run asks for exactly that.
+  capturePaused: false,
+  keepHandoffCaptures: false, // 0.76.0: capture the "Continue in…" chats too
+  // Read the cited pages (0.62.0): off until asked for, since it is the one
+  // thing that makes requests beyond the engines' own pages.
+  readCitedPages: false, // diagnostic channel is OFF by default (it is chatty)
+  // The built-in AI (0.70.0): what it checks once downloaded, and whether
+  // the names it finds join the counts (off: counts stay the same on every
+  // computer, model or not).
+  aiOnCampaigns: true,
+  aiOnEveryday: true,
+  aiInCounts: false,
   maxCaptureMB: 8, // skip storing a single raw payload larger than this
   retentionMax: 2000, // keep at most N captures; oldest pruned first
 };
@@ -110,8 +141,104 @@ async function setSettings(patch) {
 }
 // Keep the cache honest if settings are changed from another context.
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && changes.lcfcSettings) settingsCache = null;
+  if (area === "local" && changes.lcfcSettings) { settingsCache = null; idleBadge(); }
 });
+
+// The toolbar icon says "off" while capture is paused, on every page, so a
+// paused recorder is never mistaken for a working one. A run's progress
+// badge takes the icon while it runs.
+async function idleBadge() {
+  if (loader && loader.running) return;
+  try {
+    const paused = !!(await getSettings()).capturePaused;
+    await chrome.action.setBadgeText({ text: paused ? "off" : "" });
+    if (paused) await chrome.action.setBadgeBackgroundColor({ color: "#57534e" });
+    await chrome.action.setTitle({ title: paused ? "CitoSkeleton: capture paused" : "CitoSkeleton" });
+  } catch (_) { /* no action API in some test contexts */ }
+}
+
+/* ---------- "Continue in…" (0.76.0) ----------
+ * A tab opened to take CitoSkeleton's data to another AI. Its message waits
+ * here until the page script (src/handoff.js) claims it; the tab is
+ * remembered (also across a worker restart) so the conversation there — the
+ * user talking about their own data — isn't captured as an engine answer. */
+const handoffJobs = new Map(); // tabId -> {text, engine, autoSend, at}
+const HANDOFF_TABS_KEY = "lcfcHandoffTabs";
+async function handoffTabs() {
+  try { return new Set((await chrome.storage.session.get(HANDOFF_TABS_KEY))[HANDOFF_TABS_KEY] || []); } catch (_) { return new Set(); }
+}
+async function setHandoffTab(tabId, on) {
+  const s = await handoffTabs();
+  if (on) s.add(tabId); else s.delete(tabId);
+  try { await chrome.storage.session.set({ [HANDOFF_TABS_KEY]: [...s] }); } catch (_) { /* best effort */ }
+}
+// A change to a locked campaign's prompts goes in its change log (0.77.0).
+async function logCampaignChange(profileId, entry) {
+  const p = profileId ? await db.get("profiles", profileId) : null;
+  if (!p || !p.locked) return;
+  await db.put("profiles", makeProfile({ ...p, changes: [...(p.changes || []), { at: Date.now(), ...entry }] }));
+}
+async function handoffOpen({ engine, text, autoSend = true }) {
+  const e = HANDOFF_ENGINES[engine];
+  if (!e) return { ok: false, error: `No engine ${engine}.` };
+  if (!text || typeof text !== "string") return { ok: false, error: "Nothing to send." };
+  const origin = new URL(e.url).origin + "/*";
+  if (!(await chrome.permissions.contains({ origins: [origin] }).catch(() => false))) return { ok: false, error: `CitoSkeleton needs permission for ${new URL(e.url).hostname} first.`, needsPermission: origin };
+  const tab = await chrome.tabs.create({ url: e.url, active: true });
+  handoffJobs.set(tab.id, { text: text.slice(0, 200000), engine, autoSend: autoSend !== false, at: Date.now() });
+  await setHandoffTab(tab.id, true);
+  return { ok: true, tabId: tab.id };
+}
+chrome.tabs.onUpdated.addListener((tabId, info) => {
+  if (info.status !== "complete" || !handoffJobs.has(tabId)) return;
+  chrome.scripting.executeScript({ target: { tabId }, files: ["src/handoff.js"] }).catch((e) => logErr("handoff:inject", e));
+});
+chrome.tabs.onRemoved.addListener((tabId) => { handoffJobs.delete(tabId); setHandoffTab(tabId, false); });
+
+// Whether a message from an engine page is dropped because capture is
+// paused. A campaign run's tab is exempt. A "Continue in…" tab is never
+// captured (0.76.0), unless the user chose to keep those.
+async function capturePausedFor(sender) {
+  const settings = await getSettings();
+  const tid = sender && sender.tab && sender.tab.id;
+  if (tid != null && !settings.keepHandoffCaptures && (await handoffTabs()).has(tid)) return true;
+  if (!settings.capturePaused) return false;
+  const tabId = sender && sender.tab && sender.tab.id;
+  return !(loader && loader.running && tabId != null && legForTab(tabId));
+}
+
+// How the answer was asked (0.66.0): from a private (incognito) window, and
+// whether the engine had a signed-in session in that window's cookie store.
+// Signed-out and private answers carry no account history or memory, which
+// is why they're worth telling apart.
+async function sessionOf(sender, platform, url) {
+  const tab = sender && sender.tab;
+  const out = { private: !!(tab && tab.incognito), signedIn: "unknown" };
+  if (platform === "chatgpt" && /\/backend-anon\//.test(url || "")) { out.signedIn = "out"; return out; }
+  try {
+    let storeId;
+    if (tab && tab.id != null && chrome.cookies.getAllCookieStores) {
+      const stores = await chrome.cookies.getAllCookieStores();
+      const st = stores.find((x) => (x.tabIds || []).includes(tab.id));
+      if (st) storeId = st.id;
+    }
+    // The cookies the engine's page itself is sent (0.69.0). Asked by domain,
+    // Google's session cookies on google.com were out of reach (the
+    // extension has gemini.google.com, not google.com), so every Gemini
+    // answer read "unknown". By the page's address they are the ones it gets.
+    const spec = AUTH_COOKIES[platform];
+    const pageUrl = tab && tab.url && /^https:/.test(tab.url) ? new URL(tab.url).origin + "/" : null;
+    if (spec && pageUrl) {
+      const got = (await chrome.cookies.getAll(storeId ? { url: pageUrl, storeId } : { url: pageUrl })) || [];
+      if (got.some((c) => spec.names.includes(c.name) && c.value)) out.signedIn = "in";
+      else if (got.length) out.signedIn = "out";
+    } else {
+      const r = await checkEngineAuth(platform, (q) => chrome.cookies.getAll(storeId ? { ...q, storeId } : q));
+      out.signedIn = r.status;
+    }
+  } catch (_) { /* unknown */ }
+  return out;
+}
 
 // Reloading the extension orphans content scripts already running in open tabs
 // (they can no longer reach the new service worker — capture goes silent).
@@ -125,7 +252,111 @@ chrome.storage.onChanged.addListener((changes, area) => {
 // re-create them," and calling ensureHeartbeatAlarm() is itself idempotent
 // (checks before creating), so there's no cost to being explicit here
 // rather than relying on load-order coincidence.
-chrome.runtime.onInstalled.addListener(() => {
+/* The welcome guide (0.81.0, ui/welcome.html): opened once, full page, when
+ * the extension is installed, and once on the update that brings it to
+ * someone who already had the extension. Asked: "this landing page … only
+ * pops up one time". Never in an automated browser (a test run is a fresh
+ * install every time), unless a test asks for it. */
+const WELCOME_OFFERED_KEY = "citoWelcomeOffered";
+async function openWelcomeOnce({ evenAutomated = false } = {}) {
+  try {
+    // Test browsers run headless; the worker's navigator.webdriver isn't set.
+    const automated = !!navigator.webdriver || /HeadlessChrome/.test(navigator.userAgent || "");
+    if (automated && !evenAutomated) return false;
+    const got = await chrome.storage.local.get([WELCOME_OFFERED_KEY, "citoWelcomeDone", "citoSignup"]);
+    if (got[WELCOME_OFFERED_KEY] || got.citoWelcomeDone) return false;
+    await chrome.storage.local.set({ [WELCOME_OFFERED_KEY]: Date.now() });
+    await chrome.tabs.create({ url: chrome.runtime.getURL("ui/welcome.html"), active: true });
+    return true;
+  } catch (e) {
+    logErr("welcome", e);
+    return false;
+  }
+}
+
+/* Accounts and update emails (0.82.0, lib/cloud.js). Off while
+ * lib/cloudConfig.js is empty: nothing is sent and the panel says so. */
+const cloudOn = () => cloudReady(CLOUD);
+const cloud = makeCloud(CLOUD, {
+  load: async () => (await chrome.storage.local.get(CLOUD_SESSION_KEY))[CLOUD_SESSION_KEY] || null,
+  save: async (s) => (s ? chrome.storage.local.set({ [CLOUD_SESSION_KEY]: s }) : chrome.storage.local.remove(CLOUD_SESSION_KEY)),
+});
+
+// The email left on the welcome page or in Settings goes to the server once
+// there is one; what was sent, and its unsubscribe token, is kept apart from
+// citoSignup so Remove can still unsubscribe after the address is cleared.
+const SIGNUP_SENT_KEY = "citoSignupSent";
+async function syncSignup() {
+  if (!cloudOn()) return { ok: true, sent: false, reason: "off" };
+  const got = await chrome.storage.local.get(["citoSignup", SIGNUP_SENT_KEY]);
+  const want = got.citoSignup && got.citoSignup.email && got.citoSignup.consent ? got.citoSignup.email : "";
+  const sent = got[SIGNUP_SENT_KEY] || null;
+  try {
+    if (sent && sent.email !== want) {
+      await cloud.unsubscribe(sent.email, sent.token).catch((e) => { if (e.status !== 404) throw e; });
+      await chrome.storage.local.remove(SIGNUP_SENT_KEY);
+    }
+    if (want && (!sent || sent.email !== want)) {
+      const r = await cloud.subscribe(want, { source: got.citoSignup.source || "extension" });
+      await chrome.storage.local.set({ [SIGNUP_SENT_KEY]: { email: want, token: r.token, at: Date.now() }, citoSignup: { ...got.citoSignup, sent: true } });
+    }
+    return { ok: true, sent: !!want };
+  } catch (e) {
+    // Tried again at the next start; the address stays on this computer.
+    logErr("signup", e);
+    return { ok: false, error: e.message };
+  }
+}
+
+chrome.runtime.onStartup?.addListener(() => { syncSignup(); });
+
+/* A campaign as a .cito file (0.82.0, lib/campaignBundle.js). Its raw
+ * captures are read one by one, by key: the raw store can be large. */
+async function exportCampaignFile(profileId, { includeRaw = true } = {}) {
+  const profile = await db.get("profiles", profileId);
+  if (!profile) return { ok: false, error: "Campaign not found." };
+  const parts = campaignParts(profile.id, {
+    prompts: await db.getAll("trackedPrompts"),
+    runs: await db.getAll("geoRuns"),
+    records: await db.getAll("derived"),
+  });
+  if (includeRaw) {
+    const ids = [...new Set(parts.records.flatMap((r) => [r.captureId, ...(r.mergedFrom || [])]))];
+    for (const id of ids) { const row = await db.get("raw", id); if (row) parts.raws.push(row); }
+  }
+  const s = (await chrome.storage.local.get(CLOUD_SESSION_KEY))[CLOUD_SESSION_KEY];
+  const bundle = makeBundle({ profile, ...parts, includeRaw, appVersion: chrome.runtime.getManifest().version, from: s && s.user && s.user.name ? { name: s.user.name } : null });
+  try {
+    const file = await encodeBundle(bundle);
+    return { ok: true, file, fileName: bundleFileName(profile), name: profile.name || "Campaign", counts: bundle.counts };
+  } catch (e) {
+    return { ok: false, error: e.message, tooLarge: true };
+  }
+}
+
+async function importCampaignBundle(bundle, { from = "" } = {}) {
+  const live = (await db.getAll("profiles")).filter((p) => !p.deletedAt);
+  if (live.length >= MAX_PROFILES) return { ok: false, error: `You can track at most ${MAX_PROFILES} campaigns. Delete one, then import this again.` };
+  const taken = new Set(live.map((p) => (p.name || "").trim().toLowerCase()));
+  const base = (bundle.profile.name || "Shared campaign").trim();
+  let name = base;
+  for (let i = 1; taken.has(name.toLowerCase()); i++) name = i === 1 ? `${base} (shared)` : `${base} (shared ${i})`;
+  if (from && !(bundle.from && bundle.from.name)) bundle = { ...bundle, from: { name: from } };
+  const out = readBundle(bundle, { name });
+  for (const p of out.prompts) await db.put("trackedPrompts", p);
+  for (const r of out.runs) await db.put("geoRuns", r);
+  for (const r of out.raws) await db.put("raw", r);
+  for (const r of out.records) await db.put("derived", r);
+  // The campaign last, so a half-finished import never shows up as one.
+  await db.put("profiles", out.profile);
+  broadcast({ type: "capture-updated" });
+  return { ok: true, profileId: out.profile.id, name: out.profile.name, counts: { prompts: out.prompts.length, runs: out.runs.length, answers: out.records.length } };
+}
+
+chrome.runtime.onInstalled.addListener((details) => {
+  if (details && details.reason === "update") repairOnce().catch((e) => logErr("repair", e));
+  syncSignup();
+  if (details && (details.reason === "install" || details.reason === "update")) openWelcomeOnce();
   chrome.tabs.query({ url: AI_TAB_MATCHES }, (tabs) => {
     for (const t of tabs || []) {
       try {
@@ -137,6 +368,41 @@ chrome.runtime.onInstalled.addListener(() => {
   });
   ensureHeartbeatAlarm();
 });
+
+/* ---------- The capture check (0.73.1) ----------
+ * What happened on the way from an engine page to the store, per engine
+ * (lib/captureHealth.js). Updates are chained so two arriving together
+ * don't overwrite each other. */
+const HEALTH_KEY = "lcfcCaptureHealth";
+let healthChain = Promise.resolve();
+function noteCapture(engine, e) {
+  healthChain = healthChain.then(async () => {
+    const got = await chrome.storage.local.get(HEALTH_KEY);
+    await chrome.storage.local.set({ [HEALTH_KEY]: noteHealth(got[HEALTH_KEY], engine, e) });
+  }).catch(() => {});
+  if (e && e.kind === "drop" && e.reason !== "paused") logEvent(`capture:drop:${engine}`, "capture", `capture not saved: ${e.reason}`, { platform: engine, reason: e.reason, path: e.path || "" });
+  return healthChain;
+}
+const MISSED_DISMISSED_KEY = "citoMissedDismissed";
+const ENGINE_TAB_URLS = ["https://chatgpt.com/*", "https://chat.openai.com/*", "https://gemini.google.com/*", "https://www.perplexity.ai/*", "https://perplexity.ai/*", "https://grok.com/*"];
+// Each open engine tab, asked how capture stands there. No answer within
+// 1.5 s means its script is cut off from the extension.
+async function engineTabsHealth() {
+  let tabs = [];
+  try { tabs = await chrome.tabs.query({ url: ENGINE_TAB_URLS }); } catch (_) { return []; }
+  return Promise.all(tabs.map(async (t) => {
+    const engine = platformFromUrl(t.url);
+    const base = { tabId: t.id, engine, url: (() => { try { const u = new URL(t.url); return u.origin + u.pathname.replace(/\/[^/]{12,}/g, "/:id"); } catch (_) { return ""; } })(), discarded: !!t.discarded };
+    if (t.discarded || t.status === "unloaded") return { ...base, alive: false, asleep: true };
+    const reply = await new Promise((res) => {
+      const timer = setTimeout(() => res(null), 1500);
+      try {
+        chrome.tabs.sendMessage(t.id, { type: "cs-ping" }, { frameId: 0 }, (r) => { clearTimeout(timer); void chrome.runtime.lastError; res(r || null); });
+      } catch (_) { clearTimeout(timer); res(null); }
+    });
+    return reply && reply.ok ? { ...base, alive: true, ...reply, url: base.url } : { ...base, alive: false };
+  }));
+}
 
 function platformFromUrl(url) {
   const u = String(url || "");
@@ -181,13 +447,19 @@ function payloadShape(rawText) {
   return out.replace(/\s+/g, "").slice(0, 120);
 }
 
+// Raw text past this is never read, whatever the stored-size setting: the
+// copy alone would hold that much memory twice over.
+const RAW_HARD_CAP_BYTES = 64 * 1024 * 1024;
+const gzBytes = (gz) => (gz && typeof gz.byteLength === "number" ? gz.byteLength : 0);
+
 async function storeCapture(payload, meta) {
   const platform = platformFromUrl(payload.pageUrl || payload.url);
   const settings = await getSettings();
   const rawText = payload.raw || "";
 
   // Gemini emits many small RPCs; only the assistant generation is substantial.
-  if (platform === "gemini" && rawText.length < 2000) return null;
+  // A copy read off the page (0.84.0) is the answer itself, however short.
+  if (platform === "gemini" && rawText.length < 2000 && !isPageCopy(rawText)) return null;
 
   // Reject autocomplete, suggest, and navigation prediction requests (they are not answers).
   //
@@ -198,7 +470,7 @@ async function storeCapture(payload, meta) {
   // so this is a second, independent copy rather than a shared constant.
   // test/interception-endpoints.test.mjs asserts the two copies are
   // byte-for-byte identical; a change to one without the other fails CI.
-  if (/suggest\.perplexity\.ai|\/navigate\b|\/autocomplete\b|\/api\/auth/i.test(payload.url || "")) {
+  if (/suggest\.perplexity\.ai|\/navigate\b|\/autocomplete\b|\/api\/auth|\/rest\/sse\/notifications\b/i.test(payload.url || "")) {
     return null;
   }
 
@@ -209,8 +481,16 @@ async function storeCapture(payload, meta) {
 
   // Guard against pathological payloads (Gemini local/map answers have been seen
   // at 25MB raw / ~5MB stored). Without a cap the store grows ~1GB per 1k captures.
+  // The cap is on what is stored, the compressed copy (0.79.0). Signed-out
+  // ChatGPT answers arrive as 5–8 MB of mostly page markup that compresses
+  // tenfold; capped on raw length, the longest of them were dropped whole,
+  // and their campaign turns then timed out with the answer on screen.
   const capBytes = Math.max(1, settings.maxCaptureMB) * 1024 * 1024;
-  if (rawText.length > capBytes) {
+  if (rawText.length > RAW_HARD_CAP_BYTES) {
+    return { skipped: "too-large", bytes: rawText.length };
+  }
+  const gz = await gzipString(rawText);
+  if (gzBytes(gz) > capBytes) {
     return { skipped: "too-large", bytes: rawText.length };
   }
 
@@ -226,8 +506,9 @@ async function storeCapture(payload, meta) {
     projectId: (meta && meta.projectId) || null, // on raw so reprocess preserves it
     runId: (meta && meta.runId) || null,
     geo: (meta && meta.geo) || null, // ditto: tracking provenance must survive reprocess
+    session: (meta && meta.session) || null, // private window / signed in (0.66.0)
 
-    gz: await gzipString(rawText),
+    gz,
     rawSchema: 1,
   };
   await db.put("raw", rawRow);
@@ -301,7 +582,10 @@ async function storeCapture(payload, meta) {
 
   if (record) record = await settleSameAnswer(record);
 
-  await enforceRetention(settings);
+  // Not awaited (0.79.0): with a full store it scans every capture, and a
+  // campaign turn waited on it before it could move on. It never removes the
+  // capture just stored.
+  enforceRetention(settings, record ? record.captureId : captureId).catch(() => {});
   // A copy of an answer already stored is merged into that record, which
   // keeps its id; that is the capture the panel should show.
   return { captureId: record ? record.captureId : captureId, record };
@@ -327,6 +611,11 @@ async function storeCapture(payload, meta) {
 async function enrichCaptureWithAI(record) {
   try {
     if (!record || !record.answerText) return;
+    // 0.74.0: one on-device model per capture. With the built-in AI set up
+    // (Chrome's model or Qwen) its queue reads the brands; and nothing runs
+    // beside a campaign's tabs.
+    if (loader && loader.running) return;
+    if (await aiSvc.engine(await aiSvc.getState())) return;
     // Each adapter counts mentions against its own cleaned text; match that
     // here so the AI merge verifies names against the same string.
     const plain = record.platform === "chatgpt"
@@ -347,7 +636,16 @@ async function enrichCaptureWithAI(record) {
     // may have landed while the model was thinking.
     const current = await db.get("derived", record.captureId);
     if (!current) return;
-    current.brandMentions = finalBrands;
+    // 0.70.0: Nano's names no longer go into the counts directly (that made
+    // share of voice differ between a computer with Nano and one without,
+    // and Reprocess erased it). They are kept as an AI check, put back on
+    // every derive, and join the counts only with "Use AI-checked brands in
+    // counts" on.
+    const have = new Set((record.brandMentions || []).map((m) => String(m.brand || "").toLowerCase()));
+    const added = finalBrands.filter((m) => !have.has(String(m.brand || "").toLowerCase()));
+    const stances = new Map(finalBrands.filter((m) => m.stance).map((m) => [m.brand, m.stance]));
+    if (!(await aiSvc.saveNano(current, { added, stances }))) return;
+    await aiSvc.attach(current);
     await db.put("derived", current);
     try {
       chrome.runtime.sendMessage(
@@ -360,14 +658,34 @@ async function enrichCaptureWithAI(record) {
   }
 }
 
+// The answer's language, from Chrome's own detector (0.70.0); no model needed.
+async function detectAnswerLang(record) {
+  const text = String(record.answerText || "").slice(0, 4000);
+  if (text.trim().length < 20 || !chrome.i18n || !chrome.i18n.detectLanguage) return null;
+  try {
+    const r = await chrome.i18n.detectLanguage(text);
+    const top = r && r.languages && r.languages[0];
+    if (top && top.language && top.language !== "und" && (r.isReliable || top.percentage >= 60)) return top.language;
+  } catch (_) { /* not available */ }
+  return null;
+}
+
+const withTimeout = (p, ms, fallback) => new Promise((resolve) => {
+  const t = setTimeout(() => resolve(fallback), ms);
+  Promise.resolve(p).then((v) => { clearTimeout(t); resolve(v); }, () => { clearTimeout(t); resolve(fallback); });
+});
+
 async function deriveAndStore(rawRow, rawText, settings, { settle = true } = {}) {
   const raw = rawText ?? (await gunzipToString(rawRow.gz));
   const cfg = settings || (await getSettings());
-  const adapter = ADAPTERS[rawRow.platform] || ADAPTERS.chatgpt;
+  // An answer read off the page (0.84.0, adapters/pageCopy.js): one shape
+  // for every engine, whatever its network format is this week.
+  const adapter = isPageCopy(raw) ? adaptPageCopy : ADAPTERS[rawRow.platform] || ADAPTERS.chatgpt;
   const record = await adapter(
     {
       captureId: rawRow.captureId,
       raw,
+      url: rawRow.url,
       reqBody: rawRow.reqBody,
       capturedAt: rawRow.capturedAt,
       pageUrl: rawRow.pageUrl,
@@ -377,14 +695,309 @@ async function deriveAndStore(rawRow, rawText, settings, { settle = true } = {})
   record.projectId = rawRow.projectId || null;
   record.runId = rawRow.runId || null;
   record.geo = rawRow.geo || null;
+  if (rawRow.session) record.session = rawRow.session;
 
   // Don't store 0-signal captures (empty autocomplete, failed navigation, etc.)
   if (!record.userPrompt && !record.answerChars && (!record.sources || !record.sources.length)) {
     return null;
   }
+  // A Gemini stream handed over before the answer began (0.69.0): only its
+  // "Searching the web" frames had come when the stream went quiet. It is no
+  // answer yet; the next hand-over brings it. Stored, it was an empty answer
+  // that finished the campaign turn.
+  if (record.platform === "gemini" && (record.platformSpecific || {}).transport === "webchannel" && !record.answerChars) {
+    return null;
+  }
 
+  await attachPages(record);
+  await attachInteractions(record);
+  // Neither may hold the record back (0.73.1): each gets 3 s, then the
+  // record is saved without it.
+  const lang = await withTimeout(detectAnswerLang(record), 3000, null);
+  if (lang) record.answerLang = lang;
+  // The built-in AI's stored check, put back on every derive and Reprocess
+  // without running the model (0.70.0).
+  await withTimeout(aiSvc.attach(record).catch(() => {}), 3000, null);
   await db.put("derived", record);
   return settle ? settleSameAnswer(record) : record;
+}
+
+/* ------------------------------------------------------------------
+ * The cited pages, read (0.62.0). Only with "Read the cited pages" on, and
+ * only the pages an answer cited: fetched as the browser would, turned into
+ * readable text in the offscreen document (Mozilla Readability), and kept
+ * in the "pages" store. A page that comes back as a wall or an empty
+ * JavaScript shell is opened once in a hidden tab and read from there. The
+ * record carries what was found (status, words, the brands the text names)
+ * and gets it back on every reprocess from the stored text.
+ * ------------------------------------------------------------------ */
+const PAGE_FETCH_MS = 10000;
+const PAGE_MAX_BYTES = 5 * 1024 * 1024;
+
+async function attachPages(record) {
+  const urls = citedUrls(record);
+  if (!urls.length) return;
+  let read = 0;
+  for (const s of record.sources || []) {
+    if (s.outcome !== "cited" || !s.url) continue;
+    const row = await db.get("pages", s.url.replace(/#.*$/, "")).catch(() => null);
+    if (!row) continue;
+    s.platformSpecific = { ...(s.platformSpecific || {}), page: pageSummary(row, record) };
+    if (row.status === "ok") read++;
+  }
+  const tried = (record.sources || []).filter((s) => s.platformSpecific && s.platformSpecific.page).length;
+  if (tried) record.pagesRead = { read, tried, cited: urls.length };
+}
+
+/* What ChatGPT loaded after an answer (0.62.0, content-main.js): a product
+ * card's stores, seen only when someone opens the card. Stored per reply and
+ * put back on the record on every derive. */
+// The network recorder's ring (0.62.0). Session storage, not IndexedDB: it
+// is diagnostics for the report, cleared when the browser closes, and never
+// part of a capture. Appends are chained so two tabs' batches arriving
+// together can't overwrite each other.
+const NETLOG_KEY = "lcfcNetlog";
+let netlogChain = Promise.resolve();
+async function netlogLoad() {
+  try { const got = await chrome.storage.session.get(NETLOG_KEY); return got[NETLOG_KEY] || []; } catch (_) { return []; }
+}
+function netlogAppend(entries) {
+  if (!entries.length) return netlogChain;
+  netlogChain = netlogChain.then(async () => {
+    const ring = appendRing(await netlogLoad(), entries);
+    await chrome.storage.session.set({ [NETLOG_KEY]: ring });
+  }).catch((e) => logErr("netlog", e));
+  return netlogChain;
+}
+
+// Gemini replies kept as probes (0.62.1, Debug capture only; content-main.js
+// GEMINI_PROBE_RE): the newest 20, in session storage, never derived into an
+// answer. "Payloads it couldn't read" in About saves them for the owner to
+// send, so a reader for Gemini's new traffic can be written from the real
+// shape.
+const PROBE_KEY = "lcfcProbes";
+let probeChain = Promise.resolve();
+async function probesLoad() {
+  try { const got = await chrome.storage.session.get(PROBE_KEY); return got[PROBE_KEY] || []; } catch (_) { return []; }
+}
+function probeAppend(p) {
+  probeChain = probeChain.then(async () => {
+    const list = (await probesLoad()).concat([{ at: p.at || Date.now(), url: String(p.url || "").slice(0, 2000), method: String(p.method || ""), pageUrl: String(p.pageUrl || "").slice(0, 500), reqBody: String(p.reqBody || "").slice(0, 50000), body: String(p.body || "").slice(0, 300000) }]);
+    await chrome.storage.session.set({ [PROBE_KEY]: list.slice(-20) });
+  }).catch((e) => logErr("probe", e));
+  return probeChain;
+}
+
+async function attachInteractions(record) {
+  const rows = await db.getAllByIndex("interactions", "captureId", record.captureId).catch(() => []);
+  if (!rows.length) return;
+  rows.sort((a, b) => a.at - b.at);
+  const products = (record.products || []).map((p) => ({ ...p }));
+  let formChoices = null;
+  record.interactions = rows.map((r) => {
+    const kind = /\/search\/product_update/.test(r.path) ? "stores" : /\/sidebar\/conversation/.test(r.path) ? "panel" : /\/dil\/view_state/.test(r.path) ? "form" : /\/bazaar\//.test(r.path) ? "ads" : "other";
+    const row = { id: r.id, at: r.at, path: r.path, status: r.status, kind, offers: 0, cards: 0 };
+    if (kind === "stores") {
+      // What the card's lookup returned, kept on the card it was opened
+      // from (matched by its listing id, then the name it was opened with).
+      const u = productUpdateFrom(r.body, r.reqBody);
+      const i = cardIndexFor(products, { ids: u.lookupIds, name: u.query });
+      if (i >= 0 && u.products.length) {
+        const got = u.products[0];
+        products[i] = { ...products[i], opened: { at: r.at, query: u.query, ...got } };
+        row.cards = attachOffers(products, [{ id: null, title: products[i].name, offers: got.offers.map((o) => ({ merchant: o.merchant, price: o.price, url: o.url, availability: o.available === false ? "Out of stock" : o.details, delivery: null, tag: o.tag })) }]);
+        row.offers = got.offers.length;
+      }
+    } else if (kind === "panel") {
+      const pnl = productPanelFrom(r.body, r.reqBody);
+      const i = cardIndexFor(products, { name: pnl.name });
+      if (i >= 0 && (pnl.rationale || pnl.reviews.length)) {
+        products[i] = { ...products[i], panel: { at: r.at, rationale: pnl.rationale, summary: pnl.summary, reviews: pnl.reviews, pages: pnl.pages } };
+        row.cards = 1;
+      }
+    } else if (kind === "form") {
+      formChoices = formChoicesFrom(r.reqBody) || formChoices;
+    } else {
+      let json = null;
+      try { json = JSON.parse(r.body); } catch (_) { /* not JSON after all */ }
+      const found = json ? offersFrom(json) : [];
+      row.cards = attachOffers(products, found, { path: r.path });
+      row.offers = found.reduce((n, f) => n + f.offers.length, 0);
+    }
+    return row;
+  });
+  record.products = products;
+  if (formChoices) record.followUpChoices = formChoices;
+}
+
+/* Which answer something loaded after it belongs to. A product panel names
+ * its message (and conversation) in the request; that is matched against
+ * the assistant messages each record keeps (platformSpecific.messageIds).
+ * Otherwise: the latest ChatGPT answer in the page's conversation from
+ * before it, within a week (cards get opened when someone comes back). */
+async function recordForInteraction(p) {
+  let req = {};
+  try { req = JSON.parse(p.reqBody || "{}"); } catch (_) { /* not JSON */ }
+  const fromPath = (/\/conversation\/([0-9a-f][0-9a-f-]{7,})\/message\/([0-9a-f][0-9a-f-]{7,})\//i.exec(p.path || "") || []);
+  const conv = (typeof req.conversation_id === "string" && req.conversation_id) || fromPath[1] || (/\/c\/([0-9a-f][0-9a-f-]{7,})/i.exec(p.pageUrl || "") || [])[1];
+  const msg = (typeof req.message_id === "string" && req.message_id) || fromPath[2] || null;
+  if (!conv) return { conv: null, rec: null };
+  const recs = (await db.getAllByIndex("derived", "conversationId", conv).catch(() => [])).filter((r) => r.platform === "chatgpt");
+  if (msg) {
+    const exact = recs.find((r) => ((r.platformSpecific && r.platformSpecific.messageIds) || []).includes(msg));
+    if (exact) return { conv, rec: exact };
+  }
+  const at = p.at || Date.now();
+  const rec = recs.filter((r) => at - r.capturedAt < 7 * 24 * 3600 * 1000 && at >= r.capturedAt - 5000).sort((a, b) => b.capturedAt - a.capturedAt)[0];
+  return { conv, rec: rec || null };
+}
+
+async function onPageInteraction(p) {
+  const { conv, rec } = await recordForInteraction(p);
+  if (!conv) return { ok: false, reason: "no conversation" };
+  if (!rec) return { ok: false, reason: "no capture of this conversation" };
+  const at = p.at || Date.now();
+  const id = `${rec.captureId}:${at}:${Math.random().toString(36).slice(2, 8)}`;
+  await db.put("interactions", { id, captureId: rec.captureId, conversationId: conv, at, path: p.path, method: p.method, status: p.status, body: String(p.body || "").slice(0, 2000000), reqBody: String(p.reqBody || "").slice(0, 200000) });
+  const current = await db.get("derived", rec.captureId);
+  if (!current) return { ok: false };
+  await attachInteractions(current);
+  await db.put("derived", current);
+  try { chrome.runtime.sendMessage({ type: "capture-updated", captureId: rec.captureId }, () => void chrome.runtime.lastError); } catch (_) {}
+  return { ok: true, captureId: rec.captureId };
+}
+
+let offscreenReady = null;
+async function ensureOffscreen() {
+  if (!chrome.offscreen) throw new Error("no offscreen API");
+  // The page closes itself when idle (0.74.0, ui/offscreen.js), which frees
+  // the AI model's memory; then it is opened again here on demand.
+  if (offscreenReady && chrome.runtime.getContexts) {
+    try { if (!(await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] })).length) offscreenReady = null; } catch (_) { /* keep */ }
+  }
+  if (offscreenReady) return offscreenReady;
+  offscreenReady = (async () => {
+    const has = chrome.runtime.getContexts ? (await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] })).length > 0 : false;
+    if (!has) await chrome.offscreen.createDocument({ url: "ui/offscreen.html", reasons: ["DOM_PARSER"], justification: "Read the text of the pages an answer cited" });
+  })();
+  try { await offscreenReady; } catch (e) { offscreenReady = null; throw e; }
+  return offscreenReady;
+}
+// Close and reopen the offscreen document (0.70.0): the AI runtime there
+// can't change from the graphics chip to the processor once it has tried.
+async function resetOffscreen() {
+  try { if (chrome.offscreen && chrome.offscreen.closeDocument) await chrome.offscreen.closeDocument(); } catch (_) { /* none open */ }
+  offscreenReady = null;
+  await ensureOffscreen();
+}
+// Firefox and Safari have no offscreen documents; there the background is a
+// page (scripts/build-firefox.mjs) that loads ui/offscreen.js itself, and
+// its functions are called directly (0.72.0).
+const inPage = () => !chrome.offscreen && globalThis.citoOffscreen;
+async function extractPage(html, url) {
+  if (inPage()) return { ok: true, ...globalThis.citoOffscreen.extract(html, url) };
+  await ensureOffscreen();
+  const r = await chrome.runtime.sendMessage({ target: "offscreen", type: "extract-page", html, url });
+  if (!r || !r.ok) throw new Error((r && r.error) || "no reply from the page reader");
+  return r;
+}
+
+async function fetchPage(url) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), PAGE_FETCH_MS);
+  try {
+    const res = await fetch(url, { credentials: "omit", redirect: "follow", signal: ctl.signal });
+    const type = res.headers.get("content-type") || "";
+    if (!res.ok) return { status: "failed", httpStatus: res.status };
+    if (!/html|xml|text\/plain/i.test(type)) return { status: "not-html", httpStatus: res.status };
+    const len = Number(res.headers.get("content-length") || 0);
+    if (len > PAGE_MAX_BYTES) return { status: "too-large", httpStatus: res.status };
+    const html = (await res.text()).slice(0, PAGE_MAX_BYTES);
+    const page = await extractPage(html, res.url || url);
+    return { status: pageVerdict(page), httpStatus: res.status, ...page };
+  } catch (e) {
+    return { status: "failed", error: String((e && e.name === "AbortError") ? "timed out" : (e && e.message) || e) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// One hidden tab at a time: a page that only fills in with JavaScript, or
+// sits behind a check that a real browser passes. Needs the site access the
+// setting asked for (scripting a page needs host permission).
+let tabReadChain = Promise.resolve();
+function readInTab(url) {
+  const run = async () => {
+    let tabId = null;
+    try {
+      const tab = await chrome.tabs.create({ url, active: false });
+      tabId = tab.id;
+      try { await chrome.tabs.update(tabId, { autoDiscardable: false }); } catch (_) {}
+      await new Promise((resolve) => {
+        const done = setTimeout(resolve, 15000);
+        const on = (id, info) => { if (id === tabId && info.status === "complete") { clearTimeout(done); chrome.tabs.onUpdated.removeListener(on); setTimeout(resolve, 1500); } };
+        chrome.tabs.onUpdated.addListener(on);
+      });
+      const [res] = await chrome.scripting.executeScript({ target: { tabId }, func: () => ({ title: document.title, text: document.body ? document.body.innerText : "", lang: document.documentElement.lang || null }) });
+      const page = (res && res.result) || { title: "", text: "" };
+      page.text = String(page.text || "").slice(0, 200000);
+      return { status: pageVerdict(page), method: "tab", ...page };
+    } catch (e) {
+      return { status: "failed", method: "tab", error: String((e && e.message) || e) };
+    } finally {
+      if (tabId != null) chrome.tabs.remove(tabId).catch(() => {});
+    }
+  };
+  const p = tabReadChain.then(run, run);
+  tabReadChain = p.catch(() => {});
+  return p;
+}
+
+async function readOnePage(url, { force = false } = {}) {
+  const cached = await db.get("pages", url).catch(() => null);
+  if (!force && cached && cached.status === "ok" && Date.now() - (cached.fetchedAt || 0) < PAGE_TTL_MS) return cached;
+  let page = await fetchPage(url);
+  let method = "fetch";
+  if (page.status === "blocked" || page.status === "thin" || page.status === "failed") {
+    const canScript = !!(chrome.scripting && (await chrome.permissions.contains({ origins: ["<all_urls>"] }).catch(() => false)));
+    if (canScript) {
+      const viaTab = await readInTab(url);
+      if (viaTab.status === "ok" || (page.status !== "ok" && wordCount(viaTab.text) > wordCount(page.text))) { page = viaTab; method = "tab"; }
+    }
+  }
+  const row = {
+    url, fetchedAt: Date.now(), status: page.status, method: page.method === "tab" ? "tab" : method,
+    httpStatus: page.httpStatus || null, title: page.title || "", lang: page.lang || null,
+    words: wordCount(page.text), text: page.status === "ok" ? page.text : "", error: page.error || null,
+  };
+  await db.put("pages", row);
+  return row;
+}
+
+// Three pages at a time; the record is rewritten once, when all are read.
+const pagesInFlight = new Set();
+async function readCitedPages(captureId, { force = false, manual = false } = {}) {
+  if (pagesInFlight.has(captureId)) return { ok: true, busy: true };
+  const settings = await getSettings();
+  if (!settings.readCitedPages && !manual) return { ok: false, off: true };
+  const rec = await db.get("derived", captureId);
+  if (!rec) return { ok: false, error: "no such capture" };
+  const urls = citedUrls(rec);
+  if (!urls.length) return { ok: true, read: 0, tried: 0 };
+  pagesInFlight.add(captureId);
+  try {
+    const queue = [...urls];
+    const work = async () => { while (queue.length) { const u = queue.shift(); try { await readOnePage(u, { force }); } catch (e) { logErr("pages", e, { url: u.slice(0, 120) }); } } };
+    await Promise.all([work(), work(), work()]);
+    const current = await db.get("derived", captureId);
+    if (!current) return { ok: false, error: "capture removed" };
+    await attachPages(current);
+    await db.put("derived", current);
+    try { chrome.runtime.sendMessage({ type: "capture-updated", captureId }, () => void chrome.runtime.lastError); } catch (_) {}
+    return { ok: true, ...(current.pagesRead || {}) };
+  } finally {
+    pagesInFlight.delete(captureId);
+  }
 }
 
 /* One answer, one record (lib/sameAnswer.js). Another copy of this answer
@@ -394,8 +1007,11 @@ async function deriveAndStore(rawRow, rawText, settings, { settle = true } = {})
  * "derived". Every raw copy stays, so a reprocess rebuilds the same merge,
  * and deleting or pruning the record removes them with it (dropCapture). */
 async function settleSameAnswer(record) {
-  if (!answerKey(record) || !record.capturedAt) return record;
-  const near = await db.getByTimeRange("derived", record.capturedAt - SAME_ANSWER_WINDOW_MS, record.capturedAt + SAME_ANSWER_WINDOW_MS);
+  const key = answerKey(record);
+  if (!key || !record.capturedAt) return record;
+  // A reply id joins copies however far apart (lib/sameAnswer.js).
+  const span = /\|(?:reply|turn):/.test(key) ? SAME_REPLY_WINDOW_MS : SAME_ANSWER_WINDOW_MS;
+  const near = await db.getByTimeRange("derived", record.capturedAt - span, record.capturedAt + span);
   const same = near.filter((r) => r.captureId !== record.captureId && sameAnswer(r, record));
   if (!same.length) return record;
   const merged = mergeAnswers([...same, record]);
@@ -409,6 +1025,9 @@ async function dropCapture(captureId) {
   const rec = await db.get("derived", captureId);
   for (const id of [captureId, ...((rec && rec.mergedFrom) || [])]) await db.delete("raw", id);
   await db.delete("derived", captureId);
+  // What loaded after the answer goes with it (0.62.0). Read pages stay:
+  // they belong to the address, and other answers cite the same pages.
+  for (const row of await db.getAllByIndex("interactions", "captureId", captureId).catch(() => [])) await db.delete("interactions", row.id);
 }
 
 // Keep the store bounded: prune the oldest AD-HOC captures beyond the
@@ -416,17 +1035,62 @@ async function dropCapture(captureId) {
 // isPrunableCapture() in lib/geo.js for why (short version: pruning by age
 // alone made a large campaign run delete its own earlier results once the
 // store filled, so prompts went missing and it looked like a capture bug).
-async function enforceRetention(settings) {
+async function enforceRetention(settings, keepId) {
   const cfg = settings || (await getSettings());
   const limit = Math.max(50, cfg.retentionMax || DEFAULT_SETTINGS.retentionMax);
   const count = await db.count("derived");
   if (count <= limit) return;
-  const keys = await db.getOldestPrunableKeys("derived", count - limit, isPrunableCapture);
-  for (const id of keys) await dropCapture(id);
+  // The cap counts manual captures only (retentionVictims, 0.73.1).
+  const prunable = await db.getOldestPrunableKeys("derived", Number.MAX_SAFE_INTEGER, isPrunableCapture);
+  for (const id of retentionVictims(prunable, limit, keepId)) await dropCapture(id);
 }
 
 // Re-derive every stored capture. Uses a cursor + chunking so a large store
 // doesn't pull every gzipped blob into memory at once (SW OOM risk).
+/* Once, on updating to 0.62.1: re-derive every stored capture, so page-text
+ * copies already stored as answers of their own (Grok's "Youbest good
+ * quality…") fold into the network capture of the same reply, and the
+ * Dashboard counts each question once. Raw copies are all kept. */
+const REPAIR_KEY = "lcfcRepaired0621";
+const REPAIR_KEY_0781 = "lcfcRepaired0781";
+// 0.79.0: signed-out ChatGPT answers keep their lines (adaptSource), so their
+// lists and headings reach brand detection: read once more on update.
+// 0.80.0: and once more, for their products, places and pictures, on
+// installs that already ran the 0.79.0 pass.
+const REPAIR_KEY_0790 = "lcfcRepaired0800";
+async function repairOnce() {
+  const got = await chrome.storage.local.get([REPAIR_KEY, REPAIR_KEY_0781, REPAIR_KEY_0790]);
+  if (!got || !got[REPAIR_KEY]) {
+    await reprocessAll();
+    await chrome.storage.local.set({ [REPAIR_KEY]: Date.now(), [REPAIR_KEY_0781]: Date.now(), [REPAIR_KEY_0790]: Date.now() });
+    return;
+  }
+  if (!got[REPAIR_KEY_0781] || !got[REPAIR_KEY_0790]) {
+    await reprocessSignedOutChatGpt().catch((e) => logErr("repair:0790", e));
+    await chrome.storage.local.set({ [REPAIR_KEY_0781]: Date.now(), [REPAIR_KEY_0790]: Date.now() });
+  }
+}
+
+/* 0.78.1: signed-out ChatGPT captures read again. Until now ChatGPT's
+ * "Message limit reached" card was stored as an answer (39% of the owner's
+ * signed-out ChatGPT captures), and every signed-out capture had no prompt.
+ * Read again, the card is a refusal with no answer (left out of the numbers,
+ * listed as "usage limit") and every capture gets its prompt back. */
+async function reprocessSignedOutChatGpt() {
+  const settings = await getSettings();
+  let n = 0;
+  for (const id of await db.getAllKeys("raw")) {
+    try {
+      const row = await db.get("raw", id);
+      if (!row || row.platform !== "chatgpt" || !/\/unauth-mweb\/conversation\/updates\b/.test(row.url || "")) continue;
+      await deriveAndStore(row, undefined, settings);
+      n++;
+    } catch (_) { /* keep going */ }
+  }
+  logEvent("repair:signed-out-chatgpt", "capture", `read ${n} signed-out ChatGPT captures again`, { count: n });
+  return n;
+}
+
 async function reprocessAll() {
   const settings = await getSettings();
   // Oldest first, so copies of one answer merge in the order they arrived
@@ -502,6 +1166,11 @@ const MIN_ADVANCE_GAP_MS = 2500; // ignore a second "done" arriving right after 
  * logging. */
 const errorLog = createErrorLog(db);
 const logErr = (where, err, ctx, trace) => { try { errorLog.record(where, err, ctx, trace); } catch (_) {} };
+
+// The built-in AI (0.70.0, src/aiService.js): the model runs in the
+// offscreen document; this keeps its queue, results and state.
+const broadcast = (m) => { try { chrome.runtime.sendMessage(m, () => void chrome.runtime.lastError); } catch (_) { /* no page open */ } };
+const aiSvc = createAiService({ db, getSettings, ensureOffscreen, resetOffscreen, logErr: (w, e, c) => logErr(w, e, c), broadcast, isBusy: () => !!(loader && loader.running) });
 // The "capture" (network-trace breadcrumbs, replacing the old in-memory
 // DEBUG ring buffer) and "turn" (per-prompt outcome history, previously
 // only visible in the live progress view) categories of the same durable
@@ -551,6 +1220,38 @@ function newLoaderState() {
   return { running: false, paused: false, options: {}, done: 0, errors: 0, total: 0, platforms: {}, runId: null, interrupted: null };
 }
 
+// The window a resumed run's new tabs open in: its own private window when it
+// runs signed out (reopened if it was closed), otherwise wherever Chrome puts
+// them.
+async function resumeWindowId() {
+  if (!(loader.options && loader.options.incognito)) return null;
+  if (loader.windowId != null) {
+    try { const w = await chrome.windows.get(loader.windowId); if (w && w.incognito) return w.id; } catch (_) { /* closed */ }
+  }
+  const win = await chrome.windows.create({ incognito: true });
+  loader.windowId = win.id;
+  return win.id;
+}
+
+// Every pause and resume of the whole run goes through here, so the time a
+// run spent stopped can be left out of how long it took (0.79.0).
+function setLoaderPaused(v) {
+  const now = Date.now();
+  if (v && !loader.paused) loader.pausedAt = now;
+  if (!v && loader.paused && loader.pausedAt) {
+    loader.pausedMs = (loader.pausedMs || 0) + (now - loader.pausedAt);
+    loader.pausedAt = null;
+  }
+  loader.paused = v;
+}
+
+// How long the run has been working, without the time it sat paused.
+function loaderActiveMs(now = Date.now()) {
+  if (!loader.startedAt) return 0;
+  const paused = (loader.pausedMs || 0) + (loader.paused && loader.pausedAt ? now - loader.pausedAt : 0);
+  return Math.max(0, now - loader.startedAt - paused);
+}
+
 // Best-effort: a persistence failure must never break a run already in
 // progress, so every call site fires this and moves on rather than awaiting
 // a hard guarantee.
@@ -575,6 +1276,9 @@ async function persistLoaderState() {
       // thread-list preview is this run's answer or an older run's — see
       // isUnusableCampaignPreview. Has to survive a restart like the rest.
       startedAt: loader.startedAt || null,
+      pausedMs: loader.pausedMs || 0,
+      pausedAt: loader.pausedAt || null,
+      windowId: loader.windowId != null ? loader.windowId : null,
       // Stamped fresh on every write so a resume always compares against the
       // CURRENT session's nonce, not a stale one cached from before this
       // worker instance's own restart.
@@ -583,9 +1287,12 @@ async function persistLoaderState() {
         Object.entries(loader.platforms).map(([plat, pd]) => [
           plat,
           {
+            rateLimitedUntil: pd.rateLimitedUntil || null,
+            cooldownReason: pd.cooldownReason || null,
             legs: (pd.legs || []).map((leg) => ({
               tabId: leg.tabId,
               startOffset: leg.startOffset || 0,
+              ...(Array.isArray(leg.geoIdx) ? { geoIdx: leg.geoIdx } : {}),
               prompts: leg.prompts,
               idx: leg.idx,
               failed: leg.failed || 0,
@@ -598,6 +1305,7 @@ async function persistLoaderState() {
               // across a restart so a resumed turn can't be handed out twice.
               sentToken: leg.sentToken || null,
               durations: leg.durations || [],
+              finishTimes: leg.finishTimes || [],
               outcomes: leg.outcomes || [],
               // Set only on a rate-limit hit — see loader-rate-limited — so
               // this one engine's legs sit out while a sibling platform's
@@ -679,6 +1387,7 @@ async function ensureHeartbeatAlarm() {
   }
 }
 ensureHeartbeatAlarm();
+idleBadge();
 
 // Fires once, as soon as the browser itself starts (not just this worker) —
 // the earliest possible chance to notice a run left mid-flight by the
@@ -703,18 +1412,38 @@ chrome.alarms?.onAlarm?.addListener((alarm) => {
     // error log," which is the difference between an unfixable mystery and
     // a reportable bug.
     heartbeatTick().catch((err) => logErr("heartbeatTick", err));
+    // Answers left in the AI queue by a closed browser are picked up again.
+    aiSvc.kick();
   }
 });
+
+// A sleeping worker woken by something other than the heartbeat — an answer
+// arriving — first picks its run back up, so that answer counts for its turn
+// (0.79.0; it was stored without its run and the turn then timed out).
+// Shared, so the heartbeat and a capture can't restore the run twice.
+let restoring = null;
+function restoreRunIfAny() {
+  if (loader.running) return Promise.resolve();
+  if (!restoring) {
+    restoring = (async () => {
+      const snap = await loadPersistedLoaderState();
+      if (snap && snap.running && !loader.running) await resumeFromSnapshot(snap);
+    })().finally(() => { restoring = null; });
+  }
+  return restoring;
+}
 
 async function heartbeatTick() {
   if (!loader.running) {
     // This worker instance has no memory of an active run. If persisted
     // state disagrees, a previous instance died mid-run — resume it.
-    const snap = await loadPersistedLoaderState();
-    if (snap && snap.running) await resumeFromSnapshot(snap);
+    await restoreRunIfAny();
     return;
   }
   if (loader.paused) return;
+  for (const [plat, pd] of Object.entries(loader.platforms)) {
+    if (pd.rateLimitedUntil && Date.now() >= pd.rateLimitedUntil) resumeAfterCooldown(plat);
+  }
   // This instance already believes it's mid-run, with a setTimeout watchdog
   // armed per platform — those survive as long as THIS instance stays
   // alive, so there's normally nothing to do here. This loop is the safety
@@ -737,6 +1466,9 @@ async function heartbeatTick() {
 // much more time, at most this many times — see armWatchdog.
 const STREAM_EXTENSION_MS = 60 * 1000;
 const MAX_STREAM_EXTENSIONS = 2;
+const ANSWER_SHOWN_MIN_CHARS = 40;
+const ANSWER_SHOWN_GRACE_MS = 15000;
+
 function armWatchdog(plat, leg, ms) {
   if (!leg) return;
   leg.watchdog = setTimeout(async () => {
@@ -750,6 +1482,23 @@ function armWatchdog(plat, leg, ms) {
     const probe = await probeLoaderTab(leg);
     if (!loader.running || loader.paused || leg.paused) return;
     if (leg.idx !== idxAtFire || leg.token !== tokenAtFire) return;
+    // A ChatGPT copy held for its stream's end (loaderOnCapture): the answer
+    // is here, so it completes the turn rather than a timeout failing it.
+    const held = quietHolds.get(leg);
+    if (held) {
+      clearTimeout(held.timer);
+      quietHolds.delete(leg);
+      completeTurn(plat, leg, held.record);
+      return;
+    }
+    // The answer is on the page and finished, but its capture hasn't landed:
+    // a short wait more, once (0.79.0). Before, this turn failed as "no
+    // answer" while the answer sat on screen.
+    if (probe && probe.ok && probe.stage === "sent" && !probe.streaming && (probe.answerChars || 0) > ANSWER_SHOWN_MIN_CHARS && leg.answerGraceToken !== leg.token) {
+      leg.answerGraceToken = leg.token;
+      armWatchdog(plat, leg, ANSWER_SHOWN_GRACE_MS);
+      return;
+    }
     // Still streaming its answer: not a failure yet. Two real ChatGPT turns
     // were failed at 90s with the stop button still showing — a long answer,
     // not a lost one. The extensions are capped so a stuck indicator can't
@@ -766,7 +1515,9 @@ function armWatchdog(plat, leg, ms) {
     if (leg.streamExtensions) {
       ctx.streamExtensions = leg.streamExtensions;
     }
-    failTurnAndAdvance(plat, leg, reason, 0, trace, ctx);
+    const shown = !unreadable && probe && probe.ok && (probe.answerChars || 0) > ANSWER_SHOWN_MIN_CHARS;
+    if (shown) ctx.answerChars = probe.answerChars;
+    failTurnAndAdvance(plat, leg, shown ? "timeout: answer shown on the page, but its capture never arrived" : reason, 0, trace, ctx);
   }, ms);
 }
 
@@ -889,6 +1640,12 @@ function describeTimeout(probe, unreadable = null, tab = null, nav = []) {
   };
 }
 
+// Every finished prompt, answered or failed, stamps when it finished: the
+// time-left estimate reads the spacing between them (pacing.js legEta).
+function noteFinish(leg) {
+  leg.finishTimes = [...(leg.finishTimes || []), Date.now()].slice(-12);
+}
+
 // The one place a turn is counted as failed and the run moves on — shared by
 // the watchdog, the tab-closed path, and both restart-recovery paths below,
 // so "what counts as a failure" can never quietly diverge between them.
@@ -897,12 +1654,70 @@ function describeTimeout(probe, unreadable = null, tab = null, nav = []) {
 // behaviour); the tab-closed path passes a short delay to avoid hammering
 // chrome.tabs.update in a tight loop if every remaining prompt in the list
 // would also fail against the same closed tab.
+/* Pause one engine's legs on a cooldown, then resume them (a limit seen on
+ * the page, or reported by the engine itself — Grok's gateway, 0.62.2). Other
+ * engines keep running. */
+/* An engine's cooldown is over: its legs ask the prompt that met the limit
+ * again. Until 0.79.0 this called a function that didn't exist, so the legs
+ * were un-paused but never restarted, and the heartbeat then failed the
+ * waiting prompt as "watchdog lost" — every ChatGPT limit card cost a prompt
+ * and stalled that engine for the rest of the run. */
+function resumeAfterCooldown(plat) {
+  const p = loader.platforms[plat];
+  if (!p) return;
+  if (p.cooldownTimer) { clearTimeout(p.cooldownTimer); p.cooldownTimer = null; }
+  if (!p.rateLimitedUntil) return; // already resumed (timer and heartbeat both fire)
+  p.rateLimitedUntil = null;
+  if (!loader.running) return;
+  logErr(`run:auto-resume:${plat}`, "Cooldown expired, auto-resuming platform queue", { platform: plat, runId: loader.runId });
+  for (const leg of p.legs || []) {
+    if (!leg.paused) continue;
+    leg.paused = false;
+    if (leg.idx < leg.prompts.length && !loader.paused) loaderRunLeg(plat, leg);
+  }
+  if (loader.interrupted && loader.interrupted.reason === "rate limit" && loader.interrupted.platform === plat) loader.interrupted = null;
+  persistLoaderState();
+  syncGeoRun();
+}
+
+async function pauseForLimit(matched, detail) {
+  const p = loader.platforms[matched];
+  const cooldownMs = parseCooldownFromNotice(detail);
+  const resumeAt = Date.now() + cooldownMs;
+  p.rateLimitedUntil = resumeAt;
+  p.cooldownReason = typeof detail === "string" ? detail.slice(0, 160) : "rate limit";
+
+  for (const leg of p.legs || []) {
+    clearWatchdog(leg);
+    leg.paused = true;
+  }
+
+  // Arm an auto-resume timer for this specific platform
+  if (p.cooldownTimer) clearTimeout(p.cooldownTimer);
+  // The worker can sleep through a 30-minute timer, so the heartbeat also
+  // resumes an engine whose cooldown has passed (see heartbeatTick).
+  p.cooldownTimer = setTimeout(() => resumeAfterCooldown(matched), cooldownMs);
+
+  loader.interrupted = {
+    at: Date.now(),
+    reason: "rate limit",
+    platform: matched,
+    detail: p.cooldownReason,
+    autoResumeAt: resumeAt,
+  };
+
+  await persistLoaderState();
+  syncGeoRun(undefined, `cooldown: ${matched} (${formatCooldown(cooldownMs)})`);
+  notifyRateLimited(`${matched}: ${p.cooldownReason} (Auto-resuming in ${formatCooldown(cooldownMs)})`);
+}
+
 function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "", extraCtx = null) {
   if (!leg) return;
   loader.errors++;
   leg.failed = (leg.failed || 0) + 1;
   leg.outcomes = leg.outcomes || [];
   leg.outcomes[leg.idx] = { status: "failed", reason, at: Date.now() };
+  noteFinish(leg);
   leg.inFlightIdx = -1;
   leg.idx++;
   leg.lastAdvanceAt = Date.now();
@@ -925,7 +1740,7 @@ function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "", ext
    * it across tabs) is enough to find it, and the log is deliberately free
    * of user content (see lib/errorlog.js).
    */
-  const promptIndex = (leg.startOffset || 0) + leg.idx - 1;
+  const promptIndex = geoIdxOf(leg, leg.idx - 1);
   const elapsedMs = leg.startedAt ? Date.now() - leg.startedAt : 0;
   logErr(`run:turn-failed:${plat}`, reason, {
     platform: plat,
@@ -950,10 +1765,13 @@ function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "", ext
     ...(extraCtx || {}),
   });
   persistLoaderState();
-  syncGeoRun(undefined, reason);
+  syncGeoRun(undefined, reason, 1, plat);
+  if (retryDelayMs < 0) return; // the caller moves the leg on itself
   if (retryDelayMs > 0) setTimeout(() => loaderRunLeg(plat, leg), retryDelayMs);
   else loaderRunLeg(plat, leg);
 }
+
+const MAX_LIMIT_STREAK = 4;
 
 // A snapshot written before concurrency shipped has the OLD flat shape —
 // {tabId, prompts, idx, ...} directly on the platform, no `legs` array.
@@ -963,6 +1781,14 @@ function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "", ext
 // the whole run; wrapping it as a single leg instead makes the upgrade
 // transparent — the run resumes as one tab, exactly as it was running
 // before, and the NEXT run it starts gets the new concurrency.
+// Where prompt i of this leg sits in the run's full prompt list (and so in
+// loader.options.geoPrompts). A leg normally holds a contiguous shard
+// (startOffset + i); a "Retry missing" leg (0.78.1) holds a chosen subset,
+// so it carries the original positions itself (leg.geoIdx).
+function geoIdxOf(leg, i) {
+  return Array.isArray(leg.geoIdx) && leg.geoIdx[i] != null ? leg.geoIdx[i] : (leg.startOffset || 0) + i;
+}
+
 function legsOf(pd) {
   if (!pd) return [];
   if (Array.isArray(pd.legs)) return pd.legs;
@@ -1081,6 +1907,10 @@ async function resumeFromSnapshot(snap) {
     total: snap.total || 0,
     runId: snap.runId,
     startedAt: snap.startedAt || null,
+    // Time the browser was closed counts as paused, not as work (0.79.0).
+    pausedMs: (snap.pausedMs || 0) + (snap.savedAt && !snap.pausedAt && Date.now() - snap.savedAt > 2 * 60 * 1000 ? Date.now() - snap.savedAt : 0),
+    pausedAt: snap.pausedAt || null,
+    windowId: restarted ? null : (snap.windowId != null ? snap.windowId : null),
     platforms: {},
   };
 
@@ -1105,6 +1935,7 @@ async function resumeFromSnapshot(snap) {
         // fresh tab whenever tabId is null.
         tabId: restarted ? null : sl.tabId,
         startOffset: sl.startOffset || 0,
+        ...(Array.isArray(sl.geoIdx) ? { geoIdx: sl.geoIdx } : {}),
         prompts: legPrompts,
         idx,
         failed: sl.failed || 0,
@@ -1118,12 +1949,13 @@ async function resumeFromSnapshot(snap) {
         inFlightIdx: idx === (sl.idx || 0) && (Number.isInteger(sl.inFlightIdx) ? sl.inFlightIdx === sl.idx : !!sl.token) ? idx : -1,
         sentToken: sl.sentToken || null,
         durations: sl.durations || [],
+        finishTimes: sl.finishTimes || [],
         outcomes,
         watchdog: null,
         paused: !!sl.paused,
       };
     });
-    loader.platforms[plat] = { legs };
+    loader.platforms[plat] = { legs, rateLimitedUntil: sp.rateLimitedUntil || null, cooldownReason: sp.cooldownReason || null };
   }
   loader.done = Object.values(loader.platforms)
     .reduce((n, pd) => n + pd.legs.reduce((m, leg) => m + leg.idx, 0), 0);
@@ -1161,7 +1993,7 @@ async function resumeFromSnapshot(snap) {
         // UI, and simply parking everything keeps one predictable recovery
         // path.
         leg.tabId = null;
-        loader.paused = true;
+        setLoaderPaused(true);
         loader.interrupted = {
           at: Date.now(),
           reason: ownership.reason === "tab_closed"
@@ -1186,6 +2018,7 @@ async function resumeFromSnapshot(snap) {
   if (Object.values(loader.platforms).every((pd) => pd.legs.every((leg) => leg.idx >= leg.prompts.length))) {
     loader.running = false;
     syncGeoRun("done");
+    startNextQueued();
     notifyRunComplete();
     closeRunTabs();
   }
@@ -1219,25 +2052,43 @@ async function resumeFromSnapshot(snap) {
 // update). Chaining guarantees call N's read only happens after call N-1's
 // write has actually landed.
 let syncGeoRunChain = Promise.resolve();
-function syncGeoRun(statusOverride, reason, reasonCount = 1) {
-  syncGeoRunChain = syncGeoRunChain.then(() => syncGeoRunOnce(statusOverride, reason, reasonCount));
+function syncGeoRun(statusOverride, reason, reasonCount = 1, plat = null) {
+  syncGeoRunChain = syncGeoRunChain.then(() => syncGeoRunOnce(statusOverride, reason, reasonCount, plat));
   return syncGeoRunChain;
 }
-async function syncGeoRunOnce(statusOverride, reason, reasonCount) {
+async function syncGeoRunOnce(statusOverride, reason, reasonCount, plat) {
   const g = loader.options && loader.options.geo;
   if (!g || !g.runId) return;
   try {
     const run = await db.get("geoRuns", g.runId);
     if (!run) return;
-    const patch = { ...run, captured: loader.done, failed: loader.errors };
+    // A "Retry missing" pass (0.78.1) adds to the run it retries: what it
+    // recovers is taken off that run's failures.
+    const base = g.retryBase;
+    const patch = base
+      ? { ...run, captured: base.captured + loader.done, failed: Math.max(0, base.failed - loader.done) }
+      : { ...run, captured: loader.done, failed: loader.errors };
     if (reason) {
+      const key = base ? `retry ${reason}` : reason;
       const reasons = { ...(run.reasons || {}) };
-      reasons[reason] = (reasons[reason] || 0) + reasonCount;
+      reasons[key] = (reasons[key] || 0) + reasonCount;
       patch.reasons = reasons;
+      // Which engine each reason came from (0.78.1): the diagnostics said
+      // "send control never accepted the prompt: 65" without saying where.
+      if (plat) {
+        const by = { ...(run.reasonsBy || {}) };
+        by[plat] = { ...(by[plat] || {}), [key]: ((by[plat] || {})[key] || 0) + reasonCount };
+        patch.reasonsBy = by;
+      }
     }
+    if (base && statusOverride === "done") patch.retries = [...(run.retries || []), { at: Date.now(), asked: loader.total, answered: loader.done }];
     if (statusOverride) {
       patch.status = statusOverride;
       patch.finishedAt = Date.now();
+      // How long the run worked, without the time it sat paused or the
+      // browser was closed; a retry adds its own working time (0.79.0).
+      // finishedAt − startedAt spanned days once a run was retried later.
+      patch.activeMs = (base ? base.activeMs || 0 : 0) + loaderActiveMs();
     }
     await db.put("geoRuns", patch);
   } catch (_) {
@@ -1367,7 +2218,8 @@ function loaderStatus() {
     // this is just the shards back to back) — the per-prompt status list
     // needs to read the same regardless of how many tabs are working it.
     const prompts = [];
-    let bestAvg = null, worstEta = null, etaKnownForPlat = true, anyRemaining = false;
+    let worstEta = null, etaKnownForPlat = true, anyRemaining = false;
+    const avgs = [];
 
     for (let li = 0; li < legs.length; li++) {
       const leg = legs[li];
@@ -1389,7 +2241,7 @@ function loaderStatus() {
       const eta = turnEta(leg);
       if (inFlight && eta == null) etaKnownForPlat = false;
       if (eta) worstEta = Math.max(worstEta || 0, eta.remainingMs);
-      if (eta) bestAvg = bestAvg == null ? eta.avgMs : (bestAvg + eta.avgMs) / 2;
+      if (eta && eta.avgMs != null) avgs.push(eta.avgMs);
 
       // Per-prompt status list — previously nothing tracked this at all, only
       // an aggregate done/total count and one truncated "current" string
@@ -1414,7 +2266,12 @@ function loaderStatus() {
       legStats.push({
         tab: li + 1,
         current: started ? leg.prompts[leg.idx] : null,
-        elapsedMs: started && leg.startedAt ? Math.min(now - leg.startedAt, turnBudgetMs(leg)) : null,
+        // The real time this prompt has been going, not capped at its budget
+        // (0.79.0: it froze at "1m 30s/1m 30s" through every extension and
+        // through a whole cooldown). A leg sitting out a limit has no turn
+        // running; the platform's cooldownUntil says how long is left.
+        elapsedMs: started && !leg.paused && leg.startedAt ? now - leg.startedAt : null,
+        sinceSentMs: started && !leg.paused && leg.sentAt ? now - leg.sentAt : null,
         turnTimeoutMs: turnBudgetMs(leg),
       });
     }
@@ -1424,7 +2281,8 @@ function loaderStatus() {
     platStats[plat] = {
       done, total, failed,
       legs: legStats,
-      avgTurnMs: bestAvg != null ? Math.round(bestAvg) : null,
+      avgTurnMs: avgs.length ? Math.round(avgs.reduce((a, b) => a + b, 0) / avgs.length) : null,
+      cooldownUntil: pd.rateLimitedUntil || null,
       etaMs: anyRemaining && etaKnownForPlat && worstEta != null ? Math.round(worstEta) : null,
       prompts,
       // True once this platform's legs were paused by loader-rate-limited —
@@ -1453,6 +2311,9 @@ function loaderStatus() {
     etaMs = Math.max(etaMs, s.etaMs);
   }
   return {
+    // Which campaign this run is for: the Campaigns page holds that one still
+    // while it runs (0.62.2).
+    profileId: (loader.options && loader.options.geo && loader.options.geo.profileId) || null,
     running: loader.running,
     paused: loader.paused || anyPlatformPaused,
     total: totalTasks,
@@ -1467,6 +2328,8 @@ function loaderStatus() {
     // agrees on it, and null whenever the ETA is unknown rather than showing
     // a confidently wrong time.
     etaAt: etaKnown ? Date.now() + etaMs : null,
+    // Working time so far, paused time left out (0.79.0).
+    activeMs: loaderActiveMs(now),
     interrupted,
     platStats,
   };
@@ -1499,6 +2362,8 @@ async function loaderRunLeg(plat, leg) {
     if (allDone) {
       loader.running = false;
       syncGeoRun("done");
+      startNextQueued();
+    startNextQueued();
       notifyRunComplete();
       closeRunTabs();
     }
@@ -1516,7 +2381,7 @@ async function loaderRunLeg(plat, leg) {
       failTurnAndAdvance(plat, leg, "tab closed", 500);
     } else {
       leg.tabId = null;
-      loader.paused = true;
+      setLoaderPaused(true);
       loader.interrupted = { at: Date.now(), reason: "a Loader tab was navigated away from the engine" };
       await persistLoaderState();
     }
@@ -1530,6 +2395,7 @@ async function loaderRunLeg(plat, leg) {
   leg.token = crypto.randomUUID();
   leg.expectedPrompt = prompt;
   leg.startedAt = Date.now();
+  leg.sentAt = 0;
   // The one prompt this leg can currently complete — see loaderOnCapture.
   leg.inFlightIdx = leg.idx;
   leg.streamExtensions = 0;
@@ -1740,7 +2606,7 @@ chrome.tabs.onUpdated?.addListener((tabId, changeInfo) => {
     }
     logErr(`run:tab-reloaded:${plat}`, "Loader tab reloaded mid-turn — retrying", {
       platform: plat,
-      promptIndex: (leg.startOffset || 0) + leg.idx,
+      promptIndex: geoIdxOf(leg, leg.idx),
       totalPrompts: platformTotal(plat),
       attempt: leg.reloadRetries,
       runId: loader.runId,
@@ -1816,6 +2682,9 @@ async function loaderStart(prompts, options) {
   // runs up by the campaign's id) could never find a single log entry.
   loader.runId = (options && options.geo && options.geo.runId) || crypto.randomUUID();
   loader.startedAt = Date.now();
+  loader.pausedMs = 0;
+  loader.pausedAt = null;
+  loader.windowId = null;
   // Clear any badge left over from a previous run's completion so it never
   // reads as this run's status by mistake.
   try {
@@ -1827,11 +2696,12 @@ async function loaderStart(prompts, options) {
     const allowed = await new Promise((res) => chrome.extension.isAllowedIncognitoAccess(res));
     if (!allowed) {
       loader.running = false;
-      return { ok: false, error: "Enable 'Allow in Incognito' for this extension at chrome://extensions first." };
+      return { ok: false, incognitoBlocked: true, error: "To run signed out, allow CitoSkeleton in private windows first: chrome://extensions → CitoSkeleton → Details → Allow in Incognito." };
     }
     try {
       const win = await chrome.windows.create({ incognito: true });
       windowId = win.id;
+      loader.windowId = windowId;
     } catch (_) {
       loader.running = false;
       return { ok: false, error: "Failed to create Incognito window." };
@@ -1855,8 +2725,14 @@ async function loaderStart(prompts, options) {
   // a second automated tab with nothing to do would be pure extra footprint
   // on the account for zero benefit.
   const runTabIds = [];
+  // "Retry missing" (0.78.1): each engine asks only the prompts it is
+  // missing, given as positions in the full list.
+  const only = options && options.only;
   for (const plat of supported) {
-    const shards = shardPrompts(clean, CONCURRENT_TABS_PER_ENGINE).filter((s) => s.prompts.length > 0);
+    const pick = only ? (only[plat] || []).filter((i) => Number.isInteger(i) && i >= 0 && i < clean.length) : null;
+    if (pick && !pick.length) continue;
+    const list = pick ? pick.map((i) => clean[i]) : clean;
+    const shards = shardPrompts(list, tabsForEngine(plat)).filter((s) => s.prompts.length > 0);
     const legs = [];
     for (const shard of shards) {
       const created = windowId
@@ -1876,11 +2752,14 @@ async function loaderStart(prompts, options) {
       chrome.tabs.update(created.id, { autoDiscardable: false }).catch(() => {});
       legs.push({
         tabId: created.id, startOffset: shard.startOffset, prompts: shard.prompts,
+        ...(pick ? { geoIdx: pick.slice(shard.startOffset, shard.startOffset + shard.prompts.length) } : {}),
         idx: 0, failed: 0, lastAdvanceAt: 0, durations: [], outcomes: [],
       });
     }
     loader.platforms[plat] = { legs };
   }
+  if (only) loader.total = Object.values(loader.platforms).reduce((n, pd) => n + pd.legs.reduce((m, l) => m + l.prompts.length, 0), 0);
+  if (only && !loader.total) { loader.running = false; return { ok: false, error: "Nothing is missing from this run." }; }
   // Every engine tab this run owns, grouped and collapsed so they don't take
   // over the window — one shared group for the whole run rather than one per
   // engine, since the point is minimizing footprint, not organizing by
@@ -1925,7 +2804,79 @@ async function loaderStart(prompts, options) {
  * aligned with the prompt list) so each capture is stamped with the profile,
  * run, prompt and tags it belongs to.
  */
+async function geoRunRetry(profileId, runId, runOpts = {}) {
+  const run = await db.get("geoRuns", runId);
+  if (!run || run.profileId !== profileId) return { ok: false, error: "Run not found." };
+  if (run.status === "running") return { ok: false, error: "That run is still going." };
+  const prompts = (await db.getAll("trackedPrompts")).filter((p) => p.profileId === profileId)
+    .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+  const m = missingTurns(run, prompts, await db.getAll("derived"));
+  for (const e of Object.keys(m.only)) if (!availableEngines().some((a) => a.id === e)) delete m.only[e];
+  if (!m.count) return { ok: false, error: "Nothing is missing from this run." };
+  const res = await loaderStart(m.prompts.map((p) => p.text), {
+    platforms: Object.keys(m.only).filter((e) => m.only[e].length),
+    only: m.only,
+    geo: { profileId, runId, retryBase: { captured: run.captured || 0, failed: run.failed || 0, activeMs: runTookMs(run) || 0 } },
+    geoPrompts: m.prompts.map((p) => ({ id: p.id, tags: p.tags || [] })),
+    skipAuthCheck: !!runOpts.skipAuthCheck || !!run.privateWindow,
+    incognito: !!run.privateWindow,
+  });
+  if (!res.ok) return res;
+  await db.put("geoRuns", { ...run, status: "running", finishedAt: null });
+  return { ok: true, geoRunId: runId, retrying: m.count, loaderRunId: res.runId };
+}
+
+/* Campaigns waiting their turn (0.80.0). Asked: two campaigns for two brands
+ * should both run and each keep its own answers. One run drives the engine
+ * tabs at a time (two at once would double the automated traffic on the
+ * same accounts), so a campaign started during another's run is queued and
+ * starts by itself when that run finishes or is stopped. Kept in storage so
+ * a restart doesn't lose the queue. */
+const RUN_QUEUE_KEY = "lcfcRunQueue";
+async function loadRunQueue() {
+  try { const got = await chrome.storage.local.get(RUN_QUEUE_KEY); return Array.isArray(got[RUN_QUEUE_KEY]) ? got[RUN_QUEUE_KEY] : []; } catch (_) { return []; }
+}
+async function enqueueRun(profileId, runOpts) {
+  const profile = await db.get("profiles", profileId);
+  if (!profile) return { ok: false, error: "Campaign not found." };
+  const running = loader.options && loader.options.geo && loader.options.geo.profileId;
+  if (running === profileId && !runOpts.retryRunId) return { ok: false, error: "This campaign is already running." };
+  const q = await loadRunQueue();
+  if (!q.some((x) => x.profileId === profileId)) q.push({ profileId, runOpts, name: profile.name || "", queuedAt: Date.now() });
+  await chrome.storage.local.set({ [RUN_QUEUE_KEY]: q });
+  return { ok: true, queued: true, position: q.findIndex((x) => x.profileId === profileId) + 1 };
+}
+let startingQueued = false;
+function startNextQueued() {
+  if (startingQueued) return;
+  startingQueued = true;
+  // A moment for the finished run's tabs to close first.
+  setTimeout(async () => {
+    try {
+      while (!loader.running) {
+        const q = await loadRunQueue();
+        if (!q.length) break;
+        const [next, ...rest] = q;
+        await chrome.storage.local.set({ [RUN_QUEUE_KEY]: rest });
+        // The sign-in check was offered when it was queued; a gate now would
+        // have no one to answer it, so it isn't repeated.
+        const res = await geoRunStart(next.profileId, { ...(next.runOpts || {}), skipAuthCheck: true });
+        if (res && res.ok) {
+          logEvent("run:queue-start", "turn", `started the queued campaign "${next.name || next.profileId}"`, { profileId: next.profileId });
+          break;
+        }
+        logErr("run:queue-start", (res && res.error) || "couldn't start", { profileId: next.profileId });
+      }
+    } catch (e) {
+      logErr("run:queue-start", e);
+    } finally {
+      startingQueued = false;
+    }
+  }, 3000);
+}
+
 async function geoRunStart(profileId, runOpts = {}) {
+  if (runOpts.retryRunId) return geoRunRetry(profileId, runOpts.retryRunId, runOpts);
   const profile = await db.get("profiles", profileId);
   if (!profile) return { ok: false, error: "Profile not found." };
   if (!profile.brand || !profile.brand.name) {
@@ -1945,8 +2896,14 @@ async function geoRunStart(profileId, runOpts = {}) {
   // this line would have happily run it anyway. availableEngines() is the
   // one place that decides "can this actually run", enforced here where the
   // run is kicked off, not just in the picker UI.
-  const engines = (profile.engines || []).filter((e) => availableEngines().some((a) => a.id === e));
+  let engines = (profile.engines || []).filter((e) => availableEngines().some((a) => a.id === e));
   if (!engines.length) return { ok: false, error: "Select at least one engine with an active adapter." };
+  // Signed out, Grok's page sent no chat request at all for any prompt in
+  // the owner's run (0.69.0): it needs an account. It is left out and the
+  // run says so rather than timing out on every prompt.
+  const leftOut = runOpts.privateWindow ? engines.filter((e) => e === "grok") : [];
+  if (leftOut.length) engines = engines.filter((e) => !leftOut.includes(e));
+  if (!engines.length) return { ok: false, error: "Grok needs a signed-in account, so it can't run signed out. Pick another engine for this campaign." };
 
   const vol = runVolume(prompts, engines);
   const geoRunId = crypto.randomUUID();
@@ -1962,7 +2919,12 @@ async function geoRunStart(profileId, runOpts = {}) {
       // through here rather than calling loaderStart directly, so without
       // this the override would be silently dropped and the dialog would
       // reappear forever.
-      skipAuthCheck: !!runOpts.skipAuthCheck,
+      skipAuthCheck: !!runOpts.skipAuthCheck || !!runOpts.privateWindow,
+      // Signed out (0.66.0): the run opens its own private window, whose
+      // cookie store has no engine session, so the answers carry no
+      // account history or memory. Being signed out there is the point, so
+      // the sign-in check is skipped.
+      incognito: !!runOpts.privateWindow,
     }
   );
   if (!res.ok) return res;
@@ -1974,12 +2936,13 @@ async function geoRunStart(profileId, runOpts = {}) {
     promptIds: prompts.map((p) => p.id),
     expected: vol.submissions,
     status: "running",
+    ...(runOpts.privateWindow ? { privateWindow: true } : {}),
   }));
   // Stamp the cadence clock now rather than on completion: the "run due today"
   // reminder should not keep nagging through a run that is already in flight.
   await db.put("profiles", { ...profile, lastRunAt: Date.now() });
 
-  return { ok: true, geoRunId, ...vol, loaderRunId: res.runId };
+  return { ok: true, geoRunId, ...vol, loaderRunId: res.runId, ...(leftOut.length ? { leftOut } : {}) };
 }
 
 // Finds the (platform, leg) that owns a given tab, across every platform and
@@ -2013,8 +2976,22 @@ function platformTotal(plat) {
 // and deciding which prompt it's filed under (attributeCaptureToPrompt) —
 // so they can never disagree. Loose on purpose: adapters normalise
 // whitespace differently from the string the run navigated with.
+// Folded hard enough that the same question still matches after an engine
+// echoes it back escaped or re-punctuated (0.79.0): signed-out ChatGPT reads
+// it from page markup, where quotes and ampersands arrive as entities, and a
+// real answer was dropped as a "late capture" over a curly apostrophe.
+const ENTITY = { amp: "&", quot: '"', apos: "'", lt: "<", gt: ">", nbsp: " " };
 function normPrompt(t) {
-  return String(t || "").replace(/\s+/g, " ").trim().toLowerCase();
+  return String(t || "")
+    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e) => {
+      if (e[0] === "#") { const n = e[1].toLowerCase() === "x" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10); return Number.isFinite(n) ? String.fromCodePoint(n) : m; }
+      return ENTITY[e.toLowerCase()] ?? m;
+    })
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\p{P}\p{S}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 function promptTextMatches(a, b) {
   const x = normPrompt(a), y = normPrompt(b);
@@ -2049,7 +3026,7 @@ function attributeCaptureToPrompt(leg, record) {
   const atPosition = leg.prompts[leg.idx];
   if (atPosition && promptTextMatches(atPosition, got)) return null;
   const hits = [];
-  leg.prompts.forEach((text, i) => { if (promptTextMatches(text, got)) hits.push((leg.startOffset || 0) + i); });
+  leg.prompts.forEach((text, i) => { if (promptTextMatches(text, got)) hits.push(geoIdxOf(leg, i)); });
   if (hits.length === 1) {
     const tp = geoPrompts[hits[0]] || {};
     return tp.id ? { promptId: tp.id, tags: tp.tags || [] } : null;
@@ -2091,7 +3068,15 @@ function isUnusableCampaignPreview(leg, record) {
   return null;
 }
 
-function loaderOnCapture(tabId, record) {
+// A ChatGPT copy handed over because the stream went quiet may be an answer
+// paused mid-search (0.79.0). The turn waits this long for the stream's end
+// line or its close; a later copy replaces it, and without one this copy
+// completes the turn. Before 0.79.0 such a copy completed the turn at once,
+// the next prompt navigated the tab away, and the rest of the answer was lost.
+const QUIET_SETTLE_MS = 6000;
+const quietHolds = new WeakMap(); // leg -> { timer, record }
+
+function loaderOnCapture(tabId, record, end) {
   if (!loader.running) return;
   const found = legForTab(tabId);
   if (!found) return;
@@ -2111,8 +3096,35 @@ function loaderOnCapture(tabId, record) {
    */
   if (leg.idx >= leg.prompts.length || leg.inFlightIdx !== leg.idx) return;
 
-  // Ignore empty race-loser captures — advancing on those silently SKIPS prompts.
-  if (!hasSignal(record)) return;
+  // The engine says this account has hit its limit (Grok's gateway sends it
+  // as a stream_error). Pause this engine's legs on the same cooldown a limit
+  // seen on the page gets; the prompt is asked again when it resumes. Until
+  // 0.62.2 these turns were logged "ok" with no answer.
+  const limit = usageLimitOf(record);
+  if (limit) {
+    logErr(`run:usage-limit:${plat}`, `${plat}: usage limit reached`, { platform: plat, promptIndex: geoIdxOf(leg, leg.idx), runId: loader.runId, detail: limit });
+    // A limit that doesn't lift (0.78.1): signed out, ChatGPT's anonymous
+    // limit can last the day, and each cooldown only met it again. After
+    // MAX_LIMIT_STREAK cooldowns in a row with no answer between them, this
+    // engine's remaining prompts are marked "usage limit" so the run can
+    // finish; "Retry missing" asks them again later.
+    const pd = loader.platforms[plat];
+    pd.limitStreak = (pd.limitStreak || 0) + 1;
+    if (pd.limitStreak > MAX_LIMIT_STREAK) {
+      for (const l of pd.legs || []) {
+        clearWatchdog(l);
+        l.paused = false;
+        while (l.idx < l.prompts.length) failTurnAndAdvance(plat, l, `usage limit: ${plat} still limited after ${MAX_LIMIT_STREAK} cooldowns`, -1);
+      }
+      loaderRunLeg(plat, leg);
+      return;
+    }
+    pauseForLimit(plat, `usage limit reached (${limit})`);
+    return;
+  }
+  // Ignore empty race-loser captures — advancing on those silently SKIPS
+  // prompts — and, on Grok's gateway, captures of an answer still on its way.
+  if (!turnAnswered(record)) return;
   // Ignore a second completion arriving immediately after one we already counted.
   if (leg.lastAdvanceAt && Date.now() - leg.lastAdvanceAt < MIN_ADVANCE_GAP_MS) return;
 
@@ -2145,7 +3157,7 @@ function loaderOnCapture(tabId, record) {
     if (!promptTextMatches(wantPrompt, gotPrompt)) {
       logErr(`run:late-capture:${plat}`, "capture did not match the prompt in flight", {
         platform: plat,
-        promptIndex: (leg.startOffset || 0) + leg.idx,
+        promptIndex: geoIdxOf(leg, leg.idx),
         totalPrompts: platformTotal(plat),
         runId: loader.runId,
       });
@@ -2153,15 +3165,35 @@ function loaderOnCapture(tabId, record) {
     }
   }
 
+  const held = quietHolds.get(leg);
+  if (held) { clearTimeout(held.timer); quietHolds.delete(leg); }
+  if (plat === "chatgpt" && end === "quiet") {
+    const token = leg.token, idx = leg.idx;
+    quietHolds.set(leg, {
+      record,
+      timer: setTimeout(() => {
+        quietHolds.delete(leg);
+        if (!loader.running || leg.token !== token || leg.idx !== idx || leg.inFlightIdx !== idx) return;
+        completeTurn(plat, leg, record);
+      }, QUIET_SETTLE_MS),
+    });
+    return;
+  }
+  completeTurn(plat, leg, record);
+}
+
+function completeTurn(plat, leg, record) {
   clearWatchdog(leg);
   const turnElapsedMs = leg.startedAt ? Date.now() - leg.startedAt : 0;
   if (leg.startedAt) leg.durations = [...(leg.durations || []), turnElapsedMs].slice(-DURATION_WINDOW);
   leg.outcomes = leg.outcomes || [];
   leg.outcomes[leg.idx] = { status: "done", reason: null, at: Date.now() };
+  noteFinish(leg);
   leg.lastAdvanceAt = Date.now();
   loader.done++;
+  if (loader.platforms[plat]) loader.platforms[plat].limitStreak = 0;
   leg.inFlightIdx = -1;
-  const donePromptIndex = (leg.startOffset || 0) + leg.idx;
+  const donePromptIndex = geoIdxOf(leg, leg.idx);
   const reloadRetriesAtSuccess = leg.reloadRetries || 0;
   leg.idx++;
   // This leg is genuinely moving to a new prompt now — the reload-retry
@@ -2192,6 +3224,23 @@ function loaderOnCapture(tabId, record) {
   if (!loader.paused && !leg.paused) setTimeout(() => loaderRunLeg(plat, leg), delay);
 }
 
+// Which of a campaign's answers a view shows: one run (`runId`), every
+// answer ("all"), or by default the newest per prompt and engine (0.80.0).
+// When the newest answers all come from one run (every engine ran together),
+// that run is shown, with its change since the run before; only when engines
+// ran in different runs is the default a mix of runs (`mixed`).
+function pickCampaignAnswers(all, runs, want) {
+  if (want === "all") return { runId: null, recs: all, latestMode: false, mixed: latestRunsOf(all) > 1 };
+  if (want && want !== "latest" && runs.some((r) => r.id === want)) return { runId: want, recs: all.filter((r) => r.geo && r.geo.runId === want), latestMode: false, mixed: latestRunsOf(all) > 1 };
+  const latest = latestAnswers(all);
+  const from = [...new Set(latest.map((r) => r.geo && r.geo.runId).filter(Boolean))];
+  if (from.length === 1) return { runId: from[0], recs: all.filter((r) => r.geo && r.geo.runId === from[0]), latestMode: false, mixed: false };
+  return { runId: null, recs: latest, latestMode: true, mixed: true };
+}
+function latestRunsOf(all) {
+  return new Set(latestAnswers(all).map((r) => r.geo && r.geo.runId).filter(Boolean)).size;
+}
+
 // Strip heavy fields for list/aggregate views. The full record (with answerText)
 // is fetched per capture by `get-record` when Analyze opens it.
 function toLight(r) {
@@ -2205,9 +3254,109 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     try {
       switch (msg?.type) {
+        // "Continue in…" (0.76.0).
+        case "handoff-open":
+          try { sendResponse(await handoffOpen(msg)); } catch (e) { sendResponse({ ok: false, error: String(e && e.message || e) }); }
+          break;
+        case "handoff-claim": {
+          const tid = sender && sender.tab && sender.tab.id;
+          const job = tid != null ? handoffJobs.get(tid) : null;
+          if (job) handoffJobs.delete(tid);
+          sendResponse(job ? { ok: true, text: job.text, autoSend: job.autoSend, engine: job.engine } : { ok: false });
+          break;
+        }
+        case "handoff-result": {
+          const r = { ok: !!msg.ok, sent: !!msg.sent, how: String(msg.how || ""), error: msg.error ? String(msg.error).slice(0, 200) : null, at: Date.now() };
+          if (!r.ok) logEvent("handoff:failed", "capture", r.error || "hand-off failed", {});
+          try { await chrome.storage.session.set({ lcfcHandoffLast: r }); } catch (_) { /* best effort */ }
+          broadcast({ type: "handoff-result", ...r });
+          sendResponse({ ok: true });
+          break;
+        }
+        // A campaign's findings (lib/insights.js), for the hand-off pack.
+        case "campaign-insights": {
+          const [records, profiles, runs] = await Promise.all([db.getAll("derived"), db.getAll("profiles"), db.getAll("geoRuns")]);
+          // The campaign asked for, else the one run most recently.
+          const lastRun = (p) => runs.filter((g) => g.profileId === p.id).reduce((m, g) => Math.max(m, g.startedAt || 0), 0);
+          const profile = profiles.find((p) => p.id === msg.profileId) || [...profiles].sort((a, b) => lastRun(b) - lastRun(a))[0];
+          const I = profile ? campaignInsights({ records, profile, runs, runId: msg.runId || null, engines: msg.engines || null }) : null;
+          sendResponse({ ok: !!I, insights: I ? { ...I, refs: undefined } : null });
+          break;
+        }
+
+        // The capture check (0.73.1): what each engine page saw, and why a
+        // capture went nowhere.
+        case "capture-health": {
+          const row = msg.row || {};
+          const engine = platformFromUrl(msg.pageUrl || (sender && sender.tab && sender.tab.url));
+          noteCapture(engine, row.ev === "conv" ? { kind: "conv", path: row.path, method: row.method, status: row.status, at: row.at } : { kind: "unknown", ev: row.ev, path: row.path, method: row.method, ctype: row.ctype, at: row.at });
+          sendResponse({ ok: true });
+          break;
+        }
+        case "capture-drop": {
+          const engine = platformFromUrl(msg.pageUrl || (sender && sender.tab && sender.tab.url));
+          noteCapture(engine, { kind: "drop", reason: String(msg.reason || "unknown").slice(0, 40) });
+          sendResponse({ ok: true });
+          break;
+        }
+        case "capture-check": {
+          const [got, tabs, settings] = await Promise.all([chrome.storage.local.get(HEALTH_KEY), engineTabsHealth(), getSettings()]);
+          const health = got[HEALTH_KEY] || emptyHealth();
+          const paused = !!settings.capturePaused;
+          let derived = null, manual = null;
+          try {
+            const recs = await db.getAll("derived");
+            derived = recs.length;
+            manual = recs.filter((r) => !r.geo).length;
+          } catch (_) { /* counts unknown */ }
+          const counts = { derived, manual };
+          const engines = HEALTH_ENGINES.map((e) => verdict(e, health[e], tabs, { paused }));
+          sendResponse({ ok: true, version: BUILD, paused, tabs, health, engines, counts, retentionMax: settings.retentionMax, report: healthReport({ version: BUILD, health, tabs, paused, counts, retentionMax: settings.retentionMax }) });
+          break;
+        }
+        // A question sent by hand in an engine tab (0.84.0), for the missed-
+        // answer notice. A campaign's own tabs are left out: the run reports
+        // its misses itself.
+        case "user-asked": {
+          const tabId = sender && sender.tab && sender.tab.id;
+          if (tabId != null && !legForTab(tabId)) await noteCapture(platformFromUrl(sender.tab.url || ""), { kind: "asked", tabId });
+          sendResponse({ ok: true });
+          break;
+        }
+        // Was an answer stored for this engine since the question (0.84.0)?
+        // The page copies ask this rather than trusting that something was
+        // forwarded: after a format change the traffic still goes through,
+        // it just can't be read.
+        case "capture-stored-since": {
+          const engine = platformFromUrl((sender && sender.tab && sender.tab.url) || "");
+          const h = ((await chrome.storage.local.get(HEALTH_KEY))[HEALTH_KEY] || {})[engine] || {};
+          sendResponse({ ok: true, stored: !!(h.stored && h.stored.at > Number(msg.since || 0)) });
+          break;
+        }
+        case "capture-missed": {
+          const got = await chrome.storage.local.get([HEALTH_KEY, MISSED_DISMISSED_KEY]);
+          // afterMs: tests only, to wait less than the real 90 s.
+          const afterMs = Number(msg.afterMs) >= 1000 ? Number(msg.afterMs) : undefined;
+          sendResponse({ ok: true, missed: missedAnswers(got[HEALTH_KEY], Date.now(), got[MISSED_DISMISSED_KEY] || {}, afterMs ? { afterMs } : {}) });
+          break;
+        }
+        case "capture-missed-dismiss": {
+          const got = (await chrome.storage.local.get(MISSED_DISMISSED_KEY))[MISSED_DISMISSED_KEY] || {};
+          await chrome.storage.local.set({ [MISSED_DISMISSED_KEY]: { ...got, [String(msg.engine)]: Date.now() } });
+          sendResponse({ ok: true });
+          break;
+        }
+        case "capture-refresh-tab": {
+          try { await chrome.tabs.reload(Number(msg.tabId)); sendResponse({ ok: true }); } catch (e) { sendResponse({ ok: false, error: String(e && e.message || e) }); }
+          break;
+        }
+
         case "raw-conversation": {
           const tabId = sender?.tab?.id;
+          const capEngine = platformFromUrl((msg.payload || {}).pageUrl || (msg.payload || {}).url);
+          if (await capturePausedFor(sender)) { noteCapture(capEngine, { kind: "drop", reason: "paused" }); sendResponse({ ok: true, captureId: null, skipped: "paused" }); break; }
           let meta = null;
+          if (!loader.running) await restoreRunIfAny().catch((err) => logErr("restoreRunIfAny", err));
           if (loader.running) {
             const found = legForTab(tabId);
             if (found) {
@@ -2228,7 +3377,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               // rate and this one's alike.
               const g = loader.options.geo;
               if (g) {
-                const originalIdx = (leg.startOffset || 0) + leg.idx;
+                const originalIdx = geoIdxOf(leg, leg.idx);
                 const tp = (loader.options.geoPrompts || [])[originalIdx] || {};
                 meta.geo = {
                   profileId: g.profileId,
@@ -2243,9 +3392,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               }
             }
           }
-          const res = await storeCapture(msg.payload, meta);
+          meta = { ...(meta || {}), session: await sessionOf(sender, platformFromUrl((msg.payload || {}).pageUrl || (msg.payload || {}).url), (msg.payload || {}).url) };
+          let res;
+          try {
+            res = await storeCapture(msg.payload, meta);
+          } catch (e) {
+            noteCapture(capEngine, { kind: "drop", reason: "error" });
+            throw e;
+          }
+          // The capture check: saved, or why not (0.73.1).
+          if (res && res.skipped) noteCapture(capEngine, { kind: "drop", reason: res.skipped });
+          else if (res && res.captureId && !res.record) noteCapture(capEngine, { kind: "drop", reason: "empty", path: endpointShape((msg.payload || {}).url, (msg.payload || {}).pageUrl) });
+          else if (res && res.record) noteCapture(capEngine, { kind: "stored", captureId: res.captureId });
           if (res && res.captureId) {
-            loaderOnCapture(tabId, res.record);
+            loaderOnCapture(tabId, res.record, (msg.payload || {}).end);
             // Notify the popup if it's open. Use a callback so a missing receiver
             // doesn't surface as an unhandled promise rejection.
             try {
@@ -2260,6 +3420,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             } catch (_) {}
             // Deliberately NOT awaited: the capture is already saved and shown.
             enrichCaptureWithAI(res.record);
+            // The built-in AI, when downloaded (0.70.0): queued, checked one at a time.
+            await aiSvc.enqueue(res.record).catch(() => {});
+            // Also not awaited, and only with the setting on (0.62.0).
+            readCitedPages(res.captureId).catch(() => {});
           }
           sendResponse({ ok: true, captureId: res?.captureId || null, skipped: res?.skipped || null });
           break;
@@ -2294,6 +3458,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const ok = !!(found && found.leg.token && found.leg.token === msg.token);
           if (ok && found.leg.sentToken !== msg.token) {
             found.leg.sentToken = msg.token;
+            found.leg.sentAt = Date.now();
             noteTabEvent(found.leg, "sent");
             persistLoaderState();
           }
@@ -2356,50 +3521,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             const found = legForTab(tabId);
             if (found && found.leg.token && found.leg.token === msg.token) matched = found.plat;
           }
-          if (matched) {
-            const p = loader.platforms[matched];
-            const cooldownMs = parseCooldownFromNotice(msg.detail);
-            const resumeAt = Date.now() + cooldownMs;
-            p.rateLimitedUntil = resumeAt;
-            p.cooldownReason = typeof msg.detail === "string" ? msg.detail.slice(0, 160) : "rate limit";
-
-            for (const leg of p.legs || []) {
-              clearWatchdog(leg);
-              leg.paused = true;
-            }
-
-            // Arm an auto-resume timer for this specific platform
-            if (p.cooldownTimer) clearTimeout(p.cooldownTimer);
-            p.cooldownTimer = setTimeout(() => {
-              p.rateLimitedUntil = null;
-              p.cooldownTimer = null;
-              if (loader.running) {
-                for (const leg of p.legs || []) {
-                  leg.paused = false;
-                }
-                logErr(`run:auto-resume:${matched}`, "Cooldown expired, auto-resuming platform queue", { platform: matched, runId: loader.runId });
-                (p.legs || []).forEach((l) => loaderAdvanceLeg(p, l));
-                persistLoaderState();
-                syncGeoRun();
-              }
-            }, cooldownMs);
-
-            loader.interrupted = {
-              at: Date.now(),
-              reason: "rate limit",
-              platform: matched,
-              detail: p.cooldownReason,
-              autoResumeAt: resumeAt,
-            };
-
-            await persistLoaderState();
-            syncGeoRun(undefined, `cooldown: ${matched} (${formatCooldown(cooldownMs)})`);
-            notifyRateLimited(`${matched}: ${p.cooldownReason} (Auto-resuming in ${formatCooldown(cooldownMs)})`);
-          }
+          if (matched) await pauseForLimit(matched, msg.detail);
           sendResponse({ ok: !!matched });
           break;
         }
-
         // The content script tried to type and submit this turn's prompt and
         // couldn't (composer never mounted, or the send control never accepted
         // it). Previously it just stopped trying and said nothing, so the run
@@ -2484,11 +3609,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             sendResponse({ ok: false, error: `You can track at most ${MAX_PROFILES} brand profiles.` });
             break;
           }
-          if (existing && existing.locked && !msg.unlockOverride) {
-            sendResponse({ ok: false, error: "This profile is locked. Unlock it before editing." });
+          // A locked campaign is edited in place (0.77.0): only a new brand
+          // or website still needs the explicit unlock. What changed is logged.
+          if (existing && needsUnlock(existing, msg.profile) && !msg.unlockOverride) {
+            sendResponse({ ok: false, error: "Changing the brand or website needs the campaign unlocked first.", needsUnlock: true });
             break;
           }
-          const profile = makeProfile({ ...(existing || {}), ...msg.profile });
+          const merged = { ...(existing || {}), ...msg.profile };
+          const logged = existing && existing.locked && merged.locked !== false ? profileChanges(existing, makeProfile(merged)) : [];
+          const profile = makeProfile({ ...merged, changes: [...(existing?.changes || []), ...logged] });
           await db.put("profiles", profile);
           sendResponse({ ok: true, profile });
           break;
@@ -2501,6 +3630,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // a locked profile: the locked definition is "own brand + configured
         // competitors", and an inferred brand was never part of it. It only
         // ever touches excludedBrands.
+        // One click from the board (0.77.0): a brand the answers named becomes
+        // a competitor, on a locked campaign too, logged in its changes.
+        case "geo-competitor-add": {
+          const profile = await db.get("profiles", msg.profileId);
+          if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
+          const names = Array.isArray(msg.names) ? msg.names : [msg.name];
+          let cur = profile, added = [];
+          for (const n of names) {
+            const r = addCompetitor(cur, { name: n, url: msg.url || "" });
+            if (r.error) { if (names.length === 1) { sendResponse({ ok: false, error: r.error }); cur = null; } break; }
+            if (r.added) added.push(String(n).trim());
+            cur = r.profile;
+          }
+          if (!cur) break;
+          if (added.length) await db.put("profiles", cur);
+          sendResponse({ ok: true, profile: cur, added });
+          break;
+        }
         case "geo-brand-exclude": {
           const profile = await db.get("profiles", msg.profileId);
           if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
@@ -2547,6 +3694,70 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
 
+        // Share a campaign as a file, and open one (0.82.0). The file is the
+        // whole campaign: setup, prompts, runs, answers and raw captures.
+        case "campaign-bundle-export": {
+          const r = await exportCampaignFile(msg.profileId, { includeRaw: msg.includeRaw !== false });
+          sendResponse(r.ok ? { ok: true, data: bufToB64(r.file), bytes: r.file.byteLength, fileName: r.fileName, counts: r.counts } : r);
+          break;
+        }
+        case "campaign-bundle-import": {
+          let bundle;
+          try { bundle = await decodeBundle(b64ToBuf(msg.data)); } catch (e) { sendResponse({ ok: false, error: e.message }); break; }
+          sendResponse(await importCampaignBundle(bundle));
+          break;
+        }
+
+        // Accounts and shared codes (0.82.0). Each says plainly when accounts
+        // aren't switched on, rather than failing somewhere later.
+        case "cloud-status": {
+          const s = cloudOn() ? await cloud.session().catch(() => null) : null;
+          sendResponse({ ok: true, ready: cloudOn(), signedIn: !!s, user: s ? s.user : null });
+          break;
+        }
+        case "cloud-request-code":
+        case "cloud-verify":
+        case "cloud-sign-out":
+        case "cloud-profile-save":
+        case "cloud-shares":
+        case "cloud-share-revoke":
+        case "campaign-share-upload":
+        case "campaign-share-open": {
+          if (!cloudOn()) { sendResponse({ ok: false, off: true, error: "Accounts aren't switched on yet. Share the campaign as a file instead." }); break; }
+          try {
+            if (msg.type === "cloud-request-code") {
+              const r = checkEmail(msg.email);
+              if (!r.ok) { sendResponse({ ok: false, error: r.message }); break; }
+              await cloud.requestCode(r.email);
+              sendResponse({ ok: true, email: r.email });
+            } else if (msg.type === "cloud-verify") {
+              const s = await cloud.verifyCode(msg.email, msg.code);
+              const p = await cloud.getProfile().catch(() => null);
+              if (p && p.display_name) await chrome.storage.local.set({ [CLOUD_SESSION_KEY]: { ...s, user: { ...s.user, name: p.display_name } } });
+              sendResponse({ ok: true, user: { ...s.user, name: (p && p.display_name) || "" } });
+            } else if (msg.type === "cloud-sign-out") {
+              sendResponse(await cloud.signOut());
+            } else if (msg.type === "cloud-profile-save") {
+              sendResponse({ ok: true, profile: await cloud.saveProfile(msg.name) });
+            } else if (msg.type === "cloud-shares") {
+              sendResponse({ ok: true, shares: await cloud.shareList() });
+            } else if (msg.type === "cloud-share-revoke") {
+              sendResponse(await cloud.shareRevoke(msg.code));
+            } else if (msg.type === "campaign-share-upload") {
+              const r = await exportCampaignFile(msg.profileId, { includeRaw: msg.includeRaw !== false });
+              if (!r.ok) { sendResponse(r); break; }
+              const up = await cloud.shareUpload(r.file, { name: r.name, counts: r.counts });
+              sendResponse({ ok: true, code: up.code, expiresAt: up.expiresAt, bytes: r.file.byteLength });
+            } else {
+              const got = await cloud.shareFetch(msg.code);
+              sendResponse(await importCampaignBundle(await decodeBundle(got.bytes), { from: got.meta.from }));
+            }
+          } catch (e) {
+            sendResponse({ ok: false, error: e.message, signedOut: e.status === 401 });
+          }
+          break;
+        }
+
         case "geo-prompt-list": {
           const prompts = await db.getAll("trackedPrompts");
           const scoped = msg.profileId ? prompts.filter((p) => p.profileId === msg.profileId) : prompts;
@@ -2559,6 +3770,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const prompt = makeTrackedPrompt({ ...(existing || {}), ...msg.prompt });
           if (!prompt.text) { sendResponse({ ok: false, error: "Prompt text is required." }); break; }
           await db.put("trackedPrompts", prompt);
+          if (existing && existing.text !== prompt.text) await logCampaignChange(prompt.profileId, { kind: "prompt-edited", name: existing.text.slice(0, 120) });
+          else if (existing && (existing.tags || []).join("\u0001") !== (prompt.tags || []).join("\u0001")) await logCampaignChange(prompt.profileId, { kind: "tags", name: prompt.text.slice(0, 120) });
+          else if (!existing) await logCampaignChange(prompt.profileId, { kind: "prompts-added", count: 1 });
           sendResponse({ ok: true, prompt });
           break;
         }
@@ -2599,13 +3813,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             await db.put("trackedPrompts", p);
             added.push(p);
           }
+          if (added.length) await logCampaignChange(msg.profileId, { kind: "prompts-added", count: added.length });
           sendResponse({ ok: true, added: added.length, duplicates });
           break;
         }
-        case "geo-prompt-delete":
+        case "geo-prompt-delete": {
+          const gone = await db.get("trackedPrompts", msg.id);
           await db.delete("trackedPrompts", msg.id);
+          if (gone) await logCampaignChange(gone.profileId, { kind: "prompt-removed", name: String(gone.text || "").slice(0, 120) });
           sendResponse({ ok: true });
           break;
+        }
         case "geo-tag-delete": {
           // Removes the tag from every prompt that carries it — the prompts
           // themselves are untouched. Distinct from deleting prompts by tag.
@@ -2800,28 +4018,54 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const profile = await db.get("profiles", msg.profileId);
           if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
           const records = await db.getAll("derived");
-          const all = selectTracked(records, { profileId: msg.profileId, engines: msg.engines, tags: msg.tags });
           const runs = (await db.getAll("geoRuns")).filter((r) => r.profileId === msg.profileId)
             .sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
-          // The run shown: the one asked for; by default the latest run that
-          // has answers, so the board opens on "now" with the change since
-          // the run before; "all" combines every run.
-          const latest = runs.find((r) => all.some((x) => x.geo && x.geo.runId === r.id));
-          const runId = msg.runId === "all" ? null : (msg.runId && runs.some((r) => r.id === msg.runId) ? msg.runId : (latest ? latest.id : null));
-          const recs = runId ? all.filter((r) => r.geo && r.geo.runId === runId) : all;
+          // A run still going isn't on the board (0.62.2, asked: "only show
+          // the data of the campaign when it's done or stopped"): its answers
+          // are left out of every view, the default and "all runs" included.
+          const live = new Set(runs.filter((r) => r.status === "running").map((r) => r.id));
+          const all = selectTracked(records, { profileId: msg.profileId, engines: msg.engines, tags: msg.tags, tagMode: msg.tagMode }).filter((x) => !(x.geo && live.has(x.geo.runId)));
+          // What's shown (0.80.0): by default the newest answer for each
+          // prompt on each engine, whichever run it came from; or one run;
+          // or "all", every answer of every run.
+          const { runId, recs, latestMode, mixed } = pickCampaignAnswers(all, runs, msg.runId);
           const brands = effectiveTrackedBrands(profile, recs);
           const prompts = (await db.getAll("trackedPrompts")).filter((p) => p.profileId === msg.profileId)
             .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
           sendResponse({
+            mixedRuns: mixed,
             ok: true,
-            board: campaignBoard(recs, { profile, brands, viewAs: msg.viewAs, prompts, runs, runId, all, engineFilter: msg.engines || [], tags: msg.tags || [] }),
-            runId: runId || "all",
-            runs: runs.map((r) => ({ id: r.id, startedAt: r.startedAt, status: r.status, captured: r.captured || 0, expected: r.expected || 0, hasAnswers: all.some((x) => x.geo && x.geo.runId === r.id) })),
+            board: campaignBoard(recs, { profile, brands, viewAs: msg.viewAs, prompts, runs: runs.filter((r) => !live.has(r.id)), runId, latest: latestMode, all, engineFilter: msg.engines || [], tags: msg.tags || [] }),
+            // The 0.64.0 board's sections, over the same answers.
+            // Seen from any brand (0.67.0, asked: "look at the entire data
+            // for not just my brand but other competition as well"): the
+            // board measures whichever brand is picked against the rest.
+            view: campaignView(recs, { profile, brands: msg.viewAs && brands.some((b) => b.name === msg.viewAs) ? brands.map((b) => ({ ...b, isOwn: b.name === msg.viewAs })) : brands, prompts, engineFilter: msg.engines || [] }),
+            ownBrand: (brands.find((b) => b.isOwn) || {}).name || null,
+            runId: runId || (latestMode ? "latest" : "all"),
+            runs: runs.filter((r) => !live.has(r.id)).map((r) => ({ id: r.id, startedAt: r.startedAt, status: r.status, captured: r.captured || 0, expected: r.expected || 0, hasAnswers: all.some((x) => x.geo && x.geo.runId === r.id), engines: [...new Set(all.filter((x) => x.geo && x.geo.runId === r.id).map((x) => x.platform))] })),
             brands: brands.map((b) => ({ name: b.name, isOwn: !!b.isOwn, auto: !!b.auto })),
             excludedBrands: profile.excludedBrands || [],
+            // Named in the answers and not on the list (0.77.0): offered to
+            // add even once the campaign has competitors of its own.
+            suggested: autoCompetitorsFrom(recs, profile).map((b) => ({ name: b.name, responses: b.responses })),
+            changes: profile.changes || [],
             tags: [...new Set(prompts.flatMap((p) => p.tags || []))],
             answers: recs.length,
           });
+          break;
+        }
+        // Two runs of a campaign side by side (0.80.0, lib/runCompare.js).
+        case "campaign-run-compare": {
+          const profile = await db.get("profiles", msg.profileId);
+          if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
+          const all = selectTracked(await db.getAll("derived"), { profileId: msg.profileId, engines: msg.engines, tags: msg.tags, tagMode: msg.tagMode });
+          const recsA = all.filter((x) => x.geo && x.geo.runId === msg.runA);
+          const recsB = all.filter((x) => x.geo && x.geo.runId === msg.runB);
+          let brands = effectiveTrackedBrands(profile, [...recsA, ...recsB]);
+          if (msg.viewAs && brands.some((b) => b.name === msg.viewAs)) brands = brands.map((b) => ({ ...b, isOwn: b.name === msg.viewAs }));
+          const prompts = (await db.getAll("trackedPrompts")).filter((p) => p.profileId === msg.profileId);
+          sendResponse({ ok: true, compare: compareRuns(recsA, recsB, { brands, prompts }) });
           break;
         }
         // One brand against yours (0.50.0): the brand detail the board opens.
@@ -2830,12 +4074,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const profile = await db.get("profiles", msg.profileId);
           if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
           const records = await db.getAll("derived");
-          const all = selectTracked(records, { profileId: msg.profileId, engines: msg.engines, tags: msg.tags });
+          const all = selectTracked(records, { profileId: msg.profileId, engines: msg.engines, tags: msg.tags, tagMode: msg.tagMode });
           const runs = (await db.getAll("geoRuns")).filter((r) => r.profileId === msg.profileId)
             .sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
-          const latest = [...runs].reverse().find((r) => all.some((x) => x.geo && x.geo.runId === r.id));
-          const runId = msg.runId === "all" ? null : (msg.runId && runs.some((r) => r.id === msg.runId) ? msg.runId : (latest ? latest.id : null));
-          const recs = runId ? all.filter((r) => r.geo && r.geo.runId === runId) : all;
+          const { runId, recs, latestMode } = pickCampaignAnswers(all, runs, msg.runId);
           const brands = effectiveTrackedBrands(profile, recs);
           const own = brands.find((b) => b.isOwn);
           const prompts = (await db.getAll("trackedPrompts")).filter((p) => p.profileId === msg.profileId)
@@ -2847,12 +4089,46 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             sourceDomains: detail ? brandSourceDomains(recs, brands, detail.them.name) : [],
             brands: brands.map((b) => ({ name: b.name, isOwn: !!b.isOwn, auto: !!b.auto })),
             answers: recs.length,
-            runLabel: runId ? `Run ${runs.findIndex((r) => r.id === runId) + 1}` : "All runs combined",
+            runLabel: runId ? `Run ${runs.findIndex((r) => r.id === runId) + 1}` : latestMode ? "Latest answers" : "All runs combined",
           });
           break;
         }
+        // What the last finished run is missing (0.78.1), for "Retry missing".
+        case "geo-run-missing": {
+          const runs = (await db.getAll("geoRuns")).filter((r) => r.profileId === msg.profileId).sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+          const run = runs.find((r) => r.status !== "running");
+          if (!run || runs[0] !== run) { sendResponse({ ok: true, count: 0 }); break; }
+          const prompts = (await db.getAll("trackedPrompts")).filter((p) => p.profileId === msg.profileId).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+          const m = missingTurns(run, prompts, await db.getAll("derived"));
+          const byEngine = Object.fromEntries(Object.entries(m.only).map(([e, l]) => [e, l.length]));
+          sendResponse({ ok: true, runId: run.id, count: m.count, byEngine, startedAt: run.startedAt || null, status: run.status || null });
+          break;
+        }
         case "geo-run-start": {
-          sendResponse(await geoRunStart(msg.profileId, { skipAuthCheck: !!msg.skipAuthCheck }));
+          const runOpts = { skipAuthCheck: !!msg.skipAuthCheck, privateWindow: !!msg.privateWindow, retryRunId: msg.retryRunId || null };
+          // Another campaign running (0.80.0): this one waits its turn
+          // instead of being refused, and starts when that run ends.
+          if (loader.running && !msg.noQueue) { sendResponse(await enqueueRun(msg.profileId, runOpts)); break; }
+          sendResponse(await geoRunStart(msg.profileId, runOpts));
+          break;
+        }
+        case "welcome-open-once":
+          sendResponse({ ok: true, opened: await openWelcomeOnce({ evenAutomated: !!msg.evenAutomated }) });
+          break;
+        // The email given on the welcome page or in Settings (0.81.0). Kept on
+        // this computer; sent to the developer's server once accounts are
+        // switched on (0.82.0), and unsubscribed from there on Remove.
+        case "signup-saved":
+        case "signup-removed":
+          sendResponse(await syncSignup());
+          break;
+        case "run-queue":
+          sendResponse({ ok: true, queue: await loadRunQueue(), runningProfileId: (loader.running && loader.options && loader.options.geo && loader.options.geo.profileId) || null });
+          break;
+        case "run-queue-remove": {
+          const q = (await loadRunQueue()).filter((x) => x.profileId !== msg.profileId);
+          await chrome.storage.local.set({ [RUN_QUEUE_KEY]: q });
+          sendResponse({ ok: true, queue: q });
           break;
         }
         // Opens an engine's own sign-in page for the pre-flight auth gate.
@@ -2893,6 +4169,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             runId: msg.runId || undefined,
             engines: msg.engines,
             tags: msg.tags,
+            tagMode: msg.tagMode,
             since: msg.since,
             until: msg.until,
           });
@@ -2971,6 +4248,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             runId: msg.runId || undefined,
             engines: msg.engines,
             tags: msg.tags,
+            tagMode: msg.tagMode,
             since: msg.since,
             until: msg.until,
           });
@@ -3040,6 +4318,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             runId: msg.runId || undefined,
             engines: msg.engines,
             tags: msg.tags,
+            tagMode: msg.tagMode,
             since: msg.since,
             until: msg.until,
           });
@@ -3140,6 +4419,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             runId: msg.runId || undefined,
             engines: msg.engines,
             tags: msg.tags,
+            tagMode: msg.tagMode,
             since: msg.since,
             until: msg.until,
           });
@@ -3205,7 +4485,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse(await loaderStart(msg.prompts, msg.options));
           break;
         case "loader-pause":
-          loader.paused = true;
+          setLoaderPaused(true);
           for (const pd of Object.values(loader.platforms)) {
             for (const leg of pd.legs) clearWatchdog(leg);
           }
@@ -3234,7 +4514,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 }
                 if (!alive) {
                   try {
-                    const tab = await chrome.tabs.create({ url: engineBaseUrl(plat), active: false });
+                    // A signed-out run resumes in a private window, never
+                    // in the signed-in one (0.79.0).
+                    const winId = await resumeWindowId();
+                    const tab = winId != null
+                      ? await chrome.tabs.create({ windowId: winId, url: engineBaseUrl(plat), active: false })
+                      : await chrome.tabs.create({ url: engineBaseUrl(plat), active: false });
                     leg.tabId = tab.id;
                     chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
                   } catch (_) {
@@ -3246,7 +4531,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 }
               }
             }
-            loader.paused = false;
+            setLoaderPaused(false);
             loader.interrupted = null;
             await persistLoaderState();
             for (const [plat, pd] of Object.entries(loader.platforms)) {
@@ -3261,12 +4546,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             for (const leg of pd.legs) clearWatchdog(leg);
           }
           loader.running = false;
-          loader.paused = false;
+          setLoaderPaused(false);
           // "stopped" here, not "done" — deliberately no badge/notification:
           // the user just clicked Stop, they're already right there.
           await syncGeoRun("stopped");
           await persistLoaderState();
           sendResponse({ ok: true, ...loaderStatus() });
+          startNextQueued();
           break;
         case "loader-status":
           sendResponse({ ok: true, ...loaderStatus() });
@@ -3308,6 +4594,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           try {
             await chrome.action.setBadgeText({ text: "" });
           } catch (_) {}
+          idleBadge();
           sendResponse({ ok: true });
           break;
 
@@ -3332,10 +4619,41 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
 
+        // The network recorder (0.62.0, Debug capture only; content-main.js).
+        case "netlog": {
+          if (await capturePausedFor(sender)) { sendResponse({ ok: true, skipped: "paused" }); break; }
+          await netlogAppend(Array.isArray(msg.entries) ? msg.entries.slice(0, 200) : []);
+          sendResponse({ ok: true });
+          break;
+        }
+        case "probe": {
+          if (await capturePausedFor(sender)) { sendResponse({ ok: true, skipped: "paused" }); break; }
+          // A reply the Gemini reader already turns into an answer isn't kept (0.69.0).
+          if (probeIsRead(msg.payload || {})) { sendResponse({ ok: true, skipped: "read" }); break; }
+          await probeAppend(msg.payload || {});
+          sendResponse({ ok: true });
+          break;
+        }
+        case "get-probes": {
+          sendResponse({ ok: true, probes: await probesLoad() });
+          break;
+        }
+        case "get-netlog": {
+          sendResponse({ ok: true, entries: await netlogLoad() });
+          break;
+        }
+
         case "get-records": {
           const records = await db.getAll("derived");
           records.sort((a, b) => b.capturedAt - a.capturedAt);
           sendResponse({ ok: true, records: records.map(toLight) });
+          break;
+        }
+        // 0.74.0: one record as the list holds it, so the panel can patch the
+        // record a broadcast names instead of refetching every capture.
+        case "get-record-light": {
+          const rec = await db.get("derived", msg.captureId);
+          sendResponse({ ok: true, record: rec ? toLight(rec) : null });
           break;
         }
         case "get-record": {
@@ -3377,10 +4695,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, records: out });
           break;
         }
+        case "page-interaction":
+          if (await capturePausedFor(sender)) { sendResponse({ ok: true, skipped: "paused" }); break; }
+          sendResponse(await onPageInteraction(msg.payload || {}));
+          break;
+        // Read (or re-read) one answer's cited pages now, from Analyze.
+        case "read-cited-pages":
+          sendResponse(await readCitedPages(msg.captureId, { force: !!msg.force, manual: true }));
+          break;
         case "get-raw": {
           const row = await db.get("raw", msg.captureId);
           const raw = row ? await gunzipToString(row.gz) : null;
-          sendResponse({ ok: true, raw, meta: row ? { url: row.url, reqBody: row.reqBody } : null });
+          const inter = await db.getAllByIndex("interactions", "captureId", msg.captureId).catch(() => []);
+          sendResponse({ ok: true, raw, meta: row ? { url: row.url, reqBody: row.reqBody } : null, interactions: inter.sort((x, y) => x.at - y.at).map((x) => ({ at: x.at, path: x.path, status: x.status, body: x.body })) });
           break;
         }
         case "reprocess-all":
@@ -3411,6 +4738,97 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, present: all.some(isDemoRecord), real: all.filter((r) => !isDemoRecord(r)).length });
           break;
         }
+        // The built-in AI (0.70.0).
+        case "ai-progress":
+          aiSvc.onProgress(msg.progress || null);
+          break;
+        case "ai-status":
+          sendResponse(await aiSvc.status());
+          break;
+        case "ai-hardware":
+          try { sendResponse({ ok: true, ...(await aiSvc.hardware()) }); } catch (e) { sendResponse({ ok: false, error: String(e && e.message || e) }); }
+          break;
+        case "ai-download":
+          sendResponse(await aiSvc.download({ tier: msg.tier, device: msg.device }));
+          break;
+        case "ai-remove":
+          sendResponse(await aiSvc.remove());
+          break;
+        // Laya, for the labels (0.83.0).
+        case "laya-download":
+          sendResponse(await aiSvc.downloadLaya({ device: msg.device }));
+          break;
+        case "laya-remove":
+          sendResponse(await aiSvc.removeLaya());
+          break;
+        case "ai-cancel-download":
+          sendResponse(await aiSvc.cancelDownload(msg.kind === "laya" ? "laya" : "llm"));
+          break;
+        case "ai-set-labeller":
+          sendResponse(await aiSvc.setLabeller(msg.labeller));
+          break;
+        // Tests only: a stand-in Laya bundle served from this computer.
+        case "laya-test-model": {
+          const host = String((msg.model || {}).host || "");
+          if (!/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/$/.test(host)) { sendResponse({ ok: false, error: "local addresses only" }); break; }
+          const st = await aiSvc.getState();
+          await aiSvc.setState({ laya: { ...(st.laya || {}), custom: { repo: String(msg.model.repo), rev: String(msg.model.rev || "main"), sub: String(msg.model.sub || ""), host, label: "Test Laya" }, downloadedAt: null } });
+          sendResponse({ ok: true });
+          break;
+        }
+        // 0.74.0: which engine answers, Chrome's own model, and the speed test.
+        case "ai-set-engine":
+          sendResponse(await aiSvc.setEngine(msg.engine));
+          break;
+        case "ai-use-nano":
+          sendResponse(await aiSvc.useNano());
+          break;
+        case "ai-benchmark":
+          try { sendResponse(await aiSvc.benchmark()); } catch (e) { sendResponse({ ok: false, error: String(e && e.message || e) }); }
+          break;
+        case "ai-check-capture": {
+          const rec = await db.get("derived", msg.captureId);
+          const r = await aiSvc.enqueue(rec, { force: true });
+          if (r.ok && rec) { await aiSvc.attach(rec); await db.put("derived", rec); broadcast({ type: "capture-updated", captureId: rec.captureId }); }
+          sendResponse(r);
+          break;
+        }
+        // Ask (0.73.0): the model reads the user's own data through tools.
+        case "ask": {
+          try {
+            const [records, profiles, runs] = await Promise.all([db.getAll("derived"), db.getAll("profiles"), db.getAll("geoRuns")]);
+            // Each lookup is broadcast as it starts (0.78.0): Ask shows it.
+            const onStep = (st) => broadcast({ type: "ask-step", askId: msg.askId || null, tool: st.tool });
+            sendResponse({ ok: true, ...(await aiSvc.askQuestion({ question: String(msg.question || ""), history: Array.isArray(msg.history) ? msg.history : [], data: { records, profiles, runs }, onStep })) });
+          } catch (e) { sendResponse({ ok: false, error: String(e && e.message || e) }); }
+          break;
+        }
+        case "ai-check-now":
+          try { sendResponse({ ok: true, ai: await aiSvc.checkNow(msg.record || {}) }); } catch (e) { sendResponse({ ok: false, error: String(e && e.message || e) }); }
+          break;
+        // 0.75.0: a model the user trained (training/), from their own
+        // Hugging Face repository. Only huggingface.co, only "owner/name".
+        case "ai-custom-model": {
+          if (msg.clear) { await aiSvc.setState({ custom: null, downloadedAt: null }); sendResponse({ ok: true }); break; }
+          const repo = String(msg.repo || "").trim();
+          if (!/^[\w.-]{1,96}\/[\w.-]{1,96}$/.test(repo)) { sendResponse({ ok: false, error: "Give the repository as owner/name." }); break; }
+          await aiSvc.setState({ custom: { repo, host: null, dtype: { webgpu: "q4f16", wasm: "q4" }, label: `Your model (${repo})`, params: "" }, tier: null, downloadedAt: null });
+          sendResponse({ ok: true });
+          break;
+        }
+        // Tests only: a stand-in model served from this computer.
+        case "ai-test-offscreen-idle": {
+          await ensureOffscreen();
+          sendResponse(await chrome.runtime.sendMessage({ target: "offscreen", type: "set-idle", ms: msg.ms }));
+          break;
+        }
+        case "ai-test-model": {
+          const host = String((msg.model || {}).host || "");
+          if (!/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/$/.test(host)) { sendResponse({ ok: false, error: "local addresses only" }); break; }
+          await aiSvc.setState({ custom: { repo: String(msg.model.repo), host, dtype: msg.model.dtype || "fp32", label: "Test model", ...(Array.isArray(msg.model.script) ? { script: msg.model.script.map(String) } : {}) }, tier: null, downloadedAt: null });
+          sendResponse({ ok: true });
+          break;
+        }
         case "delete-record":
           await dropCapture(msg.captureId);
           sendResponse({ ok: true });
@@ -3419,6 +4837,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           await db.clear("raw");
           await db.clear("derived");
           await db.clear("runs");
+          await db.clear("pages").catch(() => {});
+          await db.clear("interactions").catch(() => {});
+          await db.clear("ai").catch(() => {});
+          await db.clear("aiQueue").catch(() => {});
+          await chrome.storage.session.remove([NETLOG_KEY, PROBE_KEY]).catch(() => {});
           sendResponse({ ok: true });
           break;
         case "stats": {

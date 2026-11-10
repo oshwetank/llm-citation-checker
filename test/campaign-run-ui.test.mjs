@@ -20,6 +20,7 @@
  */
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { readFileSync } from "node:fs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const EXT_PATH = path.resolve(HERE, "..");
@@ -75,7 +76,7 @@ try {
   const head = () => page.evaluate(() => {
     const h = document.getElementById("cpHead");
     if (!h) return null;
-    const shown = [...h.querySelectorAll(".cp-actions button")].filter((b) => getComputedStyle(b).display !== "none").map((b) => b.textContent);
+    const shown = [...h.querySelectorAll(".cp-actions button:not(.ho-wrap button):not(.cp-menu button)")].filter((b) => getComputedStyle(b).display !== "none").map((b) => b.textContent);
     return { live: h.classList.contains("live"), paused: h.classList.contains("paused"), shown, status: document.getElementById("loaderStatus")?.innerText || "" };
   });
 
@@ -99,7 +100,7 @@ try {
   {
     const h = await head();
     check("the campaign opens on its header", !!h);
-    check("it offers Start run, and no Pause, Resume or Stop", h && h.shown.join("|") === "Edit setup|Export…|Start run" && !h.live, h && h.shown.join("|"));
+    check("it offers Start run, and no Pause, Resume or Stop", h && h.shown.join("|") === "Start run|▾|⋯" && !h.live, h && h.shown.join("|"));
     check("the service worker has no run going", !(await status()).running);
   }
 
@@ -116,7 +117,7 @@ try {
     const ps = await waitFor(async () => { const x = await status(); return x && x.platStats && x.platStats.chatgpt ? x.platStats.chatgpt : null; }, 6000);
     check("with this campaign's two prompts on ChatGPT", !!ps && ps.total === 2, JSON.stringify(ps).slice(0, 200));
     const h = await waitFor(async () => { const x = await head(); return x && x.live ? x : null; }, 4000);
-    check("the header goes live: Edit setup, Export…, Pause, Stop", !!h && h.shown.join("|") === "Edit setup|Export…|Pause|Stop", h && h.shown.join("|"));
+    check("the header goes live: Pause, Stop and ⋯", !!h && h.shown.join("|") === "Pause|Stop|⋯", h && h.shown.join("|"));
     check("and shows the run's progress and its prompts", !!h && /Running/i.test(h.status) && /chatgpt/i.test(h.status) && /which kettle boils fastest/.test(h.status), h && h.status.slice(0, 160));
     // Two status polls later it is still there (the poll rebuilds it).
     await page.waitForTimeout(3300);
@@ -140,13 +141,34 @@ try {
     check("a new header is live from the start, not after the next status reply", heads.length > 0 && heads.every(Boolean), JSON.stringify(heads));
   }
 
+  console.log("\nA capture mid-run doesn't rebuild the page (0.62.2)");
+  {
+    // Reported: "with each new prompt run/capture the layout bounces, if you
+    // have scrolled down, you will be bounced back up forcefully". Every
+    // capture used to empty the Campaigns page and build it again.
+    await page.evaluate(() => {
+      window.__rebuilt = 0;
+      new MutationObserver((ms) => ms.forEach((m) => m.addedNodes.forEach((n) => { if (n.id === "cpHead") window.__rebuilt++; })))
+        .observe(document.getElementById("loader"), { childList: true });
+    });
+    const raw = readFileSync(path.join(HERE, "fixtures", "chatgpt-phone-under.txt"), "utf8");
+    for (let i = 0; i < 3; i++) {
+      await ask({ type: "raw-conversation", payload: { raw, reqBody: JSON.stringify({ messages: [{ author: { role: "user" }, content: { parts: [`ad-hoc question ${i}`] } }] }), pageUrl: "https://chatgpt.com/", capturedAt: Date.now() } });
+      await page.waitForTimeout(700);
+    }
+    await page.waitForTimeout(800);
+    check("three captures, no rebuild of the page", await page.evaluate(() => window.__rebuilt) === 0, String(await page.evaluate(() => window.__rebuilt)));
+    const wait = await page.evaluate(() => document.querySelector("#campaignResults .cb-run-wait")?.textContent || "");
+    check("the results say the running run's answers come at the end", /appear here when it finishes or is stopped/.test(wait), wait || "no note");
+  }
+
   console.log("\nPause and Resume");
   {
     await page.click("#cpHead .cp-pause");
     const s = await waitFor(async () => { const x = await status(); return x && x.paused ? x : null; }, 6000);
     check("Pause pauses the run in the service worker", !!s && s.running && s.paused);
     const h = await waitFor(async () => { const x = await head(); return x && x.paused ? x : null; }, 4000);
-    check("the header offers Resume and Stop", !!h && h.shown.join("|") === "Edit setup|Export…|Resume|Stop", h && h.shown.join("|"));
+    check("the header offers Resume and Stop", !!h && h.shown.join("|") === "Resume|Stop|⋯", h && h.shown.join("|"));
     check("and says it is paused", !!h && /Paused/i.test(h.status), h && h.status.slice(0, 120));
     await page.click("#cpHead .cp-resume");
     const r = await waitFor(async () => { const x = await status(); return x && x.running && !x.paused ? x : null; }, 6000);
@@ -161,12 +183,34 @@ try {
     const s = await waitFor(async () => { const x = await status(); return x && !x.running ? x : null; }, 8000);
     check("Stop ends the run in the service worker", !!s);
     const h = await waitFor(async () => { const x = await head(); return x && !x.live ? x : null; }, 4000);
-    check("the header offers Run again, no live controls", !!h && h.shown.join("|") === "Edit setup|Export…|Run again", h && h.shown.join("|"));
+    check("the header offers Run again, no live controls", !!h && h.shown.join("|") === "Run again|▾|⋯", h && h.shown.join("|"));
     const runs = await ask({ type: "geo-run-list", profileId });
     check("the run is recorded as stopped", runs && runs.ok && runs.runs.length === 1 && runs.runs[0].status === "stopped", JSON.stringify(runs && runs.runs).slice(0, 200));
     await page.waitForTimeout(1500);
     const hist = await waitFor(() => page.evaluate(() => [...document.querySelectorAll("#loader .loader-history-row")].map((r) => r.innerText.replace(/\s+/g, " "))), 5000);
     check("a run that captured nothing still shows in the run history", hist && hist.length === 1 && /Stopped/.test(hist[0]) && /0\/\d+ captured/.test(hist[0]), JSON.stringify(hist));
+  }
+
+  // 0.78.1: what a finished run is missing is asked again, into that run.
+  console.log("\nRetry missing");
+  {
+    const note = await waitFor(() => page.evaluate(() => { const n = document.getElementById("cpMissing"); return n && !n.hidden ? n.innerText.replace(/\s+/g, " ") : null; }), 6000);
+    // 0.80.0: a run that was stopped offers to carry on from where it stopped.
+    check("the header says how many answers the run is missing, and where", note && (/2 answers are missing from the last run/.test(note) || /stopped with 2 answers to go/.test(note)) && /2 on ChatGPT/.test(note), note);
+    await page.click("#cpRetryMissing");
+    // The same sign-in check as Start run; this test browser is signed out.
+    const gate2 = await waitFor(() => page.evaluate(() => !!document.getElementById("signin-gate-backdrop")), 10000);
+    if (gate2) await page.click('#signin-gate-backdrop button:has-text("Run anyway")');
+    // Running with prompts: while the sign-in check runs, the runner reads
+    // "running" with nothing in it yet.
+    const s = await waitFor(async () => { const x = await status(); return x && x.running && x.total ? x : null; }, 15000);
+    check("Retry starts a run of just those prompts", s && s.total === 2, JSON.stringify(s && { total: s.total, running: s.running }));
+    const runs = await ask({ type: "geo-run-list", profileId });
+    check("into the same campaign run, not a new one", runs && runs.runs.length === 1 && runs.runs[0].status === "running", JSON.stringify(runs && runs.runs.map((r) => [r.id.slice(0, 6), r.status])));
+    await page.click('#cpHead button:has-text("Stop")');
+    await waitFor(async () => { const x = await status(); return x && !x.running ? x : null; }, 8000);
+    const back = await ask({ type: "geo-run-list", profileId });
+    check("stopping it leaves that one run, its counts not doubled", back && back.runs.length === 1 && (back.runs[0].captured || 0) === 0, JSON.stringify(back && back.runs[0]).slice(0, 200));
   }
 
   console.log("\nThe popup has the same controls");
@@ -182,9 +226,9 @@ try {
     const r = await pop.evaluate(() => {
       const h = document.getElementById("cpHead");
       const c = document.querySelector(".app-content");
-      return { run: !!h?.querySelector(".cp-run"), shown: h ? [...h.querySelectorAll(".cp-actions button")].filter((b) => getComputedStyle(b).display !== "none").map((b) => b.textContent) : [], wide: c.scrollWidth - c.clientWidth };
+      return { run: !!h?.querySelector(".cp-run"), shown: h ? [...h.querySelectorAll(".cp-actions button:not(.ho-wrap button):not(.cp-menu button)")].filter((b) => getComputedStyle(b).display !== "none").map((b) => b.textContent) : [], wide: c.scrollWidth - c.clientWidth };
     });
-    check("the header and its actions are there", r.run && r.shown.join("|") === "Edit setup|Export…|Run again", r.shown.join("|"));
+    check("the header and its actions are there", r.run && r.shown.join("|") === "Run again|▾|⋯", r.shown.join("|"));
     check("and fit the popup", r.wide <= 0, `${r.wide}px too wide`);
     await pop.close();
   }

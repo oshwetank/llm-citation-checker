@@ -20,6 +20,10 @@ export const ABOUT_STEPS = [
 
 /** What's new — the redesign, newest first. */
 export const ABOUT_NEWS = [
+  { head: "Models are switches, in Ask.", body: "Ask → Models on this computer: flip one on to download it, off to remove it. Uninstalling CitoSkeleton removes them too." },
+  { head: "Capture holds when a site changes.", body: "A question you ask by hand is read off the page when its network copy can't be read, and Analyze says so if one still wasn't captured." },
+  { head: "Fast labels with Laya.", body: "About → Settings → Built-in AI: download Laya once and it labels every answer by picking among fixed options, much quicker than the AI model, and it never invents a name." },
+  { head: "Share a campaign.", body: "Campaigns → ⋯ → Share campaign… saves it as one file someone else opens with Import… and runs on their own computer, with the same answers and numbers." },
   { head: "About, rebuilt.", body: "An overview, a searchable glossary of every metric, settings you can undo, data & tools, and diagnostics, each on its own page." },
   { head: "A campaign's results are one board.", body: "Pick a run, an engine, tags and a brand; see it by kind of answer, product cards, every competitor, each engine, each run and every prompt." },
   { head: "A page for each competitor.", body: "Head to head against your brand, engine by engine and prompt by prompt, with the sites that cite one and not the other." },
@@ -40,7 +44,7 @@ export const GLOSSARY_GROUPS = ["Brand metrics", "Source metrics", "Grounding & 
  * definition, and a word that appears nowhere empties the list rather than
  * being ignored.
  *
- * @param {Array<{key,group,term,what,formula,howToUse,note}>} entries glossaryEntries()
+ * @param {Array<{key,group,term,what,formula,note}>} entries glossaryEntries()
  * @param {{query?: string, group?: string}} opts group "all" or a group name
  * @returns {{ total, matches, chips: [{id,label,count,on}], groups: [{name, rows}] }}
  */
@@ -103,7 +107,7 @@ export function settingValue(key, raw) {
  * justSaved only shows "Settings saved" until the next edit.
  */
 export function settingsState(saved, draft, { justSaved = false } = {}) {
-  const keys = ["retentionMax", "maxCaptureMB", "debugCapture"];
+  const keys = ["retentionMax", "maxCaptureMB", "debugCapture", "readCitedPages", "keepHandoffCaptures"];
   const changed = !!saved && !!draft && keys.some((k) => saved[k] !== draft[k]);
   return {
     dirty: changed,
@@ -122,7 +126,7 @@ export function storageMeter({ stored = 0, keep = 0, usedBytes = null } = {}) {
   return {
     pct,
     warn: keep > 0 && stored / keep >= 0.9,
-    text: `${stored.toLocaleString("en-US")} of ${keep.toLocaleString("en-US")} kept`,
+    text: `${stored.toLocaleString(undefined)} of ${keep.toLocaleString(undefined)} kept`,
     sub: `${mb == null ? "" : `${mb} MB on disk. `}Past the limit, the oldest captures are dropped first.`,
   };
 }
@@ -154,4 +158,23 @@ export function buildStatus(reply, build) {
   if (!reply.ok) return { known: false, stale: false, title: "Couldn't check", sub: "The background didn't answer" };
   return { known: true, stale: false, title: "Up to date", sub: `Version ${build}`,
     line: `Up to date. These screens and the part that runs campaigns are both version ${build}.` };
+}
+
+/**
+ * What works in this browser (0.72.0, About → Overview → "This browser").
+ * @param {{offscreen?: boolean, tabGroups?: boolean, notifications?: boolean, nano?: boolean, webgpu?: boolean, incognito?: boolean, ua?: string}} env
+ */
+export function browserSupport(env = {}) {
+  const ua = String(env.ua || "");
+  const name = /Firefox\//.test(ua) ? "Firefox" : /Edg\//.test(ua) ? "Edge" : /OPR\//.test(ua) ? "Opera" : /Safari\//.test(ua) && !/Chrome\//.test(ua) ? "Safari" : /Chrome\//.test(ua) ? "Chrome" : "This browser";
+  const rows = [
+    { id: "capture", label: "Capturing ChatGPT, Gemini, Perplexity and Grok", on: true },
+    { id: "pages", label: "Reading the cited pages", on: true, note: env.offscreen ? "" : "in the background page" },
+    { id: "ai", label: "Built-in AI", on: true, note: env.webgpu ? "on the graphics chip" : "on the processor (Light size suggested)" },
+    { id: "nano", label: "Gemini Nano", on: !!env.nano, note: env.nano ? "" : "Chrome only" },
+    { id: "groups", label: "Campaign tabs grouped", on: !!env.tabGroups, note: env.tabGroups ? "" : "not in this browser" },
+    { id: "notify", label: "A notification when a run ends", on: !!env.notifications, note: env.notifications ? "" : "shown in the panel instead" },
+    { id: "private", label: "Runs signed out, in a private window", on: env.incognito !== false, note: env.incognito === false ? "not in this browser" : "" },
+  ];
+  return { name, rows, all: rows.every((r) => r.on) };
 }

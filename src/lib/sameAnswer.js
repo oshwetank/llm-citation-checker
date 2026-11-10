@@ -60,11 +60,22 @@ function textsAgree(a, b) {
  * the window. A reply id names the reply outright; matched only by the
  * conversation and the question, their texts must agree too, so pressing
  * "regenerate" keeps its own record. */
+// A reply id or turn id names one reply, however long after it a copy turns
+// up: reopening a Grok conversation 44 minutes later made the page-text
+// reader send it again, and the 10-minute window let it in as a new answer
+// (reported: a prompt "Youbest good quality…" that was never asked).
+export const SAME_REPLY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
 export function sameAnswer(a, b, windowMs = SAME_ANSWER_WINDOW_MS) {
   const k = answerKey(a);
-  if (!k || k !== answerKey(b) || Math.abs((a.capturedAt || 0) - (b.capturedAt || 0)) > windowMs) return false;
-  return /\|(?:reply|turn):/.test(k) || textsAgree(a, b);
+  if (!k || k !== answerKey(b)) return false;
+  const byId = /\|(?:reply|turn):/.test(k);
+  if (Math.abs((a.capturedAt || 0) - (b.capturedAt || 0)) > (byId ? Math.max(windowMs, SAME_REPLY_WINDOW_MS) : windowMs)) return false;
+  return byId || textsAgree(a, b);
 }
+
+/** A copy read off the page's text rather than its network traffic. */
+export const isPageCopy = (r) => !!(r && r.platformSpecific && r.platformSpecific.pageCopy);
 
 // How complete a copy is: an answer beats none, then the longer text, then
 // more cited pages, pages read and searches.
@@ -73,14 +84,16 @@ function completeness(r) {
   const sources = r.sources || [];
   const cited = sources.filter((s) => s.outcome === "cited").length;
   const searches = Object.values(r.fanout || {}).reduce((n, v) => n + (Array.isArray(v) ? v.length : 0), 0);
-  return (text > 0 ? 1e9 : 0) + text * 1000 + cited * 100 + sources.length * 10 + searches;
+  // A page-text copy is a fallback: its text carries the page's own labels
+  // and its prompt was read off the screen, so any network copy beats it.
+  return (isPageCopy(r) ? 0 : 1e15) + (text > 0 ? 1e9 : 0) + text * 1000 + cited * 100 + sources.length * 10 + searches;
 }
 
 const urlKey = (s) => {
   const u = String((s && (s.url || s.domain)) || "").replace(/[?&]utm_[^&#]*/g, "").replace(/[?#]$/, "");
   return u.toLowerCase();
 };
-const queryText = (q) => (typeof q === "string" ? q : q && q.query) || "";
+const queryText = (q) => (typeof q === "string" ? q : q && (q.query || q.url)) || "";
 const itemKey = (x) => norm((x && (x.name || x.title || x.url)) || "");
 
 /* Fold copies of one answer into the fullest. The fullest copy's text,

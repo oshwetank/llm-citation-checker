@@ -1,0 +1,9 @@
+{
+  "appName": {
+    "message": "CitoSkeleton"
+  },
+  "appDesc": {
+    "message": "Mira qué buscan, leen y citan ChatGPT, Gemini, Perplexity y Grok, y qué marcas nombran. Todo local, sin cuenta.",
+    "description": "The extension's description in the Chrome Web Store, at most 132 characters."
+  }
+}
