@@ -37,7 +37,7 @@
  * exits non-zero rather than silently "passing" — a guard that can quietly
  * skip itself is not a guard.
  */
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -146,7 +146,13 @@ async function seedFixtures(context, extId) {
 async function runMode(reducedMotion) {
   console.log(`\nUI visibility with prefers-reduced-motion: ${reducedMotion === "reduce" ? "REDUCE (the setting that shipped a blank UI)" : "no-preference"}`);
 
-  const context = await chromium.launchPersistentContext(`${PROFILE_BASE}-${reducedMotion}`, {
+  // A fixed folder per mode that outlives the run: empty it first, so a second
+  // run on the same machine does not reopen the first run's storage (the same
+  // leftover-profile failure analyze-feedback hit on 10 Nov 2026). Only this
+  // mode's own folder is removed.
+  const profileDir = `${PROFILE_BASE}-${reducedMotion}`;
+  rmSync(profileDir, { recursive: true, force: true });
+  const context = await chromium.launchPersistentContext(profileDir, {
     headless: false,
     reducedMotion,
     args: [
