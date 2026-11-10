@@ -110,7 +110,8 @@ forever; raw answers kept in R2 indefinitely (cheap) so anything can be **reproc
 | Hire (MVP ≈ 300–450 engineering hours) | — | ~$7k–$18k at $20–$40/h; ~$20k–$45k at $60–$100/h |
 
 Why it's cheap: the hard, differentiating code — adapters, brand detection, metric definitions,
-export — **already exists and is tested** (≈14k lines in this repo, ~60 test files). The new work
+export — **already exists and is tested** (≈29k lines in `src/` at v0.84.0, 91 unit and 69 browser test files), and since v0.82.0 the repo
+also has a small `server/` (Vercel functions over Supabase) with accounts by emailed code and campaign sharing. The new work
 is mostly plumbing: tenancy, scheduler, collectors, API, dashboard.
 
 ## 7. Feasibility verdict

@@ -16,6 +16,22 @@
 6. **API-first.** The web app is just another API client; the MCP server is a thin adapter over
    the same service layer.
 
+## 1a. What already exists in this repo (v0.84.0)
+
+The plan builds on these rather than starting over:
+
+| Already built | Where | How the cloud platform uses it |
+|---|---|---|
+| Accounts by emailed code (Supabase Auth, no password) | `src/lib/cloudConfig.js`, About → Account | Same Supabase project and login for the web dashboard and the extension's cloud connector |
+| Server: Vercel functions, Node 20, no npm dependencies | `server/api/*.js`, `server/lib/*` | Becomes the first `apps/api`; new `/v1` endpoints are added next to `profile`, `share`, `subscribe` |
+| Schema with RLS: `subscribers`, `profiles` (display names), `shared_campaigns` | `server/supabase/schema.sql` | Kept as is. The tenancy tables in 05 go in a separate `cloud` Postgres schema so `cloud.profiles` (workspaces) doesn't clash with `public.profiles` (per-user display name) |
+| Campaign bundles (`.cito` file / 10-character share code) | `src/lib/campaignBundle.js` | Import path for moving an extension campaign into a cloud brand account |
+| Campaign board and Excel export | `src/lib/campaignBoard.js`, `campaignXlsx.js`, `xlsxWrite.js` | Same numbers and same workbook in the cloud dashboard |
+| On-device labels (Laya, built-in model) | `src/lib/laya.js`, `layaEngine.js` | Not run server-side in MVP (1.3 GB model); the label *shape* is reused so extension and cloud agree |
+
+None of the server is deployed yet: per `server/README.md`, it is switched on by creating the Supabase
+project, deploying `server/` to Vercel and filling in `cloudConfig.js`. That is also step 1 of Phase 2 in 09.
+
 ## 2. Context diagram
 
 ```mermaid
@@ -39,9 +55,9 @@ flowchart LR
 | Component | Tech | Responsibility |
 |---|---|---|
 | `apps/web` | React + Vite (SPA), TanStack Query, Recharts; deployed to Cloudflare Pages | Dashboard, settings, prompt management. Talks only to the API. |
-| `apps/api` | Hono on Cloudflare Workers; Zod validation; OpenAPI generated from Zod | REST `/v1/*`, MCP `/mcp`, webhooks out, auth (Supabase JWT or API key), rate limiting. Light CPU only. |
+| `apps/api` | Starts as the existing `server/` Vercel functions; Zod validation; OpenAPI generated from Zod. Move to Hono on Cloudflare Workers only if Vercel Hobby's non-commercial terms or function limits bite | REST `/v1/*`, MCP `/mcp`, webhooks out, auth (Supabase JWT or API key), rate limiting. Light CPU only. |
 | `apps/worker` | Node 20, TypeScript; runs as a long-ish batch process (GitHub Actions cron every 2–4 h, or `systemd` on a free VM) | Claim jobs → call collector → store raw → run analysis → write derived rows → roll up aggregates. |
-| `packages/core` | The extension's pure-JS libs moved here: `schema`, `brands`, `geo`, `glossary`, `sources`, `fanout`, `deep`, `funnel-omitted`, `exportDoc`, `campaignWorkbook`, `xlsxLite`, `adapters/*` | Parsing, brand detection, metrics. **No platform APIs.** Consumed by worker, API (light functions only) and the extension. |
+| `packages/core` | The extension's pure-JS libs moved here: `schema`, `brands`, `geo`, `glossary`, `sources`, `fanout`, `deep`, `funnel-omitted`, `exportDoc`, `campaignBoard`, `campaignXlsx`, `xlsxWrite`, `campaignBundle`, `adapters/*` | Parsing, brand detection, metrics. **No platform APIs.** Consumed by worker, API (light functions only) and the extension. |
 | `packages/collectors` | One module per (engine, collector) pair | Turn a job into a raw payload + `schema.js` record. See 07. |
 | `packages/db` | SQL migrations (plain SQL), generated types, query helpers | Single source of DB truth. |
 | `packages/sdk` | Typed TS client generated from OpenAPI | Used by web, MCP server, extension, and users' scripts. |
@@ -162,8 +178,8 @@ sync script) so fixes to brand detection reach both products. See 09 Phase 0.
 
 | Choice | Picked | Alternatives considered | Why |
 |---|---|---|---|
-| Language | TypeScript (JS core as-is first, typed gradually) | Python | Reuses 14k lines of tested JS |
-| API runtime | Cloudflare Workers + Hono | Vercel functions, Supabase Edge Functions | Generous free tier; Vercel Hobby is non-commercial |
+| Language | TypeScript (JS core as-is first, typed gradually) | Python | Reuses ~29k lines of tested JS |
+| API runtime | Vercel functions (already in `server/`) to start; Cloudflare Workers + Hono as the fallback | Supabase Edge Functions | Reuse what exists. Vercel Hobby is non-commercial, so move to Workers (or Vercel Pro) before charging anyone |
 | DB | Supabase Postgres | Neon, Cloudflare D1 | Postgres + Auth + RLS in one free tier |
 | Queue | Postgres `SKIP LOCKED` | Cloudflare Queues, Redis | No extra service or cost |
 | Worker host | GitHub Actions cron → free VM later | Fly.io, Render, Railway | $0; portable Docker image |

@@ -1,6 +1,6 @@
 # CitoSkeleton Cloud — planning pack
 
-**Status:** Proposal / pre-build · **Date:** 2026-10-29 · **Base:** the CitoSkeleton Chrome extension in this repository (v0.36.0)
+**Status:** Proposal / pre-build · **Date:** 2026-10-29, updated 2026-11-10 · **Base:** the CitoSkeleton Chrome extension in this repository (v0.84.0)
 
 This folder is the full planning set for turning the CitoSkeleton extension into a **hosted,
 multi-brand prompt-tracking platform** — profiles, brand accounts under each profile, a fixed
@@ -37,10 +37,10 @@ for how the new repo is seeded from this one.
    data vendor (closest to what users see, vendor carries the scraping risk), and the existing
    extension as an opt-in "browser worker" for validation and engines nothing else covers.
 3. **Reuse the extension's pure-JS analysis core** (`brands.js`, `geo.js`, `glossary.js`,
-   `sources.js`, `fanout.js`, `schema.js`, `deep.js`) server-side, unchanged where possible — it
+   `sources.js`, `fanout.js`, `schema.js`, `deep.js`, `campaignBoard.js`, `campaignXlsx.js`) server-side, unchanged where possible — it
    already computes Visibility, Share of Voice, Position, Citations and Source Visibility without
    an LLM, which is what keeps the analysis cost at zero.
-4. **Stack:** TypeScript monorepo · Cloudflare Workers (API + MCP + cron) · Supabase Postgres +
+4. **Stack:** build on the `server/` added in v0.82.0 (Vercel functions over Supabase) · Supabase Postgres +
    Auth (derived metrics only) · Cloudflare R2 (compressed raw answers) · a plain Node worker that
    runs on GitHub Actions or an always-free VM.
 5. **Agent access from day one:** scoped, hashed API keys + a remote MCP server exposing the same

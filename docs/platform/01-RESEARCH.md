@@ -20,7 +20,7 @@ countries they cover, (c) prompt volume per dollar, and (d) analysis layers on t
 source categorisation, recommendations, agent/MCP access).
 
 CitoSkeleton already does (a) via the user's own browser, (b) for ChatGPT/Gemini/Perplexity/Grok,
-and most of (d) except sentiment. What it lacks is the **hosted, scheduled, multi-tenant** part.
+and most of (d): since v0.83.0 a brand's stance is labelled on-device by Laya or the built-in model, though not as a 0–100 score. What it lacks is the **hosted, scheduled, multi-tenant** part.
 
 ---
 
@@ -60,7 +60,7 @@ model × day) → extracted **Mentions** and **Sources** → aggregated **Report
 |---|---|---|
 | Visibility | % of chats where the brand is mentioned | **Visibility** (identical) |
 | Position | Average rank of the brand within the answer | **Position** (identical: first-appearance rank) |
-| Sentiment | 0–100; ~85 clearly positive, ~65 neutral, <65 critical | Deliberately not measured (see `SENTIMENT_NOTE`) |
+| Sentiment | 0–100; ~85 clearly positive, ~65 neutral, <65 critical | No 0–100 score (see `SENTIMENT_NOTE`); per-brand stance labels on-device since 0.83.0 (Laya, `src/lib/laya.js`) |
 | Share of Voice | Brand mentions ÷ all tracked brands' mentions | **Share of Voice** (identical) |
 | Source visibility — *used* | Your content contributed to the answer, even uncited | **Source Visibility** (domain appeared as any source) |
 | Source visibility — *cited* | Your domain was cited | **Citations** |

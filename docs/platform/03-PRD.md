@@ -91,7 +91,7 @@ buyer prompts. Today:
 - FR-25 **Stability**: share of prompts whose presence outcome is unchanged vs previous run.
 - FR-26 Top cited domains and URLs; **source category** (editorial / UGC / reference / corporate-own / competitor / retailer / other) by a maintained domain list + heuristics.
 - FR-27 Competitor matrix: which competitors appear on prompts where the brand is absent ("gap prompts").
-- FR-28 Sentiment/stance **optional and labelled as model-estimated**, off by default (keeps the extension's honesty rule).
+- FR-28 Stance **optional and labelled as model-estimated**, off by default (keeps the extension's honesty rule). Reuse the extension's stance labels (`laya.js` output shape, `source: "laya"`) so the cloud and the extension label brands the same way.
 - FR-29 Reprocess: re-derive all responses from raw when the analysis core changes.
 
 ### 5.6 Dashboard (web)
@@ -100,7 +100,7 @@ buyer prompts. Today:
 - FR-32 Sources view: domains/URLs, category, which prompts cite them, own vs competitor.
 - FR-33 Competitors view: SOV ranking, head-to-head, gap prompts.
 - FR-34 Response viewer: answer text with highlighted brand mentions and footnoted citations (reuse `exportDoc.js`).
-- FR-35 Exports: CSV, XLSX workbook (reuse `campaignWorkbook.js`), HTML/PDF report.
+- FR-35 Exports: CSV, XLSX workbook (reuse `campaignXlsx.js` + `xlsxWrite.js`), HTML/PDF report.
 - FR-36 Shareable read-only report link (tokenised, revocable).
 
 ### 5.7 API & agent access (details in 06)
@@ -119,7 +119,7 @@ buyer prompts. Today:
 - FR-45 Threshold alerts: visibility drop > X pp (outside interval), new competitor in top 5, own domain lost from top cited.
 
 ### 5.10 Extension integration
-- FR-46 The extension gets an **opt-in** "Connect to CitoSkeleton Cloud" setting: paste an API key with `runs:write`; then (a) it can pull `browser_worker` jobs and execute them in the user's logged-in session, and (b) push manual captures into a chosen brand account. Off by default, so the local-only promise of the store build is unchanged.
+- FR-46 The extension gets an **opt-in** "Connect to CitoSkeleton Cloud" setting: paste an API key with `runs:write`; then (a) it can pull `browser_worker` jobs and execute them in the user's logged-in session, and (b) push manual captures into a chosen brand account. Off by default, so the local-only promise of the store build is unchanged. It should reuse the sign-in the extension already has since 0.82.0 (Supabase emailed code, `src/lib/cloudConfig.js`) rather than add a second login.
 
 ## 6. Non-functional requirements
 

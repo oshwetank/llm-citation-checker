@@ -14,9 +14,11 @@ ends with a go/no-go check so money is only spent once the previous step proves 
    # then in the new repo: git remote add core ../core-src && git merge --allow-unrelated-histories core/master
    ```
    (Or a plain copy if history isn't wanted.)
-3. Make `packages/core` runtime-neutral: remove/abstract the few browser-only bits (`db.js`
-   IndexedDB, `nano.js` Chrome `languageModel` (`ai-brands.js` already takes it by injection), `gzip.js`/`zipWrite.js` `CompressionStream`
-   — available in Node 18+ anyway). Keep the extension's tests green in Node.
+3. Make `packages/core` runtime-neutral. At v0.84.0 the browser-bound modules in `src/lib` are
+   `db.js` (IndexedDB), `nano.js`/`nanoEngine.js`/`llmEngine.js`/`layaEngine.js` (Chrome built-in AI,
+   WebGPU, Cache Storage), `auth-check.js` (cookies, already injected) and `build.js`; leave them in the
+   extension and move the rest. `CompressionStream` (`gzip.js`, `zipWrite.js`) exists in Node 18+.
+   Keep the extension's tests green in Node.
 4. pnpm + turbo workspace, TypeScript config allowing JS, Vitest running the ported `*.test.mjs`.
 5. Copy this `docs/platform/` folder to `docs/`.
 6. Plan for the extension to consume `@cito/core` (npm package or a sync script) — not in the
@@ -41,11 +43,11 @@ OpenAI API and re-run the cost table.
 
 | Week | Deliverable |
 |---|---|
-| 1 | Supabase project, migrations (05), RLS, Auth; Hono API skeleton on Workers; OpenAPI generation |
+| 1 | Set up the Supabase project and deploy the existing `server/` to Vercel (`server/README.md`), then add migrations (05, in the `cloud` schema) and the `/v1` skeleton; OpenAPI generation |
 | 2 | Profiles, members, brand accounts, competitors, engines, prompts + CSV/XLSX import (reuse header matching) |
 | 3 | Scheduler + Postgres job queue + worker on GitHub Actions; R2 raw store; analysis stage; cost ledger + spend cap |
 | 4 | `daily_metrics` rollup with intervals; REST results endpoints; API keys + scopes |
-| 5 | Web dashboard: overview, prompts, sources, competitors, response viewer; XLSX export (reuse `campaignWorkbook.js`) |
+| 5 | Web dashboard: overview, prompts, sources, competitors, response viewer; XLSX export (reuse `campaignXlsx.js`) |
 | 6 | MCP server (tools in 06 §3); `llms.txt`; hardening, tenancy tests, docs |
 
 **Exit = PRD §8 acceptance criteria.** Then run one real brand at 1,000 prompts × 4 engines on the

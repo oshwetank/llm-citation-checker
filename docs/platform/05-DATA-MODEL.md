@@ -1,6 +1,9 @@
 # 05 — Data model
 
-Postgres 15+ (Supabase). All tenant tables carry `profile_id` and have RLS enabled. IDs are
+Postgres 15+ (Supabase). All tenant tables carry `profile_id` and have RLS enabled. They live in a
+separate `cloud` schema (`create schema cloud;`) because `public.profiles` already exists in
+`server/supabase/schema.sql` (v0.82.0) as the per-user display name; table names below are
+written unqualified for readability. IDs are
 `uuid` (v7 where available, for index locality). Times are `timestamptz`.
 
 ## 1. Entity overview
