@@ -63,6 +63,43 @@ export async function loadLang(code, given) {
 export const uiLang = () => lang;
 export const isRtl = (code = lang) => RTL.has(String(code).split("-")[0]);
 
+/*
+ * Sentences built from numbers and names (0.84.2).
+ *
+ * The dictionaries are keyed by the exact English text, so anything the
+ * panel builds in code never matched: "3 of 6", "Asked Perplexity",
+ * "Cited · 2", "1 prompts captured in the last 7 days". In the 10 Nov 2026
+ * audit that left the Arabic Dashboard half in English, and a sweep of every
+ * screen found about 480 such strings. Rewriting each call site would touch
+ * hundreds of lines, so the lookup learns the shapes instead:
+ *
+ *   - every number becomes "#"        "3 of 6"            → key "# of #"
+ *   - an engine's name becomes        "Asked Perplexity"  → key "Asked {engine}"
+ *     "{engine}"
+ *   - parts joined by " · " are       "Cited · 2"         → "Cited" and "2",
+ *     looked up one by one                                   each on its own
+ *
+ * The numbers and the name go back into the translation in the order they
+ * came ("#" by "#"); a translation that needs them in another order writes
+ * "#1", "#2". patternKey is exported so the tool that finds missing strings
+ * (and the test) makes the same keys.
+ */
+const ENGINE_NAMES = /\b(?:ChatGPT|Gemini|Perplexity|Grok|Claude)\b/;
+const NUMBER = /\d[\d,.]*\d|\d/g;
+export function patternKey(s) {
+  const nums = [];
+  let engine = null;
+  let key = String(s).replace(ENGINE_NAMES, (m) => { engine = m; return "{engine}"; });
+  key = key.replace(NUMBER, (m) => { nums.push(m); return "#"; });
+  return { key, nums, engine };
+}
+function fill(template, nums, engine) {
+  let i = 0;
+  return template
+    .replace(/#(\d)?/g, (_, n) => (n ? nums[Number(n) - 1] : nums[i++]) ?? "#")
+    .replace("{engine}", engine ?? "{engine}");
+}
+
 /** The translation of an English UI string, or the string itself. */
 export function tr(s) {
   if (typeof s !== "string" || lang === "en") return s;
@@ -71,6 +108,17 @@ export function tr(s) {
   // "Label:" / " · Label" keep their punctuation around a known label.
   const m = /^(\s*(?:·\s*)?)(.*?)(\s*[:…]?\s*)$/.exec(s);
   if (m && m[2] !== s && dict[m[2]] != null) return m[1] + dict[m[2]] + m[3];
+  // A sentence with numbers or an engine's name in it.
+  const core = m ? m[2] : s;
+  const { key, nums, engine } = patternKey(core);
+  if (key !== core && typeof dict[key] === "string") return (m ? m[1] : "") + fill(dict[key], nums, engine) + (m ? m[3] : "");
+  // "A · B · C": each part on its own. A part that is itself unknown stays
+  // English, so a half-known line is half translated rather than not at all.
+  if (s.includes(" · ")) {
+    const parts = s.split(" · ");
+    const out = parts.map((p) => (p.includes(" · ") ? p : tr(p)));
+    if (out.some((p, i) => p !== parts[i])) return out.join(" · ");
+  }
   return s;
 }
 

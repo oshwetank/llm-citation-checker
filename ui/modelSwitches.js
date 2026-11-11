@@ -19,8 +19,12 @@ import { TIERS } from "../src/lib/llmTiers.js";
 
 function h(tag, props = {}, ...kids) {
   const n = document.createElement(tag);
-  for (const [k, v] of Object.entries(props)) {
+  for (let [k, v] of Object.entries(props)) {
     if (v == null || v === false) continue;
+    // Words a person reads or hears go through tr() like the text does
+    // (0.84.2): aria-label, title and placeholder were set as written, so
+    // "Typeface", "Density" and the size buttons' tooltips stayed English.
+    if (typeof v === "string" && (k === "aria-label" || k === "title" || k === "placeholder" || k === "textContent")) v = tr(v);
     if (k.startsWith("data-") || k.startsWith("aria-") || k === "for" || k === "role") n.setAttribute(k, v);
     else n[k] = v;
   }

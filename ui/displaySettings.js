@@ -16,7 +16,11 @@ const SAMPLE = "Aa Zento 1st 29,999";
 
 function h(tag, props = {}, ...kids) {
   const n = document.createElement(tag);
-  for (const [k, v] of Object.entries(props)) {
+  for (let [k, v] of Object.entries(props)) {
+    // Words a person reads or hears go through tr() like the text does
+    // (0.84.2): aria-label, title and placeholder were set as written, so
+    // "Typeface", "Density" and the size buttons' tooltips stayed English.
+    if (typeof v === "string" && (k === "aria-label" || k === "title" || k === "placeholder" || k === "textContent")) v = tr(v);
     if (k.startsWith("data-") || k.startsWith("aria-") || k === "for" || k === "role") n.setAttribute(k, v);
     else n[k] = v;
   }
@@ -37,7 +41,7 @@ function slider(id, label, key, ticks, fmt) {
   const s = current();
   const input = h("input", { type: "range", className: "ds-range", id, min, max, step, value: s[key], "aria-valuetext": fmt(s[key]) });
   const out = h("output", { for: id }, fmt(s[key]));
-  const paint = () => { input.style.setProperty("--p", `${((input.value - min) * 100) / (max - min)}%`); out.textContent = fmt(Number(input.value)); input.setAttribute("aria-valuetext", fmt(Number(input.value))); };
+  const paint = () => { input.style.setProperty("--p", `${((input.value - min) * 100) / (max - min)}%`); out.textContent = tr(fmt(Number(input.value))); input.setAttribute("aria-valuetext", fmt(Number(input.value))); };
   input.oninput = () => { paint(); save({ [key]: Number(input.value) }); };
   paint();
   return h("div", { className: "ds-slider" },

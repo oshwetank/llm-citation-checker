@@ -7960,7 +7960,7 @@ function renderCampaignSetup(profile, dis) {
       el("span", { className: "cs-measure-icon" }, glyphEl(glyph, 18)),
       el("span", { className: "cs-measure-text" }, el("span", { className: "cs-measure-name" }, label), el("span", { className: "cs-measure-sub" }, sub)), tag);
     b.dataset.value = id;
-    if (!dis && !fixed) b.onclick = () => { const v = b.getAttribute("aria-pressed") !== "true"; b.setAttribute("aria-pressed", String(v)); tag.textContent = v ? "On" : "Off"; changed(); };
+    if (!dis && !fixed) b.onclick = () => { const v = b.getAttribute("aria-pressed") !== "true"; b.setAttribute("aria-pressed", String(v)); tag.textContent = tr(v ? "On" : "Off"); changed(); };
     msGrid.append(b);
   });
   msGroup.append(msGrid);
@@ -8083,7 +8083,7 @@ function renderCampaignSetup(profile, dis) {
     };
     const missing = SETUP_REQUIRED.filter((r) => !ok[r.key]);
     titleText.textContent = v.name.trim() || "New campaign";
-    engCount.textContent = `${v.engines.length} of ${ENGINES.length} selected.`;
+    engCount.textContent = tr(`${v.engines.length} of ${ENGINES.length} selected.`);
     if (dis || locked) return missing;
 
     const attempted = setupAttemptedFor === profile.id;
@@ -8091,7 +8091,7 @@ function renderCampaignSetup(profile, dis) {
       const state = ok[r.key] ? "done" : attempted ? "bad" : "todo";
       const b = reqButtons[r.key];
       b.dataset.state = state;
-      b.setAttribute("aria-label", `${r.label}: ${state === "done" ? "done" : "still needed"}`);
+      b.setAttribute("aria-label", `${tr(r.label)}: ${tr(state === "done" ? "done" : "still needed")}`);
       b.querySelector(".cs-req-icon").replaceChildren(setupIcon(state === "done" ? "check" : state === "bad" ? "alert" : "todo", 13, state === "done" ? 3 : 2.2));
       segs.children[i].dataset.state = state;
       root.querySelectorAll(`.cs-pill[data-pill="${r.key}"]`).forEach((p) => p.classList.toggle("is-bad", state === "bad"));
@@ -8104,8 +8104,9 @@ function renderCampaignSetup(profile, dis) {
     const text = !missing.length ? `All ${n} required items done`
       : attempted ? `${missing.length} required item${missing.length === 1 ? "" : "s"} missing`
       : `${n - missing.length} of ${n} required items done`;
-    progText.textContent = text;
-    checkText.textContent = text;
+    // Set after the page was drawn, so not through el(): tr() here (0.84.2).
+    progText.textContent = tr(text);
+    checkText.textContent = tr(text);
     bar.dataset.state = !missing.length ? "ready" : attempted ? "bad" : "todo";
     nextBtn.hidden = !missing.length;
     if (missing.length) {
@@ -9241,10 +9242,10 @@ function paintCaptureToggle(paused) {
   if (!b) return;
   b.setAttribute("aria-checked", String(!paused));
   b.classList.toggle("paused", !!paused);
-  b.querySelector(".cap-label").textContent = paused ? "Paused" : "Capturing";
-  b.title = paused
+  b.querySelector(".cap-label").textContent = tr(paused ? "Paused" : "Capturing");
+  b.title = tr(paused
     ? "Capture is paused: nothing from ChatGPT, Gemini, Perplexity or Grok is being kept. A campaign run still records its own tabs. Click to capture again."
-    : "Capturing your engine chats. Click to pause.";
+    : "Capturing your engine chats. Click to pause.");
   document.body.classList.toggle("capture-paused", !!paused);
 }
 $("#capToggle")?.addEventListener("click", async () => {
@@ -10639,7 +10640,7 @@ function abTermBody(t) {
 function renderAboutGlossary() {
   const v = glossaryView(glossaryEntries(), { query: abGlossQuery, group: abGlossGroup });
   const count = $("#abGlossCount");
-  if (count) count.textContent = `${v.total} terms`;
+  if (count) count.textContent = tr(`${v.total} terms`);
   const inp = $("#abGlossSearch");
   if (inp && inp.value !== abGlossQuery) inp.value = abGlossQuery;
   const chips = $("#abGlossChips");
@@ -10704,13 +10705,13 @@ function updateSettingsStatus() {
   const status = $("#setStatus");
   if (!status || !abSaved) return;
   const st = settingsState(abSaved, abDraft(), { justSaved: abJustSaved });
-  status.textContent = st.status;
+  status.textContent = tr(st.status);
   status.className = `ab-status ${st.tone}`;
   $("#setUndo").disabled = !st.dirty;
   $("#setSave").disabled = !st.dirty;
-  $("#setDebugText").textContent = $("#setDebug").checked ? "On" : "Off";
-  if ($("#setPagesText")) $("#setPagesText").textContent = $("#setPages").checked ? "On" : "Off";
-  if ($("#setHandoffKeepText")) $("#setHandoffKeepText").textContent = $("#setHandoffKeep").checked ? "On" : "Off";
+  $("#setDebugText").textContent = tr($("#setDebug").checked ? "On" : "Off");
+  if ($("#setPagesText")) $("#setPagesText").textContent = tr($("#setPages").checked ? "On" : "Off");
+  if ($("#setHandoffKeepText")) $("#setHandoffKeepText").textContent = tr($("#setHandoffKeep").checked ? "On" : "Off");
 }
 async function loadSettings() {
   const r = await send({ type: "settings-get" });
@@ -10754,7 +10755,7 @@ $("#setUndo")?.addEventListener("click", () => { if (abSaved) { abFillSettings(a
 $("#setSave")?.addEventListener("click", async () => {
   const patch = abDraft();
   const r = await send({ type: "settings-set", patch });
-  if (!r || !r.ok) { $("#setStatus").textContent = "Couldn't save the settings."; $("#setStatus").className = "ab-status warn"; return; }
+  if (!r || !r.ok) { $("#setStatus").textContent = tr("Couldn't save the settings."); $("#setStatus").className = "ab-status warn"; return; }
   abSaved = patch;
   abJustSaved = true;
   abFillSettings(patch);
@@ -11329,10 +11330,10 @@ async function refreshDemoControls() {
   abDemo = st;
   const present = !!(st && st.ok && st.present);
   const btn = $("#demoToggle");
-  if (btn) btn.textContent = present ? "Remove sample" : "Load sample";
+  if (btn) btn.textContent = tr(present ? "Remove sample" : "Load sample");
   const chip = $("#demoStatus");
   if (chip) {
-    chip.textContent = present ? "Loaded" : "Not loaded";
+    chip.textContent = tr(present ? "Loaded" : "Not loaded");
     chip.className = `ab-chip${present ? " on" : ""}`;
   }
   if (abCurrent() === "home" && $("#about")?.classList.contains("active")) renderAboutHome();
@@ -11367,7 +11368,7 @@ async function renderEmailSetting() {
     rm.hidden = false;
   } else {
     input.value = "";
-    state.textContent = got && got.skipped ? "Not given. Without it you won't hear about new features and fixes." : "Only for news about CitoSkeleton's updates and offers. Never shared with anyone else.";
+    state.textContent = tr(got && got.skipped ? "Not given. Without it you won't hear about new features and fixes." : "Only for news about CitoSkeleton's updates and offers. Never shared with anyone else.");
     rm.hidden = true;
   }
   msg.textContent = "";
@@ -11516,7 +11517,7 @@ function syncOverflowEdges(root = document) {
       const pct = p && p.pct != null ? Math.max(0, Math.min(100, Math.round(p.pct))) : null;
       chip.querySelector(".model-dl-pct").textContent = pct == null ? "…" : `${pct}%`;
       chip.style.setProperty("--pct", String(pct || 0));
-      chip.setAttribute("aria-label", `Downloading ${s && s.downloading ? "Ask's AI model" : "Fast labels"}${pct == null ? "" : `, ${pct}%`}`);
+      chip.setAttribute("aria-label", `${tr(`Downloading ${s && s.downloading ? "Ask's AI model" : "Fast labels"}`)}${pct == null ? "" : `, ${pct}%`}`);
     }
     if (busy) t = setTimeout(tick, 1500);
   };
