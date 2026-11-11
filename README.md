@@ -14,12 +14,19 @@ Hugging Face; and, once accounts are switched on, when you sign in, share a camp
 code, open a code, or leave an email for updates. Nothing you capture ever leaves your
 device unless you choose to share that campaign: the AI runs on your computer.
 
-> **v0.84.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.84.1** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **Safety fixes before release** (0.84.1). From a security review of the whole extension; nothing was found being misused.
+>   - **Shared campaigns are checked on import.** A campaign file or share code from someone else is no longer trusted as it comes: any link in it that isn't a normal web address is removed, and a damaged answer can't break the export. A file made to unpack into gigabytes is refused.
+>   - **Saved reports are locked down.** The HTML report you save can show pictures and print itself, and nothing else: no script from the text in it can run.
+>   - **Read the cited pages only reads public sites.** Addresses on your own computer or home/office network (localhost, 192.168.x.x, a router) are skipped. Opening a page in a hidden tab, which uses your own sign-ins, now happens only when you press Read pages on an answer yourself, not automatically.
+>   - **Continue in… checks the site.** Your data is typed only into the AI site you chose; if the tab was sent somewhere else, nothing is typed.
+>   - **Engine pages can only send captures.** The scripts inside ChatGPT, Gemini, Perplexity and Grok pages can hand over an answer; they can no longer ask the extension for stored data or to delete it.
+>   - **Chrome 111 or newer.** Older versions installed the extension but captured nothing, without saying so; they are now told it needs an update.
 > - **Models as switches, and capture that holds when a site changes** (0.84.0).
 >   - **Models in Ask.** Ask → Models on this computer: one switch for the AI model and one for Laya. On downloads it; off stops a download or removes the model. The popup has Ask too. The download's progress shows in the app bar.
 >   - **Uninstalling removes them.** The models are kept in the extension's own storage, which Chrome deletes with the extension. Gemini Nano is Chrome's own and stays.

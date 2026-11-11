@@ -52,6 +52,12 @@ async function main() {
   const html = renderStandaloneHtml(models, { withPrintBar: true });
 
   const parsed = new DOMParser().parseFromString(html, "text/html");
+  // The saved file carries its own content policy (exportDoc.js, EXPORT_CSP),
+  // written for a page opened from disk. This page is the extension's and
+  // already runs under the stricter one in the manifest; copied in here, the
+  // file's policy would also apply and stop this page's own work, so it is
+  // left out of the copy.
+  parsed.head.querySelectorAll("meta[http-equiv]").forEach((m) => m.remove());
   document.title = parsed.title;
   document.head.innerHTML = parsed.head.innerHTML;
   document.body.innerHTML = parsed.body.innerHTML;

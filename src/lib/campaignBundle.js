@@ -14,6 +14,7 @@
  * overwriting anything. The links between them are kept.
  */
 import { gzipString, gunzipToString } from "./gzip.js";
+import { scrubUrls } from "./safeUrl.js";
 
 export const BUNDLE_FORMAT = "citoskeleton-campaign";
 export const BUNDLE_VERSION = 1;
@@ -21,6 +22,10 @@ export const BUNDLE_VERSION = 1;
 // with their raw captures.
 export const MAX_BUNDLE_BYTES = 25 * 1024 * 1024;
 export const BUNDLE_EXT = ".cito";
+// The most a campaign file may unpack to. Answers and settings pack about
+// 10 to 1 and the raw captures inside are already packed, so a real 25 MB
+// file stays well under this; see gunzipToString for why there is a limit.
+export const MAX_UNPACKED_BYTES = 16 * MAX_BUNDLE_BYTES;
 
 // ArrayBuffer ↔ base64 without Buffer, so it runs in the worker and in Node.
 export function bufToB64(buf) {
@@ -80,7 +85,7 @@ export async function decodeBundle(buf) {
   let text;
   const bytes = new Uint8Array(buf instanceof ArrayBuffer ? buf : buf.buffer || buf);
   if (bytes.byteLength > MAX_BUNDLE_BYTES * 8) throw new Error("This file is too large to be a campaign.");
-  if (bytes[0] === 0x1f && bytes[1] === 0x8b) text = await gunzipToString(bytes);
+  if (bytes[0] === 0x1f && bytes[1] === 0x8b) text = await gunzipToString(bytes, MAX_UNPACKED_BYTES);
   else text = new TextDecoder().decode(bytes);
   let obj;
   try { obj = JSON.parse(text); } catch (_) { throw new Error("This isn't a CitoSkeleton campaign file."); }
@@ -96,9 +101,41 @@ export function checkBundle(obj) {
   return obj;
 }
 
+/*
+ * A record as the views expect it, whatever the file held (0.84.1).
+ *
+ * A campaign file is someone else's data. Records made here go through
+ * schema.js (http(s) addresses only, known shapes); an imported one was
+ * stored exactly as it came. In the 10 Nov 2026 audit a record whose source
+ * address was "javascript:alert(document.domain)" survived import and came
+ * out as a link in the exported HTML report, and one with no fan-out lists
+ * crashed that export ("Cannot read properties of undefined"). So: every
+ * address field that isn't http(s) is blanked (lib/safeUrl.js), and the
+ * lists every view reads are lists.
+ */
+const listOf = (v) => (Array.isArray(v) ? v.filter((x) => x && typeof x === "object") : []);
+export function cleanImportedRecord(r) {
+  const rec = JSON.parse(JSON.stringify(r)); // our own copy, plain data only
+  scrubUrls(rec);
+  rec.sources = listOf(rec.sources);
+  const f = rec.fanout && typeof rec.fanout === "object" && !Array.isArray(rec.fanout) ? rec.fanout : {};
+  rec.fanout = { ...f, search: listOf(f.search), shopping: listOf(f.shopping), image: listOf(f.image) };
+  for (const k of ["products", "images", "places", "entities", "brandMentions"]) if (k in rec) rec[k] = listOf(rec[k]);
+  for (const k of ["userPrompt", "answerText", "platform", "model"]) if (rec[k] != null && typeof rec[k] !== "string") rec[k] = String(rec[k]);
+  if (rec.platformSpecific == null || typeof rec.platformSpecific !== "object" || Array.isArray(rec.platformSpecific)) rec.platformSpecific = {};
+  return rec;
+}
+// The setup, prompts and runs: plain data, addresses checked the same way.
+const cleanImported = (o) => { const c = JSON.parse(JSON.stringify(o)); scrubUrls(c); return c; };
+
 // Unpacks with fresh ids. `newId` is injectable for tests.
 export function readBundle(bundle, { newId = () => crypto.randomUUID(), now = Date.now(), name = null } = {}) {
   const b = checkBundle(bundle);
+  b.records = b.records.filter((r) => r && typeof r === "object").map(cleanImportedRecord);
+  b.profile = cleanImported(b.profile);
+  b.prompts = b.prompts.filter((p) => p && typeof p === "object").map(cleanImported);
+  b.runs = b.runs.filter((r) => r && typeof r === "object").map(cleanImported);
+  b.raws = b.raws.filter((r) => r && typeof r === "object");
   const profileId = newId();
   const promptMap = new Map(b.prompts.map((p) => [p.id, newId()]));
   const runMap = new Map(b.runs.map((r) => [r.id, newId()]));
