@@ -110,6 +110,11 @@ for (const code of ["es", "pt-BR", "fr", "hi", "ar"]) {
   const templates = new Set();
   for (const m of code.matchAll(/fmt\("((?:[^"\\]|\\.)+)"(?:, \{[^}]*\}(?:, "((?:[^"\\]|\\.)+)")?)?/g)) { templates.add(m[1].replace(/\\"/g, '"')); if (m[2]) templates.add(m[2].replace(/\\"/g, '"')); }
   check("the code fills in templates through fmt()", templates.size >= 50, String(templates.size));
+  // A local fmt in one function shadowed the import and threw "Cannot access
+  // 'fmt' before initialization" on a competitor's page (caught by
+  // full-audit and campaign-drilldown before 0.84.3 shipped).
+  const shadow = [...code.matchAll(/\b(?:const|let|var|function)\s+(fmt|tr|dateLocale)\b/g)].map((m) => m[1]);
+  check("nothing in them declares its own fmt, tr or dateLocale", shadow.length === 0, shadow.join(", "));
   for (const lang of ["es", "pt-BR", "fr", "hi", "ar"]) {
     const missing = [...templates].filter((t) => !(t in dicts[lang]));
     check(`${lang}: has a translation for each of them`, missing.length === 0, missing.slice(0, 4).join(" | "));

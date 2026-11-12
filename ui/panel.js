@@ -579,16 +579,16 @@ function showTooltip(target) {
   tip.style.display = "block";
   tip.style.visibility = "hidden";
   const r = target.getBoundingClientRect();
-  const tr = tip.getBoundingClientRect();
-  let left = r.left + r.width / 2 - tr.width / 2;
-  left = Math.max(8, Math.min(left, window.innerWidth - tr.width - 8));
-  let top = r.top - tr.height - 9;
+  const tipRect = tip.getBoundingClientRect();
+  let left = r.left + r.width / 2 - tipRect.width / 2;
+  left = Math.max(8, Math.min(left, window.innerWidth - tipRect.width - 8));
+  let top = r.top - tipRect.height - 9;
   let placement = "top";
   if (top < 4) { top = r.bottom + 9; placement = "bottom"; }
   tip.style.left = `${Math.round(left)}px`;
   tip.style.top = `${Math.round(top + window.scrollY)}px`;
   tip.dataset.placement = placement;
-  const arrowX = Math.max(12, Math.min(r.left + r.width / 2 - left, tr.width - 12));
+  const arrowX = Math.max(12, Math.min(r.left + r.width / 2 - left, tipRect.width - 12));
   tip.style.setProperty("--tip-arrow-x", `${Math.round(arrowX)}px`);
   tip.style.visibility = "visible";
   tip.classList.add("show");
@@ -1714,14 +1714,14 @@ function renderAnalyzePopup(rec, root) {
       const sub = [...models, ...aspects].join(" · ");
       const ch = r.change;
       const chText = !ch ? "—" : ch.kind === "added" ? "New" : ch.kind === "same" ? "= Same" : ch.kind === "up" ? `↑ from ${apOrd(ch.from)}` : `↓ from ${apOrd(ch.from)}`;
-      const tr = el("div", { className: `ap-tr${r.isYou ? " mine" : ""}${r.shownOnly ? " shown-only" : ""}`, role: "row", title: `${r.backing.label}${r.backing.readOnly ? ` · also in ${r.backing.readOnly} page(s) read but not cited` : ""}` },
+      const rowEl = el("div", { className: `ap-tr${r.isYou ? " mine" : ""}${r.shownOnly ? " shown-only" : ""}`, role: "row", title: `${r.backing.label}${r.backing.readOnly ? ` · also in ${r.backing.readOnly} page(s) read but not cited` : ""}` },
         el("span", { role: "cell", className: `ap-rank${r.position === 1 ? " first" : ""}` }, r.position ? String(r.position) : "–"),
         el("span", { role: "cell", className: "ap-brand-cell" },
           el("span", { className: "ap-brand-name" }, r.name + (r.isYou ? " · you" : "")),
           sub ? el("span", { className: "ap-brand-sub" }, sub) : null),
         el("span", { role: "cell", className: "num" }, r.shownOnly ? "card only" : `×${r.count}`),
         brands.hasPrevious ? el("span", { role: "cell", className: `ap-change ch-${ch ? ch.kind : "none"}` }, chText) : null);
-      table.append(tr);
+      table.append(rowEl);
     });
     brands.dropped.forEach((d) => {
       table.append(el("div", { className: "ap-tr dropped", role: "row", title: "Named last time, missing from this answer" },
@@ -4733,10 +4733,10 @@ function renderAnalyzeLegacy(rec, root) {
       const t = el("table", { className: "summary-table" });
       t.append(el("tr", {}, el("th", {}, "Link type"), el("th", { className: "num" }, "Count")));
       rows.forEach(([k, v, targetId]) => {
-        const tr = el("tr", { className: "summary-row", title: `Click to jump to ${k}` });
-        tr.append(el("td", {}, k), el("td", { className: "num" }, String(v)));
-        tr.onclick = () => scrollToCard(targetId);
-        t.append(tr);
+        const rowEl = el("tr", { className: "summary-row", title: `Click to jump to ${k}` });
+        rowEl.append(el("td", {}, k), el("td", { className: "num" }, String(v)));
+        rowEl.onclick = () => scrollToCard(targetId);
+        t.append(rowEl);
       });
       // Total Row
       const totalRow = el("tr", { style: "font-weight:600; border-top:1px solid var(--border);" },
@@ -7239,12 +7239,12 @@ async function renderCampaignBrandDetail(box, profile) {
       el("span", { className: `cb-tag${d.them.auto ? " found auto-tag" : ""}` }, d.them.auto ? "found by us" : "competitor"),
       others),
     el("span", { className: "muted small cb-detail-scope" }, `${r.answers} answers · ${r.runLabel}`));
-  const fmt = (k, v) => (v == null ? "—" : k.unit === "%" ? `${Math.round(v)}%` : k.unit === "rank" ? v.toFixed(1) : String(v));
+  const fmtVal = (k, v) => (v == null ? "—" : k.unit === "%" ? `${Math.round(v)}%` : k.unit === "rank" ? v.toFixed(1) : String(v));
   const kp = el("div", { className: "cb-vs" });
   d.kpis.forEach((k) => kp.append(el("div", { className: "cb-vs-kpi" },
     el("div", { className: "k-label", ...(CB_TERMS[k.label] ? { "data-term": CB_TERMS[k.label] } : {}) }, k.label),
-    el("div", { className: "k-value" }, fmt(k, k.them)),
-    el("div", { className: `k-sub${k.better === "them" ? " t-bad" : ""}` }, `${you} ${fmt(k, k.you)}${k.better === "them" ? ` · ${them} ahead` : ""}`))));
+    el("div", { className: "k-value" }, fmtVal(k, k.them)),
+    el("div", { className: `k-sub${k.better === "them" ? " t-bad" : ""}` }, `${you} ${fmtVal(k, k.you)}${k.better === "them" ? ` · ${them} ahead` : ""}`))));
   head.append(kp);
   box.append(head);
 
@@ -11044,7 +11044,7 @@ function renderCompare() {
 
   const caps = timeline.captures;
   const points = caps.map((r) => ({ rec: r, ...pointAggregate(r) }));
-  const fmt = (t) => new Date(t).toLocaleString(dateLocale(), { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const fmtAt = (t) => new Date(t).toLocaleString(dateLocale(), { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
   const engineName = (id) => ENGINES.find((e) => e.id === id)?.label || id;
 
   // --- the canvas's Over time board (0.60.0): the movement itself ---
@@ -11081,20 +11081,20 @@ function renderCompare() {
     const hr = el("tr", {}, el("th", {}, opts.nameHeader || "Name"));
     caps.forEach((r, i) => hr.append(el("th", {
       className: "num cmp-col",
-      title: `${fmt(r.capturedAt)} · ${engineName(r.platform)}`,
+      title: `${fmtAt(r.capturedAt)} · ${engineName(r.platform)}`,
     }, engineIconEl(r.platform), String(i + 1))));
     hr.append(el("th", { className: "num", title: "How many of the runs this appeared in" }, "Seen"));
     hr.append(el("th", { className: "num" }, "Trend"));
     t.append(hr);
     rows.forEach((row) => {
-      const tr = el("tr", {});
-      tr.append(el("td", { title: row.name }, row.name));
+      const rowEl = el("tr", {});
+      rowEl.append(el("td", { title: row.name }, row.name));
       row.values.forEach((v) => {
-        tr.append(el("td", { className: `num${v.n ? "" : " cmp-absent"}` }, v.label));
+        rowEl.append(el("td", { className: `num${v.n ? "" : " cmp-absent"}` }, v.label));
       });
-      tr.append(el("td", { className: "num" }, stabilityTag(row.values.filter((v) => v.n > 0 || v.label !== "—").length, caps.length)));
-      tr.append(el("td", { className: "num" }, deltaTag(row.delta)));
-      t.append(tr);
+      rowEl.append(el("td", { className: "num" }, stabilityTag(row.values.filter((v) => v.n > 0 || v.label !== "—").length, caps.length)));
+      rowEl.append(el("td", { className: "num" }, deltaTag(row.delta)));
+      t.append(rowEl);
     });
     card.append(el("div", { className: "drill-scroll" }, t));
     return card;

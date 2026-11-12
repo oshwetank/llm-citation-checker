@@ -48,8 +48,15 @@ export const AUTH_COOKIES = {
     label: "Gemini",
     loginUrl: "https://accounts.google.com/ServiceLogin?continue=https://gemini.google.com/app",
     // Gemini rides the shared Google account session, which lives on the
-    // parent google.com domain rather than gemini.google.com itself.
-    domains: ["google.com", "gemini.google.com"],
+    // parent google.com domain rather than gemini.google.com itself. It is
+    // read by the page's address (1.0.0): the cookies Chrome would send to
+    // gemini.google.com include google.com's, and that needs access to
+    // gemini.google.com only. Asking by domain needed access to all of
+    // google.com, a permission whose addition would have switched the
+    // extension off for every 0.36 user until they approved it, and one the
+    // store reviews closely next to "cookies".
+    domains: [],
+    urls: ["https://gemini.google.com/"],
     names: ["__Secure-1PSID", "__Secure-3PSID", "SID", "SSID"],
   },
   perplexity: {
@@ -81,10 +88,12 @@ export async function checkEngineAuth(engine, getAll) {
 
   let any = 0;
   let matched = false;
-  for (const domain of spec.domains) {
+  // By domain, or by a page's address (the cookies Chrome would send there).
+  const queries = [...(spec.domains || []).map((domain) => ({ domain })), ...(spec.urls || []).map((url) => ({ url }))];
+  for (const q of queries) {
     let cookies = [];
     try {
-      cookies = (await getAll({ domain })) || [];
+      cookies = (await getAll(q)) || [];
     } catch (_) {
       // A thrown getAll (permission missing, API unavailable) must never be
       // read as "logged out" — that would block a run over a problem on OUR

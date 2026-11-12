@@ -24,7 +24,7 @@ const check = (label, cond, detail) => {
 };
 
 // Fake chrome.cookies.getAll over a { domain: [ {name,value}, ... ] } map.
-const fakeGetAll = (byDomain) => async ({ domain }) => byDomain[domain] || [];
+const fakeGetAll = (byDomain) => async ({ domain, url }) => byDomain[domain || url] || [];
 
 console.log("\nauth-check: per-engine detection");
 
@@ -54,10 +54,15 @@ console.log("\nauth-check: per-engine detection");
   // Gemini rides the shared Google session on the PARENT domain, not on
   // gemini.google.com — a check that only looked at the engine's own host
   // would report every signed-in Gemini user as signed out.
+  // Read by gemini.google.com's address (1.0.0): Chrome returns the cookies
+  // it would send there, google.com's included, with no google.com access.
   const g = await checkEngineAuth("gemini", fakeGetAll({
-    "google.com": [{ name: "__Secure-1PSID", value: "tok" }],
+    "https://gemini.google.com/": [{ name: "__Secure-1PSID", value: "tok" }],
   }));
-  check("gemini is detected via the parent google.com session cookie", g.status === "in", g.status);
+  check("gemini is detected via the Google session cookie sent to gemini.google.com", g.status === "in", g.status);
+  const asked = [];
+  await checkEngineAuth("gemini", async (q) => { asked.push(q); return []; });
+  check("and it never asks about google.com itself (no permission for it)", asked.every((q) => !q.domain && q.url && new URL(q.url).hostname === "gemini.google.com"), JSON.stringify(asked));
 }
 
 {
@@ -73,7 +78,7 @@ console.log("\nauth-check: whole-run gate");
 {
   const cookies = fakeGetAll({
     "chatgpt.com": [{ name: "__Secure-next-auth.session-token", value: "a" }],
-    "google.com": [{ name: "__Secure-1PSID", value: "b" }],
+    "https://gemini.google.com/": [{ name: "__Secure-1PSID", value: "b" }],
     // perplexity.ai deliberately absent -> confidently signed out
   });
 
@@ -103,7 +108,7 @@ console.log("\nauth-check: registry sanity");
   check("every supported engine has an auth spec", ["chatgpt", "gemini", "perplexity", "grok"].every((e) => ids.includes(e)), ids.join(","));
   const bad = ids.filter((k) => {
     const s = AUTH_COOKIES[k];
-    return !s.label || !s.loginUrl || !Array.isArray(s.domains) || !s.domains.length || !Array.isArray(s.names) || !s.names.length;
+    return !s.label || !s.loginUrl || !((Array.isArray(s.domains) && s.domains.length) || (Array.isArray(s.urls) && s.urls.length)) || !Array.isArray(s.names) || !s.names.length;
   });
   check("every spec has a label, login URL, domains and cookie names", bad.length === 0, bad.join(","));
   // The login URLs double as an allowlist for the background's "open-url"
