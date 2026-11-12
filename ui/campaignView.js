@@ -11,6 +11,7 @@
  */
 import { brandSlug, siteSlug, markSvg } from "../src/lib/logos.js";
 import { fmt, tr } from "./i18n.js";
+import { campaignAdvice, margin, sureness } from "../src/lib/onboarding.js";
 
 let D = null;           // { el, engineIcon, openCapture, openDomain, openFullCompare, runHistory }
 let V = null;           // the view (src/lib/campaignView.js)
@@ -186,6 +187,26 @@ function overviewSec() {
       h("div", { className: "cv-kpi-v" }, k.value == null ? "—" : String(k.value), h("span", { className: "cv-kpi-u" }, k.id === "responses" ? ` / ${k.of}` : k.unit)),
       delta(k.id), rows));
   }
+  // How sure the headline numbers are (1.0.0, lib/onboarding.js): AI answers
+  // vary from run to run, so a share is shown with the answers it rests on
+  // and how far it could move by chance.
+  const visK = o.kpis.find((k) => k.id === "vis");
+  const sure = sureness(o.answered);
+  const m = visK && visK.value != null ? margin(visK.value, o.answered) : null;
+  const sureLine = m == null ? null : h("p", { className: `cv-sure s-${sure}` },
+    fmt("Based on {n} answers: a share could be about {m} points either way by chance.", { n: o.answered, m: Math.round(m) }, "Based on {n} answer: a share could be about {m} points either way by chance."),
+    sure === "few" ? h("b", {}, ` ${tr("Too few to trust small changes.")}`) : "");
+  // What to do next, from the campaign's own numbers.
+  const rival = (V.brands.all || []).filter((r) => !r.isOwn && r.vis != null).sort((a, b) => b.vis - a.vis)[0] || null;
+  const advice = campaignAdvice({
+    brand: V.own, answered: o.answered, ownVis: visK ? visK.value : null,
+    rival: rival ? { name: rival.name, vis: rival.vis } : null,
+    ownSiteCitations: V.citations ? V.citations.ownSite : null,
+    gaps: V.signals && V.signals.gaps ? V.signals.gaps.length : null,
+  });
+  const adviceCard = advice.length ? card("cv-advice", h("h4", { className: "cv-h4" }, "What to do next"),
+    h("ul", { className: "cv-advice-list" }, ...advice.map((a) => h("li", {}, h("span", {}, fmt(a.template, a.vars, a.one || null)),
+      a.go && SECTION_FN[a.go] ? h("button", { type: "button", className: "cv-link", onclick: () => goSection(a.go) }, "Show me ›") : "")))) : null;
   const notes = h("div", { className: "cv-notes" });
   o.engines.filter((e) => e.sent && e.answered < e.sent).forEach((e) => notes.append(h("div", { className: "cv-note" }, engineMark(e.id, "s"),
     h("span", {}, h("b", {}, `${e.label}: ${e.answered} of ${e.sent} answered. `), e.limited ? "It hit its usage limit; the numbers below leave it out." : "Prompts without an answer are left out of the numbers."))));
@@ -209,7 +230,7 @@ function overviewSec() {
     rows.forEach((r) => c.append(h("div", { className: `cv-bl${r.isOwn ? " you" : ""}` }, brandMark(r.name, "s"), h("span", { className: "cv-ell" }, r.name), bar(r.sov * 100 / max, r.isOwn ? "var(--you)" : "var(--cv-dim)"), h("span", { className: "cv-num" }, pct(r.sov)))));
     mult.append(c);
   });
-  return section("cv-overview", fmt("{brand} in this run", { brand: V.own }), `${o.answered} answers from ${o.sent} prompts sent`, notes, kpis,
+  return section("cv-overview", fmt("{brand} in this run", { brand: V.own }), `${o.answered} answers from ${o.sent} prompts sent`, notes, kpis, sureLine, adviceCard,
     card("", h("h4", { className: "cv-h4" }, "By engine"), h("div", { className: "cv-scroll" }, t)),
     h("h4", { className: "cv-h4" }, "Share of voice, engine by engine"), mult);
 }

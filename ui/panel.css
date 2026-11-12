@@ -7525,3 +7525,32 @@ body.popup .cap-toggle { min-block-size: 26px; min-inline-size: 32px; justify-co
 .missed-btns { display: flex; gap: 6px; align-items: center; }
 .missed-x { inline-size: 28px; block-size: 28px; border: 0; border-radius: 8px; background: transparent; color: var(--fg-muted); font-size: 18px; line-height: 1; }
 .missed-x:hover { background: var(--bg-subtle); color: var(--fg-primary); }
+
+/* Get started (1.0.0): five steps at the top of the Dashboard. */
+.gs { margin-block-end: 12px; }
+.gs-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-block-end: 8px; }
+.gs-title { font-size: 15px; }
+.gs-count { color: var(--fg-muted); font-size: 12.5px; }
+.gs-sp { flex: 1; }
+.gs-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.gs-step { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-raised); }
+.gs-step.done { opacity: 0.7; }
+.gs-step.done b { text-decoration: line-through; text-decoration-color: var(--fg-muted); font-weight: 500; }
+.gs-step.next { border-color: var(--accent); }
+.gs-tick { flex: none; inline-size: 24px; block-size: 24px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 600; border: 1px solid var(--border); background: var(--surface-solid); color: var(--fg-secondary); }
+.gs-step.done .gs-tick { background: var(--accent); border-color: var(--accent); color: #fff; }
+.gs-text { flex: 1; min-inline-size: 0; display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.gs-hint { color: var(--fg-muted); font-size: 12.5px; line-height: 1.4; }
+.gs-go { flex: none; text-decoration: none; }
+
+/* How sure, and what to do next (1.0.0). */
+.cv-sure { margin: 8px 2px 0; font-size: 12.5px; color: var(--fg-muted); }
+.cv-sure.s-few b { color: #b45309; font-weight: 600; }
+.cv-advice { margin-block-start: 12px; }
+.cv-advice-list { margin: 6px 0 0; padding-inline-start: 18px; display: grid; gap: 8px; font-size: 13.5px; line-height: 1.45; }
+.cv-advice-list li { padding-inline-start: 2px; }
+.cv-advice-list .cv-link { margin-inline-start: 6px; white-space: nowrap; }
+
+/* Prompts to start from (1.0.0). */
+.cs-examples { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-block-end: 8px; }
+.cs-example-cat { flex: 1 1 200px; min-inline-size: 160px; }

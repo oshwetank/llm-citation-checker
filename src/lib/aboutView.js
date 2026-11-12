@@ -20,6 +20,7 @@ export const ABOUT_STEPS = [
 
 /** What's new — the redesign, newest first. */
 export const ABOUT_NEWS = [
+  { head: "Help to get going.", body: "Get started on the Dashboard, About → Help & FAQ, example prompts when you set up a campaign, and what to do next on each campaign's results." },
   { head: "Every page in your language.", body: "Spanish, Portuguese (Brazil), French, Hindi and Arabic now cover the campaign results too, with dates in your language. About → Settings → Language." },
   { head: "Safer to share.", body: "A campaign file from someone else is checked as it's imported, and a saved HTML report shows pictures and prints, and does nothing else." },
   { head: "Models are switches, in Ask.", body: "Ask → Models on this computer: flip one on to download it, off to remove it. Uninstalling CitoSkeleton removes them too." },

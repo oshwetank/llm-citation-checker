@@ -364,6 +364,9 @@ async function importCampaignBundle(bundle, { from = "" } = {}) {
 chrome.runtime.onInstalled.addListener((details) => {
   if (details && details.reason === "update") repairOnce().catch((e) => logErr("repair", e));
   syncSignup();
+  // The version updated from (1.0.0): the guide starts with what changed for
+  // people coming from before the redesign (ui/welcome.js).
+  if (details && details.reason === "update" && details.previousVersion) chrome.storage.local.set({ citoUpdatedFrom: details.previousVersion }).catch(() => {});
   if (details && (details.reason === "install" || details.reason === "update")) openWelcomeOnce();
   chrome.tabs.query({ url: AI_TAB_MATCHES }, (tabs) => {
     for (const t of tabs || []) {

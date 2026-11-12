@@ -31,6 +31,7 @@ import { answersToPrompt, compareView } from "../src/lib/compareView.js";
 import { overTimeView } from "../src/lib/overTimeView.js";
 import { historyRows, historyView, highlightRuns, dayDiff, shortDate, PERIODS, KINDS, ENGINE_ORDER, rangeLabel, setDateLocale } from "../src/lib/historyView.js";
 import { loadLang, chosenLang, tr, fmt, dateLocale, translatePage, uiLang, LANGS, LANG_KEY } from "./i18n.js";
+import { checklist, examplePrompts } from "../src/lib/onboarding.js";
 import { extractBrandAspects } from "../src/lib/aspects.js";
 import { siteKindOf } from "../src/lib/siteKind.js";
 import { renderCampaignView, CV_SECTIONS, sectionCounts, resetCampaignViewState } from "./campaignView.js";
@@ -1455,6 +1456,7 @@ function apPill(text, tone, title) {
 }
 
 function renderAnalyzePopup(rec, root) {
+  if (rec && !abIsDemo(rec)) gsMark("analyzed"); // Get started (1.0.0)
   const knownBrands = knownVendors(rec);
   const own = ownBrandFor(rec, GEO_PROFILES);
   const previous = findPrevious(rec, ALL_RECORDS);
@@ -2161,6 +2163,7 @@ function atSection(id, title, count, extra) {
 function atEngineLabel(id) { return ENGINES.find((e) => e.id === id)?.label || id || "Unknown engine"; }
 
 function renderAnalyzeTab(rec, root) {
+  if (rec && !abIsDemo(rec)) gsMark("analyzed"); // Get started (1.0.0)
   const knownBrands = knownVendors(rec);
   const own = ownBrandFor(rec, GEO_PROFILES);
   const previous = findPrevious(rec, ALL_RECORDS);
@@ -5852,6 +5855,47 @@ function dbHistoryRows() {
   return dbRowsCache.rows;
 }
 
+/* Get started (1.0.0, src/lib/onboarding.js). The store's version was 0.36,
+ * a different tool; a person updating, or installing for the first time,
+ * gets five steps from a first answer to a campaign's results, at the top
+ * of the Dashboard. Each is ticked off by what they have done, and the card
+ * goes once all five are, or when they hide it. */
+const GS_KEY = { analyzed: "cito-gs-analyzed", results: "cito-gs-results", hidden: "cito-gs-hidden" };
+const gsGet = (k) => { try { return localStorage.getItem(GS_KEY[k]); } catch (_) { return null; } };
+function gsMark(k) { try { if (!localStorage.getItem(GS_KEY[k])) localStorage.setItem(GS_KEY[k], String(Date.now())); } catch (_) { /* private mode */ } }
+function getStartedCard() {
+  if (gsGet("hidden")) return null;
+  const c = checklist({
+    captured: ALL_RECORDS.some((r) => !abIsDemo(r)),
+    analyzed: !!gsGet("analyzed"),
+    campaigns: GEO_PROFILES.length,
+    ran: GEO_PROFILES.some((p) => p.lastRunAt),
+    sawResults: !!gsGet("results"),
+  });
+  if (c.complete) return null;
+  const list = el("ol", { className: "gs-list" });
+  c.steps.forEach((s, i) => {
+    const isNext = c.next && c.next.id === s.id;
+    let go = null;
+    if (!s.done && isNext) {
+      go = s.go === "engine"
+        ? el("a", { className: "btn sm primary gs-go", href: "https://chatgpt.com/", target: "_blank", rel: "noopener noreferrer" }, "Open ChatGPT")
+        : el("button", { type: "button", className: "btn sm primary gs-go", onclick: () => showTab(s.go) }, "Go there");
+    }
+    list.append(el("li", { className: `gs-step${s.done ? " done" : ""}${isNext ? " next" : ""}` },
+      el("span", { className: "gs-tick", "aria-hidden": "true" }, s.done ? "✓" : String(i + 1)),
+      el("div", { className: "gs-text" }, el("b", {}, s.label), isNext ? el("span", { className: "gs-hint" }, s.hint) : null),
+      go));
+  });
+  const hide = el("button", { type: "button", className: "linkbtn gs-hide" }, "Hide");
+  hide.onclick = () => { try { localStorage.setItem(GS_KEY.hidden, "1"); } catch (_) { /* private mode */ } renderDashboard(); };
+  const help = el("a", { className: "linkbtn gs-help", href: chrome.runtime.getURL("ui/help.html"), target: "_blank", rel: "noopener" }, "Help & FAQ");
+  return el("section", { className: "db-card gs", "aria-label": "Get started" },
+    el("div", { className: "gs-head" }, el("b", { className: "gs-title" }, "Get started"),
+      el("span", { className: "gs-count" }, fmt("{done} of {total} done", { done: c.done, total: c.total })), el("span", { className: "gs-sp" }), help, hide),
+    list);
+}
+
 function renderDashboard() { withScrollPreserved(renderDashboardImpl); }
 function dbCodeName(kind, code) {
   try { return new Intl.DisplayNames([navigator.language || "en"], { type: kind }).of(code) || code; } catch (_) { return code; }
@@ -5868,6 +5912,8 @@ function renderDashboardImpl() {
   const wrap = el("div", { className: `db ${popup ? "db-popup" : "db-tab"}` });
   root.append(wrap);
   if (dbPending) root.append(dbToast());
+  const gs = getStartedCard();
+  if (gs) wrap.append(gs);
   if (!all.length) {
     currentFilteredRecs = [];
     wrap.append(el("div", { className: "empty" }, "Nothing captured yet. Ask ChatGPT, Gemini, Perplexity or Grok something in a tab and it shows up here, with the searches it ran and the pages it read."));
@@ -6027,7 +6073,8 @@ function renderDashboardImpl() {
     bars.append(b);
   });
   const t = v.totals;
-  const totalLabel = dbQuery ? `match “${dbQuery.trim()}” ${periodPhrase}` : `prompts captured ${periodPhrase}`;
+  // "1 prompt", not "1 prompts" (1.0.0).
+  const totalLabel = dbQuery ? `match “${dbQuery.trim()}” ${periodPhrase}` : `${t.prompts === 1 ? "prompt" : "prompts"} captured ${periodPhrase}`;
   const span = t.from ? `from ${shortDate(t.from)} to ${dayDiff(Date.now(), t.to) === 0 ? "today" : shortDate(t.to)}` : "nothing here yet";
   if (popup) {
     const sum = el("section", { className: "db-card db-summary", "aria-label": "Summary" },
@@ -7107,6 +7154,7 @@ async function renderCampaignBoard(box, profile) {
     id: x.id, hasAnswers: true, engines: x.engines || [],
     label: `Run ${runsAscAll.findIndex((y) => y.id === x.id) + 1} · ${new Date(x.startedAt).toLocaleDateString(dateLocale(), { day: "numeric", month: "short" })}${(x.engines || []).length ? ` · ${x.engines.map(atEngineLabel).join(", ")}` : ""}`,
   }));
+  if ((r.runs || []).some((x) => x.hasAnswers)) gsMark("results"); // Get started (1.0.0)
   renderCampaignView(box, r.view, {
     el, engineIcon: engineIconEl, openCapture, realOwn: r.ownBrand,
     runs: runsForCompare,
@@ -8377,8 +8425,25 @@ function renderPromptManager(profile, dis, persistDetails) {
         add.disabled = true;
         if (!(await addRows(rows, "Added"))) add.disabled = false;
       };
+      // Prompts to start from (1.0.0, lib/onboarding.js): what you sell, in
+      // your words, and ten questions people ask an AI before they buy, in
+      // the interface's language, with the brand and first competitor in.
+      const cat = el("input", { type: "text", id: "cs-example-cat", className: "cs-input cs-example-cat", placeholder: "What you sell, e.g. running shoes", "aria-label": "What you sell" });
+      const fillBtn = el("button", { type: "button", className: "btn sm" }, "Fill in examples");
+      fillBtn.onclick = () => {
+        const brand = (profile && profile.brand && profile.brand.name) || (document.getElementById("cs-brand") || {}).value || "";
+        const rival = (profile && (profile.competitors || [])[0] && profile.competitors[0].name) || "";
+        const rows = examplePrompts({ category: cat.value, brand: brand.trim(), rival: rival.trim() });
+        if (!rows.length) { cat.focus(); showToast(tr("Type what you sell first, e.g. running shoes."), "info"); return; }
+        const lines = rows.map((r) => `${fmt(r.template, r.vars)} | ${tr(r.tags)}`);
+        ta.value = (ta.value.trim() ? `${ta.value.trim()}\n` : "") + lines.join("\n");
+        ta.dispatchEvent(new Event("input"));
+        ta.focus();
+      };
+      const examples = el("div", { className: "cs-examples" }, el("span", { className: "cs-help" }, "Not sure where to start?"), cat, fillBtn);
       return el("div", { className: "cs-mode-panel" },
         el("label", { htmlFor: "cs-manual", className: "cs-label" }, "Your prompts"),
+        examples,
         ta,
         el("p", { className: "cs-help" }, "One prompt per line. To tag a prompt, add ", el("b", {}, "|"), " then tags separated by commas."),
         el("div", { className: "cs-manual-foot" }, count, add));
@@ -9373,7 +9438,9 @@ initDisplaySettings(document.getElementById("setDisplay"));
   let pref = "auto";
   try { pref = localStorage.getItem(LANG_KEY) || "auto"; } catch (_) { /* storage off */ }
   sel.append(el("option", { value: "auto" }, `${tr("Same as the browser")} (${(LANGS.find(([c]) => c === chosenLang({ getItem: () => "auto" })) || LANGS[0])[1]})`));
-  LANGS.forEach(([code, name]) => sel.append(el("option", { value: code, lang: code }, name)));
+  // The translations are drafts until a native speaker has read them
+  // (1.0.0): said in the picker, in English so it reads the same everywhere.
+  LANGS.forEach(([code, name]) => sel.append(el("option", { value: code, lang: code }, code === "en" ? name : `${name} (beta)`)));
   sel.value = pref;
   sel.onchange = () => { try { localStorage.setItem(LANG_KEY, sel.value); } catch (_) { /* this view only */ } location.reload(); };
 })();
@@ -10611,7 +10678,9 @@ function renderAboutOverview() {
     steps.append(el("li", {}, el("span", { className: "ab-num", "aria-hidden": "true" }, String(s.n)), el("b", {}, s.title), el("span", { className: "ab-how-text" }, s.text), where));
   });
   box.append(el("div", { className: "card ab-card" },
-    el("div", { className: "ab-head" }, el("div", {}, el("h2", { className: "ab-title" }, "How it works"), el("p", { className: "ab-sub" }, "Four tabs, one job each."))),
+    el("div", { className: "ab-head" }, el("div", {}, el("h2", { className: "ab-title" }, "How it works"), el("p", { className: "ab-sub" }, "Four tabs, one job each.")),
+      // Help & FAQ (1.0.0, ui/help.html).
+      el("a", { className: "btn sm ghost ab-help", href: chrome.runtime.getURL("ui/help.html"), target: "_blank", rel: "noopener" }, "Help & FAQ")),
     steps,
     el("p", { className: "ab-sub" }, "Brand detection is automatic for every industry. Your brand, competitors, prompts and engines are set per campaign, in Campaigns.")));
   box.append(abNewsCard(true));

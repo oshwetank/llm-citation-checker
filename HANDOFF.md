@@ -16,17 +16,27 @@ Last updated 29 October 2026, at v0.84.0.
 
 ## How the owner works
 
-- The owner runs the extension unpacked on **Windows, without git**. Every build is delivered as a zip of the committed tree:
+- The owner runs the extension unpacked on **Windows, without git**. Every build is delivered as the store package (1.0.0), the same zip that is uploaded to the Chrome Web Store:
 
   ```bash
-  git archive --format=zip -o citoskeleton-latest.zip HEAD
+  node scripts/build-store.mjs   # → dist/citoskeleton-<version>-chrome.zip
   ```
+
+  Not `git archive`: that zipped the whole repository (test fixtures, the server, training scripts, these notes). The script packages `manifest.json`, `_locales`, `icons`, `fonts`, `src` and `ui` only, and refuses to build if anything the extension loads is missing or a file looks like a secret (`test/build-store.test.mjs`).
 
   They extract it over `C:\Users\shwet\LLM Citation Checker`, replacing all files.
 - **They must then press the reload ↻ button on the extension at `chrome://extensions`.** Restarting Chrome is not enough: a reused profile keeps running the old service worker across relaunches. This was proven locally, and it is why `src/lib/build.js` exists: the panel warns when the background and the interface builds disagree. Say this every time you hand over a zip.
 - **After a run**, they send the text "CitoSkeleton diagnostic report" and the campaign diagnostics zip. The zip comes from About → Diagnostics → Export campaign diagnostics, and holds the log, per-capture records, the raw payloads and unreadable samples. These exports are the main evidence for every fix. Read the per-turn `trace` and `context` fields.
 - **Explain things in plain language.** The owner is a GEO/SEO practitioner, not a developer. Lead with what changed for them, keep jargon out, and be honest about what is and isn't fixed.
 - **Research outward, not just inward.** The owner has asked more than once that fixes be grounded in how the engines and Chrome actually behave: public write-ups, open-source clients of each engine's endpoints, Chrome documentation. Don't rely on guessing from our own code alone.
+
+## Release 1.0.0 (November 2026)
+
+The store's version was 0.36. 1.0.0 is the first release since; the store pack is in `store/`: `LISTING.md` (description, a reason for every permission, the data-use answers), `PRIVACY.md` (to host and link), `MANUAL-TESTS.md` (what only a person with real accounts and machines can check), and `screenshots/`.
+
+- **No new site access on update.** `google.com` was dropped (the Gemini sign-in check reads cookies by gemini.google.com's address, `src/lib/auth-check.js`); `security-hardening.test` fails if a host beyond 0.36's is added, because a new one switches the extension off for every existing user until they approve it.
+- **The update test now tests the update.** `test/upgrade-capture.test.mjs` used to load the new build over the old one in the same profile, and Chrome kept running the old service-worker script: every check after the "update" tested the old background. The profile's stored worker scripts are now dropped between the runs (as a store update does) and the test checks that `build-info` answers with this build. CI runs it from v0.80.0 and from v0.36.0 (`--from 4d5a046`).
+- **Help for a first-time user** (`src/lib/onboarding.js`, tested by `getting-started.test` and `onboarding-ui.test`): Get started on the Dashboard (five steps, ticked by what was done; `cito-gs-*` in localStorage), "Based on N answers…" and **What to do next** on a campaign's overview, example prompts in setup (**Fill in examples**), `ui/help.html` (linked from Get started and About), and the welcome guide's **What's changed** step for an update from before 0.80 (`citoUpdatedFrom`, recorded on update by `background.js`). All of it is translated; the language picker marks the five translations beta.
 
 ## Rules that are in force
 

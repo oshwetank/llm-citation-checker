@@ -14,12 +14,16 @@ Hugging Face; and, once accounts are switched on, when you sign in, share a camp
 code, open a code, or leave an email for updates. Nothing you capture ever leaves your
 device unless you choose to share that campaign: the AI runs on your computer.
 
-> **v0.84.3** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v1.0.0** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **1.0.0: the release after 0.36** (November 2026).
+>   - **Help to get going.** A Get started checklist on the Dashboard, a Help & FAQ page (About → Help & FAQ), example prompts when you set up a campaign, and on each campaign's results how many answers its numbers rest on and what to do next. Updating from an earlier version, the guide opens on what changed.
+>   - **No new permissions when updating.** The extension no longer asks for access to google.com.
+>   - **Translations are marked beta** until a native speaker has reviewed them.
 > - **The campaign results in your language too** (0.84.3). Spanish, Portuguese (Brazil), French, Hindi and Arabic.
 >   - **Campaigns.** Every section of a campaign's results (overview, brands, compare, sources, citations, prompts, run vs run, products, searches and ads, signals), the run history and the setup page are translated: about 260 more phrases each.
 >   - **Lines with a name in them.** "Show boAt in the answer", "Compare Samsung with Google", "Tracking Google" and the like now follow the language, with the name kept as it is. What you typed yourself is never translated.
