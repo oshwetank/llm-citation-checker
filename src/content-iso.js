@@ -209,6 +209,10 @@
       // Straight away, not on the next tick: if the engine redirects right
       // after its send, the run must already know not to hand the turn on.
       if (pageFacts.turnToken) reportSent(pageFacts.turnToken);
+      // The page copy also starts here (1.0.0): ChatGPT's own send request,
+      // not the key or button we guessed at, so a renamed Send button
+      // doesn't leave the answer uncaptured.
+      if (typeof pageFacts.onEngineSubmit === "function") pageFacts.onEngineSubmit();
       return;
     }
 
@@ -2141,6 +2145,16 @@
       if (b) asked();
     }, true);
     pageFacts.onAsked = () => asked({ userCount: 0, userText: "" });
+    // The page as it was while the question was being typed: a send seen
+    // on the network arrives after the page may already show the question,
+    // so the count from before it is the one to compare with.
+    let typing = null;
+    document.addEventListener("input", (e) => {
+      if (!e.target || !e.target.closest || !e.target.closest('#prompt-textarea, form, [contenteditable="true"]')) return;
+      const u = lastOf(USER);
+      typing = { userCount: document.querySelectorAll(USER).length, userText: u ? (u.innerText || "").trim() : "" };
+    }, true);
+    pageFacts.onEngineSubmit = () => { if (!watch || Date.now() - watch.askedAt > 1500) asked(typing || undefined); typing = null; };
   })();
 
   /* ---------- Gemini page copy (0.84.0) ----------

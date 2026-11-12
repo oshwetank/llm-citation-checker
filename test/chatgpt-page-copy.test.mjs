@@ -11,7 +11,13 @@
  * button shows while it "writes".
  *   1. a campaign turn completes with the answer, its prompt and its links;
  *   2. a question asked by hand (Enter in the composer) is captured too;
- *   3. an old conversation merely opened is never copied.
+ *   3. an old conversation merely opened is never copied;
+ *   4. (1.0.0) the owner's 12 Nov 2026 recording: ChatGPT now sends with a
+ *      POST to conversation/prepare ("client_prepare_state":"sent") and the
+ *      answer comes over its WebSocket. Asked with a Send button the
+ *      extension doesn't recognise, in a conversation that already has an
+ *      answer, the new answer is still copied, on that request alone; a
+ *      prepare sent while typing ("typing") starts nothing.
  */
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -48,11 +54,15 @@ const PAGE = (old) => `<body>
     <div data-message-author-role="assistant"><p><strong>Lumora Kettle</strong> is the pick, says <a href="https://kitchenlab.example/kettles">KitchenLab</a>, and it boils fast enough for most homes.</p></div>` : ""}</div>
   <div id="prompt-textarea" contenteditable="true"></div>
   <button id="composer-submit-button">send</button>
+  <button id="go" aria-label="Go">→</button>
   <script>
     const box = document.getElementById('prompt-textarea');
+    const prepare = (state) => fetch('/backend-api/f/conversation/prepare', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ client_prepare_state: state, action: 'next', model: 'gpt-x' }) }).catch(() => {});
+    box.addEventListener('input', () => prepare('typing'));
     const send = () => {
       const t = box.innerText.trim(); if (!t) return;
       box.innerHTML = '';
+      prepare('sent');
       const u = document.createElement('div'); u.setAttribute('data-message-author-role', 'user');
       u.textContent = t; document.getElementById('convo').appendChild(u);
       const stop = document.createElement('button'); stop.setAttribute('data-testid', 'stop-button'); stop.textContent = 'stop';
@@ -69,6 +79,7 @@ const PAGE = (old) => `<body>
       setTimeout(step, 500);
     };
     document.getElementById('composer-submit-button').addEventListener('click', send);
+    document.getElementById('go').addEventListener('click', send);
     box.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); send(); } });
   </script></body>`;
 
@@ -79,6 +90,7 @@ const context = await chromium.launchPersistentContext(`${PROFILE_BASE}-${Date.n
 try {
   await context.route(/^https:\/\/chatgpt\.com\//, (route) => {
     const u = new URL(route.request().url());
+    if (u.pathname.endsWith("/conversation/prepare")) return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status: "ok", conduit_token: "made-up" }) });
     return route.fulfill({ status: 200, contentType: "text/html", body: PAGE(u.pathname.startsWith("/c/old")) });
   });
 
@@ -149,7 +161,31 @@ try {
   await o.goto("https://chatgpt.com/c/old-1");
   await o.waitForTimeout(12000);
   check("nothing copied", (await records()).length === before3);
+  // Typing sends prepare with "typing": that is not a question going out.
+  await o.click("#prompt-textarea");
+  await o.keyboard.type("half a question");
+  await o.waitForTimeout(9000);
+  check("typing alone copies nothing", (await records()).length === before3);
   await o.close();
+
+  console.log("\n4. ChatGPT's prepare send, a Send button we don't know, an answered conversation");
+  const before4 = (await records()).length;
+  const n = await context.newPage();
+  await n.goto("https://chatgpt.com/c/old-2");
+  await n.waitForTimeout(1500);
+  await n.click("#prompt-textarea");
+  await n.keyboard.type("which linen shirt dries fastest");
+  await n.click("#go");
+  let after4 = before4;
+  for (let i = 0; i < 40 && after4 <= before4; i++) { await n.waitForTimeout(500); after4 = (await records()).length; }
+  check("captured", after4 === before4 + 1, `${after4 - before4} new`);
+  const viaPrepare = (await records()).find((x) => x.userPrompt === "which linen shirt dries fastest");
+  check("the new question, not the old one", !!viaPrepare, (await records()).map((x) => x.userPrompt).join(" | "));
+  if (viaPrepare) {
+    const full = ((await ask({ type: "get-record", captureId: viaPrepare.captureId })) || {}).record || viaPrepare;
+    check("with the new answer, not the kettle one", /Zento Linen/.test(full.answerText || "") && !/Lumora Kettle/.test(full.answerText || ""), (full.answerText || "").slice(0, 120));
+  }
+  await n.close();
 } finally {
   await context.close();
 }

@@ -9862,16 +9862,16 @@ $("#diagReport")?.addEventListener("click", () => openDiagnosticReportModal());
 $("#probeSave")?.addEventListener("click", async () => {
   const r = await send({ type: "get-probes" });
   const probes = (r && r.ok && r.probes) || [];
-  if (!probes.length) { showToast("Nothing kept yet. Turn on Debug capture, reload Gemini and ask a prompt.", "error"); return; }
+  if (!probes.length) { showToast("Nothing kept yet. Turn on Debug capture, reload Gemini or ChatGPT and ask a prompt.", "error"); return; }
   const files = probes.map((p, i) => {
     let where = "";
     try { const u = new URL(p.url); where = `${u.hostname}${u.pathname}`.replace(/[^\w.-]+/g, "_").slice(0, 80); } catch (_) { where = "unknown"; }
     return { name: `probes/${String(i + 1).padStart(2, "0")}-${where}.txt`, text: [`# url: ${p.url}`, `# method: ${p.method}`, `# page: ${p.pageUrl}`, `# at: ${new Date(p.at).toISOString()}`, `# reqBody: ${p.reqBody}`, "", p.body].join("\n") };
   });
-  const zip = await makeZip([{ name: "README.txt", text: `CitoSkeleton ${BUILD}: ${probes.length} replies Gemini sent with Debug capture on, which this build can't read yet.\nThey include your prompt and the answer. Look before you send.\n` }, ...files]);
+  const zip = await makeZip([{ name: "README.txt", text: `CitoSkeleton ${BUILD}: ${probes.length} replies Gemini or ChatGPT sent with Debug capture on, which this build can't read yet.\nThey include your prompt and the answer. Look before you send.\n` }, ...files]);
   const a = document.createElement("a");
   a.href = URL.createObjectURL(zip);
-  a.download = `citoskeleton-unread-gemini-${Date.now()}.zip`;
+  a.download = `citoskeleton-unread-${Date.now()}.zip`;
   a.click();
   URL.revokeObjectURL(a.href);
   showToast(`${probes.length} payloads saved.`);

@@ -64,7 +64,6 @@
  "Campaign": "Campanha",
  "Export .zip": "Exportar .zip",
  "Payloads it couldn't read": "Payloads que não conseguiu ler",
- "With Debug capture on, what Gemini sent that CitoSkeleton can't read yet. These hold your prompt and the answer: open the .zip before you send it.": "Com a captura de depuração ativada, o que o Gemini enviou e o CitoSkeleton ainda não consegue ler. Contém seu prompt e a resposta: abra o .zip antes de enviá-lo.",
  "Save .zip": "Salvar .zip",
  "Activity log": "Log de atividades",
  "Errors, captures and each prompt's outcome, newest first. Kept on this device only.": "Erros, capturas e o resultado de cada prompt, do mais recente ao mais antigo. Fica só neste dispositivo.",
@@ -1427,5 +1426,6 @@
  "prompt captured between the dates you picked": "prompt capturado entre as datas escolhidas",
  "Help to get going.": "Ajuda para começar.",
  "Get started on the Dashboard, About → Help & FAQ, example prompts when you set up a campaign, and what to do next on each campaign's results.": "Primeiros passos no Painel, Sobre → Ajuda e perguntas frequentes, prompts de exemplo ao configurar uma campanha, e o que fazer agora nos resultados de cada campanha.",
- "All steps": "Todas as etapas"
+ "All steps": "Todas as etapas",
+ "With Debug capture on, what Gemini and ChatGPT sent that CitoSkeleton can't read yet. These hold your prompt and the answer: open the .zip before you send it.": "Com a captura de depuração ativada, o que o Gemini e o ChatGPT enviaram e o CitoSkeleton ainda não consegue ler. Contém seu prompt e a resposta: abra o .zip antes de enviá-lo."
 }

@@ -64,7 +64,6 @@
  "Campaign": "कैम्पेन",
  "Export .zip": ".zip एक्सपोर्ट करें",
  "Payloads it couldn't read": "जो पेलोड पढ़े नहीं जा सके",
- "With Debug capture on, what Gemini sent that CitoSkeleton can't read yet. These hold your prompt and the answer: open the .zip before you send it.": "Debug capture चालू होने पर, Gemini ने जो भेजा और जिसे CitoSkeleton अभी नहीं पढ़ सकता। इनमें आपका प्रॉम्प्ट और उत्तर होता है: भेजने से पहले .zip खोलकर देख लें।",
  "Save .zip": ".zip सेव करें",
  "Activity log": "गतिविधि लॉग",
  "Errors, captures and each prompt's outcome, newest first. Kept on this device only.": "त्रुटियाँ, कैप्चर और हर प्रॉम्प्ट का नतीजा, नवीनतम पहले। केवल इसी डिवाइस पर रखा जाता है।",
@@ -1427,5 +1426,6 @@
  "prompt captured between the dates you picked": "चुनी गई तारीखों के बीच कैप्चर हुआ प्रॉम्प्ट",
  "Help to get going.": "शुरुआत के लिए मदद।",
  "Get started on the Dashboard, About → Help & FAQ, example prompts when you set up a campaign, and what to do next on each campaign's results.": "डैशबोर्ड पर शुरुआत करें, परिचय → मदद और सवाल-जवाब, कैम्पेन सेट करते समय उदाहरण प्रॉम्प्ट, और हर कैम्पेन के नतीजों में आगे क्या करें।",
- "All steps": "सभी चरण"
+ "All steps": "सभी चरण",
+ "With Debug capture on, what Gemini and ChatGPT sent that CitoSkeleton can't read yet. These hold your prompt and the answer: open the .zip before you send it.": "Debug capture चालू होने पर, Gemini और ChatGPT ने जो भेजा और जिसे CitoSkeleton अभी नहीं पढ़ सकता। इनमें आपका प्रॉम्प्ट और उत्तर होता है: भेजने से पहले .zip खोलकर देख लें।"
 }

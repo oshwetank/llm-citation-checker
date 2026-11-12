@@ -69,6 +69,14 @@
   const CHATGPT_RE = /\/backend-(?:api|anon)\/(?:f\/)?conversation(?:\/(?:resume|updates|stream))?(?:\?|$)|\/unauth-mweb\/conversation\/updates(?:\?|$)/i;
   const CHATGPT_SUBMIT_RE = /\/backend-(?:api|anon)\/(?:f\/)?conversation(?:\?|$)|\/unauth-mweb\/conversation\/updates(?:\?|$)/i;
   const CHATGPT_FOLLOW_RE = /\/conversation\/(?:resume|updates|stream)(?:\?|$)/i;
+  // ChatGPT's newer send (seen 12 Nov 2026 in a real recording): the page
+  // POSTs conversation/prepare, gets a "conduit" token, and the answer comes
+  // back over its WebSocket. No conversation POST leaves the page at all, so
+  // CHATGPT_SUBMIT_RE never matched and a campaign couldn't tell its prompt
+  // had gone. prepare is also sent while the user is still typing; only the
+  // one whose body says "client_prepare_state":"sent" is the send itself.
+  const CHATGPT_PREPARE_RE = /\/backend-(?:api|anon)\/(?:f\/)?conversation\/prepare(?:\?|$)/i;
+  const preparedSend = (url, body) => IS_CHATGPT && CHATGPT_PREPARE_RE.test(url || "") && typeof body === "string" && /"client_prepare_state"\s*:\s*"sent"/.test(body);
   // Any other event stream from ChatGPT's own API is still taken (0.73.1):
   // when ChatGPT moves its answer to a new address, the capture keeps
   // working instead of silently stopping, and the capture check names the
@@ -424,6 +432,7 @@
     }
 
     if (method === "POST" && SUBMIT_RE && SUBMIT_RE.test(url || "")) signalSubmit("fetch");
+    else if (method === "POST" && preparedSend(url, init && init.body)) signalSubmit("prepare");
     const isConv = (method === "POST" || (IS_PERPLEXITY && /socket\.io|sse/i.test(url)) || (IS_CHATGPT && CHATGPT_FOLLOW_RE.test(url || ""))) && CONV_RE.test(url || "");
     let reqBody = null;
     if (isConv) {
@@ -598,6 +607,7 @@
       }
       if (this.__lcfc_post) dbg("xhr", { url: this.__lcfc_url.slice(0, 140), matched: !!this.__lcfc_conv });
       if (this.__lcfc_post && SUBMIT_RE && SUBMIT_RE.test(this.__lcfc_url)) signalSubmit("xhr");
+      else if (this.__lcfc_post && preparedSend(this.__lcfc_url, body)) signalSubmit("prepare");
       if (this.__lcfc_conv) {
         this.__lcfc_body = typeof body === "string" ? body : null;
         if (isBackgroundSubscription(this.__lcfc_body)) return send.call(this, body);
