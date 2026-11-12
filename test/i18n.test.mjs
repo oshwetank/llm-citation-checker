@@ -115,6 +115,13 @@ for (const code of ["es", "pt-BR", "fr", "hi", "ar"]) {
   // full-audit and campaign-drilldown before 0.84.3 shipped).
   const shadow = [...code.matchAll(/\b(?:const|let|var|function)\s+(fmt|tr|dateLocale)\b/g)].map((m) => m[1]);
   check("nothing in them declares its own fmt, tr or dateLocale", shadow.length === 0, shadow.join(", "));
+  // fmt() takes a template. A date formatter passed in as "fmt" (renderOverTime's
+  // option, before 1.0.0) was silently replaced by the i18n one and threw
+  // "out.replace is not a function" on Analyze's Over time view.
+  const odd = [...code.matchAll(/(?<![\w.])fmt\((?!")([^,)]*)/g)].map((m) => m[1].trim()).filter((a) => !["r.template", "a.template"].includes(a));
+  check("every fmt() call is given a template", odd.length === 0, odd.join(", "));
+  const param = /\{[^}]*\bfmt\b[^}]*\}\s*\)\s*\{/.test(code) || /\bfmt\s*:\s*\w/.test(code);
+  check("and no function takes a parameter called fmt", !param);
   for (const lang of ["es", "pt-BR", "fr", "hi", "ar"]) {
     const missing = [...templates].filter((t) => !(t in dicts[lang]));
     check(`${lang}: has a translation for each of them`, missing.length === 0, missing.slice(0, 4).join(" | "));

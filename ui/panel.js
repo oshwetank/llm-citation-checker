@@ -10985,7 +10985,7 @@ function stabilityTag(seen, total) {
  * where each brand came run by run (a line per brand, 1st at the top), the
  * sites cited run by run, the searches by what they were after, the ads, and
  * the runs themselves. When the runs mix engines that is said as a fact. */
-function renderOverTime(out, ot, { label, own, fmt, engineName }) {
+function renderOverTime(out, ot, { label, own, fmtAt, engineName }) {
   if (!ot) return;
   const sec = (id, title, sub) => {
     const c = el("section", { className: "card ot-sec", id },
@@ -10996,7 +10996,7 @@ function renderOverTime(out, ot, { label, own, fmt, engineName }) {
   const head = el("div", { className: "card ot-hero" },
     el("span", { className: "ot-chip" }, `Over time · ${plural(ot.runs.length, "run")}`),
     el("h2", { className: "ot-prompt" }, label),
-    el("span", { className: "muted small" }, `${fmt(ot.runs[0].at)} → ${fmt(ot.runs[ot.runs.length - 1].at)} · ${ot.engines.map(engineName).join(", ")}`));
+    el("span", { className: "muted small" }, `${fmtAt(ot.runs[0].at)} → ${fmtAt(ot.runs[ot.runs.length - 1].at)} · ${ot.engines.map(engineName).join(", ")}`));
   if (ot.engines.length > 1) head.append(el("p", { className: "ot-note" }, `These runs come from ${atList(ot.engines.map(engineName))}, so the movement below mixes engines as well as time. The engine filter above narrows it to one.`));
   if (ot.runs.length === 1) head.append(el("p", { className: "ot-note" }, "Only one capture so far. A later answer to this prompt will be compared with it here."));
   out.append(head);
@@ -11052,7 +11052,7 @@ function renderOverTime(out, ot, { label, own, fmt, engineName }) {
     const s3 = sec("ot-sites", "Sites cited, run by run", "filled = cited in that run");
     const grid = el("div", { className: "at-grid-table ot-sites", role: "table", style: `grid-template-columns: minmax(150px, 1.4fr) repeat(${ot.runs.length}, minmax(34px, 60px)) 96px` });
     const row = (...cells) => el("div", { className: "at-grid-row", role: "row" }, ...cells);
-    grid.append(row(el("span", { role: "columnheader" }, "Site"), ...ot.runs.map((r) => el("span", { role: "columnheader", className: "c", title: fmt(r.at) }, `#${r.n}`)), el("span", { role: "columnheader" }, "Trend")));
+    grid.append(row(el("span", { role: "columnheader" }, "Site"), ...ot.runs.map((r) => el("span", { role: "columnheader", className: "c", title: fmtAt(r.at) }, `#${r.n}`)), el("span", { role: "columnheader" }, "Trend")));
     ot.sites.forEach((x) => grid.append(row(el("span", { role: "rowheader", className: "at-matrix-site" }, x.domain),
       ...x.cells.map((on, i) => el("span", { role: "cell", className: "c", "aria-label": `run ${i + 1}: ${on ? "cited" : "not cited"}` }, el("i", { className: on ? "dot cited" : "dot none" }))),
       el("span", { role: "cell" }, el("span", { className: `ot-trend t-${x.trend.replace(/\s.*$/, "")}` }, x.trend)))));
@@ -11083,7 +11083,7 @@ function renderOverTime(out, ot, { label, own, fmt, engineName }) {
     open.onclick = () => openCapture(r.captureId);
     t.append(el("div", { className: `at-tr${own ? " has-you" : ""}`, role: "row" },
       el("span", { role: "cell", className: "ap-muted" }, String(r.n)),
-      el("span", { role: "cell" }, fmt(r.at)),
+      el("span", { role: "cell" }, fmtAt(r.at)),
       el("span", { role: "cell" }, el("i", { className: `at-eng-dot e-${r.platform}` }), ` ${engineName(r.platform)}`),
       el("span", { role: "cell" }, r.first || "—"),
       own ? el("span", { role: "cell" }, el("span", { className: `at-rank-chip${r.you === 1 ? " first" : r.you ? "" : " none"}` }, r.you ? apOrd(r.you) : "not named")) : null,
@@ -11123,7 +11123,7 @@ function renderCompare() {
   // "Every count, run by run".
   const own = ownBrandFor(caps[caps.length - 1], GEO_PROFILES);
   const ot = overTimeView(caps, { own });
-  renderOverTime(out, ot, { label: timeline.label, own, fmt, engineName });
+  renderOverTime(out, ot, { label: timeline.label, own, fmtAt, engineName });
 
   if (caps.length < 2) return;
 
