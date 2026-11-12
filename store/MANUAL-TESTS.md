@@ -26,6 +26,7 @@ On each of ChatGPT, Gemini, Perplexity and Grok, ask a question that makes it se
 
 - The answer appears in **Analyze** within a few seconds of finishing, with its brands, cited pages and searches.
 - Do one question on each engine with **an image or a product card** in the answer, and check the cards appear.
+- Analyze says whether each answer was asked signed in. For Gemini it will usually say it **couldn't tell**: Google keeps its sign-in on google.com, which 1.0.0 deliberately doesn't ask access to. That is expected, and it never stops a campaign.
 
 ## 3. Capture signed out and in a private window
 
