@@ -73,6 +73,21 @@ const res = [ov.result, ab.result];
 check("numbers from the tools pass (40%, down 60, 66.7 written as 67)", checkNumbers("Zento was named in 40% of answers, down 60 points; Earbuds 67%.", [...res, { x: 66.7 }]).unverified.length === 0);
 const bad = checkNumbers("Zento has 73% visibility and 1,250 mentions.", res);
 check("an invented 73% and 1,250 are flagged", bad.unverified.join() === "73,1,250", bad.unverified.join());
+// The ids the lookups return are random UUIDs; "…-87ab-…" was read as the
+// number 87, so an invented 87% went unflagged about 1 time in 25 with four
+// ids in the results (ask-ui.test failed in CI on 11 Nov 2026 that way).
+{
+  const ids = ["3f2a9c1e-87ab-4cde-9f00-112233445566", "a1b2c3d4-0000-4000-8000-000000000087"];
+  const viaId = checkNumbers("Zento has 87% visibility.", [{ answers: ids.map((id) => ({ id, engine: "chatgpt", prompt: "best phone" })) }]);
+  check("a number hidden inside an id doesn't count as found", viaId.unverified.join() === "87", JSON.stringify(viaId));
+  const viaUrl = checkNumbers("Zento has 87% visibility.", [{ pages: [{ url: "https://reviews.example/top-87-phones" }] }]);
+  check("nor one inside a web address", viaUrl.unverified.join() === "87", JSON.stringify(viaUrl));
+  let missed = 0;
+  for (let i = 0; i < 2000; i++) if (!checkNumbers("Zento has 87% visibility.", [{ answers: Array.from({ length: 4 }, () => ({ id: crypto.randomUUID() })) }]).unverified.length) missed++;
+  check("with random ids, never (was about 1 in 25)", missed === 0, `${missed} of 2000 missed`);
+  check("a real figure next to an id still counts", checkNumbers("Zento has 87% visibility.", [{ id: ids[0], visibility: 87 }]).unverified.length === 0);
+  check("and so does one written in a sentence", checkNumbers("Zento has 87% visibility.", [{ note: "named in 87% of answers" }]).unverified.length === 0);
+}
 check("small counts and years aren't flagged", checkNumbers("2 engines, 3 prompts, in 2026.", res).unverified.length === 0);
 
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");

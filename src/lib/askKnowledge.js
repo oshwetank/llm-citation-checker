@@ -191,14 +191,25 @@ export function numbersIn(text) {
   }
   return out;
 }
+/*
+ * An id is not a number anyone reads (0.84.2). The lookups return each
+ * answer's id, a random UUID such as "3f2a9c1e-87ab-…", and the digits after
+ * a dash were read as the number 87. So a figure the model made up was
+ * "found" whenever an id happened to hold it: with four ids in the results,
+ * an invented 87% went unflagged about 1 time in 25 (measured), which is how
+ * ask-ui.test failed at random in CI on 11 Nov 2026. Ids, URLs and long
+ * letter-and-digit tokens are skipped; prose and figures are still read.
+ */
+const ID_KEY = /^(?:id|ids|.*Id|.*_id|captureId|runId|profileId|promptId|url|href)$/;
+const ID_LIKE = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|https?:\/\/\S+|(?=[\w-]*\d)(?=[\w-]*[a-z])[\w-]{16,})$/i;
 export function checkNumbers(answer, toolResults = []) {
   const known = new Set();
   const walk = (v) => {
     if (v == null) return;
     if (typeof v === "number") { known.add(v); return; }
-    if (typeof v === "string") { for (const x of numbersIn(v)) known.add(x.n); return; }
+    if (typeof v === "string") { if (ID_LIKE.test(v.trim())) return; for (const x of numbersIn(v)) known.add(x.n); return; }
     if (Array.isArray(v)) { v.forEach(walk); known.add(v.length); return; }
-    if (typeof v === "object") for (const x of Object.values(v)) walk(x);
+    if (typeof v === "object") for (const [k, x] of Object.entries(v)) { if (ID_KEY.test(k) && typeof x === "string") continue; walk(x); }
   };
   toolResults.forEach(walk);
   // "down 60 points" for a change of -60; "67%" for 66.7.

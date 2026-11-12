@@ -13,8 +13,12 @@ import { mountModelSwitches } from "./modelSwitches.js";
 
 function h(tag, props = {}, ...kids) {
   const n = document.createElement(tag);
-  for (const [k, v] of Object.entries(props)) {
+  for (let [k, v] of Object.entries(props)) {
     if (v == null || v === false) continue;
+    // Words a person reads or hears go through tr() like the text does
+    // (0.84.2): aria-label, title and placeholder were set as written, so
+    // "Typeface", "Density" and the size buttons' tooltips stayed English.
+    if (typeof v === "string" && (k === "aria-label" || k === "title" || k === "placeholder" || k === "textContent")) v = tr(v);
     if (k.startsWith("data-") || k.startsWith("aria-") || k === "for" || k === "role") n.setAttribute(k, v);
     else n[k] = v;
   }
@@ -28,7 +32,7 @@ const gb = (b) => (b == null ? "?" : `${(b / GB).toFixed(b >= 10 * GB ? 0 : 1)} 
 function sw(id, label, note, checked, onChange) {
   const input = h("input", { type: "checkbox", id, role: "switch", checked: !!checked });
   const text = h("span", { className: "ab-switch-text" }, checked ? "On" : "Off");
-  input.onchange = () => { text.textContent = input.checked ? "On" : "Off"; onChange(input.checked); };
+  input.onchange = () => { text.textContent = tr(input.checked ? "On" : "Off"); onChange(input.checked); };
   return h("div", { className: "ab-row ai-row" },
     h("label", { className: "ab-row-text", for: id }, h("b", {}, label), h("span", {}, note)),
     h("label", { className: "ab-switch" }, input, h("span", { className: "ab-switch-track", "aria-hidden": "true" }, h("span", { className: "ab-switch-knob" })), text));

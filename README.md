@@ -14,12 +14,16 @@ Hugging Face; and, once accounts are switched on, when you sign in, share a camp
 code, open a code, or leave an email for updates. Nothing you capture ever leaves your
 device unless you choose to share that campaign: the AI runs on your computer.
 
-> **v0.84.1** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.84.2** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **Much more of the interface in your language** (0.84.2). Spanish, Portuguese (Brazil), French, Hindi and Arabic.
+>   - **About 400 more phrases each.** The Dashboard, Analyze, starting a campaign, Ask, and About (overview, the metric glossary, settings, diagnostics) were largely English in the other five languages. They are translated now.
+>   - **Sentences with numbers and engine names.** Lines such as "3 of 6", "Asked Perplexity" and "6 pages read · 3 cited" used to stay English whatever the language. They follow it now.
+>   - **Still English for now.** Lines with a brand or site name inside them, the campaign results board, the What's new list, and dates on Analyze. The translations are drafts and want a native speaker's review.
 > - **Safety fixes before release** (0.84.1). From a security review of the whole extension; nothing was found being misused.
 >   - **Shared campaigns are checked on import.** A campaign file or share code from someone else is no longer trusted as it comes: any link in it that isn't a normal web address is removed, and a damaged answer can't break the export. A file made to unpack into gigabytes is refused.
 >   - **Saved reports are locked down.** The HTML report you save can show pictures and print itself, and nothing else: no script from the text in it can run.
