@@ -20,6 +20,8 @@ export const ABOUT_STEPS = [
 
 /** What's new — the redesign, newest first. */
 export const ABOUT_NEWS = [
+  { head: "Every page in your language.", body: "Spanish, Portuguese (Brazil), French, Hindi and Arabic now cover the campaign results too, with dates in your language. About → Settings → Language." },
+  { head: "Safer to share.", body: "A campaign file from someone else is checked as it's imported, and a saved HTML report shows pictures and prints, and does nothing else." },
   { head: "Models are switches, in Ask.", body: "Ask → Models on this computer: flip one on to download it, off to remove it. Uninstalling CitoSkeleton removes them too." },
   { head: "Capture holds when a site changes.", body: "A question you ask by hand is read off the page when its network copy can't be read, and Analyze says so if one still wasn't captured." },
   { head: "Fast labels with Laya.", body: "About → Settings → Built-in AI: download Laya once and it labels every answer by picking among fixed options, much quicker than the AI model, and it never invents a name." },

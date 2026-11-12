@@ -17,4 +17,4 @@
  * and says so loudly when they differ. test/build-id.test.mjs keeps it equal
  * to manifest.json's version.
  */
-export const BUILD = "0.84.2";
+export const BUILD = "0.84.3";

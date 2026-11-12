@@ -14,12 +14,17 @@ Hugging Face; and, once accounts are switched on, when you sign in, share a camp
 code, open a code, or leave an email for updates. Nothing you capture ever leaves your
 device unless you choose to share that campaign: the AI runs on your computer.
 
-> **v0.84.2** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v0.84.3** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **The campaign results in your language too** (0.84.3). Spanish, Portuguese (Brazil), French, Hindi and Arabic.
+>   - **Campaigns.** Every section of a campaign's results (overview, brands, compare, sources, citations, prompts, run vs run, products, searches and ads, signals), the run history and the setup page are translated: about 260 more phrases each.
+>   - **Lines with a name in them.** "Show boAt in the answer", "Compare Samsung with Google", "Tracking Google" and the like now follow the language, with the name kept as it is. What you typed yourself is never translated.
+>   - **Dates and counts.** Dates on Analyze, the Dashboard and Campaigns are written in the chosen language. "1 prompts" now reads "1 prompt", in English too.
+>   - **What's new** is translated, and lists these changes.
 > - **Much more of the interface in your language** (0.84.2). Spanish, Portuguese (Brazil), French, Hindi and Arabic.
 >   - **About 400 more phrases each.** The Dashboard, Analyze, starting a campaign, Ask, and About (overview, the metric glossary, settings, diagnostics) were largely English in the other five languages. They are translated now.
 >   - **Sentences with numbers and engine names.** Lines such as "3 of 6", "Asked Perplexity" and "6 pages read · 3 cited" used to stay English whatever the language. They follow it now.

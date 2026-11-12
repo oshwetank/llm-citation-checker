@@ -4,7 +4,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { pickLang, chosenLang, loadLang, tr, tp, isRtl, LANGS, uiLang, patternKey } from "../ui/i18n.js";
+import { pickLang, chosenLang, loadLang, tr, tp, fmt, dateLocale, isRtl, LANGS, uiLang, patternKey } from "../ui/i18n.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
@@ -83,6 +83,37 @@ for (const code of ["es", "pt-BR", "fr", "hi", "ar"]) {
   await loadLang(code, dicts[code]);
   const out = [tr("3 of 6"), tr("Asked Perplexity"), tr("6 pages read · 3 cited"), tr("prompts captured in the last 7 days"), tr("2 of 5 required items done")];
   check(`${code}: the real dictionary translates them`, out.every((o) => !/\b(of|Asked|read|cited|captured|required)\b/.test(o)) && out[0].includes("3") && out[0].includes("6") && out[1].includes("Perplexity"), out.join(" | "));
+}
+
+console.log("\nsentences with names in them (0.84.3)");
+// Names are given by the call site, never guessed out of the text, so a
+// prompt such as "Compare iPhone with Samsung" is never taken for a label.
+await loadLang("en");
+check("English: the template filled in", fmt("Show {brand} in the answer", { brand: "Zento" }) === "Show Zento in the answer");
+check("English: one is singular, the rest plural (was '1 prompts')", fmt("{n} prompts", { n: 1 }, "{n} prompt") === "1 prompt" && fmt("{n} prompts", { n: 3 }, "{n} prompt") === "3 prompts" && fmt("{n} prompts", { n: 0 }, "{n} prompt") === "0 prompts");
+check("English: dates follow the browser, as before", dateLocale() === undefined);
+await loadLang("es", { "Show {brand} in the answer": "Mostrar {brand} en la respuesta", "{n} prompts": "{n} prompts", "{n} prompt": "{n} prompt", "Compare {brand} with {own}": "Comparar {brand} con {own}" });
+check("the name goes into the translation", fmt("Show {brand} in the answer", { brand: "Zento" }) === "Mostrar Zento en la respuesta");
+check("two names, each in its place", fmt("Compare {brand} with {own}", { brand: "Kovo", own: "Zento" }) === "Comparar Kovo con Zento");
+check("a number is written the language's way", fmt("{n} prompts", { n: 12000 }, "{n} prompt") === "12.000 prompts", fmt("{n} prompts", { n: 12000 }));
+check("no translation: the English template, filled in", fmt("Leave out {brand}", { brand: "Kovo" }) === "Leave out Kovo");
+check("a user's own text is not treated as a label", tr("Compare iPhone with Samsung") === "Compare iPhone with Samsung");
+check("dates follow the chosen language", dateLocale() === "es");
+for (const code of ["es", "pt-BR", "fr", "hi", "ar"]) {
+  const d = dicts[code];
+  const wrong = Object.entries(d).filter(([k, v]) => typeof v === "string" && [...k.matchAll(/\{\w+\}/g)].map((m) => m[0]).sort().join() !== [...v.matchAll(/\{\w+\}/g)].map((m) => m[0]).sort().join()).map(([k]) => k);
+  check(`${code}: every {name} in a key is in its translation`, wrong.length === 0, wrong.slice(0, 3).join(" | "));
+}
+{
+  // Every template the code fills in has a translation in every language.
+  const code = ["ui/panel.js", "ui/campaignView.js"].map((f) => readFileSync(path.join(ROOT, f), "utf8")).join("\n");
+  const templates = new Set();
+  for (const m of code.matchAll(/fmt\("((?:[^"\\]|\\.)+)"(?:, \{[^}]*\}(?:, "((?:[^"\\]|\\.)+)")?)?/g)) { templates.add(m[1].replace(/\\"/g, '"')); if (m[2]) templates.add(m[2].replace(/\\"/g, '"')); }
+  check("the code fills in templates through fmt()", templates.size >= 50, String(templates.size));
+  for (const lang of ["es", "pt-BR", "fr", "hi", "ar"]) {
+    const missing = [...templates].filter((t) => !(t in dicts[lang]));
+    check(`${lang}: has a translation for each of them`, missing.length === 0, missing.slice(0, 4).join(" | "));
+  }
 }
 await loadLang("en");
 check("English: nothing changes", tr("Settings") === "Settings");
