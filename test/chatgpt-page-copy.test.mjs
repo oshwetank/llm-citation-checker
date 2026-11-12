@@ -17,7 +17,11 @@
  *      answer comes over its WebSocket. Asked with a Send button the
  *      extension doesn't recognise, in a conversation that already has an
  *      answer, the new answer is still copied, on that request alone; a
- *      prepare sent while typing ("typing") starts nothing.
+ *      prepare sent while typing ("typing") starts nothing;
+ *   5. (1.0.0) ChatGPT's composer as the owner's recording has it: a
+ *      textarea inside [data-composer-body], no <form>, and prepare sent as
+ *      a Request object. Enter is enough, and the capture report says how far
+ *      the page copy got.
  */
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -83,6 +87,14 @@ const PAGE = (old) => `<body>
     box.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); send(); } });
   </script></body>`;
 
+// The composer as chatgpt.com served it on 12 Nov 2026: a textarea in
+// [data-composer-body], no form, no #prompt-textarea; prepare as a Request.
+const PAGE_NOV = () => PAGE(false)
+  .replace('<div id="prompt-textarea" contenteditable="true"></div>', '<div data-composer-body=""><textarea id="pending-conversation-input" aria-label="Ask ChatGPT"></textarea></div>')
+  .replace("const box = document.getElementById('prompt-textarea');", "const box = document.getElementById('pending-conversation-input'); Object.defineProperty(box, 'innerText', { get() { return box.value; }, set(v) { box.value = v; } }); Object.defineProperty(box, 'innerHTML', { set(v) { box.value = ''; } });")
+  .replace("const prepare = (state) => fetch('/backend-api/f/conversation/prepare', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ client_prepare_state: state, action: 'next', model: 'gpt-x' }) }).catch(() => {});",
+    "const prepare = (state) => fetch(new Request('/backend-api/f/conversation/prepare', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ client_prepare_state: state, action: 'next', model: 'gpt-x' }) })).catch(() => {});");
+
 const context = await chromium.launchPersistentContext(`${PROFILE_BASE}-${Date.now()}`, {
   headless: false,
   args: [`--disable-extensions-except=${EXT_PATH}`, `--load-extension=${EXT_PATH}`, "--headless=new", "--no-sandbox"],
@@ -91,6 +103,7 @@ try {
   await context.route(/^https:\/\/chatgpt\.com\//, (route) => {
     const u = new URL(route.request().url());
     if (u.pathname.endsWith("/conversation/prepare")) return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status: "ok", conduit_token: "made-up" }) });
+    if (u.pathname.startsWith("/c/nov")) return route.fulfill({ status: 200, contentType: "text/html", body: PAGE_NOV() });
     return route.fulfill({ status: 200, contentType: "text/html", body: PAGE(u.pathname.startsWith("/c/old")) });
   });
 
@@ -186,6 +199,23 @@ try {
     check("with the new answer, not the kettle one", /Zento Linen/.test(full.answerText || "") && !/Lumora Kettle/.test(full.answerText || ""), (full.answerText || "").slice(0, 120));
   }
   await n.close();
+
+  console.log("\n5. the November 2026 composer: a textarea, no form, prepare as a Request");
+  const before5 = (await records()).length;
+  const v = await context.newPage();
+  await v.goto("https://chatgpt.com/c/nov-1");
+  await v.waitForTimeout(1500);
+  await v.click("#pending-conversation-input");
+  await v.keyboard.type("which linen shirt wrinkles least");
+  await v.keyboard.press("Enter");
+  let after5 = before5;
+  for (let i = 0; i < 40 && after5 <= before5; i++) { await v.waitForTimeout(500); after5 = (await records()).length; }
+  check("captured", after5 === before5 + 1, `${after5 - before5} new`);
+  check("with the question typed", !!(await records()).find((x) => x.userPrompt === "which linen shirt wrinkles least"));
+  const rep5 = ((await ask({ type: "capture-check" })) || {}).report || "";
+  const line = rep5.split("\n").find((l) => /page copy:/.test(l) && /sends seen: [1-9]/.test(l)) || "";
+  check("the report has the send and the page copy's last step", /\(prepare\)/.test(line) && /"copied off the page"/.test(line) && /\d+ questions, \d+ answers/.test(line), line || rep5.slice(0, 400));
+  await v.close();
 } finally {
   await context.close();
 }

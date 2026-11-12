@@ -118,6 +118,9 @@ export function healthReport({ version, health, tabs = [], paused = false, count
     for (const tab of tabs.filter((x) => x.engine === e)) {
       lines.push(`tab ${tab.url || ""}: ${tab.alive ? "connected" : "NOT connected"}${tab.alive ? ` · marker ${tab.marker ? "ok" : "MISSING"} · requests seen ${tab.conv || 0} · handed over ${tab.forwarded || 0} · send failures ${tab.sendFailed || 0}${tab.mismatched ? ` · dropped for marker ${tab.mismatched}` : ""} · open ${Math.round((tab.ageMs || 0) / 60000)} min` : ""}`);
       if (tab.lastError) lines.push(`  last error: ${tab.lastError}`);
+      // 1.0.0: the engine's own send, and how far the page copy got, so a
+      // report says which step failed when a site changes its page.
+      if (tab.alive && (tab.sends || tab.copy)) lines.push(`  sends seen: ${tab.sends || 0}${tab.sendVia ? ` (${tab.sendVia})` : ""}${tab.copy ? ` · page copy: ${tab.copy.asked || 0} asked${tab.copy.via ? ` (${tab.copy.via})` : ""}, last step "${tab.copy.stage}" at ${t(tab.copy.at)} · on the page: ${tab.copy.users ?? "?"} questions, ${tab.copy.answers ?? "?"} answers, stop button ${tab.copy.stop ? "showing" : "not showing"}` : ""}`);
     }
     lines.push(`last conversation request: ${h.conv ? `${h.conv.method} ${h.conv.path} (${h.conv.status || "?"}) at ${t(h.conv.at)}` : "none"}`);
     lines.push(`last answer saved: ${h.stored ? t(h.stored.at) : "none"}`);

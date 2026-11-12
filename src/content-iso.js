@@ -38,7 +38,7 @@
 
   // The capture check (0.73.1): this page's own record of what it saw, for
   // the worker to ask about (cs-ping) and for reasons a capture went nowhere.
-  const pageHealth = { loadedAt: Date.now(), conv: 0, lastConv: null, unknown: [], forwarded: 0, sendFailed: 0, mismatched: 0, lastError: "" };
+  const pageHealth = { loadedAt: Date.now(), conv: 0, lastConv: null, unknown: [], forwarded: 0, sendFailed: 0, mismatched: 0, lastError: "", sends: 0, sendVia: "", copy: null };
   // Whether the worker stored an answer from this engine since `since`
   // (0.84.0). The page copies below go by this, not by pageHealth's
   // lastForwardAt: after an engine changes its format its traffic is still
@@ -206,6 +206,9 @@
     if (data.type === "engine-submit") {
       engineSubmit.at = Date.now();
       engineSubmit.via = String(data.via || "").slice(0, 10);
+      // For the capture report (1.0.0): the engine's own send was seen.
+      pageHealth.sends++;
+      pageHealth.sendVia = engineSubmit.via;
       // Straight away, not on the next tick: if the engine redirects right
       // after its send, the run must already know not to hand the turn on.
       if (pageFacts.turnToken) reportSent(pageFacts.turnToken);
@@ -2062,9 +2065,17 @@
     // click comes before the page adds the question, so it reads them then;
     // a campaign send is reported once the question is already on the page,
     // and its page was opened for that one question.
-    const asked = (before) => {
+    // Where the page copy got to, for the capture report (1.0.0): when it
+    // fails on the real site, the report says which step, so a renamed
+    // label on ChatGPT's page is found from one report, not guessed at.
+    const note = (stage, extra) => {
+      const c = pageHealth.copy || (pageHealth.copy = { asked: 0, via: "", stage: "", at: 0 });
+      Object.assign(c, { stage, at: Date.now(), users: document.querySelectorAll(USER).length, answers: document.querySelectorAll(BOT).length, stop: !!document.querySelector(STOP) }, extra || {});
+    };
+    const asked = (before, via) => {
       const at = Date.now();
       if (watch && at - watch.askedAt < 1500) return;
+      note("question sent; waiting for it on the page", { asked: ((pageHealth.copy && pageHealth.copy.asked) || 0) + 1, via: via || "" });
       const u = lastOf(USER);
       if (watch && watch.stop) watch.stop();
       watch = before ? { ...before } : { userCount: document.querySelectorAll(USER).length, userText: u ? (u.innerText || "").trim() : "" };
@@ -2079,29 +2090,31 @@
 
     const check = (w) => {
       const now = Date.now();
-      if (now - w.askedAt > GIVE_UP_MS) return finish(w);
+      if (now - w.askedAt > GIVE_UP_MS) { note("gave up after 6 minutes"); return finish(w); }
       const users = document.querySelectorAll(USER);
       const u = users.length ? users[users.length - 1] : null;
       const prompt = u ? (u.innerText || "").trim() : "";
       // A new question must be on the page first.
-      if (!u || (users.length <= w.userCount && prompt === w.userText)) return;
+      if (!u || (users.length <= w.userCount && prompt === w.userText)) { note(u ? "no new question on the page" : "no question found on the page"); return; }
       const bot = lastOf(BOT);
-      if (!bot || (u.compareDocumentPosition(bot) & Node.DOCUMENT_POSITION_FOLLOWING) === 0) return;
+      if (!bot || (u.compareDocumentPosition(bot) & Node.DOCUMENT_POSITION_FOLLOWING) === 0) { note("no answer found under the question"); return; }
       const text = (bot.innerText || "").trim();
-      if (text !== w.text) { w.text = text; w.changedAt = now; w.doneAt = 0; return; }
-      if (text.length < 50 || document.querySelector(STOP) || now - w.changedAt < SETTLE_MS) return;
+      if (text !== w.text) { w.text = text; w.changedAt = now; w.doneAt = 0; note("answer still being written"); return; }
+      if (text.length < 50) { note("answer too short to keep"); return; }
+      if (document.querySelector(STOP)) { note("stop button still showing"); return; }
+      if (now - w.changedAt < SETTLE_MS) return;
       if (!w.doneAt) { w.doneAt = now; return; }
       if (now - w.doneAt < NETWORK_GRACE_MS) return;
       // The stream's own copy was stored after the question: nothing to add.
       if (w.asking) return;
       if ((pageHealth.lastForwardAt || 0) > w.askedAt && w.storedChecked !== w.doneAt) {
         w.asking = true;
-        storedSince(w.askedAt).then((stored) => { w.asking = false; if (stored) finish(w); else w.storedChecked = w.doneAt; });
+        storedSince(w.askedAt).then((stored) => { w.asking = false; if (stored) { note("the stream's own copy was stored"); finish(w); } else w.storedChecked = w.doneAt; });
         return;
       }
       const answer = domToMarkdown(bot).trim() || text;
       const sig = `${prompt}::${answer.length}::${answer.slice(-120)}`;
-      if (sig === lastSig) return finish(w);
+      if (sig === lastSig) { note("same answer as before, not copied again"); return finish(w); }
       lastSig = sig;
       const refs = [];
       const seen = new Set();
@@ -2132,29 +2145,32 @@
         type: "raw-conversation",
         payload: { url: location.href, reqBody: null, transport: "page-copy", raw, end: "page", capturedAt: now, pageUrl: location.href },
       });
+      note("copied off the page");
       finish(w);
     };
 
     // The question going out: a campaign send (pageFacts.onAsked) or the
     // user's own Enter or send click in the composer.
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.target && e.target.closest && e.target.closest('#prompt-textarea, form, [contenteditable="true"]')) asked();
+      // ChatGPT's composer in Nov 2026 is a textarea inside [data-composer-body]
+      // with no <form> around it (the owner's recording), hence the wider match.
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.target && e.target.closest && e.target.closest('#prompt-textarea, form, [contenteditable="true"], [data-composer-body], textarea')) asked(undefined, "enter");
     }, true);
     document.addEventListener("click", (e) => {
       const b = e.target && e.target.closest && e.target.closest('#composer-submit-button, [data-testid="send-button"], button[aria-label*="Send" i]');
-      if (b) asked();
+      if (b) asked(undefined, "click");
     }, true);
-    pageFacts.onAsked = () => asked({ userCount: 0, userText: "" });
+    pageFacts.onAsked = () => asked({ userCount: 0, userText: "" }, "run");
     // The page as it was while the question was being typed: a send seen
     // on the network arrives after the page may already show the question,
     // so the count from before it is the one to compare with.
     let typing = null;
     document.addEventListener("input", (e) => {
-      if (!e.target || !e.target.closest || !e.target.closest('#prompt-textarea, form, [contenteditable="true"]')) return;
+      if (!e.target || !e.target.closest || !e.target.closest('#prompt-textarea, form, [contenteditable="true"], [data-composer-body], textarea')) return;
       const u = lastOf(USER);
       typing = { userCount: document.querySelectorAll(USER).length, userText: u ? (u.innerText || "").trim() : "" };
     }, true);
-    pageFacts.onEngineSubmit = () => { if (!watch || Date.now() - watch.askedAt > 1500) asked(typing || undefined); typing = null; };
+    pageFacts.onEngineSubmit = () => { if (!watch || Date.now() - watch.askedAt > 1500) asked(typing || undefined, "network"); typing = null; };
   })();
 
   /* ---------- Gemini page copy (0.84.0) ----------

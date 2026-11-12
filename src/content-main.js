@@ -76,7 +76,20 @@
   // had gone. prepare is also sent while the user is still typing; only the
   // one whose body says "client_prepare_state":"sent" is the send itself.
   const CHATGPT_PREPARE_RE = /\/backend-(?:api|anon)\/(?:f\/)?conversation\/prepare(?:\?|$)/i;
-  const preparedSend = (url, body) => IS_CHATGPT && CHATGPT_PREPARE_RE.test(url || "") && typeof body === "string" && /"client_prepare_state"\s*:\s*"sent"/.test(body);
+  const SENT_RE = /"client_prepare_state"\s*:\s*"sent"/;
+  const preparedSend = (url, body) => IS_CHATGPT && CHATGPT_PREPARE_RE.test(url || "") && typeof body === "string" && SENT_RE.test(body);
+  // The same, for a body that isn't plain text (a Request, a Blob, bytes):
+  // read from a copy, after the fact, so the page's own request is untouched.
+  const preparedSendLater = (url, input, body) => {
+    if (!IS_CHATGPT || !CHATGPT_PREPARE_RE.test(url || "") || typeof body === "string") return;
+    let read = null;
+    try {
+      if (body instanceof Blob) read = body.text();
+      else if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) read = Promise.resolve(new TextDecoder().decode(body));
+      else if (body == null && input instanceof Request) read = input.clone().text();
+    } catch (_) { read = null; }
+    if (read) read.then((t) => { if (SENT_RE.test(t || "")) signalSubmit("prepare"); }, () => {});
+  };
   // Any other event stream from ChatGPT's own API is still taken (0.73.1):
   // when ChatGPT moves its answer to a new address, the capture keeps
   // working instead of silently stopping, and the capture check names the
@@ -433,6 +446,7 @@
 
     if (method === "POST" && SUBMIT_RE && SUBMIT_RE.test(url || "")) signalSubmit("fetch");
     else if (method === "POST" && preparedSend(url, init && init.body)) signalSubmit("prepare");
+    else if (method === "POST") preparedSendLater(url, input, init && init.body);
     const isConv = (method === "POST" || (IS_PERPLEXITY && /socket\.io|sse/i.test(url)) || (IS_CHATGPT && CHATGPT_FOLLOW_RE.test(url || ""))) && CONV_RE.test(url || "");
     let reqBody = null;
     if (isConv) {
