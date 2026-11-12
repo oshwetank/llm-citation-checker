@@ -54,14 +54,18 @@ console.log("\nauth-check: per-engine detection");
   // Gemini rides the shared Google session on the PARENT domain, not on
   // gemini.google.com — a check that only looked at the engine's own host
   // would report every signed-in Gemini user as signed out.
-  // Read by gemini.google.com's address (1.0.0): Chrome returns the cookies
-  // it would send there, google.com's included, with no google.com access.
+  // Asked by gemini.google.com's address (1.0.0). Without access to
+  // google.com, which isn't asked for, Chrome returns nothing there; where
+  // it does show the cookie, Gemini reads as signed in.
   const g = await checkEngineAuth("gemini", fakeGetAll({
     "https://gemini.google.com/": [{ name: "__Secure-1PSID", value: "tok" }],
   }));
   check("gemini is detected via the Google session cookie sent to gemini.google.com", g.status === "in", g.status);
   const asked = [];
-  await checkEngineAuth("gemini", async (q) => { asked.push(q); return []; });
+  const none = await checkEngineAuth("gemini", async (q) => { asked.push(q); return []; });
+  // No cookies seen is what every Gemini user looks like without google.com
+  // access: it must never block a run as "signed out".
+  check("gemini with no cookies seen is unknown, never signed out", none.status === "unknown", none.status);
   check("and it never asks about google.com itself (no permission for it)", asked.every((q) => !q.domain && q.url && new URL(q.url).hostname === "gemini.google.com"), JSON.stringify(asked));
 }
 

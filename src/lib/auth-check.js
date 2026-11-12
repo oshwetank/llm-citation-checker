@@ -47,16 +47,18 @@ export const AUTH_COOKIES = {
   gemini: {
     label: "Gemini",
     loginUrl: "https://accounts.google.com/ServiceLogin?continue=https://gemini.google.com/app",
-    // Gemini rides the shared Google account session, which lives on the
-    // parent google.com domain rather than gemini.google.com itself. It is
-    // read by the page's address (1.0.0): the cookies Chrome would send to
-    // gemini.google.com include google.com's, and that needs access to
-    // gemini.google.com only. Asking by domain needed access to all of
-    // google.com, a permission whose addition would have switched the
-    // extension off for every 0.36 user until they approved it, and one the
-    // store reviews closely next to "cookies".
+    // Gemini rides the shared Google account session, whose cookies live on
+    // the parent google.com domain. Reading them needs access to all of
+    // google.com, even when asked by gemini.google.com's address (checked in
+    // Chrome for 1.0.0: both return nothing without it). That permission is
+    // not asked for: adding it would switch the extension off for every 0.36
+    // user until they approved it, and the store reviews it closely next to
+    // "cookies". So Gemini can be seen signed in only where the browser
+    // happens to show us its cookies, and is never judged signed out: seeing
+    // no cookies here says nothing about the account.
     domains: [],
     urls: ["https://gemini.google.com/"],
+    neverOut: true,
     names: ["__Secure-1PSID", "__Secure-3PSID", "SID", "SSID"],
   },
   perplexity: {
@@ -110,7 +112,8 @@ export async function checkEngineAuth(engine, getAll) {
   if (matched) return { engine, label: spec.label, status: "in", loginUrl: spec.loginUrl };
   // Zero cookies across every candidate domain is the only confident
   // "signed out" — see the three-state note in the file header.
-  if (any === 0) return { engine, label: spec.label, status: "out", loginUrl: spec.loginUrl };
+  // Not for an engine whose session cookies are out of our reach (neverOut).
+  if (any === 0 && !spec.neverOut) return { engine, label: spec.label, status: "out", loginUrl: spec.loginUrl };
   return { engine, label: spec.label, status: "unknown", loginUrl: spec.loginUrl };
 }
 

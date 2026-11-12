@@ -5873,7 +5873,10 @@ function getStartedCard() {
     sawResults: !!gsGet("results"),
   });
   if (c.complete) return null;
+  // Compact (1.0.0): only the next step shows; the full list is folded away
+  // so the card doesn't push the history down the page.
   const list = el("ol", { className: "gs-list" });
+  let nextRow = null;
   c.steps.forEach((s, i) => {
     const isNext = c.next && c.next.id === s.id;
     let go = null;
@@ -5882,18 +5885,20 @@ function getStartedCard() {
         ? el("a", { className: "btn sm primary gs-go", href: "https://chatgpt.com/", target: "_blank", rel: "noopener noreferrer" }, "Open ChatGPT")
         : el("button", { type: "button", className: "btn sm primary gs-go", onclick: () => showTab(s.go) }, "Go there");
     }
-    list.append(el("li", { className: `gs-step${s.done ? " done" : ""}${isNext ? " next" : ""}` },
+    const row = el("li", { className: `gs-step${s.done ? " done" : ""}${isNext ? " next" : ""}` },
       el("span", { className: "gs-tick", "aria-hidden": "true" }, s.done ? "✓" : String(i + 1)),
       el("div", { className: "gs-text" }, el("b", {}, s.label), isNext ? el("span", { className: "gs-hint" }, s.hint) : null),
-      go));
+      go);
+    if (isNext) nextRow = row; else list.append(row);
   });
+  const all = el("details", { className: "gs-all" }, el("summary", {}, "All steps"), list);
   const hide = el("button", { type: "button", className: "linkbtn gs-hide" }, "Hide");
   hide.onclick = () => { try { localStorage.setItem(GS_KEY.hidden, "1"); } catch (_) { /* private mode */ } renderDashboard(); };
   const help = el("a", { className: "linkbtn gs-help", href: chrome.runtime.getURL("ui/help.html"), target: "_blank", rel: "noopener" }, "Help & FAQ");
   return el("section", { className: "db-card gs", "aria-label": "Get started" },
     el("div", { className: "gs-head" }, el("b", { className: "gs-title" }, "Get started"),
       el("span", { className: "gs-count" }, fmt("{done} of {total} done", { done: c.done, total: c.total })), el("span", { className: "gs-sp" }), help, hide),
-    list);
+    nextRow ? el("ol", { className: "gs-list" }, nextRow) : null, all);
 }
 
 function renderDashboard() { withScrollPreserved(renderDashboardImpl); }

@@ -97,9 +97,10 @@ try {
   check("the answer", /^For a \*\*waterproof phone/.test(rec.answerText || "") && /Kovo Aqua Pro/.test(rec.answerText || ""), (rec.answerText || "").slice(0, 80));
   check("three cited pages", (rec.sources || []).length === 3, JSON.stringify((rec.sources || []).map((s) => s.domain)));
   check("two product cards", (rec.products || []).length === 2 && rec.products[0].name === "Zento X9 5G", JSON.stringify((rec.products || []).map((x) => x.name)));
-  // 0.69.0: Google's session cookie lives on google.com; read by the page's
-  // address it is found, so the answer says it was asked signed in.
-  check("marked as asked signed in", rec.session && rec.session.signedIn === "in" && rec.session.private === false, JSON.stringify(rec.session));
+  // 1.0.0: Google's session cookie lives on google.com, which the extension
+  // has no access to (no new permission for 0.36 users), so Chrome doesn't
+  // show it. The answer must then say "unknown", never "signed out".
+  check("sign-in marked unknown, not signed out", rec.session && rec.session.signedIn === "unknown" && rec.session.private === false, JSON.stringify(rec.session));
   const probes = ((await msg({ type: "get-probes" })) || {}).probes || [];
   check("nothing kept as a probe", probes.length === 0, String(probes.length));
 

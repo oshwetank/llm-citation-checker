@@ -230,16 +230,16 @@ async function sessionOf(sender, platform, url) {
       const st = stores.find((x) => (x.tabIds || []).includes(tab.id));
       if (st) storeId = st.id;
     }
-    // The cookies the engine's page itself is sent (0.69.0). Asked by domain,
-    // Google's session cookies on google.com were out of reach (the
-    // extension has gemini.google.com, not google.com), so every Gemini
-    // answer read "unknown". By the page's address they are the ones it gets.
+    // The cookies the engine's page itself is sent (0.69.0). For Gemini this
+    // finds nothing without access to google.com, which 1.0.0 doesn't ask
+    // for (see AUTH_COOKIES.gemini), so a Gemini answer reads "unknown"
+    // rather than a wrong "signed out".
     const spec = AUTH_COOKIES[platform];
     const pageUrl = tab && tab.url && /^https:/.test(tab.url) ? new URL(tab.url).origin + "/" : null;
     if (spec && pageUrl) {
       const got = (await chrome.cookies.getAll(storeId ? { url: pageUrl, storeId } : { url: pageUrl })) || [];
       if (got.some((c) => spec.names.includes(c.name) && c.value)) out.signedIn = "in";
-      else if (got.length) out.signedIn = "out";
+      else if (got.length && !spec.neverOut) out.signedIn = "out";
     } else {
       const r = await checkEngineAuth(platform, (q) => chrome.cookies.getAll(storeId ? { ...q, storeId } : q));
       out.signedIn = r.status;

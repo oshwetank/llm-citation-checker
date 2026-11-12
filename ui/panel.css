@@ -7528,7 +7528,10 @@ body.popup .cap-toggle { min-block-size: 26px; min-inline-size: 32px; justify-co
 
 /* Get started (1.0.0): five steps at the top of the Dashboard. */
 .gs { margin-block-end: 12px; }
-.gs-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-block-end: 8px; }
+.gs-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-block-end: 6px; }
+.gs-all { margin-block-start: 6px; font-size: 12.5px; }
+.gs-all > summary { cursor: pointer; color: var(--fg-muted); }
+.gs-all > .gs-list { margin-block-start: 6px; }
 .gs-title { font-size: 15px; }
 .gs-count { color: var(--fg-muted); font-size: 12.5px; }
 .gs-sp { flex: 1; }

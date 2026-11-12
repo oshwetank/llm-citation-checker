@@ -159,7 +159,18 @@ try {
       btn: !!document.getElementById("dbFiltersBtn"),
       recentShown: [...document.querySelectorAll("#dashboard .db-recent")].some((x) => x.offsetParent !== null),
     }));
-    check("the history starts near the top: under 320px down", lay.list < 320, String(lay.list));
+    // 1.0.0: a new user also sees the Get started card above it, kept to one
+    // step so the first rows of history are still on a 900px laptop screen.
+    const shown = await page.evaluate(() => !!document.querySelector("#dashboard .gs"));
+    check("with the Get started card shown, still under 560px down", !shown || lay.list < 560, `${shown} ${lay.list}`);
+    // Hidden, as for anyone who has dismissed it: the 0.78.0 bound holds.
+    await page.evaluate(() => { localStorage.setItem("cito-gs-hidden", "1"); });
+    await page.reload();
+    await page.waitForTimeout(1500);
+    await page.evaluate(() => document.querySelector('[data-tab="dashboard"]').click());
+    await page.waitForSelector("#dashboard .db-list", { timeout: 15000 });
+    const top = await page.evaluate(() => Math.round(document.querySelector("#dashboard .db-list")?.getBoundingClientRect().top || 9999));
+    check("the history starts near the top: under 320px down", top < 320, String(top));
     check("the filters sit behind a Filters button, closed", lay.btn && !lay.open, JSON.stringify(lay));
     await page.click("#dbFiltersBtn");
     await page.waitForTimeout(250);
