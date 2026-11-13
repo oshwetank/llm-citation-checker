@@ -148,7 +148,7 @@ jobs:
                    test/glossary.test.mjs test/grounding-score.test.mjs test/multi-engine.test.mjs \
                    test/pacing.test.mjs test/retention.test.mjs \
                    test/image-url.test.mjs test/sources.test.mjs test/text-sanitize.test.mjs test/xlsxlite.test.mjs \
-                   test/brands-local.test.mjs test/same-answer.test.mjs test/gemini-hotels.test.mjs \
+                   test/brands-local.test.mjs test/brands-common-words.test.mjs test/same-answer.test.mjs test/gemini-hotels.test.mjs \
                    test/chatgpt-ads.test.mjs test/chatgpt-genui.test.mjs test/raw-breakdown.test.mjs test/page-text.test.mjs test/security-hardening.test.mjs test/build-store.test.mjs test/getting-started.test.mjs test/offers.test.mjs test/netlog.test.mjs test/proto-strings.test.mjs test/answer-links.test.mjs test/campaign-view.test.mjs test/display.test.mjs test/chatgpt-signed-out.test.mjs test/money.test.mjs test/site-kind.test.mjs test/text-has.test.mjs test/ai-check.test.mjs test/hardware-tier.test.mjs test/i18n.test.mjs test/firefox-build.test.mjs test/assistant.test.mjs test/context-pack.test.mjs test/campaign-edit.test.mjs test/retry-missing.test.mjs test/capture-health.test.mjs test/run-compare.test.mjs test/email-check.test.mjs test/campaign-bundle.test.mjs test/cloud.test.mjs test/server-api.test.mjs test/laya.test.mjs test/ai-bench.test.mjs test/insights.test.mjs test/ask-knowledge.test.mjs test/training-gen.test.mjs; do
             echo "── $f"
             if ! node "$f"; then
