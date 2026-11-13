@@ -1390,10 +1390,17 @@ function patchFromBroadcast(captureId) {
   }, 400);
 }
 
+const announced = new Set();
+let lastAnnounced = 0;
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type === "new-capture") {
     refreshFromBroadcast();
-    if (!msg.duringRun) showToast("New LLM citation captured!");
+    // Once per answer, and at most one notice every 15 s however many come.
+    if (!msg.duringRun && msg.captureId && !announced.has(msg.captureId) && Date.now() - lastAnnounced > 15000) {
+      lastAnnounced = Date.now();
+      showToast("New LLM citation captured!");
+    }
+    if (msg.captureId) announced.add(msg.captureId);
   }
   // The optional on-device AI pass finished and improved a record that is
   // already on screen. Refresh silently: the capture was announced moments

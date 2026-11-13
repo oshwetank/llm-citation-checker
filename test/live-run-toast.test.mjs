@@ -22,10 +22,18 @@
  * causes it is not yet understood, so nothing here should be read as
  * covering it.
  *
+ * 1.0.0, reported: "the tool is continuously sending a popup which says New
+ * Citation captured, even though I am not running any prompt". A Perplexity
+ * tab left open keeps making requests that are saved raw but hold no
+ * answer, and each one was announced; so was an answer the page sent again.
+ * Through the real worker now: neither raises the notice, a new answer does,
+ * once.
+ *
  * As with any panel-messaging test: a page's own chrome.runtime.sendMessage
  * is NOT delivered to that page's own onMessage listener, so the broadcasts
  * below are fired from a second extension page.
  */
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -97,6 +105,26 @@ try {
   await page.waitForTimeout(900);
   const adhocToasts = await toastCount();
   check("a browsing capture still raises a toast", adhocToasts === 1, `saw ${adhocToasts}`);
+
+  console.log("\nThrough the worker: only a new answer is announced");
+  await page.waitForTimeout(16000); // past the one-notice-per-15-s spacing
+  const before = await toastCount();
+  const toastsAfter = async (ms) => { await page.waitForTimeout(ms); return (await toastCount()) - before; };
+  const send = (payload) => other.evaluate((p) => new Promise((r) => chrome.runtime.sendMessage({ type: "raw-conversation", payload: p }, r)), payload);
+  // Perplexity's background requests: saved raw, no answer in them.
+  for (const path of ["/rest/perplexity_ask/graphql", "/rest/perplexity_ask/graphql/ws", "/rest/sse/related-queries/abc"]) {
+    await send({ url: `https://www.perplexity.ai${path}`, raw: '{"data":{"ping":true}}', transport: "fetch", pageUrl: "https://www.perplexity.ai/", capturedAt: Date.now() });
+  }
+  check("Perplexity's empty requests raise no notice", (await toastsAfter(1200)) === 0);
+  const fx = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "chatgpt-genui-cards.txt"), "utf8").split(/\r?\n/);
+  const answer = { url: "https://chatgpt.com/backend-api/f/conversation", reqBody: (fx.find((l) => l.startsWith("# reqBody:")) || "").replace("# reqBody: ", ""), raw: fx.filter((l) => !l.startsWith("# ")).join("\n"), transport: "fetch", pageUrl: "https://chatgpt.com/", capturedAt: Date.now() };
+  const first = await send(answer);
+  check("a new answer is announced", first && first.captureId && (await toastsAfter(1500)) === 1, JSON.stringify(first));
+  await page.waitForTimeout(16000);
+  const before2 = await toastCount();
+  await send({ ...answer, capturedAt: Date.now() });
+  await page.waitForTimeout(1500);
+  check("the same answer sent again is not announced again", (await toastCount()) - before2 === 0);
 
   check("no uncaught page errors", pageErrors.length === 0, pageErrors.join(" | "));
 } finally {

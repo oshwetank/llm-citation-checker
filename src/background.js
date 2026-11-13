@@ -598,8 +598,10 @@ async function storeCapture(payload, meta) {
   // capture just stored.
   enforceRetention(settings, record ? record.captureId : captureId).catch(() => {});
   // A copy of an answer already stored is merged into that record, which
-  // keeps its id; that is the capture the panel should show.
-  return { captureId: record ? record.captureId : captureId, record };
+  // keeps its id; that is the capture the panel should show. `isNew` says
+  // whether this was an answer not stored before (1.0.0: the "captured"
+  // notice went up for every page request saved, answer or not).
+  return { captureId: record ? record.captureId : captureId, record, isNew: !!record && record.captureId === captureId };
 }
 
 // Build a derived record from a raw row. `rawText` optional (avoids re-gunzip).
@@ -3454,8 +3456,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               // IS the notification; during a run the progress card already
               // counts every prompt, so one toast per prompt is noise layered
               // over the thing the user is trying to read.
+              // Only a new answer is announced (1.0.0). The owner saw "New
+              // LLM citation captured!" again and again with nothing asked:
+              // a Perplexity tab left open keeps making requests (related
+              // questions, live updates) that are saved raw but hold no
+              // answer, and a page re-sending an answer already stored was
+              // announced again too. Those refresh the panel silently.
               chrome.runtime.sendMessage(
-                { type: "new-capture", captureId: res.captureId, duringRun: !!loader.running },
+                res.record && res.isNew
+                  ? { type: "new-capture", captureId: res.captureId, duringRun: !!loader.running }
+                  : { type: "capture-updated", captureId: res.captureId },
                 () => void chrome.runtime.lastError);
             } catch (_) {}
             // Deliberately NOT awaited: the capture is already saved and shown.
