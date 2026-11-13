@@ -141,7 +141,7 @@ export function initAiSettings(slot) {
       slot.append(
         sw("aiCampaigns", "Check campaign answers", "Each answer a campaign captures is checked in the background, one at a time.", s.settings && s.settings.onCampaigns, (v) => set({ aiOnCampaigns: v })),
         sw("aiEveryday", "Check everyday answers", "Answers you get by asking the engines yourself. Nothing leaves this computer.", s.settings && s.settings.onEveryday, (v) => set({ aiOnEveryday: v })),
-        sw("aiCounts", "Use AI-checked brands in counts", "Adds the names the AI found, each quoted from the answer, to share of voice and visibility. Off keeps counts the same on every computer.", s.settings && s.settings.inCounts, (v) => set({ aiInCounts: v })));
+        sw("aiCounts", "Let the AI correct brands in counts", "Adds names the rules missed, takes out words that aren't names, and counts a product under its brand, each backed by the answer. Off keeps counts the same on every computer.", s.settings && s.settings.inCounts, (v) => set({ aiInCounts: v })));
       slot.append(h("p", { className: "ai-hw", id: "aiQueue" }, s.checking ? `Checking an answer now · ${s.queued} waiting` : s.queued ? `${s.queued} answers waiting` : "Nothing waiting.",
         s.model ? ` Model: ${s.model.repo}.` : ""));
     }

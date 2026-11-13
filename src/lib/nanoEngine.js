@@ -82,6 +82,47 @@ async function baseFor(lm, system) {
   return p;
 }
 
+// Is this a whole JSON value yet? (outside strings, every bracket closed)
+function jsonClosed(t) {
+  let depth = 0, inStr = false, esc = false, began = false;
+  for (const ch of t) {
+    if (inStr) { if (esc) esc = false; else if (ch === "\\") esc = true; else if (ch === "\"") inStr = false; continue; }
+    if (ch === "\"") inStr = true;
+    else if (ch === "{" || ch === "[") { depth++; began = true; }
+    else if (ch === "}" || ch === "]") { depth--; if (began && depth === 0) return true; }
+  }
+  return false;
+}
+
+/*
+ * A reply read as it streams (1.0.0). The owner's computer ran out of the
+ * 90 s on all four answers, and what the model had written by then was
+ * thrown away. Read as it comes, the reply stops being read when the JSON
+ * closes or passes its budget, and on time running out what arrived is kept
+ * (aiCheck.parseJson closes a cut-off reply).
+ */
+async function promptCapped(session, input, opts, capChars, limitMs = TIMEOUT_MS) {
+  const ctl = new AbortController();
+  let acc = "", timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; ctl.abort(); }, limitMs);
+  try {
+    const stream = session.promptStreaming(input, { ...opts, signal: ctl.signal });
+    const reader = stream.getReader ? stream.getReader() : null;
+    const next = reader ? () => reader.read() : (() => { const it = stream[Symbol.asyncIterator](); return () => it.next(); })();
+    for (;;) {
+      const { value, done } = await next();
+      if (done) break;
+      const c = String(value || "");
+      // Older Chrome streams the whole text so far; newer, each new piece.
+      acc = acc && c.length > acc.length && c.startsWith(acc) ? c : acc + c;
+      if (acc.length >= capChars || jsonClosed(acc)) { ctl.abort(); break; }
+    }
+  } catch (e) {
+    if (!acc) throw timedOut ? new Error("Chrome's built-in AI took too long (replying)") : e;
+  } finally { clearTimeout(timer); }
+  return acc;
+}
+
 /**
  * One reply.
  * @param {{messages: {role: string, content: string}[], maxTokens?: number, schema?: object, tools?: object[]}} o
@@ -103,7 +144,18 @@ export async function nanoGenerate(o, g = globalThis) {
     else if (rest.length) last.content = rest.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n\n") + `\n\nUSER: ${last.content}`;
     const opts = {};
     if (o.schema && !o.tools) { opts.responseConstraint = o.schema; opts.omitResponseConstraintInput = true; }
-    const text = await withTimeout(session.prompt(last ? last.content : "", opts), TIMEOUT_MS, "replying");
+    const input = last ? last.content : "";
+    const capChars = o.maxTokens ? Math.max(600, o.maxTokens * 5) : 0;
+    const once = (op) => (capChars && typeof session.promptStreaming === "function"
+      ? promptCapped(session, input, op, capChars, o.timeoutMs || TIMEOUT_MS)
+      : withTimeout(session.prompt(input, op), o.timeoutMs || TIMEOUT_MS, "replying"));
+    let text;
+    try { text = await once(opts); } catch (e) {
+      // A Chrome that can't hold to this shape (a keyword it doesn't know)
+      // still answers without it; the reply is checked the same way after.
+      if (!opts.responseConstraint || /took too long/.test(String(e && e.message))) throw e;
+      text = await once({});
+    }
     return { text: String(text || ""), ms: Date.now() - t0 };
   } finally {
     if (session !== base) { try { session.destroy && session.destroy(); } catch (_) { /* gone */ } }

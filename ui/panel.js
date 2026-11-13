@@ -2980,14 +2980,14 @@ function atMemorySection(rec, { brands, mentions, engineLabel }) {
  * treats it with the quote that shows it, and names the rules missed. Every
  * claim here was checked against the answer before it was kept (lib/
  * aiValidate.js); what wasn't backed is counted at the foot. Counts change
- * only with "Use AI-checked brands in counts" on. */
+ * only with "Let the AI correct brands in counts" on. */
 const AI_LABEL = {
   comparison: "Comparisons & alternatives", local: "Local & near me", price_value: "Price, cost & value", trust: "Trust, safety & compliance",
   careers: "Jobs & careers", howto: "How-to & information", for_use: "For a person or use", best_top: "Best, top & reviews", other: "Other",
   awareness: "Learning about options", consideration: "Comparing options", decision: "Ready to choose", post_purchase: "After buying",
   consumer: "Consumers", business: "Businesses", public_sector: "Public sector", mixed: "Mixed",
   local_scope: "Local", national: "National", regional: "Regional", global: "Global",
-  brand: "Brand", product: "Product", retailer: "Store", publisher: "Publisher", institution: "Institution", place: "Place", person: "Person",
+  brand: "Brand", product: "Product", retailer: "Store", publisher: "Publisher", institution: "Institution", place: "Place", person: "Person", not_a_name: "Not a name",
   recommended: "Recommended", positive: "Positive", neutral: "Neutral", negative: "Negative", advised_against: "Advised against", mentioned: "Mentioned",
 };
 const AI_STANCE_TONE = { recommended: "ok", positive: "ok", neutral: "neutral", negative: "bad", advised_against: "bad", mentioned: "neutral" };
@@ -3062,6 +3062,20 @@ function atAiSection(rec) {
     const ul = el("ul", { className: "at-ai-missed" });
     missed.forEach((x) => ul.append(el("li", {}, el("b", {}, el("bdi", {}, x.name)), el("span", { className: "ap-muted" }, ` · ${AI_LABEL[x.type] || x.type}`), x.quote ? el("q", { className: "at-ai-q" }, x.quote) : "")));
     sec.append(ul);
+  }
+  // What the AI corrected (1.0.0), or would with the setting on.
+  const removed = rec.aiRemoved || [];
+  const notNames = ents.filter((e) => e.type === "not_a_name");
+  if (removed.length) {
+    sec.append(el("h3", { className: "at-h3" }, "Corrected by AI", el("span", { className: "ap-muted" }, " · in your counts")));
+    const ul = el("ul", { className: "at-ai-missed" });
+    removed.forEach((x) => ul.append(el("li", {}, el("b", {}, el("bdi", {}, x.brand)), el("span", { className: "ap-muted" }, " · ", x.why === "not_a_name" ? "not a name, taken out" : fmt("counted under {brand}", { brand: x.into || "" })))));
+    sec.append(ul);
+  } else if (notNames.length) {
+    sec.append(el("h3", { className: "at-h3" }, "Not names, says the AI", el("span", { className: "ap-muted" }, " · still in your counts")));
+    const ul = el("ul", { className: "at-ai-missed" });
+    notNames.forEach((x) => ul.append(el("li", {}, el("b", {}, el("bdi", {}, x.name)))));
+    sec.append(ul, el("p", { className: "ap-muted" }, "Turn on “Let the AI correct brands in counts” in About → Settings → Built-in AI to take them out."));
   }
   if (!ents.length && !missed.length) sec.append(el("p", { className: "ap-muted" }, "The AI found nothing it could back with a quote from the answer."));
   const ch = ai.checks || {};

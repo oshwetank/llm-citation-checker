@@ -1427,5 +1427,14 @@
  "Help to get going.": "शुरुआत के लिए मदद।",
  "Get started on the Dashboard, About → Help & FAQ, example prompts when you set up a campaign, and what to do next on each campaign's results.": "डैशबोर्ड पर शुरुआत करें, परिचय → मदद और सवाल-जवाब, कैम्पेन सेट करते समय उदाहरण प्रॉम्प्ट, और हर कैम्पेन के नतीजों में आगे क्या करें।",
  "All steps": "सभी चरण",
- "With Debug capture on, what Gemini and ChatGPT sent that CitoSkeleton can't read yet. These hold your prompt and the answer: open the .zip before you send it.": "Debug capture चालू होने पर, Gemini और ChatGPT ने जो भेजा और जिसे CitoSkeleton अभी नहीं पढ़ सकता। इनमें आपका प्रॉम्प्ट और उत्तर होता है: भेजने से पहले .zip खोलकर देख लें।"
+ "With Debug capture on, what Gemini and ChatGPT sent that CitoSkeleton can't read yet. These hold your prompt and the answer: open the .zip before you send it.": "Debug capture चालू होने पर, Gemini और ChatGPT ने जो भेजा और जिसे CitoSkeleton अभी नहीं पढ़ सकता। इनमें आपका प्रॉम्प्ट और उत्तर होता है: भेजने से पहले .zip खोलकर देख लें।",
+ "Let the AI correct brands in counts": "गिनती में ब्रांड AI को ठीक करने दें",
+ "Adds names the rules missed, takes out words that aren't names, and counts a product under its brand, each backed by the answer. Off keeps counts the same on every computer.": "नियमों से छूटे नाम जोड़ता है, जो शब्द नाम नहीं हैं उन्हें हटाता है, और हर उत्पाद को उसके ब्रांड में गिनता है, सब उत्तर के आधार पर। बंद रहने पर हर कंप्यूटर पर गिनती एक जैसी रहती है।",
+ "Corrected by AI": "AI द्वारा ठीक किया गया",
+ "not a name, taken out": "नाम नहीं, हटाया गया",
+ "counted under {brand}": "{brand} में गिना गया",
+ "Not names, says the AI": "AI के अनुसार ये नाम नहीं हैं",
+ " · still in your counts": " · अभी भी आपकी गिनती में",
+ "Turn on “Let the AI correct brands in counts” in About → Settings → Built-in AI to take them out.": "इन्हें हटाने के लिए About → Settings → Built-in AI में “गिनती में ब्रांड AI को ठीक करने दें” चालू करें।",
+ "Not a name": "नाम नहीं"
 }

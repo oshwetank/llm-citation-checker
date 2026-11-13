@@ -11,7 +11,7 @@
  *     prompt version, so a duplicate answer is checked once and Reprocess
  *     never runs the model again — attach() puts the result back on the
  *     record on every derive.
- * Counts never change unless the user turned on "Use AI-checked brands in
+ * Counts never change unless the user turned on "Let the AI correct brands in
  * counts" (applyAi in lib/aiCheck.js).
  *
  * Two engines since 0.74.0 (lib/aiBench.js chooses): Chrome's own built-in

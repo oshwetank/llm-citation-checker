@@ -185,7 +185,7 @@ device unless you choose to share that campaign: the AI runs on your computer.
 >   names the rules missed. Every claim is checked against the answer before it is kept, and
 >   what isn't backed is left out and counted. Analyze has a new **AI check** section; the
 >   Dashboard filters by language and market. Your counts never change unless you turn on
->   "Use AI-checked brands in counts". Checks are kept, so Reprocess doesn't run the model
+>   "Let the AI correct brands in counts". Checks are kept, so Reprocess doesn't run the model
 >   again. Brand names in any script (Japanese, Hindi, Arabic, Thai…) are now matched, and
 >   Gemini Nano's extra names no longer change the counts silently.
 > - **For any brand, anywhere** (0.69.0). Prices are read in any currency, before or after the

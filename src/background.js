@@ -650,7 +650,7 @@ async function enrichCaptureWithAI(record) {
     // 0.70.0: Nano's names no longer go into the counts directly (that made
     // share of voice differ between a computer with Nano and one without,
     // and Reprocess erased it). They are kept as an AI check, put back on
-    // every derive, and join the counts only with "Use AI-checked brands in
+    // every derive, and join the counts only with "Let the AI correct brands in
     // counts" on.
     const have = new Set((record.brandMentions || []).map((m) => String(m.brand || "").toLowerCase()));
     const added = finalBrands.filter((m) => !have.has(String(m.brand || "").toLowerCase()));
