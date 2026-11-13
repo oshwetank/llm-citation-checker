@@ -282,11 +282,13 @@
       // and go between poll ticks, so "is the prompt now in the conversation"
       // is the more durable signal. Several selectors because this markup
       // changes; querySelectorAll on an unsupported one just yields nothing.
-      userTurn: '[data-message-author-role="user"], [data-testid^="conversation-turn"] [data-message-author-role="user"]',
+      // [data-turn-key]: ChatGPT's virtualized turns (Nov 2026), which carry no
+      // author-role wrapper in some modes.
+      userTurn: '[data-message-author-role="user"], [data-testid^="conversation-turn"] [data-message-author-role="user"], [data-turn-key]',
       // Conversation content, EXCLUDED when scanning the page for upstream
       // limit notices — see limitHit(). Any node carrying an author role is
       // prompt or answer text; a cap notice never has one.
-      turns: "[data-message-author-role]",
+      turns: "[data-message-author-role], [data-turn-key]",
     },
     gemini: {
       composer: ['rich-textarea div[contenteditable="true"]', "rich-textarea", 'div[contenteditable="true"]', "textarea"],
@@ -1143,7 +1145,8 @@
           // an engine that didn't reply (0.79.0).
           let answerChars = 0;
           try {
-            const msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
+            let msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
+            if (!msgs.length) msgs = [...document.querySelectorAll("[data-turn-key]")].filter((t) => { const h = t.querySelector("[data-conversation-role]"); return h && h.getAttribute("data-conversation-role") === "assistant"; });
             const last = msgs.length ? msgs[msgs.length - 1] : null;
             answerChars = last ? (last.innerText || last.textContent || "").trim().length : 0;
           } catch (_) {}
@@ -2051,8 +2054,6 @@
    */
   (function chatgptPageCopy() {
     if (!/(?:^|\.)(?:chatgpt\.com|chat\.openai\.com)$/.test(location.hostname)) return;
-    const USER = '[data-message-author-role="user"]';
-    const BOT = '[data-message-author-role="assistant"]';
     const STOP = '[data-testid="stop-button"], button[aria-label*="Stop" i]';
     const SETTLE_MS = 3000;          // answer text unchanged this long = finished
     const NETWORK_GRACE_MS = 2500;   // then this long for the stream's own copy
@@ -2060,7 +2061,45 @@
     let watch = null;
     let lastSig = "";
 
-    const lastOf = (sel) => { const all = document.querySelectorAll(sel); return all.length ? all[all.length - 1] : null; };
+    /*
+     * The thread, in both of ChatGPT's layouts (1.0.0). Until Nov 2026 every
+     * message sat in a div[data-message-author-role]. The owner's capture
+     * report of 13 Nov (page copy: "0 questions, 0 answers") and ChatGPT's own
+     * page code show why that stopped matching: the thread is now virtualized
+     * into div[data-turn-key] turns, each with a screen-reader heading marked
+     * data-conversation-role ("You said:" / "ChatGPT said:"), and the old
+     * wrapper is added only in some modes. Each role is read from the old
+     * wrapper where it exists, else from the turns.
+     */
+    const roleEls = (role) => {
+      const old = [...document.querySelectorAll(`[data-message-author-role="${role}"]`)];
+      if (old.length) return old;
+      const out = [];
+      for (const t of document.querySelectorAll("[data-turn-key]")) {
+        const h = t.querySelector("[data-conversation-role]");
+        const inner = t.querySelector("[data-turn]");
+        const r = (h && h.getAttribute("data-conversation-role")) || t.getAttribute("data-turn") || (inner && inner.getAttribute("data-turn")) || "";
+        if (r === role) out.push(t);
+      }
+      return out;
+    };
+    const lastOfRole = (role) => { const all = roleEls(role); return all.length ? all[all.length - 1] : null; };
+    // A turn without its chrome: the hidden "You said:" heading, buttons,
+    // icons and the sent-time, which are not part of what was said.
+    const clean = (el) => {
+      if (!el || el.hasAttribute("data-message-author-role")) return el;
+      const c = el.cloneNode(true);
+      c.querySelectorAll('[data-conversation-role], [data-markdown-copy="exclude"], [data-user-message-sent-time], button, svg, style, script, textarea').forEach((n) => n.remove());
+      return c;
+    };
+    const textOf = (el) => {
+      if (!el) return "";
+      const c = clean(el);
+      return ((c === el ? el.innerText : c.textContent) || "").replace(/\u00a0/g, " ").trim();
+    };
+    // What the page looks like, for the capture report: attribute names and
+    // counts only, never text.
+    const domShape = () => `old wrapper ${document.querySelectorAll("[data-message-author-role]").length} · turns ${document.querySelectorAll("[data-turn-key]").length} · role headings ${document.querySelectorAll("[data-conversation-role]").length} · composer ${document.querySelector("[data-composer-body]") ? "yes" : "no"}`;
     // `before`: the questions on the page before this one. A key press or
     // click comes before the page adds the question, so it reads them then;
     // a campaign send is reported once the question is already on the page,
@@ -2070,15 +2109,15 @@
     // label on ChatGPT's page is found from one report, not guessed at.
     const note = (stage, extra) => {
       const c = pageHealth.copy || (pageHealth.copy = { asked: 0, via: "", stage: "", at: 0 });
-      Object.assign(c, { stage, at: Date.now(), users: document.querySelectorAll(USER).length, answers: document.querySelectorAll(BOT).length, stop: !!document.querySelector(STOP) }, extra || {});
+      Object.assign(c, { stage, at: Date.now(), users: roleEls("user").length, answers: roleEls("assistant").length, stop: !!document.querySelector(STOP), dom: domShape() }, extra || {});
     };
     const asked = (before, via) => {
       const at = Date.now();
       if (watch && at - watch.askedAt < 1500) return;
       note("question sent; waiting for it on the page", { asked: ((pageHealth.copy && pageHealth.copy.asked) || 0) + 1, via: via || "" });
-      const u = lastOf(USER);
+      const u = lastOfRole("user");
       if (watch && watch.stop) watch.stop();
-      watch = before ? { ...before } : { userCount: document.querySelectorAll(USER).length, userText: u ? (u.innerText || "").trim() : "" };
+      watch = before ? { ...before } : { userCount: roleEls("user").length, userText: u ? textOf(u) : "" };
       Object.assign(watch, { askedAt: at, text: "", changedAt: 0, doneAt: 0, stop: null });
       const w = watch;
       w.stop = startClock(1000);
@@ -2091,14 +2130,14 @@
     const check = (w) => {
       const now = Date.now();
       if (now - w.askedAt > GIVE_UP_MS) { note("gave up after 6 minutes"); return finish(w); }
-      const users = document.querySelectorAll(USER);
+      const users = roleEls("user");
       const u = users.length ? users[users.length - 1] : null;
-      const prompt = u ? (u.innerText || "").trim() : "";
+      const prompt = u ? textOf(u) : "";
       // A new question must be on the page first.
       if (!u || (users.length <= w.userCount && prompt === w.userText)) { note(u ? "no new question on the page" : "no question found on the page"); return; }
-      const bot = lastOf(BOT);
+      const bot = lastOfRole("assistant");
       if (!bot || (u.compareDocumentPosition(bot) & Node.DOCUMENT_POSITION_FOLLOWING) === 0) { note("no answer found under the question"); return; }
-      const text = (bot.innerText || "").trim();
+      const text = textOf(bot);
       if (text !== w.text) { w.text = text; w.changedAt = now; w.doneAt = 0; note("answer still being written"); return; }
       if (text.length < 50) { note("answer too short to keep"); return; }
       if (document.querySelector(STOP)) { note("stop button still showing"); return; }
@@ -2112,13 +2151,13 @@
         storedSince(w.askedAt).then((stored) => { w.asking = false; if (stored) { note("the stream's own copy was stored"); finish(w); } else w.storedChecked = w.doneAt; });
         return;
       }
-      const answer = domToMarkdown(bot).trim() || text;
+      const answer = domToMarkdown(clean(bot)).trim() || text;
       const sig = `${prompt}::${answer.length}::${answer.slice(-120)}`;
       if (sig === lastSig) { note("same answer as before, not copied again"); return finish(w); }
       lastSig = sig;
       const refs = [];
       const seen = new Set();
-      for (const a of bot.querySelectorAll("a[href]")) {
+      for (const a of clean(bot).querySelectorAll("a[href]")) {
         const href = a.href || "";
         if (!/^https?:/i.test(href) || /(?:^|\.)(?:chatgpt\.com|openai\.com)\//i.test(href.replace(/^https?:\/\//, "")) || seen.has(href)) continue;
         seen.add(href);
@@ -2127,7 +2166,7 @@
       }
       // Its pictures, as the stream's own image component (0.80.0).
       const pics = [];
-      for (const im of bot.querySelectorAll("img[src]")) {
+      for (const im of clean(bot).querySelectorAll("img[src]")) {
         const src = im.currentSrc || im.src || "";
         if (!/^https?:/i.test(src) || (im.naturalWidth && im.naturalWidth < 48) || pics.some((p) => p.thumbnail_url === src)) continue;
         const a = im.closest("a[href]");
@@ -2167,8 +2206,8 @@
     let typing = null;
     document.addEventListener("input", (e) => {
       if (!e.target || !e.target.closest || !e.target.closest('#prompt-textarea, form, [contenteditable="true"], [data-composer-body], textarea')) return;
-      const u = lastOf(USER);
-      typing = { userCount: document.querySelectorAll(USER).length, userText: u ? (u.innerText || "").trim() : "" };
+      const u = lastOfRole("user");
+      typing = { userCount: roleEls("user").length, userText: u ? textOf(u) : "" };
     }, true);
     pageFacts.onEngineSubmit = () => { if (!watch || Date.now() - watch.askedAt > 1500) asked(typing || undefined, "network"); typing = null; };
   })();

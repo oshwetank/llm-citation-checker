@@ -21,7 +21,13 @@
  *   5. (1.0.0) ChatGPT's composer as the owner's recording has it: a
  *      textarea inside [data-composer-body], no <form>, and prepare sent as
  *      a Request object. Enter is enough, and the capture report says how far
- *      the page copy got.
+ *      the page copy got;
+ *   6. (1.0.0) the owner's capture report of 13 Nov 2026 ("0 questions, 0
+ *      answers on the page") and ChatGPT's own page code: the thread is
+ *      virtualized into div[data-turn-key] turns, each with a hidden "You
+ *      said:" / "ChatGPT said:" heading (data-conversation-role), buttons
+ *      inside, and no data-message-author-role anywhere. The answer is still
+ *      copied, without the headings or buttons in it.
  */
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -95,6 +101,14 @@ const PAGE_NOV = () => PAGE(false)
   .replace("const prepare = (state) => fetch('/backend-api/f/conversation/prepare', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ client_prepare_state: state, action: 'next', model: 'gpt-x' }) }).catch(() => {});",
     "const prepare = (state) => fetch(new Request('/backend-api/f/conversation/prepare', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ client_prepare_state: state, action: 'next', model: 'gpt-x' }) })).catch(() => {});");
 
+// The thread as ChatGPT drew it in Nov 2026: virtualized turns, no author-role wrapper.
+const PAGE_VIRT = () => PAGE_NOV()
+  .replace("u.setAttribute('data-message-author-role', 'user');\n      u.textContent = t; document.getElementById('convo').appendChild(u);",
+    "u.setAttribute('data-turn-key', 'turn-u' + Date.now()); u.innerHTML = '<div data-virtualized-turn-content=\"\"><h4 class=\"sr-only\" data-conversation-role=\"user\">You said:</h4><div class=\"whitespace-pre-wrap\"></div></div>'; u.querySelector('.whitespace-pre-wrap').textContent = t; document.getElementById('convo').appendChild(u);")
+  .replace("a.setAttribute('data-message-author-role', 'assistant');\n      document.getElementById('convo').appendChild(a);",
+    "a.setAttribute('data-turn-key', 'turn-a' + Date.now()); a.innerHTML = '<div data-virtualized-turn-content=\"\"><h4 class=\"sr-only\" data-conversation-role=\"assistant\" tabindex=\"-1\">ChatGPT said:</h4><div class=\"markdown\"></div><button aria-label=\"Copy\">Copy</button><span data-markdown-copy=\"exclude\">Good response</span></div>'; document.getElementById('convo').appendChild(a);")
+  .replace("a.innerHTML += parts[i++];", "a.querySelector('.markdown').innerHTML += parts[i++];");
+
 const context = await chromium.launchPersistentContext(`${PROFILE_BASE}-${Date.now()}`, {
   headless: false,
   args: [`--disable-extensions-except=${EXT_PATH}`, `--load-extension=${EXT_PATH}`, "--headless=new", "--no-sandbox"],
@@ -103,6 +117,7 @@ try {
   await context.route(/^https:\/\/chatgpt\.com\//, (route) => {
     const u = new URL(route.request().url());
     if (u.pathname.endsWith("/conversation/prepare")) return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status: "ok", conduit_token: "made-up" }) });
+    if (u.pathname.startsWith("/c/virt")) return route.fulfill({ status: 200, contentType: "text/html", body: PAGE_VIRT() });
     if (u.pathname.startsWith("/c/nov")) return route.fulfill({ status: 200, contentType: "text/html", body: PAGE_NOV() });
     return route.fulfill({ status: 200, contentType: "text/html", body: PAGE(u.pathname.startsWith("/c/old")) });
   });
@@ -216,6 +231,30 @@ try {
   const line = rep5.split("\n").find((l) => /page copy:/.test(l) && /sends seen: [1-9]/.test(l)) || "";
   check("the report has the send and the page copy's last step", /\(prepare\)/.test(line) && /"copied off the page"/.test(line) && /\d+ questions, \d+ answers/.test(line), line || rep5.slice(0, 400));
   await v.close();
+
+  console.log("\n6. the virtualized thread (no author-role wrapper anywhere)");
+  const before6 = (await records()).length;
+  const w6 = await context.newPage();
+  await w6.goto("https://chatgpt.com/c/virt-1");
+  await w6.waitForTimeout(1500);
+  const wrappers = await w6.evaluate(() => document.querySelectorAll("[data-message-author-role]").length);
+  await w6.click("#pending-conversation-input");
+  await w6.keyboard.type("which linen shirt is cheapest");
+  await w6.keyboard.press("Enter");
+  let after6 = before6;
+  for (let i = 0; i < 40 && after6 <= before6; i++) { await w6.waitForTimeout(500); after6 = (await records()).length; }
+  check("the page has no old wrapper (the test is honest)", wrappers === 0 && (await w6.evaluate(() => document.querySelectorAll("[data-turn-key]").length)) === 2);
+  check("captured", after6 === before6 + 1, `${after6 - before6} new`);
+  const virt = (await records()).find((x) => /cheapest/.test(x.userPrompt || ""));
+  check("with the question typed, without the hidden heading", !!virt && virt.userPrompt === "which linen shirt is cheapest", virt && JSON.stringify(virt.userPrompt));
+  if (virt) {
+    const full = ((await ask({ type: "get-record", captureId: virt.captureId })) || {}).record || virt;
+    check("the answer, with its structure and links", /\*\*Zento Linen\*\*/.test(full.answerText || "") && (full.sources || []).some((x) => /stylelab/.test(x.domain || "")), (full.answerText || "").slice(0, 100));
+    check("no heading, button or feedback text in it", !/You said|ChatGPT said|Good response|\bCopy\b/.test(full.answerText || ""), (full.answerText || "").slice(0, 160));
+  }
+  const rep6 = ((await ask({ type: "capture-check" })) || {}).report || "";
+  check("the report says what the page looks like", /page: old wrapper 0 · turns \d+ · role headings \d+/.test(rep6), rep6.split("\n").find((l) => /page copy/.test(l)) || rep6.slice(0, 300));
+  await w6.close();
 } finally {
   await context.close();
 }
