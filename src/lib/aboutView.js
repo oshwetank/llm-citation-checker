@@ -20,6 +20,7 @@ export const ABOUT_STEPS = [
 
 /** What's new — the redesign, newest first. */
 export const ABOUT_NEWS = [
+  { head: "Brands read the way you would.", body: "Ordinary words such as sugar or oats are no longer brands, list items and product headings are, and Chrome's built-in AI can now finish its check on a slow computer and correct the list." },
   { head: "Help to get going.", body: "Get started on the Dashboard, About → Help & FAQ, example prompts when you set up a campaign, and what to do next on each campaign's results." },
   { head: "Every page in your language.", body: "Spanish, Portuguese (Brazil), French, Hindi and Arabic now cover the campaign results too, with dates in your language. About → Settings → Language." },
   { head: "Safer to share.", body: "A campaign file from someone else is checked as it's imported, and a saved HTML report shows pictures and prints, and does nothing else." },

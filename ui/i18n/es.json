@@ -1436,5 +1436,7 @@
  "Not names, says the AI": "No son nombres, según la IA",
  " · still in your counts": " · aún en tus recuentos",
  "Turn on “Let the AI correct brands in counts” in About → Settings → Built-in AI to take them out.": "Activa «Dejar que la IA corrija las marcas en los recuentos» en Acerca de → Ajustes → IA integrada para quitarlos.",
- "Not a name": "No es un nombre"
+ "Not a name": "No es un nombre",
+ "Brands read the way you would.": "Marcas leídas como lo harías tú.",
+ "Ordinary words such as sugar or oats are no longer brands, list items and product headings are, and Chrome's built-in AI can now finish its check on a slow computer and correct the list.": "Palabras comunes como azúcar o avena ya no son marcas, los elementos de lista y los títulos de producto sí, y la IA integrada de Chrome ahora termina su revisión en un ordenador lento y corrige la lista."
 }
