@@ -53,6 +53,16 @@ console.log("\nthe prompt");
 {
   check("comes out of the upload", channelPrompt(uploadBody(PROMPT)) === PROMPT, channelPrompt(uploadBody(PROMPT)));
   check("and nothing out of an acknowledgement", channelPrompt("count=1&ofs=2&req0___data__=IgIIAQ%3D%3D") === null);
+  // 1.0.0: the owner's Gemini capture of 13 Nov 2026 had no prompt. The
+  // question had moved to field 2.9.1 of the upload.
+  check("the November 2026 upload (field 2.9.1)", channelPrompt("count=1&ofs=1&req0___data__=EjoIAUo2CjRiZXN0IGJpc2N1dGUgZm9yIG1vcm5pbmcgY2hhaSwgd2hpY2ggaXMgYWxzbyBoZWFsdGh5") === "best biscute for morning chai, which is also healthy");
+  {
+    // And wherever it moves next: the innermost text with a space in it.
+    const enc = (n, b) => Uint8Array.from([(n << 3) | 2, b.length, ...b]);
+    const body = enc(7, enc(3, enc(1, new TextEncoder().encode("which biscuit is healthiest with tea"))));
+    const got = channelPrompt("count=1&req0___data__=" + encodeURIComponent(btoa(String.fromCharCode(...body))));
+    check("a field it has never seen", got === "which biscuit is healthiest with tea", got);
+  }
 }
 
 console.log("\nthe adapter");
