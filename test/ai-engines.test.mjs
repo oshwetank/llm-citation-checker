@@ -93,7 +93,9 @@ try {
   const b0 = await msg({ type: "ai-benchmark" });
   const cores = await page.evaluate(() => navigator.hardwareConcurrency);
   check("the test ran and timed it", b0 && b0.ok && b0.bench.qwen && Number.isFinite(b0.bench.qwen.ms), JSON.stringify(b0));
-  check(`with ${Math.max(1, Math.min(8, cores - 1))} threads, not 1`, b0.bench.qwen.threads === Math.max(1, Math.min(8, cores - 1)), String(b0.bench.qwen.threads));
+  // Half the cores, at most 4 (1.0.0): every core but one ran a laptop hot.
+  const want = Math.max(1, Math.min(4, Math.floor(cores / 2)));
+  check(`with ${want} threads: half the cores, at most 4`, b0.bench.qwen.threads === want, String(b0.bench.qwen.threads));
   check("the stand-in's noise fails the quality test", b0.bench.qwen.ok === false && b0.bench.qwen.score < 3, JSON.stringify(b0.bench.qwen));
   // This Chromium has the Prompt API but no model fetched ("downloadable").
   check("Chrome's model isn't ready here, and the test says why", b0.bench.nano && b0.bench.nano.ok === false && ["unavailable", "downloadable", "downloading"].includes(b0.bench.nano.availability), JSON.stringify(b0.bench.nano));

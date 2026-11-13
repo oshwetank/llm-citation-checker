@@ -53,7 +53,7 @@ export function initAiSettings(slot) {
     const pick = s.pick || null;
     const tier = chosen || s.tier || (pick && pick.tier) || "standard";
     slot.replaceChildren();
-    const chip = s.downloading ? h("span", { className: "ai-chip busy" }, s.progress && s.progress.pct != null ? `Downloading ${Math.round(s.progress.pct)}%` : "Downloading…")
+    const chip = s.downloading ? h("span", { className: "ai-chip busy" }, s.progress && /waiting/.test(s.progress.status || "") ? "Waiting for the other download" : s.progress && s.progress.pct != null ? `Downloading ${Math.round(s.progress.pct)}%` : "Downloading…")
       : s.ready && s.engine && s.engine.id === "nano" ? h("span", { className: "ai-chip ok" }, "Ready · Chrome's built-in AI")
       : s.ready ? h("span", { className: "ai-chip ok" }, `Ready · ${s.model ? (s.model.params ? `${s.model.label} (${s.model.params})` : s.model.label) : ""}${s.device ? ` · ${s.device === "webgpu" ? "graphics chip" : "processor"}` : ""}`)
       : s.error ? h("span", { className: "ai-chip bad" }, "Download failed")
@@ -193,7 +193,7 @@ export function initAiSettings(slot) {
   function layaBlock(s) {
     const L = s.laya || {};
     const box = h("div", { className: "ai-engine ai-laya", id: "aiLaya" });
-    const chip = L.downloading ? h("span", { className: "ai-chip busy" }, L.progress && L.progress.pct != null ? `Downloading ${Math.round(L.progress.pct)}%` : "Downloading…")
+    const chip = L.downloading ? h("span", { className: "ai-chip busy" }, L.progress && /waiting/.test(L.progress.status || "") ? "Waiting for the other download" : L.progress && L.progress.pct != null ? `Downloading ${Math.round(L.progress.pct)}%` : "Downloading…")
       : L.ready ? h("span", { className: "ai-chip ok" }, `Ready${L.device ? ` · ${L.device === "webgpu" ? "graphics chip" : "processor"}` : ""}`)
       : L.error ? h("span", { className: "ai-chip bad" }, "Download failed") : h("span", { className: "ai-chip" }, "Off");
     box.append(h("div", { className: "ab-row ai-row" },

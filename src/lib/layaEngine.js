@@ -40,7 +40,8 @@ async function runtime() {
     ort = await import(VENDOR + "ort.webgpu.min.mjs");
     ort.env.wasm.wasmPaths = { mjs: vendorUrl("ort-wasm-simd-threaded.asyncify.mjs"), wasm: vendorUrl("ort-wasm-simd-threaded.asyncify.wasm") };
     const cores = Number(globalThis.navigator && navigator.hardwareConcurrency) || 2;
-    ort.env.wasm.numThreads = globalThis.crossOriginIsolated ? Math.max(1, Math.min(8, cores - 1)) : 1;
+    // Half the cores, at most 4, as for the AI model (lib/llmEngine.js).
+    ort.env.wasm.numThreads = globalThis.crossOriginIsolated ? Math.max(1, Math.min(4, Math.floor(cores / 2))) : 1;
   }
   if (!tf) tf = await import(VENDOR + "transformers.min.js");
   return { ort, tf };

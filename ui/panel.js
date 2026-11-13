@@ -11605,7 +11605,11 @@ function syncOverflowEdges(root = document) {
   const tick = async () => {
     clearTimeout(t);
     const s = await send({ type: "ai-status" }).catch(() => null);
-    const p = s && (s.downloading ? s.progress : s.laya && s.laya.downloading ? s.laya.progress : null);
+    // The one actually downloading: the other may be waiting its turn (1.0.0).
+    const waiting = (x) => !!(x && /waiting/.test(x.status || ""));
+    const llmP = s && s.downloading ? s.progress : null;
+    const layaP = s && s.laya && s.laya.downloading ? s.laya.progress : null;
+    const p = llmP && !waiting(llmP) ? llmP : layaP && !waiting(layaP) ? layaP : llmP || layaP;
     const busy = !!(s && (s.downloading || (s.laya && s.laya.downloading)));
     if (chip) {
       chip.hidden = !busy;

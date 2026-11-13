@@ -43,6 +43,26 @@ const STATE_KEY = "lcfcAi";
 export const LAYA_DEFAULT = { repo: "duration465/laya-onnx", rev: "main", sub: "multilingual", host: null, label: "Laya multilingual", bytes: 1306000000 };
 const MAX_TRIES = 2;
 
+/**
+ * One download's progress from its files' updates (1.0.0). `bar` is the
+ * running state ({files: Map, pct}); the result never goes backwards.
+ */
+const QUEUE_PAUSE_MS = 3000;
+
+export function combineProgress(bar, p, expected) {
+  const st = String((p && p.status) || "");
+  if (/ready|done/.test(st)) { bar.pct = 100; return { status: st, pct: 100, loaded: p.loaded || 0, total: p.total || 0 }; }
+  if (p.file && p.total) bar.files.set(p.file, { loaded: Math.min(p.loaded || 0, p.total), total: p.total });
+  let loaded = 0, total = 0;
+  for (const f of bar.files.values()) { loaded += f.loaded; total += f.total; }
+  // A file not started yet isn't in the sum: the model's size stands in.
+  const whole = Math.max(total, Number(expected) || 0);
+  let pct = whole ? (loaded * 100) / whole : null;
+  if (/progress_total/.test(st) && p.pct != null) pct = Math.max(pct || 0, Number(p.pct) || 0);
+  if (pct != null) bar.pct = Math.max(bar.pct, Math.min(99, pct));
+  return { status: st, pct: Math.round(bar.pct), loaded, total: whole || total };
+}
+
 export function createAiService({ db, getSettings, ensureOffscreen, resetOffscreen = async () => {}, logErr = () => {}, broadcast = () => {}, isBusy = () => false }) {
   async function getState() {
     try { return (await chrome.storage.local.get(STATE_KEY))[STATE_KEY] || {}; } catch (_) { return {}; }
@@ -158,9 +178,15 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
     if (layaDownloading) return { ok: true, already: true };
     const state = await getState();
     const spec = layaSpecOf(state);
+    resetBar("laya");
     layaProgress = { status: "laya-initiate", pct: 0 };
     layaDownloading = (async () => {
       try {
+        // One model at a time (1.0.0): the owner's laptop crashed with both
+        // downloading, each loaded and running on most of the processor. The
+        // other download finishes first, and the other model leaves memory.
+        if (downloading) { layaProgress = { status: "laya-waiting", pct: 0 }; await downloading.catch(() => {}); }
+        await llm("unload", {}, 60000).catch(() => {});
         const info = await llm("laya-load", { repo: spec.repo, rev: spec.rev, sub: spec.sub, host: spec.host || undefined, device: device || (state.pick && state.pick.device) || "webgpu" }, 6 * 60 * 60 * 1000);
         await setState({ laya: { ...((await getState()).laya || {}), downloadedAt: Date.now(), device: info.device, error: null } });
         layaProgress = { status: "laya-ready", pct: 100 };
@@ -254,7 +280,26 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
     };
   }
 
-  function onProgress(p) { if (p && /^laya-/.test(p.status || "")) layaProgress = p; else progress = p; }
+  /*
+   * One bar for the whole model (1.0.0). Reported: "the download bar goes
+   * back and forth multiple times". A model is several files, and each
+   * file's own 0–100% went straight to the bar; the larger model also mixed
+   * in an overall figure, so the bar jumped between the two. Here every
+   * file's bytes are added up and measured against the model's known size,
+   * and the bar never moves backwards during one download.
+   */
+  const newBar = () => ({ files: new Map(), pct: 0 });
+  const bars = { llm: newBar(), laya: newBar() };
+  const resetBar = (kind) => { bars[kind] = newBar(); };
+  const combine = (kind, p, expected) => combineProgress(bars[kind], p, expected);
+  function onProgress(p) {
+    if (!p) return;
+    if (/^laya-/.test(p.status || "")) {
+      getState().then((st) => { layaProgress = combine("laya", p, (layaSpecOf(st) || {}).bytes); }).catch(() => {});
+    } else {
+      getState().then((st) => { progress = combine("llm", p, (specOf(st) || {}).bytes); }).catch(() => {});
+    }
+  }
 
   /** Download (or load from the cache) the chosen size. Returns at once. */
   async function download({ tier, device } = {}) {
@@ -264,9 +309,13 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
     const spec = specOf(state);
     if (!spec) return { ok: false, error: "Pick a size first." };
     const dev = device || (state.pick && state.pick.device) || "webgpu";
+    resetBar("llm");
     progress = { status: "initiate", pct: 0 };
     downloading = (async () => {
       try {
+        // One model at a time (1.0.0); see downloadLaya.
+        if (layaDownloading) { progress = { status: "waiting", pct: 0 }; await layaDownloading.catch(() => {}); }
+        await llm("laya-unload", {}, 60000).catch(() => {});
         let info;
         try {
           info = await llm("load", { repo: spec.repo, dtype: spec.dtype, device: dev, host: spec.host || undefined }, 6 * 60 * 60 * 1000);
@@ -338,6 +387,11 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
           const eng = await labeller(state);
           if (!eng) break;
           await processOne(items[0], eng);
+          current = null;
+          broadcast({ type: "ai-state" });
+          // A breather between answers (1.0.0): back to back, a backlog kept
+          // a laptop's processor at full load until it ran hot.
+          await new Promise((r) => setTimeout(r, QUEUE_PAUSE_MS));
         }
       } catch (e) { logErr("ai-queue", e); }
       finally { running = false; current = null; broadcast({ type: "ai-state" }); }

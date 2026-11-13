@@ -44,10 +44,14 @@ async function lib(host) {
 }
 
 /** Processor threads for the model: one when the page isn't isolated. */
+// Half the cores, at most 4 (1.0.0). Every core but one, as before, kept a
+// laptop's processor at full load for as long as a model ran: the owner's
+// laptop heated up and crashed with both models downloading. The other half
+// is left for the browser and everything else.
 export function threadCount(g = globalThis) {
   if (!g.crossOriginIsolated) return 1;
   const cores = Number(g.navigator && g.navigator.hardwareConcurrency) || 2;
-  return Math.max(1, Math.min(8, cores - 1));
+  return Math.max(1, Math.min(4, Math.floor(cores / 2)));
 }
 
 /** What this computer offers the model: graphics chip, memory, free space. */

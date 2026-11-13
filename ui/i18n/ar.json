@@ -1438,5 +1438,6 @@
  "Turn on “Let the AI correct brands in counts” in About → Settings → Built-in AI to take them out.": "فعّل «السماح للذكاء الاصطناعي بتصحيح العلامات في الأعداد» في حول ← الإعدادات ← الذكاء الاصطناعي المدمج لحذفها.",
  "Not a name": "ليس اسمًا",
  "Brands read the way you would.": "العلامات تُقرأ كما تقرأها أنت.",
- "Ordinary words such as sugar or oats are no longer brands, list items and product headings are, and Chrome's built-in AI can now finish its check on a slow computer and correct the list.": "لم تعد الكلمات العادية مثل السكر أو الشوفان علامات، بل عناصر القوائم وعناوين المنتجات، ويمكن للذكاء الاصطناعي المدمج في Chrome الآن إنهاء فحصه على جهاز بطيء وتصحيح القائمة."
+ "Ordinary words such as sugar or oats are no longer brands, list items and product headings are, and Chrome's built-in AI can now finish its check on a slow computer and correct the list.": "لم تعد الكلمات العادية مثل السكر أو الشوفان علامات، بل عناصر القوائم وعناوين المنتجات، ويمكن للذكاء الاصطناعي المدمج في Chrome الآن إنهاء فحصه على جهاز بطيء وتصحيح القائمة.",
+ "Waiting for the other download": "بانتظار التنزيل الآخر"
 }

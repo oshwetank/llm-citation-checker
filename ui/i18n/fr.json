@@ -1438,5 +1438,6 @@
  "Turn on “Let the AI correct brands in counts” in About → Settings → Built-in AI to take them out.": "Activez « Laisser l’IA corriger les marques dans les comptes » dans À propos → Réglages → IA intégrée pour les retirer.",
  "Not a name": "Pas un nom",
  "Brands read the way you would.": "Les marques lues comme vous le feriez.",
- "Ordinary words such as sugar or oats are no longer brands, list items and product headings are, and Chrome's built-in AI can now finish its check on a slow computer and correct the list.": "Les mots courants comme sucre ou avoine ne sont plus des marques, les éléments de liste et les titres de produit le sont, et l’IA intégrée de Chrome termine désormais sa vérification sur un ordinateur lent et corrige la liste."
+ "Ordinary words such as sugar or oats are no longer brands, list items and product headings are, and Chrome's built-in AI can now finish its check on a slow computer and correct the list.": "Les mots courants comme sucre ou avoine ne sont plus des marques, les éléments de liste et les titres de produit le sont, et l’IA intégrée de Chrome termine désormais sa vérification sur un ordinateur lent et corrige la liste.",
+ "Waiting for the other download": "En attente de l’autre téléchargement"
 }
