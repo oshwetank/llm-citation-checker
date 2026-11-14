@@ -24,6 +24,7 @@ import { walk, collectByKey, collectObjects, firstPath, isHttpUrl, domainOf } fr
 import { detectBrands } from "../lib/brands.js";
 import { isGenUi, readGenUi } from "../lib/genui.js";
 import { isConversationSource, readConversationSource, limitOfSource, promptOfSourceRequest } from "../lib/chatgptSource.js";
+import { isConversationJson, turnAsCapture } from "../lib/chatgptConversation.js";
 
 export const ADAPTER_VERSION = "chatgpt@0.5.0";
 
@@ -830,6 +831,16 @@ async function adaptSource(rawCapture, opts, diag) {
 
 export async function adapt(rawCapture, opts = {}) {
   const diag = { adapterVersion: ADAPTER_VERSION, usedFallback: false, notes: [] };
+  // A conversation read from ChatGPT (1.0.0, lib/chatgptConversation.js):
+  // its latest turn becomes the stream lines read below. The stored raw stays
+  // the conversation, so Reprocess reads it the same way.
+  if (isConversationJson(rawCapture.raw, rawCapture.url)) {
+    let cap = null;
+    try { cap = turnAsCapture(JSON.parse(rawCapture.raw)); } catch (_) { cap = null; }
+    if (!cap) { diag.notes.push("conversation read: no finished turn in it"); return null; }
+    diag.notes.push("read from the conversation, not the stream");
+    rawCapture = { ...rawCapture, raw: cap.raw, reqBody: cap.reqBody };
+  }
   if (isConversationSource(rawCapture.raw, rawCapture.url)) return adaptSource(rawCapture, opts, diag);
   const nodes = parseSse(rawCapture.raw || "");
 

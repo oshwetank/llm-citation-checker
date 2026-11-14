@@ -120,12 +120,12 @@ export function healthReport({ version, health, tabs = [], paused = false, count
       if (tab.lastError) lines.push(`  last error: ${tab.lastError}`);
       // 1.0.0: the engine's own send, and how far the page copy got, so a
       // report says which step failed when a site changes its page.
-      if (tab.alive && (tab.sends || tab.copy)) lines.push(`  sends seen: ${tab.sends || 0}${tab.sendVia ? ` (${tab.sendVia})` : ""}${tab.copy ? ` · page copy: ${tab.copy.asked || 0} asked${tab.copy.via ? ` (${tab.copy.via})` : ""}, last step "${tab.copy.stage}" at ${t(tab.copy.at)} · on the page: ${tab.copy.users ?? "?"} questions, ${tab.copy.answers ?? "?"} answers, stop button ${tab.copy.stop ? "showing" : "not showing"}${tab.copy.dom ? ` · page: ${tab.copy.dom}` : ""}` : ""}`);
+      if (tab.alive && (tab.sends || tab.copy)) lines.push(`  sends seen: ${tab.sends || 0}${tab.sendVia ? ` (${tab.sendVia})` : ""}${tab.copy ? ` · page copy: ${tab.copy.asked || 0} asked${tab.copy.via ? ` (${tab.copy.via})` : ""}, last step "${tab.copy.stage}" at ${t(tab.copy.at)} · on the page: ${tab.copy.users ?? "?"} questions, ${tab.copy.answers ?? "?"} answers, stop button ${tab.copy.stop ? "showing" : "not showing"}${tab.copy.dom ? ` · page: ${tab.copy.dom}` : ""}${tab.copy.conv ? ` · ${tab.copy.conv}` : ""}` : ""}`);
     }
     lines.push(`last conversation request: ${h.conv ? `${h.conv.method} ${h.conv.path} (${h.conv.status || "?"}) at ${t(h.conv.at)}` : "none"}`);
     lines.push(`last answer saved: ${h.stored ? t(h.stored.at) : "none"}`);
     for (const d of h.drops || []) lines.push(`dropped: ${d.reason}${d.path ? ` ${d.path}` : ""} at ${t(d.at)}`);
-    for (const u of h.unknown || []) lines.push(`${u.ev === "stream-taken" ? "stream taken (unfamiliar address)" : u.ev === "socket" ? "live socket not read" : "stream not recognised"}: ${u.method} ${u.path}${u.ctype ? ` [${u.ctype}]` : ""} at ${t(u.at)}`);
+    for (const u of h.unknown || []) lines.push(`${u.ev === "fetch-taken" ? "another extension holds this page's network calls, so answers are read from the conversation instead" : u.ev === "stream-taken" ? "stream taken (unfamiliar address)" : u.ev === "socket" ? "live socket not read" : "stream not recognised"}: ${u.method} ${u.path}${u.ctype ? ` [${u.ctype}]` : ""} at ${t(u.at)}`);
   }
   return lines.join("\n");
 }

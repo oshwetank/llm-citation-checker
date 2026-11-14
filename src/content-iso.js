@@ -2122,10 +2122,105 @@
       const w = watch;
       w.stop = startClock(1000);
       const off = onClockTick(() => check(w));
+      const offConv = onClockTick(() => convTick(w));
       const prevStop = w.stop;
-      w.stop = () => { off(); prevStop(); };
+      w.stop = () => { off(); offConv(); prevStop(); };
     };
     const finish = (w) => { if (w.stop) { w.stop(); w.stop = null; } if (watch === w) watch = null; };
+
+    /*
+     * The finished turn, read from the conversation itself (1.0.0; the why
+     * is in src/lib/chatgptConversation.js). The owner's recording of 13 Nov
+     * 2026: another extension's inject.js ("patchedFetch") takes over the
+     * page's fetch, so CitoSkeleton's network hook never sees ChatGPT's
+     * requests, and the thread's markup keeps changing. This asks for the
+     * conversation the way ChatGPT's page does to draw it, from this script,
+     * which another extension's hook on the page can't reach. Only for a
+     * question asked in this tab, only that one conversation, and only until
+     * its answer is read.
+     */
+    const CONV_FIRST_MS = 5000, CONV_EVERY_MS = 4000;
+    const convId = () => (location.pathname.match(/\/c\/([0-9a-f][0-9a-f-]{15,})/i) || [])[1] || null;
+    const convNote = (status) => { const c = pageHealth.copy || (pageHealth.copy = { asked: 0, via: "", stage: "", at: 0 }); c.conv = status; };
+    /*
+     * Asked the way ChatGPT's own page asks (checked against the owner's
+     * recording of 13 Nov 2026: all 38 of the page's requests to
+     * /backend-api carry cookies plus a device and an account identifier, and
+     * not one carries an Authorization header). So: the page's own cookies,
+     * and the two identifiers the page sends, which the page keeps in cookies
+     * (oai-did, _account). No sign-in token is asked for, read or sent, and
+     * the identifiers are used only in this request to chatgpt.com. When
+     * they aren't accepted the request is made again with cookies alone.
+     */
+    const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const cookie = (name) => { try { const m = document.cookie.match(new RegExp("(?:^|; )" + name + "=([^;]*)")); return m ? decodeURIComponent(m[1]) : ""; } catch (_) { return ""; } };
+    const headerSets = () => {
+      const plain = { accept: "application/json" };
+      const full = { ...plain };
+      const did = cookie("oai-did"), acct = cookie("_account");
+      if (UUID.test(did)) full["oai-device-id"] = did;
+      if (UUID.test(acct)) full["chatgpt-account-id"] = acct;
+      return Object.keys(full).length > 1 ? [full, plain] : [plain];
+    };
+    const getConv = async (id) => {
+      const addrs = [`/backend-api/conversations/${id}?num_turns=2&include_has_versions=true`, `/backend-api/conversation/${id}`];
+      let last = 0;
+      for (const addr of addrs) {
+        for (const headers of headerSets()) {
+          let r;
+          try { r = await fetch(addr, { credentials: "include", headers, cache: "no-store" }); } catch (_) { return { status: "network error" }; }
+          last = r.status;
+          if (r.status === 404) break;                                  // the other address
+          if (r.status === 401 || r.status === 403 || r.status === 400) continue; // the other header set
+          if (!r.ok) return { status: r.status };
+          return { status: r.status, addr, text: await r.text() };
+        }
+      }
+      return { status: last || 404 };
+    };
+    // The same test as latestTurn() in lib/chatgptConversation.js, which the
+    // adapter runs on what is sent: a question asked since `since`, with a
+    // finished answer after it. (A content script can't import that module.)
+    const turnDone = (conv, since) => {
+      let msgs = Array.isArray(conv && conv.messages) ? conv.messages : [];
+      if (!msgs.length && conv && conv.mapping) {
+        const seen = new Set(); let id = conv.current_node;
+        while (id && conv.mapping[id] && !seen.has(id)) { seen.add(id); if (conv.mapping[id].message) msgs.push(conv.mapping[id].message); id = conv.mapping[id].parent; }
+        msgs = msgs.reverse();
+      }
+      const role = (m) => m && m.author && m.author.role;
+      const text = (m) => (m && m.content && Array.isArray(m.content.parts) ? m.content.parts.filter((p) => typeof p === "string").join("").trim() : "");
+      let u = -1;
+      for (let i = msgs.length - 1; i >= 0; i--) if (role(msgs[i]) === "user" && text(msgs[i])) { u = i; break; }
+      if (u < 0) return false;
+      const asked = Number(msgs[u].create_time) * 1000;
+      if (asked && asked < since - 120000) return false; // an older question: not this one yet
+      const finals = msgs.slice(u + 1).filter((m) => role(m) === "assistant" && (m.content || {}).content_type === "text" && text(m) && (!m.recipient || m.recipient === "all"));
+      const last = finals[finals.length - 1];
+      return !!last && (!last.status || last.status === "finished_successfully");
+    };
+    const convTick = (w) => {
+      const now = Date.now();
+      if (w.convBusy || now - w.askedAt < CONV_FIRST_MS || now - (w.convAt || 0) < CONV_EVERY_MS) return;
+      w.convAt = now;
+      w.convBusy = true;
+      (async () => {
+        // The stream's own copy, when the network hook did see it, is as good.
+        if ((pageHealth.lastForwardAt || 0) > w.askedAt && await storedSince(w.askedAt)) { note("the stream's own copy was stored"); finish(w); return; }
+        const id = convId();
+        if (!id) { convNote("waiting for the conversation's address"); return; }
+        const res = await getConv(id);
+        if (!res.text) { convNote(`conversation read: ${res.status}`); return; }
+        let conv = null;
+        try { conv = JSON.parse(res.text); } catch (_) { convNote("conversation read: not JSON"); return; }
+        if (!turnDone(conv, w.askedAt)) { convNote("conversation read: answer not finished yet"); return; }
+        if (watch !== w) return;
+        tellWorker({ type: "raw-conversation", payload: { url: location.origin + res.addr.split("?")[0], reqBody: null, transport: "conversation-read", raw: res.text, end: "conversation", capturedAt: Date.now(), pageUrl: location.href } });
+        convNote("conversation read: ok");
+        note("read from the conversation");
+        finish(w);
+      })().catch(() => {}).finally(() => { w.convBusy = false; });
+    };
 
     const check = (w) => {
       const now = Date.now();

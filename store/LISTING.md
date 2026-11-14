@@ -48,7 +48,7 @@ Show users how AI answer engines (ChatGPT, Gemini, Perplexity, Grok) answer ques
 
 | Permission | Why |
 |---|---|
-| Host access: chatgpt.com, chat.openai.com, gemini.google.com, perplexity.ai, www.perplexity.ai, grok.com, x.com | The extension reads the answers these AI sites send to the user's browser, on those sites only, and types campaign prompts into them when the user runs a campaign. x.com is where Grok also runs. |
+| Host access: chatgpt.com, chat.openai.com, gemini.google.com, perplexity.ai, www.perplexity.ai, grok.com, x.com | The extension reads the answers these AI sites send to the user's browser, on those sites only, and types campaign prompts into them when the user runs a campaign. x.com is where Grok also runs. On chatgpt.com, after the user asks a question in a tab, it reads that one conversation the way ChatGPT's page loads it (the browser's own cookies and the page's device and account identifiers, no token), to record the answer. |
 | Content scripts on those sites | Capture the answer stream as the page receives it (main world) and pass it to the extension (isolated world). |
 | `storage`, `unlimitedStorage` | Captured answers and campaigns are stored locally in the browser; a campaign of several hundred answers, and the optional on-device AI model, exceed the default quota. |
 | `tabs` | Open the AI sites in tabs to run a campaign's prompts, and find the user's open engine tabs to report whether capture works there. |
@@ -69,7 +69,7 @@ Show users how AI answer engines (ChatGPT, Gemini, Perplexity, Grok) answer ques
 
 - **Website content:** Yes. The text of AI answers, the sources and searches in them, from the AI sites listed above. Stored on the user's computer only.
 - **Personally identifiable information:** Yes, only if the user chooses to give an email address for update news. With accounts off, as they are in 1.0.0, it stays on the user's computer.
-- **Authentication information:** No. The sign-in check looks at whether a session cookie exists; its value is never read into storage or sent.
+- **Authentication information:** No. The sign-in check looks at whether a session cookie exists; its value is never read into storage or sent. Reading a ChatGPT conversation the user just asked in uses the browser's own cookies and the page's device and account identifiers for that one request to chatgpt.com; no sign-in token is requested, read, stored or sent.
 - Everything else (health, financial, location, personal communications, web history beyond the AI sites, user activity): No.
 
 **Certify:** the data is not sold, not used or transferred for purposes unrelated to the single purpose, and not used to determine creditworthiness or for lending.

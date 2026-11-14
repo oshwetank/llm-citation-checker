@@ -430,7 +430,7 @@
 
   // --- fetch patch (ChatGPT, Perplexity REST stream via fetch) ---
   const origFetch = window.fetch;
-  window.fetch = async function (...args) {
+  const citoFetch = async function (...args) {
     const input = args[0];
     const init = args[1];
     let url = "";
@@ -519,6 +519,14 @@
     }
     return resp;
   };
+  window.fetch = citoFetch;
+  // Still ours? (1.0.0) On the owner's computer another extension's inject.js
+  // ("patchedFetch") held the page's fetch, and this hook never saw a single
+  // ChatGPT request; the capture report said nothing about why. It now says
+  // so; ChatGPT's answer is then read from the conversation (content-iso.js).
+  const fetchHeld = (when) => { if (IS_TARGET && window.fetch !== citoFetch) health("fetch-taken", location.href, { method: when }); };
+  fetchHeld("start");
+  setTimeout(() => fetchHeld("later"), 8000);
 
   // --- XHR patch (Gemini's StreamGenerate is XHR, not fetch) ---
   const XHR = window.XMLHttpRequest;

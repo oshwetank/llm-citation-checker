@@ -21,7 +21,11 @@ In your browser's own storage on your computer (IndexedDB and extension storage)
 
 ## When CitoSkeleton connects to the internet
 
-CitoSkeleton makes no network requests of its own, except in these cases, each one something you turn on:
+CitoSkeleton makes no network requests of its own, except in these cases:
+
+- **A ChatGPT question you just asked:** once ChatGPT has answered a question you asked in a tab, CitoSkeleton reads that one conversation from chatgpt.com, from that tab, the same way ChatGPT's own page loads it to show it to you: with the cookies your browser already sends to chatgpt.com and the device and account identifiers ChatGPT's page sends. It asks for, reads and sends no sign-in token. This is how the answer is recorded when the page itself can't be read (for example when another extension takes over the page's connections). It reads only the conversation you just asked in, only until that answer is recorded, and the request goes to chatgpt.com and nowhere else. An old conversation you merely open is never read.
+
+The rest happen only when you turn them on:
 
 - **Read the cited pages** (off by default): it fetches the pages an answer cited, without your cookies, to see which brands they name. It skips addresses on your own computer or local network.
 - **On-device AI** (off until you turn it on): it downloads the model's files once from huggingface.co. The model then runs on your computer; your captures are never sent.
