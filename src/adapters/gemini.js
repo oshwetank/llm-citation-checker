@@ -351,11 +351,27 @@ const CARD_PLACEHOLDER_RE = /\n*[ \t]*https?:\/\/googleusercontent\.com\/([a-z]+
 export function stripCardPlaceholders(text) {
   const cards = [];
   let removed = 0;
-  const clean = String(text || "").replace(CARD_PLACEHOLDER_RE, (m, kind, offset) => {
+  let clean = String(text || "").replace(CARD_PLACEHOLDER_RE, (m, kind, offset) => {
     cards.push({ kind, at: offset - removed });
     removed += m.length;
     return "";
   });
+  // Gemini's newer card markup (1.0.0): a line "<EntityCard entity_id="…"
+  // entity_type="product" title="Samsung Galaxy S26 Ultra 5G"/>" where a card
+  // sits, and the name in the paragraph after it written "[Samsung Galaxy S26
+  // Ultra 5G](_link)". Both reached the stored answer as written, so Analyze
+  // showed code. The card is kept by kind and title; the name stays as text.
+  clean = clean.replace(/^[ \t]*<EntityCard\b([^>]*)\/?>[ \t]*\n?/gm, (m, attrs) => {
+    const kind = (/\bentity_type="([^"]*)"/.exec(attrs) || [])[1] || "entity";
+    const title = (/\btitle="([^"]*)"/.exec(attrs) || [])[1] || null;
+    cards.push({ kind, title });
+    return "";
+  });
+  clean = clean
+    .replace(/\[([^\]\n]+)\]\(_link\)/g, "$1")
+    // Any other card tag of the same kind ("<SomethingCard … />") on a line of its own.
+    .replace(/^[ \t]*<[A-Z][A-Za-z]*Card\b[^>]*\/>[ \t]*\n?/gm, "")
+    .replace(/\n{3,}/g, "\n\n");
   return { text: clean.replace(/\s+$/, ""), cards };
 }
 

@@ -70,6 +70,9 @@ console.log("\n2. signed out: the answer is in `dil`");
   check("brands: realme, JBL, Boat", has(r, /^realme$/i) && has(r, /^JBL$/) && has(r, /^boat/i), names(r).join(", "));
   check("not: chatgpt, What's, a seller's website", !has(r, /chatgpt|^what/i) && !has(r, /\.com$/), names(r).join(", "));
   check("marked as read from the signed-out stream", r.platformSpecific && r.platformSpecific.signedOut === true);
+  // A product card's click payload (query: "JBL Tune 520BT") and a product's
+  // own data (query: "deprecated") are not searches ChatGPT ran.
+  check("no product name or \"deprecated\" listed as a search", !(r.fanout.search || []).some((q) => /deprecated|JBL|realme|Boat/i.test(q.query)), JSON.stringify(r.fanout.search));
 }
 check("ChatGPT's escapes and doubled currency are undone", fallbackToMarkdown("**1\\. Which?**\n\nAudio\\, 40mm\n\n## ₹₹3,999") === "**1. Which?**\n\nAudio, 40mm\n\n## ₹3,999", JSON.stringify(fallbackToMarkdown("**1\\. Which?**\n\nAudio\\, 40mm\n\n## ₹₹3,999")));
 

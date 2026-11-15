@@ -52,6 +52,7 @@ import { adapt as adaptGemini } from "./adapters/gemini.js";
 import { adapt as adaptPerplexity } from "./adapters/perplexity.js";
 import { adapt as adaptGrok } from "./adapters/grok.js";
 import { adaptPageCopy, isPageCopy } from "./adapters/pageCopy.js";
+import { cleanPrompt } from "./lib/promptText.js";
 import {
   MAX_PROFILES, TRASH_RETENTION_DAYS, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
   needsUnlock, profileChanges, addCompetitor, autoCompetitorsFrom, missingTurns,
@@ -518,6 +519,9 @@ async function storeCapture(payload, meta) {
     runId: (meta && meta.runId) || null,
     geo: (meta && meta.geo) || null, // ditto: tracking provenance must survive reprocess
     session: (meta && meta.session) || null, // private window / signed in (0.66.0)
+    // The question as the page showed it (1.0.0; content-iso pagePromptNow),
+    // kept on the raw row so Reprocess reads it the same way.
+    pagePrompt: typeof payload.pagePrompt === "string" ? payload.pagePrompt.slice(0, 4000) : null,
 
     gz,
     rawSchema: 1,
@@ -720,6 +724,12 @@ async function deriveAndStore(rawRow, rawText, settings, { settle = true } = {})
   // that finished the campaign turn.
   if (record.platform === "gemini" && (record.platformSpecific || {}).transport === "webchannel" && !record.answerChars) {
     return null;
+  }
+  // No question in the engine's own request: the one the page showed, once
+  // there is an answer (so it can never turn an empty capture into a record).
+  if (!record.userPrompt && rawRow.pagePrompt && record.answerChars) {
+    record.userPrompt = cleanPrompt(rawRow.pagePrompt);
+    if (record._extraction && Array.isArray(record._extraction.notes)) record._extraction.notes.push("prompt: read off the page; the engine's request didn't carry it");
   }
 
   await attachPages(record);

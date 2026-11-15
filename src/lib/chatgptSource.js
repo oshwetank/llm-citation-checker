@@ -178,7 +178,13 @@ export function readConversationSource(raw) {
         else if (isObj(r)) addRef(r.url || r.href || r.link, r.title || r.name || r.attribution, r.snippet || r.description || r.text, true);
       });
       for (const k of ["approvedUrls", "canonicalApprovedUrls"]) if (Array.isArray(o[k])) o[k].forEach((u) => addRef(typeof u === "string" ? u : u && u.url, null, null, true));
-      for (const k of ["query", "queries", "search_query", "searchQuery"]) {
+      // Not a product card's click payload ({category, event_name, extraParams,
+      // query: "OPPO Find X9 Ultra"}): that is what clicking the card looks
+      // up, not a search the engine ran (1.0.0: the owner's signed-out answer
+      // listed ten phone names as its searches).
+      // Nor a product's own data ({offers, merchants, query: "deprecated"}).
+      const clickPayload = "event_name" in o || "extraParams" in o || "offers" in o || "merchants" in o || ("category" in o && "query" in o && !("queries" in o));
+      if (!clickPayload) for (const k of ["query", "queries", "search_query", "searchQuery"]) {
         const v = o[k];
         (Array.isArray(v) ? v : [v]).forEach((q) => { const t = typeof q === "string" ? q : q && q.q; if (t && t.trim() && t.length < 300 && !queries.includes(t.trim())) queries.push(t.trim()); });
       }

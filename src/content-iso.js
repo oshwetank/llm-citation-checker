@@ -238,6 +238,11 @@
     if (data.type !== "raw-conversation") return;
 
     pageHealth.forwarded++;
+    // The question as the page shows it (1.0.0), for an engine whose request
+    // doesn't carry it readably: the owner's Gemini capture of 15 Nov 2026 had
+    // the question field of its upload empty. The background uses it only
+    // when the network copy has no question.
+    const pagePrompt = pagePromptNow();
     pageHealth.lastForwardAt = Date.now();
     tellWorker({
       type: "raw-conversation",
@@ -251,9 +256,23 @@
         end: typeof data.end === "string" ? data.end : null,
         capturedAt: data.capturedAt || Date.now(),
         pageUrl: location.href,
+        ...(pagePrompt ? { pagePrompt } : {}),
       },
     });
   });
+
+  // The last question on the page, Gemini only (its own markup, as its page
+  // copy below reads it). Other engines' requests carry the question.
+  function pagePromptNow() {
+    try {
+      if (!/(?:^|\.)gemini\.google\.com$/.test(location.hostname)) return null;
+      const all = document.querySelectorAll('user-query, .user-query-container, [data-test-id="user-query"]');
+      const u = all.length ? all[all.length - 1] : null;
+      if (!u) return null;
+      const t = String((u.querySelector(".query-text, .query-content, p") || u).innerText || "").replace(/^You said\s*/i, "").trim();
+      return t ? t.slice(0, 4000) : null;
+    } catch (_) { return null; }
+  }
 
   // The worker asks each engine tab how capture stands here (0.73.1). A tab
   // that doesn't answer has a script cut off from the extension.
