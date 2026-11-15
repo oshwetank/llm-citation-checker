@@ -369,7 +369,13 @@
   // are kept as probes: stored apart from captures (never shown as answers),
   // for the owner to save and send ("Payloads it couldn't read").
   const GEMINI_PROBE_RE = /\/v1\/processSession\b|\/batchexecute\b/;
-  let geminiUpload = ""; // the last WebChannel upload that carried a prompt
+  // The last few WebChannel uploads, newest first (1.0.0). Gemini sends the
+  // question in one upload and then more of them that carry no question (a
+  // session setup, ~2 KB of ids and a token); keeping only the last one meant
+  // the answer was stored with the setup upload and no prompt (the owner's
+  // Gemini captures of 13 and 15 Nov 2026). The reader (lib/geminiChannel.js
+  // channelPrompt) takes the first upload that has a question in it.
+  let geminiUploads = [];
   function probe(url, method, reqBody, body) {
     if (!(IS_GEMINI || IS_CHATGPT) || !debugOn() || !body) return;
     try {
@@ -579,7 +585,10 @@
         // answer so far. Frames run ~50 KB each, so only the newest data
         // frame and the largest are kept, never the whole stream, and they
         // are handed over once the stream has gone quiet.
-        if (this.__lcfc_post && /req\d+___data__=/.test(reqBody) && reqBody.length > 100) geminiUpload = reqBody; // not an acknowledgement (~40 chars)
+        if (this.__lcfc_post && /req\d+___data__=/.test(reqBody) && reqBody.length > 100) { // not an acknowledgement (~40 chars)
+          geminiUploads = [reqBody, ...geminiUploads.filter((u) => u !== reqBody)].slice(0, 6);
+          while (geminiUploads.length > 1 && geminiUploads.reduce((n, u) => n + u.length, 0) > 120000) geminiUploads.pop();
+        }
         if (!this.__lcfc_post && /[?&]RID=rpc\b/.test(this.__lcfc_url)) {
           let read = 0, lastData = "", bigData = "", fresh = false, quiet = null;
           const scan = () => {
@@ -605,7 +614,7 @@
             const frames = bigData && bigData !== lastData ? [bigData, lastData] : [lastData];
             const raw = frames.map((f) => `${f.length}\n${f}`).join("");
             lastData = ""; bigData = "";
-            emit({ url: xhr.__lcfc_url, reqBody: geminiUpload || "", transport: "webchannel", raw, capturedAt: Date.now() });
+            emit({ url: xhr.__lcfc_url, reqBody: geminiUploads.join("&"), transport: "webchannel", raw, capturedAt: Date.now() });
           };
           const grew = () => { scan(); if (quiet) clearTimeout(quiet); quiet = setTimeout(hand, 2500); };
           this.addEventListener("progress", grew);

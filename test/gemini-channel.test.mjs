@@ -57,6 +57,22 @@ console.log("\nthe prompt");
   // question had moved to field 2.9.1 of the upload.
   check("the November 2026 upload (field 2.9.1)", channelPrompt("count=1&ofs=1&req0___data__=EjoIAUo2CjRiZXN0IGJpc2N1dGUgZm9yIG1vcm5pbmcgY2hhaSwgd2hpY2ggaXMgYWxzbyBoZWFsdGh5") === "best biscute for morning chai, which is also healthy");
   {
+    // 1.0.0: the owner's Gemini capture of 15 Nov 2026 had no prompt. Gemini
+    // sends the question in one upload and then a session-setup upload with no
+    // question (ids and a token, no text with a space in it); the page hook
+    // used to keep only the last. Kept together, newest first, the question
+    // is the first one the reader finds.
+    const enc = (n, b) => Uint8Array.from([(n << 3) | 2, b.length, ...b]);
+    const te = (x) => new TextEncoder().encode(x);
+    const setup = enc(1, Uint8Array.from([...enc(1, Uint8Array.from([...enc(2, te("cf41b0e0dd7d53e5")), ...enc(4, te("0A1B2C3D-0000-4000-8000-000000000001"))]))]));
+    const setupBody = "count=1&ofs=0&req0___data__=" + encodeURIComponent(btoa(String.fromCharCode(...setup)));
+    check("a setup upload alone holds no question", channelPrompt(setupBody) === null, String(channelPrompt(setupBody)));
+    const both = `${setupBody}&${uploadBody(PROMPT)}`;
+    check("the question is found behind a later setup upload", channelPrompt(both) === PROMPT, String(channelPrompt(both)));
+    const twoQuestions = `${setupBody}&${uploadBody("a newer question")}&${uploadBody(PROMPT)}`;
+    check("with several questions, the newest (first) wins", channelPrompt(twoQuestions) === "a newer question", String(channelPrompt(twoQuestions)));
+  }
+  {
     // And wherever it moves next: the innermost text with a space in it.
     const enc = (n, b) => Uint8Array.from([(n << 3) | 2, b.length, ...b]);
     const body = enc(7, enc(3, enc(1, new TextEncoder().encode("which biscuit is healthiest with tea"))));

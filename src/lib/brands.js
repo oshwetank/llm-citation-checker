@@ -66,7 +66,9 @@ const NOISE = new Set([
 // counts. Shapes, not industry nouns, so they hold for any vertical.
 const SPEC_TOKEN = /^(?:ip[x\d]\d|ipx|ai|anc|enc|enx|tws|usb|bt|nfc|hdr|oled|amoled|lcd|led|[2-6]g|wi-?fi|(?:single|dual|triple|quad|multi|hybrid)-[a-z]+)$/i;
 
-const isNoise = (w) => !w || NOISE.has(w.toLowerCase()) || SPEC_TOKEN.test(w);
+// A contraction or possessive of a noise word is noise too (1.0.0): "What's"
+// (a follow-up question's label) and "Here's" reached a brand list.
+const isNoise = (w) => !w || NOISE.has(w.toLowerCase()) || NOISE.has(w.toLowerCase().replace(/['’](?:s|re|ll|d|ve)$/, "")) || SPEC_TOKEN.test(w);
 
 // entity[] markers come in (at least) two shapes:
 //   ["company","Zerodha","Indian stock broker"]        — category + name + description
@@ -1188,12 +1190,25 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     // card carries. A marketplace merchant ("Amazon.in") is excluded the
     // same way a marketplace CITED DOMAIN is below, so "available on
     // Amazon" can't turn the platform into a reported competitor.
+    // A seller written as a website ("boat-lifestyle.com + others") is a
+    // shop's address, not a brand (1.0.0): it never became "boat-lifestyle.com"
+    // beside the real "boAt".
+    const merchantName = p.merchant ? String(p.merchant).split(/[+,]/)[0].trim() : "";
+    const merchantIsSite = /^[\w-]+(?:\.[\w-]+)+$/.test(merchantName);
     if (p.brand) addCand(p.brand, "product_vendor", null, "default", true);
-    else if (p.merchant && !isMarketplaceName(p.merchant)) {
-      addCand(String(p.merchant).split(/[+,]/)[0].trim(), "product_vendor");
+    else if (merchantName && !merchantIsSite && !isMarketplaceName(merchantName)) {
+      addCand(merchantName, "product_vendor");
     } else {
       addCand(vendorFromProductName(p.name), "product_vendor", null, "default", true);
     }
+    // The product's own name starts with its maker ("boAt Rockerz 551", "JBL
+    // Tune 520BT", "realme TechLife Studio H1"), whoever sells it (1.0.0):
+    // before, a card with a seller named only the seller.
+    // Only a name with a model number in it ("Rockerz 551", "Tune 520BT",
+    // "Studio H1"): "Modern Gold Drape Bar Necklace" starts with an
+    // adjective, and its maker is the seller above. The same rule the
+    // structural candidates below use.
+    if (!p.brand && p.name && /\d/.test(p.name)) addCand(vendorFromProductName(p.name), "product_vendor", null, "default", true);
   });
   // Local/place answers: the businesses themselves are the brands (structured
   // listing data, not a text guess — trusted, long names OK, and "shown" by definition).

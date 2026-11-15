@@ -9,6 +9,8 @@
  * mentioned — the distinction that separates this from output-only tools.
  */
 
+import { cleanPrompt } from "./lib/promptText.js";
+
 export const SCHEMA_VERSION = 2;
 
 // The reconstructed answer can be long. Cap what we persist so the derived store
@@ -48,7 +50,7 @@ export function makeRecord(base = {}) {
     // metrics reproducible — see the isolation note in src/lib/geo.js. Never
     // test this field directly in UI code; go through geo.js isTracked().
     geo: base.geo || null,
-    userPrompt: base.userPrompt || null,
+    userPrompt: cleanPrompt(base.userPrompt) || null,
     generatedTitle: base.generatedTitle || null,
     turnUseCase: base.turnUseCase || null,
     searched: base.searched ?? false, // did the model actually run a web search?
