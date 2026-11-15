@@ -725,6 +725,15 @@ async function deriveAndStore(rawRow, rawText, settings, { settle = true } = {})
   if (record.platform === "gemini" && (record.platformSpecific || {}).transport === "webchannel" && !record.answerChars) {
     return null;
   }
+  // The same for ChatGPT signed out (1.0.0): its stream is handed over while
+  // it still says "Searching the web", then again with the answer. The owner's
+  // private-window campaign of 15 Nov 2026 kept 11 of those first copies as
+  // empty answers beside the real ones (the real copy is keyed by its reply
+  // id, the empty one has none, so they weren't joined). A limit is kept.
+  if (record.platform === "chatgpt" && (record.platformSpecific || {}).transport === "conversation-source"
+    && !record.answerChars && !(record.sources || []).length && !(record.platformSpecific || {}).gatewayError) {
+    return null;
+  }
   // No question in the engine's own request: the one the page showed, once
   // there is an answer (so it can never turn an empty capture into a record).
   if (!record.userPrompt && rawRow.pagePrompt && record.answerChars) {

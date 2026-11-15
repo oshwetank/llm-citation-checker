@@ -6147,6 +6147,21 @@ function renderDashboardImpl() {
     views.append(b);
   });
   head.append(views);
+  // Select every prompt shown at once (1.0.0, asked: "an option to select all
+  // prompts in one go"), as the filters and search leave the list, including
+  // a campaign's rows folded under "Show all". Partly ticked when some are.
+  if (!popup && dbView === "prompts" && v.list.length) {
+    const picked = v.list.filter((r) => dbSelected.has(r.key)).length;
+    const all = el("input", { type: "checkbox", "aria-label": `Select all ${v.list.length} prompts shown` });
+    all.checked = picked === v.list.length;
+    all.indeterminate = picked > 0 && picked < v.list.length;
+    all.onchange = () => {
+      if (all.checked) v.list.forEach((r) => dbSelected.add(r.key));
+      else v.list.forEach((r) => dbSelected.delete(r.key));
+      renderDashboard();
+    };
+    head.append(el("label", { className: "db-selall", title: "Select every prompt in this list, as filtered" }, all, el("span", {}, `Select all (${v.list.length})`)));
+  }
   if (!popup && dbView === "prompts") {
     const sort = el("select", { className: "db-select", "aria-label": "Sort" });
     [["newest", "Newest first"], ["asked", "Asked most often"], ["engines", "Most engines"]].forEach(([k, l]) => { const o = el("option", { value: k }, l); if (k === dbSort) o.selected = true; sort.append(o); });
@@ -8864,7 +8879,11 @@ function renderCampaignHead(profile) {
   // session, for answers without account history or memory.
   const privBtn = el("button", { className: "btn ghost cp-btn cp-run cp-run-private", type: "button", title: "Run in a private window, signed out of every engine: answers without your account's history or memory" }, "Run signed out");
   privBtn.onclick = withBusy(privBtn, "Starting…", async () => {
-    if (!confirm(`Run signed out?\n\n${vol.submissions} submissions (${vol.prompts} prompts × ${vol.engines} engines) will be sent from a new private window, signed out of every engine, so the answers carry no account history or memory.\n\nGrok needs an account, so it is left out. Other engines may limit how much you can ask signed out.`)) return;
+    // Grok is left out signed out (it needs an account), so it isn't counted.
+    const privVol = runVolume(GEO_PROMPTS, (profile.engines || []).filter((e) => e !== "grok"));
+    const grokNote = (profile.engines || []).includes("grok") ? "Grok needs an account, so it is left out. " : "";
+    if (!privVol.engines) { showToast("Grok needs a signed-in account, so it can't run signed out. Add another engine to this campaign.", "error"); return; }
+    if (!confirm(`Run signed out?\n\n${privVol.submissions} submissions (${privVol.prompts} prompts × ${privVol.engines} engine${privVol.engines === 1 ? "" : "s"}) will be sent from a new private window, signed out of every engine, so the answers carry no account history or memory.\n\n${grokNote}Other engines may limit how much you can ask signed out: Perplexity asks you to sign up after a few questions, and those turns are marked "usage limit" so "Retry missing" can ask them later, signed in.`)) return;
     const r = await send({ type: "geo-run-start", profileId: profile.id, privateWindow: true });
     if (!r || !r.ok) { showToast((r && r.error) || "Couldn't start the run.", "error"); return; }
     if (r.queued) showToast(`Queued (${r.position === 1 ? "next" : `#${r.position}`}): it starts by itself when the run going now finishes.`);

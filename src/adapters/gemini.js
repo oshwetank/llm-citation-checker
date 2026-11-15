@@ -371,7 +371,14 @@ export function stripCardPlaceholders(text) {
     .replace(/\[([^\]\n]+)\]\(_link\)/g, "$1")
     // Any other card tag of the same kind ("<SomethingCard … />") on a line of its own.
     .replace(/^[ \t]*<[A-Z][A-Za-z]*Card\b[^>]*\/>[ \t]*\n?/gm, "")
+    // Gemini's suggested follow-ups (1.0.0): "<ElicitationsGroup message=…>"
+    // holding "<Elicitation label=… query=…/>" lines, at the end of the answer.
+    // The owner's capture of 15 Nov 2026 kept them as answer text.
+    .replace(/^[ \t]*<ElicitationsGroup\b[^>]*>[\s\S]*?<\/ElicitationsGroup>[ \t]*\n?/gm, "")
+    .replace(/^[ \t]*<\/?Elicitations?(?:Group)?\b[^>]*>[ \t]*\n?/gm, "")
     .replace(/\n{3,}/g, "\n\n");
+  // A rule the follow-ups sat under, now with nothing after it.
+  clean = clean.replace(/(?:\n[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*)+\s*$/, "");
   return { text: clean.replace(/\s+$/, ""), cards };
 }
 

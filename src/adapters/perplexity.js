@@ -227,7 +227,22 @@ function readBlockStream(nodes) {
   }
 
   let text = longer(md.join(""), mdAnswer);
+  const answerBlock = !!text;
   if (!text && workflow) text = workflowText(workflow);
+  /*
+   * Perplexity's wall for someone not signed in (1.0.0). The owner's
+   * private-window campaign of 15 Nov 2026 stored 133 of 139 Perplexity turns
+   * as answers that read only "Sign up and repeat your request." (and
+   * "Daftar dan ulangi permintaan Anda.", "Înscrie-te și repetă-ți cererea.",
+   * "Iscriviti e ripeti la richiesta." — it follows the account's language,
+   * so it can't be matched by its words). Every one had the same shape: no
+   * answer block at all, the text only in a workflow step, no search results
+   * and no searches, one short sentence. Such a reply is not an answer: the
+   * adapter flags it as a limit, so a campaign pauses Perplexity and asks
+   * again, and it is never counted as an answer that named nobody.
+   */
+  const refusal = !answerBlock && !!text && results.length === 0 && queries.length === 0
+    && text.trim().length <= 120 && !/\n\s*\S/.test(text.trim()) && final;
 
   const cited = new Set();
   text = text.replace(/\[(\d{1,2})\]/g, (whole, n) => {
@@ -248,6 +263,7 @@ function readBlockStream(nodes) {
     },
     prompt,
     final,
+    refusal: refusal ? text.trim() : null,
   };
 }
 
@@ -587,7 +603,8 @@ export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, op
   // answerText too (not just a brand-detection-only copy) also fixes the
   // same tokens showing up as visible clutter inline in the rendered answer.
   const answerInfo = {};
-  const answerText = stripCitationFootnotes(extractAnswer(nodes, userPrompt, answerInfo), sources);
+  const refusal = stream && stream.refusal;
+  const answerText = refusal ? "" : stripCitationFootnotes(extractAnswer(nodes, userPrompt, answerInfo), sources);
   const fanout = extractFanout(nodes);
   // Detection-only text: strips [[cite:URL]] markers so a cited domain can't
   // match itself inside its own citation marker (see stripCiteMarkersForDetection
@@ -619,6 +636,9 @@ export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, op
       answerSource: answerInfo.source,
       previewUpdatedAt: answerInfo.updatedAt || null,
       transport: stream ? "blocks" : "legacy",
+      // Perplexity asked to sign up instead of answering (see readBlockStream):
+      // a limit, which geo.js usageLimitOf() turns into a cooldown in a run.
+      ...(refusal ? { gatewayError: "signed-out limit: Perplexity asked to sign up", refusal } : {}),
       streamFinal: stream ? stream.final : undefined,
       // Read off the page's text (content-iso.js): a fallback that any
       // network copy of the same answer beats (lib/sameAnswer.js).

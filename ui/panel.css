@@ -5616,6 +5616,8 @@ i.dot.cited { background: var(--cited-fill); }
 .db-row.selected { background: var(--accent-subtle); }
 .db-row.k-task { background: var(--bg-subtle); }
 .db-check { display: inline-flex; }
+.db-selall { display: inline-flex; align-items: center; gap: 6px; margin-left: 12px; font-size: 13px; color: var(--fg-secondary); cursor: pointer; white-space: nowrap; }
+.db-selall input { margin: 0; }
 .db-when { font-size: 12px; color: var(--fg-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .db-kind { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 7px; background: var(--bg-subtle); }
 .db-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }

@@ -414,6 +414,37 @@ export function structuralCandidates(answerText) {
   return out;
 }
 
+/**
+ * Products named in bold inside a sentence (1.0.0): "Devices like the
+ * **Realme P4 Power** and **Redmi Note 17 Pro Max** pack…". Read last, by
+ * detectBrands, and only to ADD makers the other passes missed: as a
+ * structural candidate it also switched off the prose pass, and an answer
+ * whose brands came from prose lost Google, Xiaomi and Leica.
+ */
+export function boldProductNames(answerText) {
+  if (!answerText) return [];
+  // Only a line's first bold was read, so both were missed in the owner's
+  // Gemini answer of 15 Nov 2026. A model number is required: bold words alone
+  // are as often emphasis ("**incredible battery life**") as names.
+  const out = [];
+  const boldProduct = /\*\*((?:[A-Z]|i[A-Z])[^*\n]{1,60})\*\*/g;
+  let bm;
+  while ((bm = boldProduct.exec(answerText))) {
+    const it = bm[1].trim();
+    // Inside a sentence only: structuralCandidates reads a line's first bold.
+    const before = answerText.slice(answerText.lastIndexOf("\n", bm.index) + 1, bm.index);
+    if (!/[A-Za-z0-9]/.test(before.replace(/^[ \t]*#{0,6}[ \t]*(?:\d+[.)][ \t]*)?[-*•]?[ \t]*/, ""))) continue;
+    // "Galaxy M34 / F15 5G": alternatives, the second without its maker.
+    if (/\//.test(it)) continue;
+    const words = it.split(/\s+/);
+    if (words.length > 6 || /[:.!?]$/.test(it) || !words.slice(1).some((w) => /^[A-Za-z]*\d[A-Za-z0-9]*$/.test(w))) continue;
+    if (/^(?:Step|Option|Scenario|Tip|Day|Week|Phase|Part|Level|Round|Plan|Tier|Rule|Point|Method|Way|Top|Under|Over|Below|Above|Best|Rs|INR|USD|Price)\b/i.test(it)) continue;
+    const s = cleanCandidateText(it);
+    if (s && !isNoise(s)) out.push(s);
+  }
+  return out;
+}
+
 /* ---------- 4. cited domains ---------- */
 export const MARKETPLACE_DOMAINS = new Set([
   "amazon.com", "amazon.in", "amazon.co.uk", "amazon.ae", "amazon.de", "amazon.ca",
@@ -1530,6 +1561,22 @@ export function detectBrands(answerText, plainText, ctx = {}) {
       }
       scoreCandidates([...proseCands.values()].sort((a, b) => b.name.length - a.name.length));
     }
+  }
+
+  // Makers of products named in bold mid-sentence that nothing above found
+  // (see boldProductNames). Added only; never replaces or removes a brand.
+  for (const name of boldProductNames(answerText || "")) {
+    const vendor = vendorFromProductName(name);
+    // The same exclusions the other passes make: chips, shops, and dates
+    // ("**November 2026**").
+    if (!vendor || isNoise(vendor) || isComponentOrChip(name) || isComponentOrChip(vendor) || isMarketplaceName(vendor)) continue;
+    if (/^(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|monday|tuesday|wednesday|thursday|friday|saturday|sunday|q[1-4]|fy|h[12])$/i.test(vendor)) continue;
+    const key = vendor.toLowerCase();
+    if (results.some((r) => { const b = r.brand.toLowerCase(); return b === key || b.startsWith(key + " ") || key.startsWith(b + " ") || name.toLowerCase().startsWith(b + " "); })) continue;
+    const hits = [...text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(vendor)}(?![\\p{L}\\p{N}])`, "gu"))];
+    if (!hits.length) continue;
+    const at = hits[0].index;
+    results.push({ brand: vendor, count: hits.length, firstIndex: at, category: null, description: null, passages: [text.slice(Math.max(0, at - 110), at + 110).replace(/\s+/g, " ").trim()] });
   }
 
   // Renaming a domain candidate to how the answer writes it can collide with a
