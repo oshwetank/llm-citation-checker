@@ -115,6 +115,14 @@ const PAGE_ONETURN = () => PAGE_VIRT()
   .replace("a.setAttribute('data-turn-key', 'turn-a' + Date.now()); ", "")
   .replace("Good response</span></div>'; document.getElementById('convo').appendChild(a);", "Good response</span></div>'; [...document.querySelectorAll('[data-turn-key]')].pop().appendChild(a);");
 
+// ChatGPT's card answer (16 Nov 2026): the number and the name bold apart,
+// the price in a heading. Stored as "**1.****Titan Eye+**" and "# **₹…**".
+const PAGE_CARDS = () => PAGE_ONETURN().replace(/const parts = \[[\s\S]*?\];/, `const parts = [
+        '<h2><strong>Best optical stores</strong></h2><p><strong>1.</strong><strong>Titan Eye+</strong><strong>&ndash; Bandra West</strong></p>',
+        '<ul><li>Large collection of branded frames</li></ul><h1><strong>&#8377;1,999</strong></h1>',
+        '<p><strong>2.</strong><strong>Zento Optics</strong></p><ul><li>Budget-friendly options and quick eye tests near the station.</li></ul>',
+      ];`);
+
 const context = await chromium.launchPersistentContext(`${PROFILE_BASE}-${Date.now()}`, {
   headless: false,
   args: [`--disable-extensions-except=${EXT_PATH}`, `--load-extension=${EXT_PATH}`, "--headless=new", "--no-sandbox"],
@@ -123,6 +131,7 @@ try {
   await context.route(/^https:\/\/chatgpt\.com\//, (route) => {
     const u = new URL(route.request().url());
     if (u.pathname.endsWith("/conversation/prepare")) return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status: "ok", conduit_token: "made-up" }) });
+    if (u.pathname.startsWith("/c/cards")) return route.fulfill({ status: 200, contentType: "text/html", body: PAGE_CARDS() });
     if (u.pathname.startsWith("/c/oneturn")) return route.fulfill({ status: 200, contentType: "text/html", body: PAGE_ONETURN() });
     if (u.pathname.startsWith("/c/virt")) return route.fulfill({ status: 200, contentType: "text/html", body: PAGE_VIRT() });
     if (u.pathname.startsWith("/c/nov")) return route.fulfill({ status: 200, contentType: "text/html", body: PAGE_NOV() });
@@ -283,6 +292,28 @@ try {
     check("the answer alone, not the question with it", /\*\*Zento Linen\*\*/.test(full.answerText || "") && !/lasts longest|You said|ChatGPT said/.test(full.answerText || ""), (full.answerText || "").slice(0, 160));
   }
   await w7.close();
+
+  console.log("\n8. a card answer: number and name bold apart, the price in a heading");
+  const before8 = (await records()).length;
+  const w8 = await context.newPage();
+  await w8.goto("https://chatgpt.com/c/cards-1");
+  await w8.waitForTimeout(1500);
+  await w8.click("#pending-conversation-input");
+  await w8.keyboard.type("best place to buy new glasses");
+  await w8.keyboard.press("Enter");
+  let after8 = before8;
+  for (let i = 0; i < 40 && after8 <= before8; i++) { await w8.waitForTimeout(500); after8 = (await records()).length; }
+  const cards = (await records()).find((x) => x.userPrompt === "best place to buy new glasses");
+  check("captured", !!cards);
+  if (cards) {
+    const full = ((await ask({ type: "get-record", captureId: cards.captureId })) || {}).record || cards;
+    const t = full.answerText || "";
+    check("a numbered item, the bold runs apart", /^1\. \*\*Titan Eye\+\*\* \*\*– Bandra West\*\*$/m.test(t), t.split("\n").find((l) => /Titan/.test(l)));
+    check("the price is a line, not a heading", /^₹1,999$/m.test(t) && !/^# /m.test(t), t.split("\n").find((l) => /1,999/.test(l)));
+    const b = (full.brandMentions || []).map((m) => m.brand);
+    check("the stores are its brands", b.includes("Titan Eye+") && b.some((x) => /^Zento/.test(x)), b.join(", "));
+  }
+  await w8.close();
 } finally {
   await context.close();
 }

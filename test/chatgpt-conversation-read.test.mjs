@@ -97,7 +97,7 @@ try {
 
 // The page: a composer; on Enter it "sends" with an iframe's fetch (out of the
 // extension's hook) and draws the answer in plain divs, no known markers.
-const PAGE = () => `<!doctype html><html><body>
+const PAGE = () => `<!doctype html><html${idsInPage ? ` data-theme-account-id="${ACCOUNT}"` : ""}><body>${idsInPage ? `<script>window.__boot = "{\\"user\\":{\\"customIDs\\":{\\"DeviceId\\":\\"${DEVICE}\\"}}}";</script>` : ""}
   <div id="thread"></div>
   <div data-composer-body=""><textarea id="pending-conversation-input" aria-label="Ask ChatGPT"></textarea></div>
   <script>
@@ -116,7 +116,7 @@ const PAGE = () => `<!doctype html><html><body>
   </script></body></html>`;
 
 const DEVICE = "7c1d2e3f-0a1b-4c5d-8e9f-a0b1c2d3e4f5", ACCOUNT = "bdf806ad-e7e1-4a2b-9c3d-4e5f6a7b8c9d";
-let lastQ = PROMPT, refuseIds = false, bareReads = 0;
+let lastQ = PROMPT, refuseIds = false, bareReads = 0, idsInPage = false, notFound = 0;
 let askedAt = 0, convReads = 0, convUnauthorized = 0, sessionReads = 0, authHeaders = 0;
 const context = await chromium.launchPersistentContext(`${PROFILE_BASE}-${Date.now()}`, {
   headless: false,
@@ -143,6 +143,9 @@ try {
         const done0 = askedAt && Date.now() - askedAt > 7000;
         return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(conversation(askedAt || Date.now(), done0, lastQ, "Cheapest is the **Lumora** shirt.\n\n- **Lumora**: the budget choice.\n- **Kovo Weave**: pricier.")) });
       }
+      // The owner's browser of 16 Nov 2026: no identifier cookies, and a
+      // read without the identifiers is "not found".
+      if (idsInPage && (hd["oai-device-id"] !== DEVICE || hd["chatgpt-account-id"] !== ACCOUNT)) { notFound++; return route.fulfill({ status: 404, contentType: "application/json", body: '{"detail":"Conversation not found"}' }); }
       // As ChatGPT answers its own page: the cookies, and the device and
       // account identifiers the page sends.
       if (hd["oai-device-id"] !== DEVICE || hd["chatgpt-account-id"] !== ACCOUNT || !/session-cookie=made-up/.test(hd.cookie || "")) { convUnauthorized++; return route.fulfill({ status: 401, contentType: "application/json", body: '{"detail":"Unauthorized"}' }); }
@@ -203,6 +206,23 @@ try {
   check("still no token, ever", sessionReads === 0 && authHeaders === 0);
   const rep = ((await ask({ type: "capture-check" })) || {}).report || "";
   check("the report says it was read from the conversation", /read from the conversation/.test(rep) && /conversation read: ok/.test(rep), rep.split("\n").find((l) => /page copy/.test(l)) || rep.slice(0, 300));
+
+  console.log("\n5. no identifier cookies: the identifiers are read off the page (16 Nov 2026)");
+  refuseIds = false; idsInPage = true;
+  await context.clearCookies();
+  await context.addCookies([{ name: "session-cookie", value: "made-up", url: "https://chatgpt.com/", httpOnly: true }]);
+  const p5 = await context.newPage();
+  await p5.goto(`https://chatgpt.com/c/${ID}`);
+  await p5.waitForTimeout(1500);
+  const before5 = (await records()).length, nf = notFound;
+  await p5.click("#pending-conversation-input");
+  await p5.keyboard.type("which linen shirt lasts longest");
+  await p5.keyboard.press("Enter");
+  let recs5 = [];
+  for (let i = 0; i < 70 && recs5.length <= before5; i++) { await p5.waitForTimeout(500); recs5 = await records(); }
+  check("recorded", recs5.some((x) => x.userPrompt === "which linen shirt lasts longest"), recs5.map((x) => x.userPrompt).join(" | "));
+  check("asked with the page's own identifiers: never 'not found'", notFound === nf, `${notFound - nf} not-found replies`);
+  check("still no token", sessionReads === 0 && authHeaders === 0);
 } finally {
   await context.close();
 }

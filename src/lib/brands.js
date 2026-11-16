@@ -56,6 +56,9 @@ const NOISE = new Set([
   // …**", "**Choose the realme …**", "**ANC:** Up to 55dB"); reported as
   // brands in a ChatGPT answer (0.62.1).
   "buy", "choose", "save", "get", "go", "skip", "avoid", "opt", "prefer", "stretch",
+  // Labels of ChatGPT's follow-up question form ("**3. Preferred area**",
+  // 16 Nov 2026) and the card bullets' opening adjectives.
+  "preferred", "preference", "excellent", "strong", "useful", "powerful", "consistent",
   "spend", "pay", "look", "check", "try", "use", "want", "need", "up", "to", "with",
   "without", "under", "around", "about", "only", "both", "either", "here", "there",
   "then", "yes", "no", "not", "it", "its", "they", "you", "we",

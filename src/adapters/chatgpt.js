@@ -246,7 +246,7 @@ export function tokenizeAnswerMarkup(text) {
 // calls with nearly identical arguments, which was mildly wasteful even
 // synchronously and would have doubled the cost of the AI tier for no
 // reason now that this call is async.
-async function detectBrandsForCapture(answerText, products, tracked, sources, places, prompt) {
+async function detectBrandsForCapture(answerText, products, tracked, sources, places, prompt, { keepLines = false } = {}) {
   if (!answerText) return { brands: [], entities: [] };
   // A card's "Listed at <store> + others" line names where it's sold, not a
   // brand the answer recommends (a resolved binding since 0.62.1). The
@@ -256,7 +256,12 @@ async function detectBrandsForCapture(answerText, products, tracked, sources, pl
   // tier runs AFTER the capture is stored (see background.js's
   // enrichCaptureWithAI) — inside here it blocked the write, so nothing
   // appeared in the UI until an on-device inference finished.
-  return detectBrands(answerText, cleanPassage(answerText), {
+  // A copy read off the page keeps its lines in the plain text too, as every
+  // other engine's does: flattened, a heading with no full stop ran into the
+  // first name under it ("Best optical stores 1. Titan Eye+") and the names
+  // read as words inside a sentence, so a card answer had no brands (1.0.0).
+  const plain = keepLines ? answerText.split("\n").map((l) => cleanPassage(l)).join("\n") : cleanPassage(answerText);
+  return detectBrands(answerText, plain, {
     products,
     places,
     sources,
@@ -787,6 +792,20 @@ function genUiBindings(nodes) {
 
 // Signed out (0.69.0): /unauth-mweb/conversation/updates, ndjson (see
 // lib/chatgptSource.js). Read by name; what it can't find stays empty.
+
+/*
+ * A copy read off ChatGPT's page by an older 1.0.0 build (16 Nov 2026): its
+ * cards bold the number and the name apart, which came out as
+ * "**1.****Titan Eye+**", and a price as a heading ("# **₹1,85,900**"). Read
+ * the way the page copy now writes them, so stored answers mend on re-read.
+ */
+export function tidyPageCopy(text) {
+  return String(text || "")
+    .replace(/\*\*(\d{1,2}[.)])\*\*(?=\*\*)/g, "$1 ")
+    .replace(/\*\*\*\*/g, "** **")
+    .replace(/^#{1,6} (.*)$/gm, (m, x) => (/\p{L}/u.test(x.replace(/\*/g, "").replace(/\b(?:Rs|INR|USD|EUR|GBP)\b/gi, "")) ? m : x.replace(/\*\*/g, "")));
+}
+
 async function adaptSource(rawCapture, opts, diag) {
   // ChatGPT's message-limit card is not an answer (0.78.1): no answer text,
   // and the limit on the record, so a campaign turn pauses for it and asks
@@ -800,7 +819,8 @@ async function adaptSource(rawCapture, opts, diag) {
   // the whole answer it flattened every list and heading into one line —
   // the structure brand detection reads (lib/brands.js), so names in a
   // signed-out list were missed.
-  const answerText = r ? r.answer.split(/\r?\n/).map((l) => (l.trim() ? cleanPassage(l) : "")).join("\n").replace(/\n{3,}/g, "\n\n").trim() : "";
+  let answerText = r ? r.answer.split(/\r?\n/).map((l) => (l.trim() ? cleanPassage(l) : "")).join("\n").replace(/\n{3,}/g, "\n\n").trim() : "";
+  if (pageCopy) answerText = tidyPageCopy(answerText);
   const sources = (r ? r.sources : []).map((x) => makeSource({
     url: x.url, domain: domainOf(x.url), title: x.title || domainOf(x.url), snippet: x.snippet || null,
     outcome: x.cited ? "cited" : "fetched", type: x.cited ? "citation" : "search_result", platformSpecific: {},
@@ -810,7 +830,7 @@ async function adaptSource(rawCapture, opts, diag) {
   let userPrompt = (r && r.prompt) || promptOfSourceRequest(rawCapture.reqBody) || extractPrompt(rawCapture.reqBody);
   if (!userPrompt) { try { userPrompt = new URL(rawCapture.pageUrl).searchParams.get("q") || null; } catch (_) { /* no address */ } }
   const products = (r && r.products) || [], places = (r && r.places) || [], images = (r && r.images) || [];
-  const { brands: brandMentions, entities: baseEntities } = await detectBrandsForCapture(answerText, products, opts.tracked, sources, places, userPrompt);
+  const { brands: brandMentions, entities: baseEntities } = await detectBrandsForCapture(answerText, products, opts.tracked, sources, places, userPrompt, { keepLines: pageCopy });
   const entities = extractEntities(baseEntities, products, brandMentions, sources, places);
   if (pageCopy) diag.notes.push("read off the page: the network stream wasn't seen, so searches and pages read aren't known");
   else if (r && !r.queries.length) diag.notes.push("signed-out stream: no searches named in it");

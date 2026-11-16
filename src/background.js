@@ -1108,6 +1108,9 @@ const REPAIR_KEY_0781 = "lcfcRepaired0781";
 // 0.80.0: and once more, for their products, places and pictures, on
 // installs that already ran the 0.79.0 pass.
 const REPAIR_KEY_0790 = "lcfcRepaired0800";
+// 1.0.0: ChatGPT answers copied off the page before 16 Nov 2026 wrote card
+// titles as "**1.****Titan Eye+**" and missed their brands; read once more.
+const REPAIR_KEY_PAGECOPY = "lcfcRepaired100pc";
 async function repairOnce() {
   const got = await chrome.storage.local.get([REPAIR_KEY, REPAIR_KEY_0781, REPAIR_KEY_0790]);
   if (!got || !got[REPAIR_KEY]) {
@@ -1119,6 +1122,26 @@ async function repairOnce() {
     await reprocessSignedOutChatGpt().catch((e) => logErr("repair:0790", e));
     await chrome.storage.local.set({ [REPAIR_KEY_0781]: Date.now(), [REPAIR_KEY_0790]: Date.now() });
   }
+  const pc = await chrome.storage.local.get(REPAIR_KEY_PAGECOPY);
+  if (!pc || !pc[REPAIR_KEY_PAGECOPY]) {
+    await reprocessChatGptPageCopies().catch((e) => logErr("repair:pagecopy", e));
+    await chrome.storage.local.set({ [REPAIR_KEY_PAGECOPY]: Date.now() });
+  }
+}
+
+async function reprocessChatGptPageCopies() {
+  const settings = await getSettings();
+  let n = 0;
+  for (const id of await db.getAllKeys("raw")) {
+    try {
+      const row = await db.get("raw", id);
+      if (!row || row.platform !== "chatgpt" || row.transport !== "page-copy") continue;
+      await deriveAndStore(row, undefined, settings);
+      n++;
+    } catch (_) { /* keep going */ }
+  }
+  logEvent("repair:chatgpt-page-copy", "capture", `read ${n} ChatGPT page copies again`, { count: n });
+  return n;
 }
 
 /* 0.78.1: signed-out ChatGPT captures read again. Until now ChatGPT's

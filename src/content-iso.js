@@ -1239,6 +1239,13 @@
         if (citeUrl) { out += `[[cite:${citeUrl}]]`; continue; }
         if (tag === "strong" || tag === "b") {
           const t = inline(c, d + 1).trim();
+          // ChatGPT's cards (16 Nov 2026) bold the number and the name apart:
+          // "<strong>1.</strong><strong>Titan Eye+</strong>" came out as
+          // "**1.****Titan Eye+**", which no brand rule could read. A bold
+          // list number is written as a list number, and two bold runs that
+          // touch are kept apart.
+          if (/^\d{1,2}[.)]$/.test(t)) { out += `${t} `; continue; }
+          if (t && /\*\*$/.test(out)) out += " ";
           out += t ? `**${t}**` : "";
         } else if (tag === "em" || tag === "i") {
           const t = inline(c, d + 1).trim();
@@ -1286,7 +1293,11 @@
         if (c.nodeType !== 1) continue;
         const tag = (c.tagName || "").toLowerCase();
         if (/^h[1-6]$/.test(tag)) {
-          out += `\n${"#".repeat(Number(tag[1]))} ${inline(c).trim()}\n\n`;
+          const ht = inline(c).trim();
+          // A "heading" with no words in it is a card's price ("₹1,85,900"),
+          // not a section: a plain line.
+          if (!/\p{L}/u.test(ht.replace(/\*/g, "").replace(/\b(?:Rs|INR|USD|EUR|GBP)\b/gi, ""))) { if (ht) out += ht.replace(/\*\*/g, "") + "\n\n"; }
+          else out += `\n${"#".repeat(Number(tag[1]))} ${ht}\n\n`;
         } else if (tag === "p") {
           const t = inline(c).trim();
           if (t) out += t + "\n\n";
@@ -2197,10 +2208,34 @@
      */
     const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const cookie = (name) => { try { const m = document.cookie.match(new RegExp("(?:^|; )" + name + "=([^;]*)")); return m ? decodeURIComponent(m[1]) : ""; } catch (_) { return ""; } };
+    /*
+     * Where the cookies aren't set (the owner's browser of 16 Nov 2026, whose
+     * reads were all 404 while the page's own read of the same address was
+     * 200 with both identifiers), the page states them itself: the account on
+     * <html data-theme-account-id>, the device in the page's start-up data.
+     */
+    const pageIds = { did: "", acct: "", from: "" };
+    const idsFromPage = () => {
+      if (pageIds.from) return pageIds;
+      pageIds.acct = document.documentElement.getAttribute("data-theme-account-id") || "";
+      for (const sc of document.scripts) {
+        const t = sc.textContent || "";
+        if (!pageIds.did) { const m = t.match(/\\?"DeviceId\\?"\s*:\s*\\?"([0-9a-f-]{36})/i); if (m) pageIds.did = m[1]; }
+        if (!pageIds.acct) { const m = t.match(/\\?"account_id\\?"\s*:\s*\\?"([0-9a-f-]{36})/i); if (m) pageIds.acct = m[1]; }
+        if (pageIds.did && pageIds.acct) break;
+      }
+      pageIds.from = "page";
+      return pageIds;
+    };
+    let idsSeen = "";
     const headerSets = () => {
       const plain = { accept: "application/json" };
       const full = { ...plain };
-      const did = cookie("oai-did"), acct = cookie("_account");
+      let did = cookie("oai-did"), acct = cookie("_account");
+      if (!UUID.test(did) || !UUID.test(acct)) { const p = idsFromPage(); if (!UUID.test(did)) did = p.did; if (!UUID.test(acct)) acct = p.acct; }
+      idsSeen = `device id ${UUID.test(did) ? "yes" : "no"}, account id ${UUID.test(acct) ? "yes" : "no"}`;
+      const lang = document.documentElement.lang;
+      if (lang && /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(lang)) full["oai-language"] = lang;
       if (UUID.test(did)) full["oai-device-id"] = did;
       if (UUID.test(acct)) full["chatgpt-account-id"] = acct;
       return Object.keys(full).length > 1 ? [full, plain] : [plain];
@@ -2253,7 +2288,7 @@
         const id = convId();
         if (!id) { convNote("waiting for the conversation's address"); return; }
         const res = await getConv(id);
-        if (!res.text) { convNote(`conversation read: ${res.status}`); return; }
+        if (!res.text) { convNote(`conversation read: ${res.status} (${idsSeen})`); return; }
         let conv = null;
         try { conv = JSON.parse(res.text); } catch (_) { convNote("conversation read: not JSON"); return; }
         if (!turnDone(conv, w.askedAt)) { convNote("conversation read: answer not finished yet"); return; }
