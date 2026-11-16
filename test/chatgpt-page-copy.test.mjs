@@ -109,6 +109,12 @@ const PAGE_VIRT = () => PAGE_NOV()
     "a.setAttribute('data-turn-key', 'turn-a' + Date.now()); a.innerHTML = '<div data-virtualized-turn-content=\"\"><h4 class=\"sr-only\" data-conversation-role=\"assistant\" tabindex=\"-1\">ChatGPT said:</h4><div class=\"markdown\"></div><button aria-label=\"Copy\">Copy</button><span data-markdown-copy=\"exclude\">Good response</span></div>'; document.getElementById('convo').appendChild(a);")
   .replace("a.innerHTML += parts[i++];", "a.querySelector('.markdown').innerHTML += parts[i++];");
 
+// 16 Nov 2026: the question and the answer in ONE turn (the owner's report:
+// "turns 1 · role headings 2", page copy gave up after 6 minutes).
+const PAGE_ONETURN = () => PAGE_VIRT()
+  .replace("a.setAttribute('data-turn-key', 'turn-a' + Date.now()); ", "")
+  .replace("Good response</span></div>'; document.getElementById('convo').appendChild(a);", "Good response</span></div>'; [...document.querySelectorAll('[data-turn-key]')].pop().appendChild(a);");
+
 const context = await chromium.launchPersistentContext(`${PROFILE_BASE}-${Date.now()}`, {
   headless: false,
   args: [`--disable-extensions-except=${EXT_PATH}`, `--load-extension=${EXT_PATH}`, "--headless=new", "--no-sandbox"],
@@ -117,6 +123,7 @@ try {
   await context.route(/^https:\/\/chatgpt\.com\//, (route) => {
     const u = new URL(route.request().url());
     if (u.pathname.endsWith("/conversation/prepare")) return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status: "ok", conduit_token: "made-up" }) });
+    if (u.pathname.startsWith("/c/oneturn")) return route.fulfill({ status: 200, contentType: "text/html", body: PAGE_ONETURN() });
     if (u.pathname.startsWith("/c/virt")) return route.fulfill({ status: 200, contentType: "text/html", body: PAGE_VIRT() });
     if (u.pathname.startsWith("/c/nov")) return route.fulfill({ status: 200, contentType: "text/html", body: PAGE_NOV() });
     return route.fulfill({ status: 200, contentType: "text/html", body: PAGE(u.pathname.startsWith("/c/old")) });
@@ -255,6 +262,27 @@ try {
   const rep6 = ((await ask({ type: "capture-check" })) || {}).report || "";
   check("the report says what the page looks like", /page: old wrapper 0 · turns \d+ · role headings \d+/.test(rep6), rep6.split("\n").find((l) => /page copy/.test(l)) || rep6.slice(0, 300));
   await w6.close();
+
+  console.log("\n7. the question and the answer in one turn (16 Nov 2026)");
+  const before7 = (await records()).length;
+  const w7 = await context.newPage();
+  await w7.goto("https://chatgpt.com/c/oneturn-1");
+  await w7.waitForTimeout(1500);
+  await w7.click("#pending-conversation-input");
+  await w7.keyboard.type("which linen shirt lasts longest");
+  await w7.keyboard.press("Enter");
+  let after7 = before7;
+  for (let i = 0; i < 40 && after7 <= before7; i++) { await w7.waitForTimeout(500); after7 = (await records()).length; }
+  const shape7 = await w7.evaluate(() => ({ turns: document.querySelectorAll("[data-turn-key]").length, heads: document.querySelectorAll("[data-conversation-role]").length }));
+  check("one turn holds both headings (the test is honest)", shape7.turns === 1 && shape7.heads === 2, JSON.stringify(shape7));
+  check("captured", after7 === before7 + 1, `${after7 - before7} new`);
+  const one = (await records()).find((x) => /lasts longest/.test(x.userPrompt || ""));
+  check("the question alone, not the answer with it", !!one && one.userPrompt === "which linen shirt lasts longest", one && JSON.stringify(one.userPrompt));
+  if (one) {
+    const full = ((await ask({ type: "get-record", captureId: one.captureId })) || {}).record || one;
+    check("the answer alone, not the question with it", /\*\*Zento Linen\*\*/.test(full.answerText || "") && !/lasts longest|You said|ChatGPT said/.test(full.answerText || ""), (full.answerText || "").slice(0, 160));
+  }
+  await w7.close();
 } finally {
   await context.close();
 }

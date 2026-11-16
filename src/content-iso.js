@@ -2090,9 +2090,33 @@
      * wrapper is added only in some modes. Each role is read from the old
      * wrapper where it exists, else from the turns.
      */
+    /*
+     * Since 16 Nov 2026 a turn can hold the question AND the answer: the
+     * owner's report read "turns 1 · role headings 2", and the page copy,
+     * which took one heading per turn, never saw the answer and gave up
+     * after 6 minutes. So each message is found from its own heading: the
+     * widest box around the heading that holds no other heading, kept inside
+     * its turn and never reaching the composer.
+     */
+    const HEAD = "[data-conversation-role]";
+    const COMPOSER = "[data-composer-body], #prompt-textarea, form, textarea";
+    const messageOf = (h) => {
+      const turn = h.closest("[data-turn-key]");
+      if (turn && turn.querySelectorAll(HEAD).length === 1) return turn;
+      let el = h;
+      while (el.parentElement && el !== turn) {
+        const up = el.parentElement;
+        if (up === document.body || up.tagName === "MAIN" || up.querySelectorAll(HEAD).length > 1 || up.querySelector(COMPOSER)) break;
+        el = up;
+        if (el === turn) break;
+      }
+      return el;
+    };
     const roleEls = (role) => {
       const old = [...document.querySelectorAll(`[data-message-author-role="${role}"]`)];
       if (old.length) return old;
+      const heads = [...document.querySelectorAll(HEAD)];
+      if (heads.length) return heads.filter((h) => h.getAttribute("data-conversation-role") === role).map(messageOf).filter((el, i, all) => all.indexOf(el) === i);
       const out = [];
       for (const t of document.querySelectorAll("[data-turn-key]")) {
         const h = t.querySelector("[data-conversation-role]");
