@@ -50,6 +50,8 @@ The store's version was 0.36. 1.0.0 is the first release since; the store pack i
    - line 13 of `README.md`
 
    Add a README bullet for each user-visible fix.
+
+   **Every zip the owner receives gets a new version (asked 17 Nov 2026).** 1.0.0 went to the owner several times while its capture was being fixed; from now on each round of fixes is the next patch version: 1.0.1, then 1.0.2, and so on. Never send changed code under a version the owner already has.
 5. **Run the full suite before every push, from fresh browser profiles.** Delete `/tmp/citoskeleton-*` first: a reused profile runs a stale service worker and gives false results. Push only when everything passes.
 6. **Don't `pkill -f` with a pattern that matches your own shell command.** Doing so killed the suite runner twice.
 7. **Match the code's style.** Comments explain *why*, with the evidence: which run, which export, which source. The existing ones are long on purpose, and new code should read like its neighbours.
