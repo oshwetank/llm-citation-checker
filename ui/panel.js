@@ -15,6 +15,7 @@ import {
 import { parseCsv, parseXlsx, rowsToPrompts } from "../src/lib/xlsxLite.js";
 import { promptTemplateWorkbook, promptTemplateCsv } from "../src/lib/promptTemplate.js";
 import { makeZip } from "../src/lib/zipWrite.js";
+import { pictureProducts } from "../src/lib/productImages.js";
 import { BUNDLE_PARTS, buildFeedbackFiles, bundleFilename } from "../src/lib/feedbackBundle.js";
 import { computeSearchFunnel, computeBrandMatrix } from "../src/lib/funnel-omitted.js";
 import { GLOSSARY, glossaryEntries } from "../src/lib/glossary.js";
@@ -844,6 +845,9 @@ async function hydrate(captureId) {
   if (FULL.has(captureId)) return FULL.get(captureId);
   const r = await send({ type: "get-record", captureId });
   const rec = r.ok ? r.record : null;
+  // Product cards stored without their picture (before 1.0.1) take the image
+  // titled with their name, so they show it without being read again.
+  if (rec && Array.isArray(rec.products) && rec.products.some((p) => p && !p.image)) rec.products = pictureProducts(rec.products, rec.images);
   if (rec) FULL.set(captureId, rec);
   return rec;
 }

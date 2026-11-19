@@ -25,6 +25,7 @@ import { detectBrands } from "../lib/brands.js";
 import { isGenUi, readGenUi } from "../lib/genui.js";
 import { isConversationSource, readConversationSource, limitOfSource, promptOfSourceRequest } from "../lib/chatgptSource.js";
 import { isConversationJson, turnAsCapture } from "../lib/chatgptConversation.js";
+import { pictureProducts } from "../lib/productImages.js";
 
 export const ADAPTER_VERSION = "chatgpt@0.5.0";
 
@@ -829,7 +830,9 @@ async function adaptSource(rawCapture, opts, diag) {
   // The signed-out page posts a form whose "prompt" field is the question.
   let userPrompt = (r && r.prompt) || promptOfSourceRequest(rawCapture.reqBody) || extractPrompt(rawCapture.reqBody);
   if (!userPrompt) { try { userPrompt = new URL(rawCapture.pageUrl).searchParams.get("q") || null; } catch (_) { /* no address */ } }
-  const products = (r && r.products) || [], places = (r && r.places) || [], images = (r && r.images) || [];
+  const images = (r && r.images) || [], places = (r && r.places) || [];
+  // Each card's picture, from the image titled with its name (lib/productImages.js).
+  const products = pictureProducts((r && r.products) || [], images);
   const { brands: brandMentions, entities: baseEntities } = await detectBrandsForCapture(answerText, products, opts.tracked, sources, places, userPrompt, { keepLines: pageCopy });
   const entities = extractEntities(baseEntities, products, brandMentions, sources, places);
   if (pageCopy) diag.notes.push("read off the page: the network stream wasn't seen, so searches and pages read aren't known");
@@ -911,6 +914,8 @@ export async function adapt(rawCapture, opts = {}) {
     if (!have) images.push(im);
     else for (const k of ["sourceUrl", "attribution", "title"]) if (!have[k] && im[k]) have[k] = im[k];
   });
+  // A product with no picture of its own takes the image titled with its name.
+  products = pictureProducts(products, images);
 
   // Carousel presence: products carousel if any product; news if any dated/news
   // source; image carousel if an image-typed content reference exists; map if a

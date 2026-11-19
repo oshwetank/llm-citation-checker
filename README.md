@@ -14,12 +14,14 @@ Hugging Face; and, once accounts are switched on, when you sign in, share a camp
 code, open a code, or leave an email for updates. Nothing you capture ever leaves your
 device unless you choose to share that campaign: the AI runs on your computer.
 
-> **v1.0.0** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v1.0.1** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **1.0.1** (19 November 2026).
+>   - **Product cards show their pictures.** A ChatGPT card answer whose products came without a picture (every card an empty cart, while "Images shown" had the phones) now gives each card the image titled with its name. Answers already captured show them too.
 > - **1.0.0: the release after 0.36** (November 2026).
 >   - **Help to get going.** A Get started checklist on the Dashboard, a Help & FAQ page (About → Help & FAQ), example prompts when you set up a campaign, and on each campaign's results how many answers its numbers rest on and what to do next. Updating from an earlier version, the guide opens on what changed.
 >   - **No new permissions when updating.** The extension no longer asks for access to google.com.

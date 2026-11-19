@@ -145,6 +145,7 @@ jobs:
                    test/perplexity-signed-out-wall.test.mjs \
                    test/gemini-followups-bold-products.test.mjs \
                    test/chatgpt-page-copy-cards.test.mjs \
+                   test/chatgpt-product-pictures.test.mjs \
                    test/perplexity-markdown-harvest.test.mjs test/perplexity-real-dom.test.mjs \
                    test/perplexity-steps.test.mjs test/perplexity-table-layout-brands.test.mjs \
                    test/perplexity-ws-contamination.test.mjs \
