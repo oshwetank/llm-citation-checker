@@ -14,6 +14,18 @@
  * addresses and make the request the real page makes; made-up answers.
  *
  *   node test/upgrade-capture.test.mjs [--from <commit>]   (default: v0.80.0)
+ *   CI also runs it --from 4d5a046: v0.36.0, the version live on the store.
+ *
+ * 1.0.0: until now the "update" never ran the new code. Chrome keeps an
+ * extension's service-worker script in the profile, and loading a newer
+ * build from a folder over it did not replace it: the worker went on
+ * answering as the old release (its build-info said 0.80.0) while the pages
+ * were the new ones, so every check after the update tested the old
+ * background. A store update drops the old worker and registers the new
+ * one; the profile's stored worker scripts are now removed between the two
+ * runs to do the same, the extension's own data (IndexedDB, chrome.storage)
+ * is left where it is, and the test checks the worker that answers is this
+ * build.
  */
 import { readFileSync, rmSync, mkdirSync, cpSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -151,16 +163,24 @@ try {
   const oldVersion = version();
   current = await launch(EXT, PROFILE);
   const first = await askAll(current);
-  check(`v${oldVersion} captured an answer on each engine`, ENGINES.every((e) => first.gained[e.id] >= 1), JSON.stringify(first.gained));
+  // An older release may not read today's format on every engine (0.36
+  // predates Perplexity's current stream); the default baseline must.
+  if (argFrom === -1) check(`v${oldVersion} captured an answer on each engine`, ENGINES.every((e) => first.gained[e.id] >= 1), JSON.stringify(first.gained));
+  else check(`v${oldVersion} captured answers before the update`, ENGINES.some((e) => first.gained[e.id] >= 1), JSON.stringify(first.gained));
   await current.context.close();
   current = null;
 
   console.log("\nthis build, as an update over it");
+  // What a store update does and a folder reload doesn't: the old worker
+  // script is dropped. The extension's data stays (see the note above).
+  for (const d of ["Service Worker", "Code Cache"]) rmSync(path.join(PROFILE, "Default", d), { recursive: true, force: true });
   // Working tree, so uncommitted changes are tested too.
   for (const f of readdirSync(EXT)) rmSync(path.join(EXT, f), { recursive: true, force: true });
   for (const f of ["manifest.json", "src", "ui", "icons", "fonts", "_locales"]) cpSync(path.join(ROOT, f), path.join(EXT, f), { recursive: true });
   current = await launch(EXT, PROFILE);
   check(`updated in place: v${oldVersion} → v${version()}, same extension`, version() !== oldVersion);
+  const running = await current.msg({ type: "build-info" });
+  check("and the worker answering is this build, not the old one", running && running.build === version(), JSON.stringify(running));
   const kept = await countBy(current.msg);
   check("the older answers are still there", ENGINES.every((e) => (kept.n[e.id] || 0) >= first.gained[e.id]), JSON.stringify(kept.n));
   const errs = (((await current.msg({ type: "get-errors" })) || {}).errors || []).filter((x) => x.at > Date.now() - 120000);

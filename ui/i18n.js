@@ -122,6 +122,30 @@ export function tr(s) {
   return s;
 }
 
+/*
+ * A sentence with names in it (0.84.3): fmt("Show {brand} in the answer",
+ * { brand }) and fmt("{n} prompts", { n }, "{n} prompt").
+ *
+ * The key is the template, so a name never has to be guessed out of a
+ * finished sentence. tr() could have learned "Show * in the answer" from the
+ * text alone, but it also sees what the user typed and what the engines
+ * wrote, and a prompt such as "Compare iPhone with Samsung" would have been
+ * translated as if it were a label. Here the call site says which parts are
+ * names. A value that is a number is written in the language's style; a
+ * third argument is the singular, used when the language calls the count
+ * "one" (which also puts right the English "1 prompts").
+ */
+export function fmt(template, vars = {}, one = null) {
+  const n = typeof vars.n === "number" ? vars.n : null;
+  let t = template;
+  if (one && n != null) { try { if (new Intl.PluralRules(lang).select(n) === "one") t = one; } catch (_) { if (n === 1) t = one; } }
+  const out = lang !== "en" && typeof dict[t] === "string" ? dict[t] : t;
+  return out.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? (typeof vars[k] === "number" ? fmtNum(vars[k]) : String(vars[k] ?? "")) : m));
+}
+
+/** The locale dates are written in: the chosen language, or the browser's for English. */
+export const dateLocale = () => (lang === "en" ? undefined : lang);
+
 /** A count with the right plural for the language: tp(3, "brand", "brands"). */
 export function tp(n, one, other) {
   const cat = new Intl.PluralRules(lang).select(n);

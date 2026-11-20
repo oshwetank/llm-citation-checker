@@ -53,7 +53,7 @@ export function initAiSettings(slot) {
     const pick = s.pick || null;
     const tier = chosen || s.tier || (pick && pick.tier) || "standard";
     slot.replaceChildren();
-    const chip = s.downloading ? h("span", { className: "ai-chip busy" }, s.progress && s.progress.pct != null ? `Downloading ${Math.round(s.progress.pct)}%` : "Downloading…")
+    const chip = s.downloading ? h("span", { className: "ai-chip busy" }, s.progress && /waiting/.test(s.progress.status || "") ? "Waiting for the other download" : s.progress && s.progress.pct != null ? `Downloading ${Math.round(s.progress.pct)}%` : "Downloading…")
       : s.ready && s.engine && s.engine.id === "nano" ? h("span", { className: "ai-chip ok" }, "Ready · Chrome's built-in AI")
       : s.ready ? h("span", { className: "ai-chip ok" }, `Ready · ${s.model ? (s.model.params ? `${s.model.label} (${s.model.params})` : s.model.label) : ""}${s.device ? ` · ${s.device === "webgpu" ? "graphics chip" : "processor"}` : ""}`)
       : s.error ? h("span", { className: "ai-chip bad" }, "Download failed")
@@ -141,7 +141,7 @@ export function initAiSettings(slot) {
       slot.append(
         sw("aiCampaigns", "Check campaign answers", "Each answer a campaign captures is checked in the background, one at a time.", s.settings && s.settings.onCampaigns, (v) => set({ aiOnCampaigns: v })),
         sw("aiEveryday", "Check everyday answers", "Answers you get by asking the engines yourself. Nothing leaves this computer.", s.settings && s.settings.onEveryday, (v) => set({ aiOnEveryday: v })),
-        sw("aiCounts", "Use AI-checked brands in counts", "Adds the names the AI found, each quoted from the answer, to share of voice and visibility. Off keeps counts the same on every computer.", s.settings && s.settings.inCounts, (v) => set({ aiInCounts: v })));
+        sw("aiCounts", "Let the AI correct brands in counts", "Adds names the rules missed, takes out words that aren't names, and counts a product under its brand, each backed by the answer. Off keeps counts the same on every computer.", s.settings && s.settings.inCounts, (v) => set({ aiInCounts: v })));
       slot.append(h("p", { className: "ai-hw", id: "aiQueue" }, s.checking ? `Checking an answer now · ${s.queued} waiting` : s.queued ? `${s.queued} answers waiting` : "Nothing waiting.",
         s.model ? ` Model: ${s.model.repo}.` : ""));
     }
@@ -193,7 +193,7 @@ export function initAiSettings(slot) {
   function layaBlock(s) {
     const L = s.laya || {};
     const box = h("div", { className: "ai-engine ai-laya", id: "aiLaya" });
-    const chip = L.downloading ? h("span", { className: "ai-chip busy" }, L.progress && L.progress.pct != null ? `Downloading ${Math.round(L.progress.pct)}%` : "Downloading…")
+    const chip = L.downloading ? h("span", { className: "ai-chip busy" }, L.progress && /waiting/.test(L.progress.status || "") ? "Waiting for the other download" : L.progress && L.progress.pct != null ? `Downloading ${Math.round(L.progress.pct)}%` : "Downloading…")
       : L.ready ? h("span", { className: "ai-chip ok" }, `Ready${L.device ? ` · ${L.device === "webgpu" ? "graphics chip" : "processor"}` : ""}`)
       : L.error ? h("span", { className: "ai-chip bad" }, "Download failed") : h("span", { className: "ai-chip" }, "Off");
     box.append(h("div", { className: "ab-row ai-row" },

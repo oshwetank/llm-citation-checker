@@ -225,6 +225,24 @@ export function readGeminiChannel(raw) {
   return last;
 }
 
+// Every length-delimited field that reads as text, depth first.
+function longestText(bytes, depth = 0) {
+  let best = null;
+  if (depth > 8) return null;
+  let fields;
+  try { fields = protoFields(bytes); } catch (_) { return null; }
+  for (const [, , value] of fields || []) {
+    if (!(value instanceof Uint8Array)) continue;
+    // The innermost text wins: an outer field's bytes can decode too, with
+    // the inner field's length byte in front ("$which biscuit…").
+    const inner = longestText(value, depth + 1);
+    const t = inner ? null : text(value);
+    const found = inner || (t && /\s/.test(t.trim()) && /^[^\u0000-\u001f\ufffd]+$/.test(t) ? t : null);
+    if (found && (!best || found.length > best.length)) best = found;
+  }
+  return best;
+}
+
 /** The prompt in an up-channel form body ("count=…&req0___data__=<base64>"). */
 export function channelPrompt(body) {
   let prompt = null;
@@ -233,7 +251,10 @@ export function channelPrompt(body) {
       if (prompt || !/^req\d+___data__$/.test(k)) return;
       const bytes = b64(v);
       if (!bytes) return;
-      prompt = str(bytes, "1.8.5.1.1.1");
+      // 1.8.5.1.1.1 until Nov 2026; then 2.9.1 (the owner's capture of 13
+      // Nov 2026 had no prompt). Failing both, the longest piece of text in
+      // the upload with a space in it: a question, not an id or a token.
+      prompt = str(bytes, "1.8.5.1.1.1") || str(bytes, "2.9.1") || longestText(bytes);
     });
   } catch (_) { /* not a form */ }
   return prompt ? prompt.trim() : null;

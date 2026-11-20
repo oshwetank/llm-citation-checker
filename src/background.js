@@ -52,6 +52,7 @@ import { adapt as adaptGemini } from "./adapters/gemini.js";
 import { adapt as adaptPerplexity } from "./adapters/perplexity.js";
 import { adapt as adaptGrok } from "./adapters/grok.js";
 import { adaptPageCopy, isPageCopy } from "./adapters/pageCopy.js";
+import { cleanPrompt } from "./lib/promptText.js";
 import {
   MAX_PROFILES, TRASH_RETENTION_DAYS, makeProfile, makeTrackedPrompt, makeGeoRun, runVolume,
   needsUnlock, profileChanges, addCompetitor, autoCompetitorsFrom, missingTurns,
@@ -230,16 +231,16 @@ async function sessionOf(sender, platform, url) {
       const st = stores.find((x) => (x.tabIds || []).includes(tab.id));
       if (st) storeId = st.id;
     }
-    // The cookies the engine's page itself is sent (0.69.0). Asked by domain,
-    // Google's session cookies on google.com were out of reach (the
-    // extension has gemini.google.com, not google.com), so every Gemini
-    // answer read "unknown". By the page's address they are the ones it gets.
+    // The cookies the engine's page itself is sent (0.69.0). For Gemini this
+    // finds nothing without access to google.com, which 1.0.0 doesn't ask
+    // for (see AUTH_COOKIES.gemini), so a Gemini answer reads "unknown"
+    // rather than a wrong "signed out".
     const spec = AUTH_COOKIES[platform];
     const pageUrl = tab && tab.url && /^https:/.test(tab.url) ? new URL(tab.url).origin + "/" : null;
     if (spec && pageUrl) {
       const got = (await chrome.cookies.getAll(storeId ? { url: pageUrl, storeId } : { url: pageUrl })) || [];
       if (got.some((c) => spec.names.includes(c.name) && c.value)) out.signedIn = "in";
-      else if (got.length) out.signedIn = "out";
+      else if (got.length && !spec.neverOut) out.signedIn = "out";
     } else {
       const r = await checkEngineAuth(platform, (q) => chrome.cookies.getAll(storeId ? { ...q, storeId } : q));
       out.signedIn = r.status;
@@ -364,6 +365,9 @@ async function importCampaignBundle(bundle, { from = "" } = {}) {
 chrome.runtime.onInstalled.addListener((details) => {
   if (details && details.reason === "update") repairOnce().catch((e) => logErr("repair", e));
   syncSignup();
+  // The version updated from (1.0.0): the guide starts with what changed for
+  // people coming from before the redesign (ui/welcome.js).
+  if (details && details.reason === "update" && details.previousVersion) chrome.storage.local.set({ citoUpdatedFrom: details.previousVersion }).catch(() => {});
   if (details && (details.reason === "install" || details.reason === "update")) openWelcomeOnce();
   chrome.tabs.query({ url: AI_TAB_MATCHES }, (tabs) => {
     for (const t of tabs || []) {
@@ -515,6 +519,9 @@ async function storeCapture(payload, meta) {
     runId: (meta && meta.runId) || null,
     geo: (meta && meta.geo) || null, // ditto: tracking provenance must survive reprocess
     session: (meta && meta.session) || null, // private window / signed in (0.66.0)
+    // The question as the page showed it (1.0.0; content-iso pagePromptNow),
+    // kept on the raw row so Reprocess reads it the same way.
+    pagePrompt: typeof payload.pagePrompt === "string" ? payload.pagePrompt.slice(0, 4000) : null,
 
     gz,
     rawSchema: 1,
@@ -595,8 +602,10 @@ async function storeCapture(payload, meta) {
   // capture just stored.
   enforceRetention(settings, record ? record.captureId : captureId).catch(() => {});
   // A copy of an answer already stored is merged into that record, which
-  // keeps its id; that is the capture the panel should show.
-  return { captureId: record ? record.captureId : captureId, record };
+  // keeps its id; that is the capture the panel should show. `isNew` says
+  // whether this was an answer not stored before (1.0.0: the "captured"
+  // notice went up for every page request saved, answer or not).
+  return { captureId: record ? record.captureId : captureId, record, isNew: !!record && record.captureId === captureId };
 }
 
 // Build a derived record from a raw row. `rawText` optional (avoids re-gunzip).
@@ -647,7 +656,7 @@ async function enrichCaptureWithAI(record) {
     // 0.70.0: Nano's names no longer go into the counts directly (that made
     // share of voice differ between a computer with Nano and one without,
     // and Reprocess erased it). They are kept as an AI check, put back on
-    // every derive, and join the counts only with "Use AI-checked brands in
+    // every derive, and join the counts only with "Let the AI correct brands in
     // counts" on.
     const have = new Set((record.brandMentions || []).map((m) => String(m.brand || "").toLowerCase()));
     const added = finalBrands.filter((m) => !have.has(String(m.brand || "").toLowerCase()));
@@ -715,6 +724,21 @@ async function deriveAndStore(rawRow, rawText, settings, { settle = true } = {})
   // that finished the campaign turn.
   if (record.platform === "gemini" && (record.platformSpecific || {}).transport === "webchannel" && !record.answerChars) {
     return null;
+  }
+  // The same for ChatGPT signed out (1.0.0): its stream is handed over while
+  // it still says "Searching the web", then again with the answer. The owner's
+  // private-window campaign of 15 Nov 2026 kept 11 of those first copies as
+  // empty answers beside the real ones (the real copy is keyed by its reply
+  // id, the empty one has none, so they weren't joined). A limit is kept.
+  if (record.platform === "chatgpt" && (record.platformSpecific || {}).transport === "conversation-source"
+    && !record.answerChars && !(record.sources || []).length && !(record.platformSpecific || {}).gatewayError) {
+    return null;
+  }
+  // No question in the engine's own request: the one the page showed, once
+  // there is an answer (so it can never turn an empty capture into a record).
+  if (!record.userPrompt && rawRow.pagePrompt && record.answerChars) {
+    record.userPrompt = cleanPrompt(rawRow.pagePrompt);
+    if (record._extraction && Array.isArray(record._extraction.notes)) record._extraction.notes.push("prompt: read off the page; the engine's request didn't carry it");
   }
 
   await attachPages(record);
@@ -1084,6 +1108,9 @@ const REPAIR_KEY_0781 = "lcfcRepaired0781";
 // 0.80.0: and once more, for their products, places and pictures, on
 // installs that already ran the 0.79.0 pass.
 const REPAIR_KEY_0790 = "lcfcRepaired0800";
+// 1.0.0: ChatGPT answers copied off the page before 16 Nov 2026 wrote card
+// titles as "**1.****Titan Eye+**" and missed their brands; read once more.
+const REPAIR_KEY_PAGECOPY = "lcfcRepaired100pc";
 async function repairOnce() {
   const got = await chrome.storage.local.get([REPAIR_KEY, REPAIR_KEY_0781, REPAIR_KEY_0790]);
   if (!got || !got[REPAIR_KEY]) {
@@ -1095,6 +1122,26 @@ async function repairOnce() {
     await reprocessSignedOutChatGpt().catch((e) => logErr("repair:0790", e));
     await chrome.storage.local.set({ [REPAIR_KEY_0781]: Date.now(), [REPAIR_KEY_0790]: Date.now() });
   }
+  const pc = await chrome.storage.local.get(REPAIR_KEY_PAGECOPY);
+  if (!pc || !pc[REPAIR_KEY_PAGECOPY]) {
+    await reprocessChatGptPageCopies().catch((e) => logErr("repair:pagecopy", e));
+    await chrome.storage.local.set({ [REPAIR_KEY_PAGECOPY]: Date.now() });
+  }
+}
+
+async function reprocessChatGptPageCopies() {
+  const settings = await getSettings();
+  let n = 0;
+  for (const id of await db.getAllKeys("raw")) {
+    try {
+      const row = await db.get("raw", id);
+      if (!row || row.platform !== "chatgpt" || row.transport !== "page-copy") continue;
+      await deriveAndStore(row, undefined, settings);
+      n++;
+    } catch (_) { /* keep going */ }
+  }
+  logEvent("repair:chatgpt-page-copy", "capture", `read ${n} ChatGPT page copies again`, { count: n });
+  return n;
 }
 
 /* 0.78.1: signed-out ChatGPT captures read again. Until now ChatGPT's
@@ -3451,8 +3498,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               // IS the notification; during a run the progress card already
               // counts every prompt, so one toast per prompt is noise layered
               // over the thing the user is trying to read.
+              // Only a new answer is announced (1.0.0). The owner saw "New
+              // LLM citation captured!" again and again with nothing asked:
+              // a Perplexity tab left open keeps making requests (related
+              // questions, live updates) that are saved raw but hold no
+              // answer, and a page re-sending an answer already stored was
+              // announced again too. Those refresh the panel silently.
               chrome.runtime.sendMessage(
-                { type: "new-capture", captureId: res.captureId, duringRun: !!loader.running },
+                res.record && res.isNew
+                  ? { type: "new-capture", captureId: res.captureId, duringRun: !!loader.running }
+                  : { type: "capture-updated", captureId: res.captureId },
                 () => void chrome.runtime.lastError);
             } catch (_) {}
             // Deliberately NOT awaited: the capture is already saved and shown.

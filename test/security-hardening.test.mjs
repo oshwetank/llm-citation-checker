@@ -184,5 +184,20 @@ console.log("\n7. Chrome too old to capture is told so");
   check("Firefox's build leaves Chrome's key out", !("minimum_chrome_version" in firefoxManifest(m)) && !!firefoxManifest(m).browser_specific_settings.gecko.strict_min_version);
 }
 
+/* ---------- 8. no new site access for existing users ---------- */
+console.log("\n8. updating from the store version asks for no new site access");
+{
+  // The live store version is 0.36. A host it didn't have makes Chrome switch
+  // the extension off for everyone on update until they approve it, so a new
+  // one is a decision, not a side effect. 1.0.0 dropped google.com, added in
+  // 0.69 only to see that a Google sign-in cookie exists (lib/auth-check.js
+  // now reads it by gemini.google.com's address).
+  const LIVE_HOSTS = ["https://chatgpt.com/*", "https://chat.openai.com/*", "https://gemini.google.com/*", "https://www.perplexity.ai/*", "https://perplexity.ai/*", "https://grok.com/*", "https://x.com/*"];
+  const m = JSON.parse(readFileSync(path.join(ROOT, "manifest.json"), "utf8"));
+  const added = (m.host_permissions || []).filter((h) => !LIVE_HOSTS.includes(h));
+  check("no host beyond the live version's", added.length === 0, added.join(", "));
+  check("all sites stays optional, asked for only when the setting is turned on", (m.optional_host_permissions || []).includes("<all_urls>") && !(m.host_permissions || []).includes("<all_urls>"));
+}
+
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
 process.exit(failures ? 1 : 0);

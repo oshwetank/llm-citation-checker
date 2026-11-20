@@ -237,7 +237,7 @@ try {
     check("each brand's type, owner and stance, with its quote", a && /Made-up Group/.test(a.text) && /Recommended/.test(a.text) && a.q >= 2, a && a.text);
     check("names it found, marked as not in your counts", a && /Also found by AI/.test(a.text) && /Orbix Labs/.test(a.text) && /not in your counts/.test(a.text), a && a.text);
     check("and how many claims were left out", a && /1 claim left out/.test(a.text), a && a.text);
-    // With "Use AI-checked brands in counts" on, the found name joins the
+    // With "Let the AI correct brands in counts" on, the found name joins the
     // counts only if it is written in the answer (it isn't here).
     await msg({ type: "settings-set", patch: { aiInCounts: true } });
     await msg({ type: "reprocess-all" });

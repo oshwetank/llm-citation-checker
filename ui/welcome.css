@@ -96,3 +96,9 @@ body { background: var(--wl-bg); color: var(--wl-ink); font-family: var(--wl-fon
 .wl-privacy { margin: 0; padding: 12px 14px; border-radius: 12px; background: var(--wl-soft); color: var(--wl-ink); font-size: 13px; }
 .wl-done { grid-template-columns: 1fr; text-align: center; justify-items: center; }
 .wl-done .wl-nav { justify-content: center; }
+
+/* What's changed since the earlier version (1.0.0). */
+.wl-changed { margin: 4px 0 16px; display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; font-size: 14px; line-height: 1.5; text-align: start; }
+.wl-changed dt { font-weight: 600; }
+.wl-changed dd { margin: 0; color: var(--wl-muted); }
+@media (max-width: 560px) { .wl-changed { grid-template-columns: 1fr; } .wl-changed dd { margin-block-end: 6px; } }

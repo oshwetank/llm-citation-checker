@@ -56,6 +56,9 @@ const NOISE = new Set([
   // …**", "**Choose the realme …**", "**ANC:** Up to 55dB"); reported as
   // brands in a ChatGPT answer (0.62.1).
   "buy", "choose", "save", "get", "go", "skip", "avoid", "opt", "prefer", "stretch",
+  // Labels of ChatGPT's follow-up question form ("**3. Preferred area**",
+  // 16 Nov 2026) and the card bullets' opening adjectives.
+  "preferred", "preference", "excellent", "strong", "useful", "powerful", "consistent",
   "spend", "pay", "look", "check", "try", "use", "want", "need", "up", "to", "with",
   "without", "under", "around", "about", "only", "both", "either", "here", "there",
   "then", "yes", "no", "not", "it", "its", "they", "you", "we",
@@ -66,7 +69,9 @@ const NOISE = new Set([
 // counts. Shapes, not industry nouns, so they hold for any vertical.
 const SPEC_TOKEN = /^(?:ip[x\d]\d|ipx|ai|anc|enc|enx|tws|usb|bt|nfc|hdr|oled|amoled|lcd|led|[2-6]g|wi-?fi|(?:single|dual|triple|quad|multi|hybrid)-[a-z]+)$/i;
 
-const isNoise = (w) => !w || NOISE.has(w.toLowerCase()) || SPEC_TOKEN.test(w);
+// A contraction or possessive of a noise word is noise too (1.0.0): "What's"
+// (a follow-up question's label) and "Here's" reached a brand list.
+const isNoise = (w) => !w || NOISE.has(w.toLowerCase()) || NOISE.has(w.toLowerCase().replace(/['’](?:s|re|ll|d|ve)$/, "")) || SPEC_TOKEN.test(w);
 
 // entity[] markers come in (at least) two shapes:
 //   ["company","Zerodha","Indian stock broker"]        — category + name + description
@@ -210,7 +215,7 @@ const headerNamesColumn = (h) => {
 // a hotel table: with no header the code knew, the AREA column (the town's
 // neighbourhoods and its main road) won the prose vote over the hotel names
 // and every neighbourhood was reported as a brand. Such a column is never the names.
-const NOT_NAME_HEADER_RE = /\b(areas?|locations?|localit(?:y|ies)|neighbou?rhoods?|address(?:es)?|cit(?:y|ies)|regions?|distance|near|price|prices|pricing|rates?|cost|costs|fees?|tariff|budget|ratings?|reviews?|stars?|why|reason|notes?|highlights?|amenities|features?|pros|cons|best for|good for|ideal for|verdict|type|kind|category|specs?|size|duration|timings?|hours|contact|phone|website|link|book(?:ing)?)\b/i;
+const NOT_NAME_HEADER_RE = /\b(areas?|locations?|localit(?:y|ies)|neighbou?rhoods?|address(?:es)?|cit(?:y|ies)|regions?|distance|near|price|prices|pricing|rates?|cost|costs|fees?|tariff|budget|ratings?|reviews?|stars?|why|reason|notes?|highlights?|amenities|features?|pros|cons|best for|good for|ideal for|verdict|type|kind|category|specs?|size|duration|timings?|hours|contact|phone|website|link|book(?:ing)?|nutrients?|nutrition|ingredients?|factors?|criteria|criterion|aspects?|parameters?|metrics?|attributes?|tips?|steps?|benefits?|risks?|signs?|symptoms?|uses?|purpose|goals?|what to)\b/i;
 
 // A table cell's name: ChatGPT writes some names as entity markers
 // (entity["turn0business4","Hotel Pinecrest"]), whose name is what the
@@ -269,8 +274,13 @@ function parseTableCells(text) {
               if (score > bestScore) { bestScore = score; nameColIdx = c; }
             }
           }
+          // 1.0.0: a "Nutrient (per 100g) | What to aim for" table led to
+          // Sugar, Sodium and Ingredients as brands: with no name column, the
+          // position rule took column 0 anyway. When the header itself says
+          // column 0 is a property, the table names nothing.
+          const skipTable = nameColIdx === -1 && NOT_NAME_HEADER_RE.test(cleanHeaderCell(headerCells[0]));
           let j = i + 2;
-          while (j < lines.length && lines[j].trim() && lines[j].includes("|")) {
+          while (!skipTable && j < lines.length && lines[j].trim() && lines[j].includes("|")) {
             const cells = splitTableRow(lines[j]);
             let target;
             if (nameColIdx !== -1 && cells[nameColIdx]) {
@@ -282,6 +292,7 @@ function parseTableCells(text) {
             if (target) out.push({ text: target, headed: true });
             j++;
           }
+          if (skipTable) while (j < lines.length && lines[j].trim() && lines[j].includes("|")) j++;
           i = j - 1;
           continue;
         }
@@ -324,6 +335,11 @@ function cleanCandidateText(raw) {
   else if (s.includes(":")) s = s.split(":").pop().trim();
   // Strip leading list numbering left over from heading matches ("1. Vivo V70").
   s = s.replace(/^\d+[.)]\s*/, "").trim();
+  // A qualifier in brackets after the name ("Britannia NutriChoice Digestive
+  // (High Fibre or similar variants)") pushed the whole label over the length
+  // cap and the brand was lost (1.0.0). A model's own brackets stay: they
+  // are short and hold no spaces-separated sentence ("Phone (3a)").
+  s = s.replace(/\s*\((?=[^)]*\s)[^)]{12,}\)\s*/g, " ").replace(/\s{2,}/g, " ").trim();
   if (!s || s.endsWith(":") || s.length > 40) return "";
   return s;
 }
@@ -339,9 +355,23 @@ export function structuralCandidates(answerText) {
 
   // Bold text at the START of a line, tolerating any combination of heading
   // hashes, list bullets and numbering.
-  const lineLeadBold = /(?:^|\n)[ \t]*#{0,6}[ \t]*(?:\d+[.)][ \t]*)?[-*•]?[ \t]*\*\*([^*\n]{2,40})\*\*/g;
+  // Up to 90 characters inside the bold: a label with a bracketed qualifier
+  // runs long, and cleanCandidateText strips the qualifier and caps the rest.
+  const lineLeadBold = /(?:^|\n)[ \t]*#{0,6}[ \t]*(?:\d+[.)][ \t]*)?[-*•]?[ \t]*\*\*([^*\n]{2,90})\*\*/g;
   // Plain (unbolded) headings: "### Zerodha"
   const heading = /(?:^|\n)#{2,6}[ \t]*([^\n#*]{2,60})/g;
+
+  // Which section each heading sits in: headings of the same level under the
+  // same parent are siblings, a list of things (1.0.0, see detectBrands).
+  const headingLines = [];
+  { let at = 0; for (const line of answerText.split("\n")) { const h = line.match(/^(#{1,6})\s/); if (h) headingLines.push({ at, level: h[1].length }); at += line.length + 1; } }
+  const groupOf = (idx) => {
+    const me = headingLines.find((h) => h.at <= idx && idx <= h.at + 8) || null;
+    if (!me) return null;
+    let parent = -1;
+    for (const h of headingLines) { if (h.at >= me.at) break; if (h.level < me.level) parent = h.at; }
+    return `${me.level}@${parent}`;
+  };
 
   for (const { re, source } of [
     { re: lineLeadBold, source: "heading" },
@@ -350,7 +380,29 @@ export function structuralCandidates(answerText) {
     let m;
     while ((m = re.exec(answerText))) {
       const s = cleanCandidateText(m[1]);
-      if (s) out.push({ text: s, source });
+      if (!s) continue;
+      const lead = m[0].replace(/^\n/, "");
+      // A bold label opening a list item ("- **Cremica High Bran Biscuits**:
+      // fibre-rich…") is that item's subject; a bold heading line is not.
+      const src = source === "heading" && !/#/.test(lead) && /^[ \t]*(?:\d+[.)]|[-*•])/.test(lead) ? "bullet" : source;
+      const at = m.index + (m[0].startsWith("\n") ? 1 : 0);
+      out.push({ text: s, source: src, group: source === "section" || /#/.test(lead) ? groupOf(at) : null });
+    }
+  }
+
+  // Names an answer lists as examples (1.0.0): "(e.g., Britannia NutriChoice
+  // Oats Milk & Almond, Sunfeast Farmlite Oats & Almonds, Unibic Oats
+  // Digestive)". Each item that starts with a capital is a product or brand
+  // named on purpose.
+  // Only "e.g.": "cities like Bangalore" and "such as Mumbai" name places.
+  const exampleList = /\be\.g\.,?\s+([^().;\n]{3,240})/gi;
+  let em;
+  while ((em = exampleList.exec(answerText))) {
+    for (const item of em[1].split(/,\s*|\s+or\s+|\s+and\s+(?=[A-Z])/)) {
+      const it = item.replace(/[*_`]/g, "").trim();
+      if (!/^[A-Z]/.test(it) || it.split(/\s+/).length > 6) continue;
+      const s = cleanCandidateText(it);
+      if (s) out.push({ text: s, source: "example", group: null });
     }
   }
 
@@ -362,6 +414,37 @@ export function structuralCandidates(answerText) {
     if (s && !isNoise(s)) out.push({ text: s, source: "heading" });
   }
 
+  return out;
+}
+
+/**
+ * Products named in bold inside a sentence (1.0.0): "Devices like the
+ * **Realme P4 Power** and **Redmi Note 17 Pro Max** pack…". Read last, by
+ * detectBrands, and only to ADD makers the other passes missed: as a
+ * structural candidate it also switched off the prose pass, and an answer
+ * whose brands came from prose lost Google, Xiaomi and Leica.
+ */
+export function boldProductNames(answerText) {
+  if (!answerText) return [];
+  // Only a line's first bold was read, so both were missed in the owner's
+  // Gemini answer of 15 Nov 2026. A model number is required: bold words alone
+  // are as often emphasis ("**incredible battery life**") as names.
+  const out = [];
+  const boldProduct = /\*\*((?:[A-Z]|i[A-Z])[^*\n]{1,60})\*\*/g;
+  let bm;
+  while ((bm = boldProduct.exec(answerText))) {
+    const it = bm[1].trim();
+    // Inside a sentence only: structuralCandidates reads a line's first bold.
+    const before = answerText.slice(answerText.lastIndexOf("\n", bm.index) + 1, bm.index);
+    if (!/[A-Za-z0-9]/.test(before.replace(/^[ \t]*#{0,6}[ \t]*(?:\d+[.)][ \t]*)?[-*•]?[ \t]*/, ""))) continue;
+    // "Galaxy M34 / F15 5G": alternatives, the second without its maker.
+    if (/\//.test(it)) continue;
+    const words = it.split(/\s+/);
+    if (words.length > 6 || /[:.!?]$/.test(it) || !words.slice(1).some((w) => /^[A-Za-z]*\d[A-Za-z0-9]*$/.test(w))) continue;
+    if (/^(?:Step|Option|Scenario|Tip|Day|Week|Phase|Part|Level|Round|Plan|Tier|Rule|Point|Method|Way|Top|Under|Over|Below|Above|Best|Rs|INR|USD|Price)\b/i.test(it)) continue;
+    const s = cleanCandidateText(it);
+    if (s && !isNoise(s)) out.push(s);
+  }
   return out;
 }
 
@@ -386,6 +469,11 @@ export const MARKETPLACE_DOMAINS = new Set([
   "temu.com", "shein.com", "trendyol.com", "hepsiburada.com", "ozon.ru", "wildberries.ru", "avito.ru",
   "marktplaats.nl", "leboncoin.fr", "wallapop.com", "gumtree.com", "craigslist.org", "kijiji.ca",
   "trademe.co.nz", "catch.com.au", "qoo10.com", "mercari.com", "yahoo.co.jp", "daraz.pk", "daraz.com.bd",
+  // Quick-commerce and grocery apps (1.0.0): "Listed around ₹66 on Zepto"
+  // made the app a brand in a biscuit answer.
+  "zepto.com", "zeptonow.com", "blinkit.com", "swiggy.com", "bigbasket.com", "dmart.in", "tatacliq.com",
+  "1mg.com", "pharmeasy.in", "firstcry.com", "ajio.com", "instacart.com", "ocado.com", "tesco.com",
+  "carrefour.com", "costco.com", "target.com",
 ]);
 
 // Publishers, news outlets, tech portals, aggregators, price comparison sites, and social platforms that
@@ -476,7 +564,7 @@ function alwaysAttributed(text, hits) {
 // string ("Amazon.in", "PNG Jewellers", "Mia by Tanishq"), not a URL. Only
 // the leading word is checked, since that's what identifies the seller.
 const MARKETPLACE_NAME_RE =
-  /^(amazon|flipkart|myntra|meesho|snapdeal|shopclues|ebay|walmart|aliexpress|alibaba|etsy|jiomart|olx|quikr|indiamart|tradeindia|exportersindia|justdial|dhgate|wish|rakuten|mercado ?libre|mercado ?livre|allegro|bol\.com|zalando|otto|cdiscount|coupang|shopee|lazada|tokopedia|noon|jumia|takealot|temu|shein|trendyol|ozon|wildberries|kaufland|daraz|qoo10)\b/i;
+  /^(amazon|flipkart|myntra|meesho|snapdeal|shopclues|ebay|walmart|aliexpress|alibaba|etsy|jiomart|olx|quikr|indiamart|tradeindia|exportersindia|justdial|dhgate|wish|rakuten|mercado ?libre|mercado ?livre|allegro|bol\.com|zalando|otto|cdiscount|coupang|shopee|lazada|tokopedia|noon|jumia|takealot|temu|shein|trendyol|ozon|wildberries|kaufland|daraz|qoo10|zepto|blinkit|grofers|instamart|swiggy instamart|bigbasket|big basket|dmart|tata ?cliq|tata 1mg|1mg|pharmeasy|firstcry|ajio|instacart|ocado|tesco|carrefour|costco|target)\b/i;
 function isMarketplaceName(name) {
   return MARKETPLACE_NAME_RE.test(String(name || "").trim());
 }
@@ -554,8 +642,16 @@ export function matchCompressedLabel(text, label) {
 // Multi-word brands ("Angel One") arrive via entity markers, which keep their
 // full name, so taking one token here doesn't lose them.
 export function vendorFromProductName(title) {
-  const first = String(title || "").trim().split(/\s+/)[0] || "";
-  const clean = first.replace(/[^\w&.\-]/g, "");
+  const all = String(title || "").trim().split(/\s+/);
+  // "Tots & Moms Millet Cookies", "Marks and Spencer Oat Bars": a maker's
+  // name joined by "&" or "and" is one name (1.0.0).
+  if (all.length >= 3 && /^(&|and)$/i.test(all[1]) && /^[A-Z]/.test(all[2]) && /^[A-Z]/.test(all[0])) {
+    return [all[0], "&", all[2]].join(" ").replace(/[^\w&.'’\s-]/g, "");
+  }
+  const first = all[0] || "";
+  // Apostrophes stay (1.0.0): "Mo's" read as "Mos" and "McVitie's" as
+  // "McVities", a second row beside the brand's real one.
+  const clean = first.replace(/[^\w&.'’\-]/g, "").replace(/^['’]+|['’]+$/g, "");
   if (!clean || !/^[A-Za-z]/.test(clean) || isNoise(clean)) return "";
   return clean;
 }
@@ -974,9 +1070,74 @@ const GENERIC_VENUE_RE = /^(the\s+)?(hotels?|hostels?|inns?|guest ?houses?|resor
 // name Hotel Summit 9 in bold, not a 120-character label with a URL in it.
 const unlinkMarkdown = (s) => String(s || "").replace(/\[([^\]\n]+)\]\((?:https?:\/\/|www\.)[^)\s]*\)/g, "$1");
 
+/*
+ * Common words (1.0.0). A brand is a name, and an answer writes a name the
+ * same way every time. A word the answer ALSO writes in lowercase, as an
+ * ordinary word ("low in sugar", "a ragi or oats biscuit"), is that ordinary
+ * word wherever it heads a cell or a bullet: the owner's biscuit answers had
+ * Sugar, Ragi, Oats and Whole-wheat as brands this way. No word list: the
+ * answer itself says which words are common.
+ */
+/** `name`, case as written, somewhere in a sentence other than its first word. */
+function namedMidSentence(text, name) {
+  const re = wordRe(name, "gu");
+  let m;
+  while ((m = re.exec(text))) {
+    const lineStart = text.lastIndexOf("\n", m.index - 1) + 1;
+    const line = text.slice(lineStart, text.indexOf("\n", m.index) === -1 ? text.length : text.indexOf("\n", m.index));
+    if (/^\s*(#|\|)/.test(line)) continue;
+    const before = text.slice(lineStart, m.index).replace(/^\s*(?:[-*•+]|\d+[.)])?\s*/, "").replace(/[*_`"“(\[]+$/g, "").trimEnd();
+    if (before && !/[.!?:]$/.test(before)) return true;
+  }
+  return false;
+}
+function lowercaseIn(text, word) {
+  const w = String(word || "");
+  if (!w || w === w.toLowerCase()) return false;
+  return wordRe(w.toLowerCase(), "gu").test(text);
+}
+// The same for a describing word at the end of a product's name, with its
+// singular or plural: "Digestive Biscuits" when the answer says "digestive
+// biscuits can contain…", "Cookies" when it says "a cookie option".
+function describesIn(text, word) {
+  const w = String(word || "").replace(/[^\p{L}\p{N}'’-]/gu, "");
+  if (!w || /\d/.test(w)) return false;
+  const lw = w.toLowerCase();
+  const forms = new Set([lw, lw + "s", lw.replace(/s$/, ""), lw.replace(/ies$/, "y"), lw.replace(/es$/, "")]);
+  for (const f of forms) if (f.length >= 3 && wordRe(f, "gu").test(text)) return true;
+  return false;
+}
+/** "Cremica High Bran Biscuits" -> "Cremica", "Mo's Bakery Ragi Cookies" -> "Mo's Bakery". */
+export function trimDescriptors(text, phrase, shared = null) {
+  const words = String(phrase || "").trim().split(/\s+/);
+  const isShared = (w) => !!shared && shared.has(w.toLowerCase().replace(/[^\p{L}\p{N}'’-]/gu, ""));
+  while (words.length > 1 && (describesIn(text, words[words.length - 1]) || isShared(words[words.length - 1]))) words.pop();
+  return words.join(" ");
+}
+// Words that two or more of the answer's item names share after their first
+// word ("Ragi", "Digestive" in "Patanjali Ragi Digestive Cookies" and "Mo's
+// Bakery Ragi Cookies") describe the product, not whose it is.
+function sharedTailWords(phrases) {
+  // word -> the different first words it follows. "Google Sheets" written
+  // twice is one item, not two items sharing "Sheets".
+  const norm = (w) => w.toLowerCase().replace(/[^\p{L}\p{N}'’-]/gu, "");
+  const heads = new Map();
+  for (const p of new Set(phrases)) {
+    const all = String(p).trim().split(/\s+/).map(norm).filter(Boolean);
+    for (const w of new Set(all.slice(1))) {
+      if (!heads.has(w)) heads.set(w, new Set());
+      heads.get(w).add(all[0]);
+    }
+  }
+  return new Set([...heads].filter(([, h]) => h.size >= 2).map(([w]) => w));
+}
+
 export function detectBrands(answerText, plainText, ctx = {}) {
-  answerText = answerText ? unlinkMarkdown(answerText) : answerText;
-  plainText = plainText ? unlinkMarkdown(plainText) : plainText;
+  // Citation markers ([[cite:https://…]]) are addresses, not answer text: a
+  // site's name inside one read as the answer naming it (1.0.0).
+  const noCites = (t) => String(t).replace(/\[\[cite:[^\]]*\]\]/g, "");
+  answerText = answerText ? unlinkMarkdown(noCites(answerText)) : answerText;
+  plainText = plainText ? unlinkMarkdown(noCites(plainText)) : plainText;
   const text = plainText || answerText || "";
   if (!text) return { brands: [], entities: [] };
 
@@ -1007,7 +1168,7 @@ export function detectBrands(answerText, plainText, ctx = {}) {
   };
 
   const MAX_LEN = { structural: 40, default: 60, trusted: 120 };
-  const addCand = (name, category, description, trust = "default", shownOnly = false, weak = false, needsProse = false) => {
+  const addCand = (name, category, description, trust = "default", shownOnly = false, weak = false, needsProse = false, group = null) => {
     const n = String(name || "").trim().replace(/[*_`]/g, "");
     const cap = MAX_LEN[trust] ?? MAX_LEN.default;
     if (!n || n.length < 2 || n.length > cap) return;
@@ -1021,8 +1182,9 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     const k = n.toLowerCase();
     const prev = candidates.get(k);
     const keepWhole = trust === "trusted";
-    if (!prev) candidates.set(k, { name: n, category: category || null, description: description || null, keepWhole, shownOnly, weak, needsProse });
+    if (!prev) candidates.set(k, { name: n, category: category || null, description: description || null, keepWhole, shownOnly, weak, needsProse, groups: group ? new Set([group]) : new Set() });
     else {
+      if (group) (prev.groups = prev.groups || new Set()).add(group);
       if (keepWhole) prev.keepWhole = true;
       if (shownOnly) prev.shownOnly = true;
       if (!weak) prev.weak = false;
@@ -1062,12 +1224,25 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     // card carries. A marketplace merchant ("Amazon.in") is excluded the
     // same way a marketplace CITED DOMAIN is below, so "available on
     // Amazon" can't turn the platform into a reported competitor.
+    // A seller written as a website ("boat-lifestyle.com + others") is a
+    // shop's address, not a brand (1.0.0): it never became "boat-lifestyle.com"
+    // beside the real "boAt".
+    const merchantName = p.merchant ? String(p.merchant).split(/[+,]/)[0].trim() : "";
+    const merchantIsSite = /^[\w-]+(?:\.[\w-]+)+$/.test(merchantName);
     if (p.brand) addCand(p.brand, "product_vendor", null, "default", true);
-    else if (p.merchant && !isMarketplaceName(p.merchant)) {
-      addCand(String(p.merchant).split(/[+,]/)[0].trim(), "product_vendor");
+    else if (merchantName && !merchantIsSite && !isMarketplaceName(merchantName)) {
+      addCand(merchantName, "product_vendor");
     } else {
       addCand(vendorFromProductName(p.name), "product_vendor", null, "default", true);
     }
+    // The product's own name starts with its maker ("boAt Rockerz 551", "JBL
+    // Tune 520BT", "realme TechLife Studio H1"), whoever sells it (1.0.0):
+    // before, a card with a seller named only the seller.
+    // Only a name with a model number in it ("Rockerz 551", "Tune 520BT",
+    // "Studio H1"): "Modern Gold Drape Bar Necklace" starts with an
+    // adjective, and its maker is the seller above. The same rule the
+    // structural candidates below use.
+    if (!p.brand && p.name && /\d/.test(p.name)) addCand(vendorFromProductName(p.name), "product_vendor", null, "default", true);
   });
   // Local/place answers: the businesses themselves are the brands (structured
   // listing data, not a text guess — trusted, long names OK, and "shown" by definition).
@@ -1089,7 +1264,13 @@ export function detectBrands(answerText, plainText, ctx = {}) {
   // digit-fallback below, and vanish from the brand list entirely despite
   // being right there in row 1 of the table. Table cells always get the
   // vendor-fallback instead of being dropped.
-  structuralCandidates(answerText || "").forEach(({ text: s, source }) => {
+  const fromModel = new Set();
+  const groupByText = new Map();
+  const structural = structuralCandidates(answerText || "");
+  for (const c of structural) if (c.group && !groupByText.has(c.text)) groupByText.set(c.text, c.group);
+  const groupOf = (t) => groupByText.get(t) || null;
+  const shared = sharedTailWords(structural.filter((c) => c.source === "section" || c.source === "bullet").map((c) => c.text));
+  structural.forEach(({ text: s, source }) => {
     // A heading sometimes names two alternatives at once ("Google Sheets / Excel",
     // "GIMP / Photoshop") — treat each side of " / " as its own candidate instead
     // of evaluating the joined phrase as one (wrong) name.
@@ -1099,17 +1280,52 @@ export function detectBrands(answerText, plainText, ctx = {}) {
       // Water Heaters**"), so bold-vs-plain does not separate a name from a
       // section label. Both heading kinds are therefore weak; a table's first
       // column stays strong, since that column IS the subject by construction.
-      const weak = source === "section" || source === "heading";
+      const weak = source === "section" || source === "heading" || source === "bullet";
       // Only headings and bold labels have to prove themselves. Table cells
       // do not: which COLUMN they came from is already decided on evidence
       // (see parseTableCells), and gating the cells as well cost real brands
-      // in every table whose products the prose never re-narrates.
-      const needsProse = weak;
-      if (looksLikeProperName(part)) { addCand(part, null, null, "structural", false, weak, needsProse); continue; }
+      // in every table whose products the prose never re-narrates. Nor does
+      // a list item's own bold subject (1.0.0): "- **Cremica High Bran
+      // Biscuits**: fibre-rich…" is about Cremica even if the prose never
+      // says the name again. Spec labels in that shape ("**Battery**: …")
+      // are common words the answer also writes in lowercase, and go there.
+      const needsProse = source === "section" || source === "heading";
+      const group = source === "section" ? groupOf(s) : null;
+      if (looksLikeProperName(part)) {
+        // A product named in a heading or list item is reported as its maker
+        // when the rest is describing words: "McVitie's Digestive Biscuits"
+        // in an answer that says "digestive biscuits" is McVitie's.
+        // Only words other item names share are trimmed off a heading that
+        // already reads as a name: "Google Sheets" stays whole although the
+        // answer says "sheets"; "McVitie's Digestive" loses "Digestive" when
+        // another pick is a "… Digestive Cookies" too.
+        const trimmed = source === "example" ? trimDescriptors(answerText || text, part, shared)
+          : (source === "section" || source === "bullet") ? trimDescriptors("", part, shared) : part;
+        addCand(trimmed, null, null, "structural", false, weak, needsProse, group);
+        continue;
+      }
       // A venue is named whole: "Trekkers Hostel 12" and "Hotel Summit 9"
       // are businesses, not the maker "Trekkers" plus a model number.
-      if (VENUE_WORD_RE.test(part) && /[A-Z]/.test(part)) { addCand(part, null, null, "structural", false, weak, needsProse); continue; }
+      if (VENUE_WORD_RE.test(part) && /[A-Z]/.test(part)) { addCand(part, null, null, "structural", false, weak, needsProse, group); continue; }
       const hasDigit = /\d/.test(part);
+      const words = part.trim().split(/\s+/);
+      // A long product label ("Patanjali Ragi Digestive Cookies") is its
+      // maker plus words the answer uses as ordinary words: trimmed of those,
+      // what is left is the brand (1.0.0). A sentence-case phrase ("Homemade
+      // atta, ragi, or oats biscuit") is a description, not a name.
+      const lastWord = words[words.length - 1].replace(/[^\w]/g, "").toLowerCase();
+      if (!hasDigit && words.length > 1 && /^[A-Z]/.test(words[0]) && !CATEGORY_PLURAL_NOUNS.has(lastWord)) {
+        const sentenceCase = words.slice(1).every((w) => /^[a-z,.'’&-]+$/.test(w));
+        if (sentenceCase && words.length >= 3) continue;
+        if (source !== "table" && source !== "table-guess") {
+          const trimmed = trimDescriptors(answerText || text, part, shared);
+          if (trimmed !== part && looksLikeProperName(trimmed)) { addCand(trimmed, null, null, "structural", false, weak, needsProse, group); continue; }
+          // Only a list item's subject falls back to its first word. A
+          // section heading that isn't a name once trimmed is a category
+          // ("Millet & Zero-Refined-Sugar Options"), never a brand.
+          if (source === "bullet" || source === "example") { addCand(vendorFromProductName(part), null, null, "structural", false, weak, needsProse, group); continue; }
+        }
+      }
       // vendorFromProductName only makes sense on a multi-word phrase — it
       // extracts the LEADING token of a longer name ("Vivo V70" → "Vivo"). On
       // a single bare token it just returns that token unchanged, which isn't
@@ -1119,6 +1335,12 @@ export function detectBrands(answerText, plainText, ctx = {}) {
       // digit-fallback fired, but there was nothing to extract a vendor FROM.
       const multiWord = part.trim().split(/\s+/).length > 1;
       if (source === "table" || source === "table-guess" || (hasDigit && multiWord)) {
+        // A maker followed by a model number ("Noise Buds VS104") is a name
+        // even when the answer also uses the word ("noise cancellation").
+        // So is one followed by more capitalised words ("Noise Airwave Max
+        // XR"); "Oats biscuit" is a description and gets no such pass.
+        const titled = multiWord && part.trim().split(/\s+/).slice(1).some((w) => /^[A-Z]/.test(w));
+        if (multiWord && (hasDigit || titled)) fromModel.add(String(vendorFromProductName(part)).toLowerCase());
         addCand(vendorFromProductName(part), null, null, "structural", false, weak, needsProse);
       }
     }
@@ -1193,6 +1415,7 @@ export function detectBrands(answerText, plainText, ctx = {}) {
   const ordered = [...candidates.values()].sort((a, b) => b.name.length - a.name.length);
   const claimed = [];
   const results = [];
+  const pendingHeads = [];
   const scoreCandidates = (list) => {
   for (const cand of list) {
     // ---- prompt-context gates (see "5. prompt context" above) ----
@@ -1201,7 +1424,10 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     // cited domain, the user's own tracked list — has a category set and is
     // exempt: those are facts about the capture, not readings of its layout.
     if (cand.category === null) {
-      if (cand.needsProse && proseExists && !namedInProse(text, cand.name)) continue;
+      // A brand that is also a word ("Noise" next to "noise cancellation")
+      // is still written as a name somewhere in the prose; "Sugar" never is.
+      if (!fromModel.has(cand.name.toLowerCase()) && lowercaseIn(text, cand.name) && !namedMidSentence(text, cand.name)) continue;
+      if (cand.needsProse && proseExists && !namedInProse(text, cand.name) && !(cand.groups && cand.groups.size)) continue;
       if (isPromptEcho(cand.name)) continue;
     }
     // A domain-derived candidate is a squashed label ("hdfcbank"), so it is
@@ -1231,7 +1457,12 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     // real captures). Being written about underneath its own heading clears
     // this, and so does being named twice — a product line the answer heads
     // several sections with ("Ocean Man") is a real detection, not a label.
-    if (cand.weak && hits.length < 2 && !hits.some((h) => !inHeadingLine(text, h.start))) continue;
+    if (cand.weak && hits.length < 2 && !hits.some((h) => !inHeadingLine(text, h.start))) {
+      // Kept back, not dropped, when it heads a section with siblings: see
+      // the list rule after scoring.
+      if (hits.length && cand.groups && cand.groups.size) pendingHeads.push({ cand, hits });
+      continue;
+    }
     // Prefer how the answer itself writes the name ("HDFC Bank", "PhonePe")
     // over the mangled title-cased domain label ("Hdfcbank", "Phonepe").
     const displayName = isDomain && hits.length
@@ -1268,6 +1499,32 @@ export function detectBrands(answerText, plainText, ctx = {}) {
   }
   };
   scoreCandidates(ordered);
+
+  // A list of things (1.0.0). "### McVitie's Digestive Biscuits", "###
+  // Patanjali Ragi Digestive Cookies", "### Mo's Bakery Ragi Cookies": three
+  // sibling headings, each a name, each written once. One heading alone is a
+  // section label; two or more sibling headings that all read as names are
+  // the answer's list of picks, and each is kept.
+  if (pendingHeads.length) {
+    const byGroup = new Map();
+    for (const p of pendingHeads) for (const g of p.cand.groups) {
+      if (!byGroup.has(g)) byGroup.set(g, []);
+      byGroup.get(g).push(p);
+    }
+    const kept = new Set();
+    for (const list of byGroup.values()) {
+      const named = results.filter((r) => r.groups && [...r.groups].some((g) => byGroup.get(g) === list)).length;
+      if (list.length + named < 2) continue;
+      for (const { cand, hits } of list) {
+        if (kept.has(cand)) continue;
+        const free = hits.filter((h) => !claimed.some(([cs, ce]) => h.start >= cs && h.end <= ce));
+        if (!free.length) continue;
+        kept.add(cand);
+        free.forEach((h) => claimed.push([h.start, h.end]));
+        results.push({ brand: cand.name, count: free.length, firstIndex: free[0].start, category: cand.category, description: cand.description, passages: [text.slice(Math.max(0, free[0].start - 110), free[0].start + 110).replace(/\s+/g, " ").trim()] });
+      }
+    }
+  }
 
   // Prose fallback (see "3c. names the prose itself writes"). Deliberately a
   // SECOND pass, not a peer tier: run alongside the others it injects long
@@ -1307,6 +1564,22 @@ export function detectBrands(answerText, plainText, ctx = {}) {
       }
       scoreCandidates([...proseCands.values()].sort((a, b) => b.name.length - a.name.length));
     }
+  }
+
+  // Makers of products named in bold mid-sentence that nothing above found
+  // (see boldProductNames). Added only; never replaces or removes a brand.
+  for (const name of boldProductNames(answerText || "")) {
+    const vendor = vendorFromProductName(name);
+    // The same exclusions the other passes make: chips, shops, and dates
+    // ("**November 2026**").
+    if (!vendor || isNoise(vendor) || isComponentOrChip(name) || isComponentOrChip(vendor) || isMarketplaceName(vendor)) continue;
+    if (/^(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|monday|tuesday|wednesday|thursday|friday|saturday|sunday|q[1-4]|fy|h[12])$/i.test(vendor)) continue;
+    const key = vendor.toLowerCase();
+    if (results.some((r) => { const b = r.brand.toLowerCase(); return b === key || b.startsWith(key + " ") || key.startsWith(b + " ") || name.toLowerCase().startsWith(b + " "); })) continue;
+    const hits = [...text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(vendor)}(?![\\p{L}\\p{N}])`, "gu"))];
+    if (!hits.length) continue;
+    const at = hits[0].index;
+    results.push({ brand: vendor, count: hits.length, firstIndex: at, category: null, description: null, passages: [text.slice(Math.max(0, at - 110), at + 110).replace(/\s+/g, " ").trim()] });
   }
 
   // Renaming a domain candidate to how the answer writes it can collide with a

@@ -130,8 +130,17 @@ try {
   check("so its prompts read as worse", c.compare.summary.worse >= 1, JSON.stringify(c.compare.summary));
   const g = await ask({ type: "campaign-run-compare", profileId: seeded.profileId, runA: runs[0].id, runB: runs[1].id });
   check("a ChatGPT run against a Gemini run has nothing in common", g.ok && g.compare.compared === 0);
-  await page.evaluate(() => document.querySelector('.cv-tab[data-section="cv-runs"]')?.click());
-  await page.waitForFunction(() => document.getElementById("cvRunA") && document.querySelectorAll("#cv-runs .cv-tile").length === 4, null, { timeout: 15000 }).catch(() => {});
+  // The board is rebuilt after a fresh request whenever the campaign page
+  // redraws, and has no tabs until it answers: a single click can land while
+  // it is being rebuilt and do nothing (CI on 19 Nov 2026: Overview stayed
+  // open, "a": false). So: wait for the tab, and click it again until the
+  // section is the one shown.
+  await page.waitForFunction(() => {
+    if (document.getElementById("cvRunA") && document.querySelectorAll("#cv-runs .cv-tile").length === 4) return true;
+    const t = document.querySelector('.cv-tab[data-section="cv-runs"]');
+    if (t && t.getAttribute("aria-selected") !== "true") t.click();
+    return false;
+  }, null, { timeout: 20000, polling: 500 }).catch(() => {});
   const tabUi = await page.evaluate(() => ({ a: !!document.getElementById("cvRunA"), b: !!document.getElementById("cvRunB"), tiles: document.querySelectorAll("#cv-runs .cv-tile").length, rows: document.querySelectorAll("#cv-runs .cv-runrows .cv-tr:not(.cv-th)").length }));
   check("the Run vs run tab: two run pickers, the summary and the prompts", tabUi.a && tabUi.b && tabUi.tiles === 4, JSON.stringify(tabUi));
 

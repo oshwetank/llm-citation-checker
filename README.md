@@ -14,12 +14,36 @@ Hugging Face; and, once accounts are switched on, when you sign in, share a camp
 code, open a code, or leave an email for updates. Nothing you capture ever leaves your
 device unless you choose to share that campaign: the AI runs on your computer.
 
-> **v0.84.2** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v1.0.1** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **1.0.1** (19 November 2026).
+>   - **Product cards show their pictures.** A ChatGPT card answer whose products came without a picture (every card an empty cart, while "Images shown" had the phones) now gives each card the image titled with its name. Answers already captured show them too.
+> - **1.0.0: the release after 0.36** (November 2026).
+>   - **Help to get going.** A Get started checklist on the Dashboard, a Help & FAQ page (About → Help & FAQ), example prompts when you set up a campaign, and on each campaign's results how many answers its numbers rest on and what to do next. Updating from an earlier version, the guide opens on what changed.
+>   - **No new permissions when updating.** The extension no longer asks for access to google.com.
+>   - **Translations are marked beta** until a native speaker has reviewed them.
+  - **Brands read the way you would.** A word the answer also uses as an ordinary word (sugar, oats, ragi) is no longer a brand; a table of nutrients or criteria names nothing; a list item's bold name, an "e.g." list and a set of product headings are read as brands, trimmed to the maker ("Cremica High Bran Biscuits" is Cremica). Shops such as Zepto and Blinkit count as shops.
+  - **Chrome's built-in AI finishes, and can correct the list.** Its reply is bounded and read as it arrives, so a slow computer no longer runs out of time on every answer. It can say a name isn't one, and which brand a product belongs to; with "Let the AI correct brands in counts" on, it fixes the counts, and Analyze shows what it changed.
+  - **ChatGPT's generated-layout answers, signed in and signed out.** A product card whose name was a reference no longer shows as "**2. **" with its maker missed; a signed-out answer that arrives as layout code is read from ChatGPT's own markdown version instead of coming out empty, and the product names in its data feed the brand list. Makers named in a product's title (boAt, JBL, realme) are found when a seller's card names only the seller, and a seller's website or "What's" is not a brand.
+  - **The prompt as you asked it.** A question pasted into ChatGPT as bold text no longer shows its asterisks.
+  - **Gemini keeps the question.** Gemini's session-setup upload no longer replaces the upload that carried your question, so the prompt is stored.
+  - **ChatGPT answers are read from the conversation.** After you ask ChatGPT a question in a tab, CitoSkeleton reads that conversation from chatgpt.com once it's answered, the way ChatGPT's page loads it (the browser's own cookies and the page's device and account identifiers; no sign-in token is asked for). Another extension holding the page's connections, or ChatGPT changing its page, no longer stops the answer being recorded. The capture report says when another extension holds the page's connections.
+  - **Signed-out runs.** Perplexity's "Sign up and repeat your request" (in any language) is no longer stored as an answer: it is a usage limit, so the run pauses Perplexity and, if it doesn't lift, marks the rest "usage limit" for Retry missing. ChatGPT's first, still-searching copy of a signed-out answer is no longer kept as an empty answer beside the real one. The signed-out confirmation counts only the engines that run (Grok needs an account).
+  - **Gemini's suggested follow-ups** are no longer part of the answer text, and products named in bold inside a sentence ("devices like the **Realme P4 Power**") add their maker to the brands.
+  - **ChatGPT's question and answer in one turn.** Since 16 Nov 2026 ChatGPT can draw both in one block of its page; the page copy found only the question and gave up. Each message is now found from its own heading. The capture check says when an answer wasn't found, instead of "idle", and Perplexity's empty side calls after a saved answer no longer read as a lost answer.
+  - **ChatGPT's card answers copied off the page.** A card's number and name, bold apart, no longer run together ("**1.****Titan Eye+**"), a price is no longer a heading, and the copy keeps its lines for brand detection, so the stores and phones named are the brands, not "Preferred" or "Excellent". Answers already copied are read again on update.
+  - **Reading the conversation without identifier cookies.** Where the browser doesn't set ChatGPT's device and account cookies, the identifiers are read from the page itself, as ChatGPT's own page sends them; every read had come back "not found". The capture check says which identifiers it had.
+  - **Select all on the Dashboard.** One tick selects every prompt in the list as filtered, for export, a campaign or removal.
+  - **ChatGPT and Gemini, as they changed in November 2026.** ChatGPT's new send and composer are recognised, and the capture report says how far the page copy got; Gemini's prompt is read from its new upload.
+> - **The campaign results in your language too** (0.84.3). Spanish, Portuguese (Brazil), French, Hindi and Arabic.
+>   - **Campaigns.** Every section of a campaign's results (overview, brands, compare, sources, citations, prompts, run vs run, products, searches and ads, signals), the run history and the setup page are translated: about 260 more phrases each.
+>   - **Lines with a name in them.** "Show boAt in the answer", "Compare Samsung with Google", "Tracking Google" and the like now follow the language, with the name kept as it is. What you typed yourself is never translated.
+>   - **Dates and counts.** Dates on Analyze, the Dashboard and Campaigns are written in the chosen language. "1 prompts" now reads "1 prompt", in English too.
+>   - **What's new** is translated, and lists these changes.
 > - **Much more of the interface in your language** (0.84.2). Spanish, Portuguese (Brazil), French, Hindi and Arabic.
 >   - **About 400 more phrases each.** The Dashboard, Analyze, starting a campaign, Ask, and About (overview, the metric glossary, settings, diagnostics) were largely English in the other five languages. They are translated now.
 >   - **Sentences with numbers and engine names.** Lines such as "3 of 6", "Asked Perplexity" and "6 pages read · 3 cited" used to stay English whatever the language. They follow it now.
@@ -176,7 +200,7 @@ device unless you choose to share that campaign: the AI runs on your computer.
 >   names the rules missed. Every claim is checked against the answer before it is kept, and
 >   what isn't backed is left out and counted. Analyze has a new **AI check** section; the
 >   Dashboard filters by language and market. Your counts never change unless you turn on
->   "Use AI-checked brands in counts". Checks are kept, so Reprocess doesn't run the model
+>   "Let the AI correct brands in counts". Checks are kept, so Reprocess doesn't run the model
 >   again. Brand names in any script (Japanese, Hindi, Arabic, Thai…) are now matched, and
 >   Gemini Nano's extra names no longer change the counts silently.
 > - **For any brand, anywhere** (0.69.0). Prices are read in any currency, before or after the

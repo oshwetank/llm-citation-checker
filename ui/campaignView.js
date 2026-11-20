@@ -10,6 +10,8 @@
  * filter in one section redraws only that section.
  */
 import { brandSlug, siteSlug, markSvg } from "../src/lib/logos.js";
+import { fmt, tr } from "./i18n.js";
+import { campaignAdvice, margin, sureness } from "../src/lib/onboarding.js";
 
 let D = null;           // { el, engineIcon, openCapture, openDomain, openFullCompare, runHistory }
 let V = null;           // the view (src/lib/campaignView.js)
@@ -90,7 +92,7 @@ function seg(label, items, cur, onPick) {
   items.forEach(([id, text, icon, count]) => {
     const b = h("button", { type: "button", className: id === cur ? "on" : "", "aria-pressed": id === cur ? "true" : "false" });
     if (icon) b.append(icon);
-    b.append(text);
+    b.append(typeof text === "string" ? tr(text) : text);
     if (count != null) b.append(h("span", { className: "cv-cnt" }, String(count)));
     b.onclick = () => onPick(id);
     g.append(b);
@@ -102,7 +104,7 @@ function chips(label, items, cur, onPick) {
   items.forEach(([id, text, count, icon]) => {
     const b = h("button", { type: "button", className: `cv-chip${id === cur ? " on" : ""}`, "aria-pressed": id === cur ? "true" : "false" });
     if (icon) b.append(icon);
-    b.append(text);
+    b.append(typeof text === "string" ? tr(text) : text);
     if (count != null) b.append(h("span", { className: "cv-cnt" }, String(count)));
     b.onclick = () => onPick(id);
     g.append(b);
@@ -154,7 +156,7 @@ function promptLink(text, captureId, cls = "") {
   return b;
 }
 const youBadge = () => h("span", { className: "cv-badge you" }, V.own === D.realOwn || !D.realOwn ? "You" : "Viewing");
-const ownSiteLabel = () => (V.own === D.realOwn || !D.realOwn ? "Your own site" : `${V.own}'s own site`);
+const ownSiteLabel = () => (V.own === D.realOwn || !D.realOwn ? "Your own site" : fmt("{brand}'s own site", { brand: V.own }));
 
 /* ---------- 1. Overview ---------- */
 
@@ -181,10 +183,30 @@ function overviewSec() {
       rows.append(h("span", { className: "cv-split-row" }, engineMark(s.engine, "s"), bar(w, `var(--eng-${s.engine})`), h("span", { className: `cv-num${s.value == null ? " cv-muted" : ""}` }, txt)));
     });
     kpis.append(card("cv-kpi",
-      h("div", { className: "cv-kpi-top" }, h("span", { className: "cv-kpi-l", ...(TERM[k.id] ? { "data-term": TERM[k.id] } : {}) }, k.label), k.rank ? h("span", { className: "cv-badge", title: `${ord(k.rank)} of ${k.of} brands` }, `${ord(k.rank)} of ${k.of}`) : k.of != null ? h("span", { className: "cv-badge" }, `of ${k.of}`) : ""),
+      h("div", { className: "cv-kpi-top" }, h("span", { className: "cv-kpi-l", ...(TERM[k.id] ? { "data-term": TERM[k.id] } : {}) }, k.label), k.rank ? h("span", { className: "cv-badge", title: fmt("{place} of {n} brands", { place: tr(ord(k.rank)), n: k.of }) }, `${ord(k.rank)} of ${k.of}`) : k.of != null ? h("span", { className: "cv-badge" }, `of ${k.of}`) : ""),
       h("div", { className: "cv-kpi-v" }, k.value == null ? "—" : String(k.value), h("span", { className: "cv-kpi-u" }, k.id === "responses" ? ` / ${k.of}` : k.unit)),
       delta(k.id), rows));
   }
+  // How sure the headline numbers are (1.0.0, lib/onboarding.js): AI answers
+  // vary from run to run, so a share is shown with the answers it rests on
+  // and how far it could move by chance.
+  const visK = o.kpis.find((k) => k.id === "vis");
+  const sure = sureness(o.answered);
+  const m = visK && visK.value != null ? margin(visK.value, o.answered) : null;
+  const sureLine = m == null ? null : h("p", { className: `cv-sure s-${sure}` },
+    fmt("Based on {n} answers: a share could be about {m} points either way by chance.", { n: o.answered, m: Math.round(m) }, "Based on {n} answer: a share could be about {m} points either way by chance."),
+    sure === "few" ? h("b", {}, ` ${tr("Too few to trust small changes.")}`) : "");
+  // What to do next, from the campaign's own numbers.
+  const rival = (V.brands.all || []).filter((r) => !r.isOwn && r.vis != null).sort((a, b) => b.vis - a.vis)[0] || null;
+  const advice = campaignAdvice({
+    brand: V.own, answered: o.answered, ownVis: visK ? visK.value : null,
+    rival: rival ? { name: rival.name, vis: rival.vis } : null,
+    ownSiteCitations: V.citations ? V.citations.ownSite : null,
+    gaps: V.signals && V.signals.gaps ? V.signals.gaps.length : null,
+  });
+  const adviceCard = advice.length ? card("cv-advice", h("h4", { className: "cv-h4" }, "What to do next"),
+    h("ul", { className: "cv-advice-list" }, ...advice.map((a) => h("li", {}, h("span", {}, fmt(a.template, a.vars, a.one || null)),
+      a.go && SECTION_FN[a.go] ? h("button", { type: "button", className: "cv-link", onclick: () => goSection(a.go) }, "Show me ›") : "")))) : null;
   const notes = h("div", { className: "cv-notes" });
   o.engines.filter((e) => e.sent && e.answered < e.sent).forEach((e) => notes.append(h("div", { className: "cv-note" }, engineMark(e.id, "s"),
     h("span", {}, h("b", {}, `${e.label}: ${e.answered} of ${e.sent} answered. `), e.limited ? "It hit its usage limit; the numbers below leave it out." : "Prompts without an answer are left out of the numbers."))));
@@ -208,7 +230,7 @@ function overviewSec() {
     rows.forEach((r) => c.append(h("div", { className: `cv-bl${r.isOwn ? " you" : ""}` }, brandMark(r.name, "s"), h("span", { className: "cv-ell" }, r.name), bar(r.sov * 100 / max, r.isOwn ? "var(--you)" : "var(--cv-dim)"), h("span", { className: "cv-num" }, pct(r.sov)))));
     mult.append(c);
   });
-  return section("cv-overview", `${V.own} in this run`, `${o.answered} answers from ${o.sent} prompts sent`, notes, kpis,
+  return section("cv-overview", fmt("{brand} in this run", { brand: V.own }), `${o.answered} answers from ${o.sent} prompts sent`, notes, kpis, sureLine, adviceCard,
     card("", h("h4", { className: "cv-h4" }, "By engine"), h("div", { className: "cv-scroll" }, t)),
     h("h4", { className: "cv-h4" }, "Share of voice, engine by engine"), mult);
 }
@@ -230,7 +252,7 @@ function brandsSec() {
   const start = (S.pg.brands || 0) * 15;
   pg.rows.forEach((r, j) => {
     const i = start + j;
-    const name = h("button", { type: "button", className: "cv-who cv-link cb-brand-btn", title: r.isOwn ? "" : `Compare ${r.name} with ${V.own}` }, brandMark(r.name), r.name);
+    const name = h("button", { type: "button", className: "cv-who cv-link cb-brand-btn", title: r.isOwn ? "" : fmt("Compare {brand} with {own}", { brand: r.name, own: V.own }) }, brandMark(r.name), r.name);
     if (!r.isOwn) name.onclick = () => { if (!S.rivals.includes(r.name)) S.rivals = [...S.rivals, r.name].slice(-MAX_RIVALS); goSection("cv-compare"); };
     // A brand found in the answers rather than typed in setup says so, and
     // can be left out (geo-brand-exclude), as on the board before 0.64.0.
@@ -238,12 +260,12 @@ function brandsSec() {
       r.auto ? h("span", { className: "cv-badge auto-tag", "data-term": "autoCompetitor" }, "found in answers") : "");
     // One click makes it a competitor (0.77.0), locked campaign or not.
     if (r.auto && D.addCompetitor) {
-      const add = h("button", { type: "button", className: "row-add", title: `Add ${r.name} as a competitor`, "aria-label": `Add ${r.name} as a competitor` }, "+ Add");
+      const add = h("button", { type: "button", className: "row-add", title: fmt("Add {brand} as a competitor", { brand: r.name }), "aria-label": fmt("Add {brand} as a competitor", { brand: r.name }) }, "+ Add");
       add.onclick = () => D.addCompetitor(r.name, add);
       who.append(add);
     }
     if (r.auto && D.excludeBrand) {
-      const x = h("button", { type: "button", className: "row-x", title: `Leave out ${r.name}`, "aria-label": `Leave out ${r.name}` }, "×");
+      const x = h("button", { type: "button", className: "row-x", title: fmt("Leave out {brand}", { brand: r.name }), "aria-label": fmt("Leave out {brand}", { brand: r.name }) }, "×");
       x.onclick = () => D.excludeBrand(r.name, x);
       who.append(x);
     }
@@ -313,7 +335,7 @@ function compareSec() {
     b.onclick = () => { S.rivals = on ? S.rivals.filter((x) => x !== n) : [...S.rivals, n]; S.pg.cmpP = 0; redo(); };
     pick.append(b);
   });
-  const tools = h("div", { className: "cv-tools" }, h("span", { className: "cv-muted" }, `Compare ${V.own} with`), pick,
+  const tools = h("div", { className: "cv-tools" }, h("span", { className: "cv-muted" }, fmt("Compare {brand} with", { brand: V.own })), pick,
     h("span", { className: "cv-muted" }, `${S.rivals.length} of ${MAX_RIVALS}`));
 
   const colStyle = `--n:${names.length};--cols:minmax(150px,1.4fr) repeat(${names.length}, minmax(84px,1fr))`;
@@ -357,14 +379,14 @@ function compareSec() {
   const topicCard = card("", h("h4", { className: "cv-h4" }, "Topic by topic", h("span", { className: "cv-sub" }, met[1].toLowerCase())), h("div", { className: "cv-scroll" }, tt));
 
   // Named together
-  const tog = card("", h("h4", { className: "cv-h4" }, `Named in the same answers as ${V.own}`, h("span", { className: "cv-sub" }, `of ${C[0].together.answers}`)));
+  const tog = card("", h("h4", { className: "cv-h4" }, fmt("Named in the same answers as {brand}", { brand: V.own }), h("span", { className: "cv-sub" }, `of ${C[0].together.answers}`)));
   C.forEach((c) => {
     const tg = c.together;
-    const [mb] = mixBar([{ label: "Both", n: tg.both, c: "var(--cv-ink)" }, { label: `Only ${V.own}`, n: tg.onlyMe, c: "var(--you)" }, { label: `Only ${c.name}`, n: tg.onlyThem, c: "var(--cv-them)" }, { label: "Neither", n: tg.neither, c: "var(--cv-dim)" }]);
+    const [mb] = mixBar([{ label: "Both", n: tg.both, c: "var(--cv-ink)" }, { label: fmt("Only {brand}", { brand: V.own }), n: tg.onlyMe, c: "var(--you)" }, { label: fmt("Only {brand}", { brand: c.name }), n: tg.onlyThem, c: "var(--cv-them)" }, { label: "Neither", n: tg.neither, c: "var(--cv-dim)" }]);
     tog.append(h("div", { className: "cv-tog" }, h("span", { className: "cv-who" }, brandMark(c.name, "s"), h("b", {}, c.name)), mb,
-      h("span", { className: "cv-muted small" }, `both ${tg.both} · only ${V.own} ${tg.onlyMe} · only ${c.name} ${tg.onlyThem} · neither ${tg.neither}. Both named: ${V.own} first in ${tg.meFirst}, ${c.name} in ${tg.themFirst}.`)));
+      h("span", { className: "cv-muted small" }, fmt("both {both} · only {own} {onlyMe} · only {rival} {onlyThem} · neither {neither}. Both named: {own} first in {meFirst}, {rival} in {themFirst}.", { both: tg.both, own: V.own, onlyMe: tg.onlyMe, rival: c.name, onlyThem: tg.onlyThem, neither: tg.neither, meFirst: tg.meFirst, themFirst: tg.themFirst }))));
   });
-  tog.append(h("div", { className: "cv-legend" }, ...[["var(--cv-ink)", "Both"], ["var(--you)", `Only ${V.own}`], ["var(--cv-them)", "Only the rival"], ["var(--cv-dim)", "Neither"]].map(([c, l]) => h("span", {}, h("i", { style: `background:${c}` }), l))));
+  tog.append(h("div", { className: "cv-legend" }, ...[["var(--cv-ink)", "Both"], ["var(--you)", fmt("Only {brand}", { brand: V.own })], ["var(--cv-them)", "Only the rival"], ["var(--cv-dim)", "Neither"]].map(([c, l]) => h("span", {}, h("i", { style: `background:${c}` }), l))));
 
   // Prompt by prompt, one engine at a time
   const P = C[0].prompts.map((p, k) => {
@@ -374,7 +396,7 @@ function compareSec() {
     return { text: p.text, captureId: base && base.captureId, places, noAnswer: !base || base.noAnswer };
   });
   const lead = (pl) => { const xs = pl.map((v, i) => [v, i]).filter(([v]) => v); return xs.length ? xs.sort((a, b2) => a[0] - b2[0])[0][1] : -1; };
-  const PF = [["all", "All", () => true], ["ahead", `A rival ahead of ${V.own}`, (p) => p.places && lead(p.places) > 0], ["missing", `${V.own} not named`, (p) => p.places && !p.places[0] && p.places.some(Boolean)], ["first", `${V.own} first`, (p) => p.places && lead(p.places) === 0]];
+  const PF = [["all", "All", () => true], ["ahead", fmt("A rival ahead of {brand}", { brand: V.own }), (p) => p.places && lead(p.places) > 0], ["missing", fmt("{brand} not named", { brand: V.own }), (p) => p.places && !p.places[0] && p.places.some(Boolean)], ["first", fmt("{brand} first", { brand: V.own }), (p) => p.places && lead(p.places) === 0]];
   const f = (PF.find((x) => x[0] === S.pf) || PF[0])[2];
   const shown = P.filter(f);
   const { rows, pager } = paged("cmpP", shown, 12, redo);
@@ -398,7 +420,7 @@ function compareSec() {
   const prodCard = card("", h("h4", { className: "cv-h4" }, "Product cards"), cols((i) => (prodsOf(i).length ? prodsOf(i).map((p) => h("div", { className: "cv-prod" }, h("span", { className: "cv-ell" }, p.name), h("span", { className: "cv-badge" }, `×${p.cards}`), p.first ? h("span", { className: "cv-badge gold" }, `1st ×${p.first}`) : "")) : [empty("No product cards")])));
   const quoteCard = card("", h("h4", { className: "cv-h4" }, "How the answers word it"), cols((i) => (quotesOf(i).length ? quotesOf(i).map((q) => h("figure", { className: "cv-quote" }, h("blockquote", {}, `…${q.text}…`), h("figcaption", { className: "cv-who" }, engineMark(q.engine, "s"), promptLink(q.prompt, q.captureId)))) : [empty("No lines to quote")])));
   const more = h("div", { className: "cv-tools" }, ...S.rivals.map((n) => { const b = h("button", { type: "button", className: "cv-link cv-more" }, `Full comparison with ${n} ›`); b.onclick = () => D.openFullCompare(n); return b; }));
-  return section("cv-compare", "Compare brands", `${V.own} and ${S.rivals.length === 1 ? S.rivals[0] : `${S.rivals.length} others`}`, tools,
+  return section("cv-compare", "Compare brands", S.rivals.length === 1 ? fmt("{brand} and {rival}", { brand: V.own, rival: S.rivals[0] }) : fmt("{brand} and {n} others", { brand: V.own, n: S.rivals.length }), tools,
     card("", h("h4", { className: "cv-h4" }, "Measures", h("span", { className: "cv-sub" }, "best in each row marked")), h("div", { className: "cv-scroll" }, mt)),
     engCard, topicCard, tog, promptCard, prodCard, quoteCard, more);
 }
@@ -460,7 +482,7 @@ function citationsSec() {
   const filters = h("div", { className: "cv-tools" }, h("span", { className: "cv-muted" }, "Site"), chips("Kind of site", [["All", "All"], ...kindVals.map((k) => [k, k])], S.ck, (id) => { S.ck = id; S.cpage = 0; redo(); }),
     h("span", { className: "cv-muted" }, "Page"), chips("Kind of page", [["All", "All"], ...typeVals.map((k) => [k, k])], S.ct, (id) => { S.ct = id; S.cpage = 0; redo(); }), both);
   const t = h("div", { className: "cv-table cv-cits", role: "table", "aria-label": "All citations" });
-  t.append(h("div", { className: "cv-tr cv-th", role: "row" }, ...["Page", "Prompt", "Engine", "Source no.", "Search result", "Published", "In run", `${V.own} there`, ""].map((x) => h("span", { role: "columnheader" }, x))));
+  t.append(h("div", { className: "cv-tr cv-th", role: "row" }, ...["Page", "Prompt", "Engine", "Source no.", "Search result", "Published", "In run", fmt("{brand} there", { brand: V.own }), ""].map((x) => h("span", { role: "columnheader" }, x))));
   F.slice(S.cpage * PER, S.cpage * PER + PER).forEach((r) => {
     const open = S.copen === r.i;
     const row = h("button", { type: "button", className: "cv-tr cv-rowbtn", role: "row", "aria-expanded": open ? "true" : "false" },
@@ -509,14 +531,14 @@ function promptsSec() {
   const t = h("div", { className: "cv-table cv-prompts", role: "table", "aria-label": "Prompt rankings", style: `--n-eng:${V.engines.length}` });
   t.append(h("div", { className: "cv-tr cv-th", role: "row" }, h("span", { role: "columnheader" }, "Prompt"), h("span", { role: "columnheader" }, "Topic"),
     ...V.engines.map((e) => h("span", { role: "columnheader", className: "cv-who" }, engineMark(e, "s"), ENG[e])),
-    ...["Visibility", "Position", "Named first", `${V.own}'s card`, "Searches"].map((x) => h("span", { role: "columnheader" }, x))));
+    ...["Visibility", "Position", "Named first", fmt("{brand}'s card", { brand: V.own }), "Searches"].map((x) => h("span", { role: "columnheader" }, x))));
   const ppg = paged("prompts", shown, 15, redo);
   ppg.rows.forEach((p) => {
     const open = S.propen === p.i;
     const cells = p.cells.map((c, i) => {
       if (!c) return h("span", { role: "cell", className: "cv-pc na" }, "—");
       if (!c.answered) return h("span", { role: "cell", className: "cv-pc na", title: c.limit ? "Usage limit reached" : "No answer" }, c.limit ? "limit" : "no answer");
-      const b = h("button", { type: "button", role: "cell", className: `cv-pc ${c.pos === 1 ? "first" : c.pos ? (c.pos <= 3 ? "mid" : "low") : "out"}`, title: c.pos ? `${ord(c.pos)} · ${c.first} first · open the answer` : `Not named · ${c.first || "no brand"} first · open the answer` }, c.pos ? String(c.pos) : "✕");
+      const b = h("button", { type: "button", role: "cell", className: `cv-pc ${c.pos === 1 ? "first" : c.pos ? (c.pos <= 3 ? "mid" : "low") : "out"}`, title: c.pos ? fmt("{place} · {brand} first · open the answer", { place: tr(ord(c.pos)), brand: c.first }) : c.first ? fmt("Not named · {brand} first · open the answer", { brand: c.first }) : fmt("Not named · no brand first · open the answer") }, c.pos ? String(c.pos) : "✕");
       b.onclick = (ev) => { ev.stopPropagation(); D.openCapture(c.captureId); };
       return b;
     });
@@ -530,7 +552,7 @@ function promptsSec() {
     if (open) t.append(h("div", { className: "cv-detail", role: "row" }, h("div", { className: "cv-stack" }, h("span", { className: "cv-muted" }, "Searches the engines ran for it"),
       ...(p.queries.length ? p.queries.map((x) => h("span", { className: "cv-who cv-mono" }, engineMark(x.engine, "s"), x.text)) : [h("span", { className: "cv-muted" }, "No searches were sent.")]))));
   });
-  return section("cv-prompts", "Prompt rankings", `${V.own}'s place in each answer · ${P.length} prompts`,
+  return section("cv-prompts", "Prompt rankings", fmt("{brand}'s place in each answer · {n} prompts", { brand: V.own, n: P.length }, "{brand}'s place in each answer · {n} prompt"),
     h("div", { className: "cv-tools" }, chips("Show", PF.map(([id, l, f]) => [id, l, P.filter(f).length]), S.prf, (id) => { S.prf = id; S.pg.prompts = 0; redo(); }), chips("Topic", [["All", "All topics"], ...topics.map((x) => [x, x])], S.prt, (id) => { S.prt = id; S.pg.prompts = 0; redo(); })),
     card("", h("div", { className: "cv-scroll" }, t), ppg.pager, h("p", { className: "cv-legend cv-foot" }, h("span", { className: "cv-pc first" }, "1"), " named first ", h("span", { className: "cv-pc mid" }, "2"), " 2nd–3rd ", h("span", { className: "cv-pc low" }, "4"), " lower ", h("span", { className: "cv-pc out" }, "✕"), " not named")));
 }
@@ -550,13 +572,13 @@ function productsSec() {
   const share = card("", h("h4", { className: "cv-h4" }, "Card share by brand", h("span", { className: "cv-sub" }, `of ${p.total} cards`)));
   p.share.forEach((x) => share.append(h("div", { className: `cv-bl${x.isOwn ? " you" : ""}` }, brandMark(x.name, "s"), h("span", { className: "cv-ell" }, x.name), bar(x.pct, x.isOwn ? "var(--you)" : "var(--cv-dim)"), h("span", { className: "cv-num" }, pct(x.pct)), h("span", { className: "cv-num cv-muted" }, `${x.first} first`))));
   const tt = h("div", { className: "cv-table cv-topics", role: "table", "aria-label": "Topics" });
-  tt.append(h("div", { className: "cv-tr cv-th", role: "row" }, ...["Topic", "Prompts · answers", `${V.own}: share · visibility`, "Strongest rival", ""].map((x) => h("span", { role: "columnheader" }, x))));
+  tt.append(h("div", { className: "cv-tr cv-th", role: "row" }, ...["Topic", "Prompts · answers", fmt("{brand}: share · visibility", { brand: V.own }), "Strongest rival", ""].map((x) => h("span", { role: "columnheader" }, x))));
   V.topics.forEach((x) => {
     const ahead = !x.rival || (x.own && x.own.sov >= x.rival.sov);
     tt.append(h("div", { className: "cv-tr", role: "row" }, h("span", { role: "cell", className: "cv-strong" }, x.topic), h("span", { role: "cell", className: "cv-num cv-muted" }, `${x.prompts} · ${x.answers}`),
       h("span", { role: "cell", className: "cv-barcell" }, bar(x.own ? x.own.sov * 1.5 : 0, "var(--you)"), h("span", { className: "cv-num" }, x.own ? `${pct(x.own.sov)} · ${pct(x.own.vis)}` : "—")),
       h("span", { role: "cell", className: "cv-who" }, x.rival ? brandMark(x.rival.name, "s") : "", x.rival ? `${x.rival.name} ${pct(x.rival.sov)}` : "—"),
-      h("span", { role: "cell" }, h("span", { className: `cv-badge ${ahead ? "good" : "bad"}` }, ahead ? `${V.own} ahead` : `${x.rival.name} ahead`))));
+      h("span", { role: "cell" }, h("span", { className: `cv-badge ${ahead ? "good" : "bad"}` }, fmt("{brand} ahead", { brand: ahead ? V.own : x.rival.name })))));
   });
   return section("cv-products", "Products & topics", p.total ? `${p.total} product cards in ${p.answersWithCards} answers` : "",
     p.total ? h("div", { className: "cv-grid2" }, card("", h("h4", { className: "cv-h4" }, "Products shown as cards"), h("div", { className: "cv-scroll" }, pt), prpg.pager), share) : empty("No answer in this view showed product cards."),
@@ -599,7 +621,7 @@ function searchesSec() {
   if (!a.rows.length) adsCard.append(empty(a.answers ? `No ads in this run. None of ChatGPT's ${a.answers} answers carried one.` : "No ChatGPT answers in this view.", a.engines.length ? engineMark("chatgpt") : ""));
   else {
     const at = h("div", { className: "cv-table cv-adt", role: "table", "aria-label": "Ads" });
-    at.append(h("div", { className: "cv-tr cv-th", role: "row" }, ...["Advertiser", "Ad", "Prompt", "Named in answer", "Site cited", `${V.own} there`].map((x) => h("span", { role: "columnheader" }, x))));
+    at.append(h("div", { className: "cv-tr cv-th", role: "row" }, ...["Advertiser", "Ad", "Prompt", "Named in answer", "Site cited", fmt("{brand} there", { brand: V.own })].map((x) => h("span", { role: "columnheader" }, x))));
     const apg = paged("ads", a.rows, 10, () => replace("cv-searches", searchesSec));
     apg.rows.forEach((x) => {
       const b = h("button", { type: "button", className: "cv-tr cv-rowbtn", role: "row", title: "Open the answer" }, h("span", { role: "cell", className: "cv-who" }, siteMark(x.domain || x.advertiser, "m"), x.advertiser),
@@ -611,7 +633,7 @@ function searchesSec() {
     });
     adsCard.append(h("div", { className: "cv-scroll" }, at), apg.pager);
   }
-  return section("cv-searches", "Searches, site: and ads", `${s.total} searches across ${s.byEngine.filter((e) => e.published).length} engines`, eng, h("div", { className: "cv-grid2" }, brands, ex), siteCard, adsCard);
+  return section("cv-searches", "Searches, site: and ads", fmt("{searches} searches across {n} engines", { searches: s.total, n: s.byEngine.filter((e) => e.published).length }, "{searches} searches across {n} engine"), eng, h("div", { className: "cv-grid2" }, brands, ex), siteCard, adsCard);
 }
 
 /* ---------- 9. Signals ---------- */
@@ -619,7 +641,7 @@ function searchesSec() {
 function signalsSec(runHistory) {
   const g = V.signals;
   const ag = card("", h("h4", { className: "cv-h4" }, "Engine agreement", h("span", { className: "cv-sub" }, "the same brand named first")),
-    h("div", { className: "cv-big-row" }, h("span", { className: "cv-big" }, String(g.agreement.same)), h("span", { className: "cv-muted" }, ` of ${g.agreement.of} prompts`)), bar(g.agreement.of ? g.agreement.same * 100 / g.agreement.of : 0, "var(--cv-ink)"));
+    h("div", { className: "cv-big-row" }, h("span", { className: "cv-big" }, String(g.agreement.same)), h("span", { className: "cv-muted" }, ` ${fmt("of {n} prompts", { n: g.agreement.of }, "of {n} prompt")}`)), bar(g.agreement.of ? g.agreement.same * 100 / g.agreement.of : 0, "var(--cv-ink)"));
   const dfp = paged("differ", g.agreement.differ, 8, () => replace("cv-signals", () => signalsSec(RUN_HISTORY)));
   dfp.rows.forEach((d) => ag.append(h("div", { className: "cv-differ" }, promptLink(d.text), ...d.firsts.filter((f) => f.first).map((f) => h("span", { className: "cv-who" }, engineMark(f.engine, "s"), brandMark(f.first, "s"), f.first)))));
   ag.append(dfp.pager);

@@ -30,6 +30,18 @@ check("a tab cut off from the extension: refresh it", /Refresh/.test(verdict("ch
 check("a tab with no marker", /link to the extension/.test(verdict("perplexity", {}, [{ engine: "perplexity", alive: true, marker: false }]).line));
 const dropped = noteHealth(emptyHealth(), "grok", { kind: "drop", reason: "empty", at: now });
 check("dropped after the last save: says why", /no prompt, answer or sources/.test(verdict("grok", dropped.grok, []).line));
+// 1.0.0, from the owner's report of 16 Nov 2026: Perplexity's empty side
+// calls after a saved answer read "bad"; ChatGPT's page copy giving up read "idle".
+{
+  let hp = noteHealth(emptyHealth(), "perplexity", { kind: "stored", at: now - 60000 });
+  hp = noteHealth(hp, "perplexity", { kind: "drop", reason: "empty", path: "/rest/sse/related-queries/:id", at: now - 30000 });
+  hp = noteHealth(hp, "perplexity", { kind: "drop", reason: "empty", path: "/rest/perplexity_ask/graphql/ws", at: now });
+  check("an empty side call after a saved answer is not a lost answer", verdict("perplexity", hp.perplexity, []).status === "ok", JSON.stringify(verdict("perplexity", hp.perplexity, [])));
+  const hl = noteHealth(hp, "perplexity", { kind: "drop", reason: "empty", path: "/rest/sse/perplexity_ask", at: now + 1 });
+  check("an empty answer stream still is", verdict("perplexity", hl.perplexity, []).status === "bad");
+  const v = verdict("chatgpt", {}, [{ engine: "chatgpt", alive: true, marker: true, copy: { stage: "gave up after 6 minutes", at: now } }]);
+  check("the page copy giving up is bad, not idle", v.status === "bad" && /wasn't found/.test(v.line), JSON.stringify(v));
+}
 const asked = noteHealth(emptyHealth(), "chatgpt", { kind: "conv", path: "/x", at: now });
 check("a request with nothing saved: warn", verdict("chatgpt", asked.chatgpt, []).status === "warn");
 const unknown = noteHealth(emptyHealth(), "chatgpt", { kind: "unknown", ev: "stream-unknown", path: "/new/stream", at: now });

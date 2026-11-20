@@ -12,6 +12,12 @@
  * exists (0.82.0); nothing is sent from this page.
  */
 import { checkEmail } from "../src/lib/emailCheck.js";
+import { loadLang, chosenLang, tr, translatePage } from "./i18n.js";
+import { WHATS_CHANGED, cameFromBeforeRedesign } from "../src/lib/onboarding.js";
+
+// The version someone updated from (background.js records it, 1.0.0). From
+// before the 0.80 redesign, the guide starts with what changed.
+export const UPDATED_FROM_KEY = "citoUpdatedFrom";
 
 export const SIGNUP_KEY = "citoSignup";
 export const WELCOME_KEY = "citoWelcomeDone";
@@ -23,9 +29,10 @@ const h = (tag, attrs = {}, ...kids) => {
     if (v == null || v === false) continue;
     if (k === "className") e.className = v;
     else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
-    else e.setAttribute(k, v === true ? "" : v);
+    else e.setAttribute(k, v === true ? "" : (typeof v === "string" && /^(?:aria-label|placeholder|title)$/.test(k) ? tr(v) : v));
   }
-  for (const c of kids.flat()) if (c != null && c !== false) e.append(c.nodeType ? c : document.createTextNode(String(c)));
+  // Text is translated here (1.0.0), as panel.js's el() does.
+  for (const c of kids.flat()) if (c != null && c !== false) e.append(c.nodeType ? c : document.createTextNode(tr(String(c))));
   return e;
 };
 // A small SVG from a list of [tag, attrs] shapes, sized by its viewBox.
@@ -34,11 +41,11 @@ const svg = (w, hgt, shapes, label) => {
   s.setAttribute("viewBox", `0 0 ${w} ${hgt}`);
   s.setAttribute("class", "wl-art");
   s.setAttribute("role", "img");
-  s.setAttribute("aria-label", label);
+  s.setAttribute("aria-label", tr(label));
   for (const [tag, a, text] of shapes) {
     const n = document.createElementNS(NS, tag);
     for (const [k, v] of Object.entries(a)) n.setAttribute(k, v);
-    if (text) n.textContent = text;
+    if (text) n.textContent = tr(text);
     s.append(n);
   }
   return s;
@@ -50,6 +57,11 @@ const L = (x1, y1, x2, y2, cls = "ln") => ["line", { x1, y1, x2, y2, class: cls 
 
 // The pictures. Made-up brands (Zento, Kovo, Lumora), as everywhere in the tool.
 const ART = {
+  changed: () => svg(420, 240, [
+    R(30, 40, 150, 150, "card"), T(50, 72, "0.36", "t b"), R(50, 90, 110, 12, "bar"), R(50, 112, 90, 12, "bar"), R(50, 134, 100, 12, "bar"),
+    ["path", { d: "M192 115 L232 115", class: "arrow" }], ["path", { d: "M224 107 L234 115 L224 123", class: "arrow" }],
+    R(244, 30, 150, 170, "card"), T(264, 62, "1.0", "t b"), R(264, 80, 110, 12, "bar a"), R(264, 102, 80, 12, "bar"), R(264, 124, 100, 12, "bar"), R(264, 146, 70, 12, "bar"), C(370, 176, 12, "lens"),
+  ], "The earlier version on the left, this version on the right"),
   hello: () => svg(420, 240, [
     R(20, 30, 210, 150, "card"), T(40, 62, "You asked an AI:", "t s"), T(40, 86, "“best linen shirt?”", "t b"),
     R(40, 104, 150, 14, "bar a"), R(40, 126, 120, 14, "bar"), R(40, 148, 90, 14, "bar"),
@@ -85,7 +97,7 @@ const ART = {
   ], "Ask questions about your own data, or share it with your favourite AI"),
 };
 
-const STEPS = [
+let STEPS = [
   { id: "hello", title: "See how AI talks about your brand", sub: "CitoSkeleton reads the answers ChatGPT, Gemini, Perplexity and Grok give you, right in your browser, and shows which brands they name and which sites they trust." },
   { id: "analyze", title: "Analyze: one answer, taken apart", sub: "Brands in the order they were named, the pages cited and the ones only read, the searches the engine ran, and its pictures and places." },
   { id: "dashboard", title: "Dashboard: every prompt you've asked", sub: "Search everything you've captured, by engine, date or kind of answer." },
@@ -116,6 +128,7 @@ function stepView(s) {
       h("p", { className: "wl-kicker" }, `${at + 1} of ${STEPS.length + 1}`),
       h("h1", { className: "wl-h" }, s.title),
       h("p", { className: "wl-sub" }, s.sub),
+      s.id === "changed" ? h("dl", { className: "wl-changed" }, ...WHATS_CHANGED.flatMap((x) => [h("dt", {}, x.was), h("dd", {}, x.now)])) : null,
       h("div", { className: "wl-nav" }, back, next)));
 }
 
@@ -134,7 +147,7 @@ function emailView() {
       h("b", {}, "Your email is only for this. "),
       "We use it to tell you about CitoSkeleton's updates and offers, and to hear back about problems you report. It is never sold, shared with or passed to any other company or person: only the developer sees it. Unsubscribe any time from any email we send, or remove it in About → Settings."));
   let suggested = null;
-  const show = (text, kind) => { msg.textContent = text; msg.className = `wl-msg ${kind || ""}`; };
+  const show = (text, kind) => { msg.textContent = tr(text); msg.className = `wl-msg ${kind || ""}`; };
   input.addEventListener("input", () => { suggested = null; show("", ""); });
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
@@ -157,7 +170,7 @@ function emailView() {
     // Said once, plainly; then never asked again.
     if (skip.dataset.sure !== "1") {
       skip.dataset.sure = "1";
-      skip.textContent = "Skip anyway";
+      skip.textContent = tr("Skip anyway");
       show("No worries. Just so you know: without an email you won't hear about new features and fixes, and things change fast in AI search. You can add it later in About → Settings.", "warn");
       return;
     }
@@ -168,7 +181,7 @@ function emailView() {
   // Replayed later (About → Replay the guide): an email already given is
   // said, not asked for again.
   store.get(SIGNUP_KEY).then((got) => {
-    if (got && got.email && form.isConnected) form.replaceChildren(h("p", { className: "wl-msg ok" }, `You're signed up as ${got.email} ✨`), h("div", { className: "wl-nav" }, h("button", { type: "button", className: "wl-btn primary", onclick: () => finish("in") }, "Done")));
+    if (got && got.email && form.isConnected) form.replaceChildren(h("p", { className: "wl-msg ok" }, `${tr("You're signed up as")} ${got.email} ✨`), h("div", { className: "wl-nav" }, h("button", { type: "button", className: "wl-btn primary", onclick: () => finish("in") }, "Done")));
   });
   return h("section", { className: "wl-step wl-email", "data-step": "email" },
     h("div", { className: "wl-pic" }, svg(420, 240, [
@@ -204,4 +217,12 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "ArrowLeft") go(at - 1);
 });
 
-go(0);
+// The language first, then the steps (1.0.0).
+(async () => {
+  await loadLang(chosenLang());
+  translatePage();
+  document.title = tr("Welcome to CitoSkeleton");
+  const from = await store.get(UPDATED_FROM_KEY);
+  if (cameFromBeforeRedesign(from)) STEPS = [{ id: "changed", title: "What's changed since your last version", sub: "CitoSkeleton has been rebuilt. Here is where everything you knew went." }, ...STEPS];
+  go(0);
+})();

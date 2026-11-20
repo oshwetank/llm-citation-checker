@@ -1,0 +1,405 @@
+{
+ "chatgpt": {
+  "prompt": "best biscute for morning chai, which is also healthy",
+  "answerText": "For morning chai, I'd recommend **high-fibre, whole-wheat or oats-based biscuits with low added sugar and no hydrogenated fats**. They make a better everyday choice than regular glucose, cream or butter biscuits.\n\nOne important thing: even biscuits labelled *multigrain, digestive or sugar-free* aren't automatically healthy. Check the nutrition label before buying.\n\n## Best types of biscuits for morning chai\n\n### McVitie's Digestive Biscuits\n\n*Good everyday option, in moderation*\n\n- Whole-wheat based\n- Around 6.4g fibre per 100g in the available nutrition data\n- Have 2 biscuits with chai rather than eating freely from the packet.\nApprox. ₹172 on Amazon in the search results.\n\n### Patanjali Ragi Digestive Cookies\n\n- Millet-based alternative.\n- Worth considering for variety.\n- Check added sugar and saturated fat on the pack.\nListed around ₹66 on Zepto.\n\n### Mo's Bakery Ragi Cookies\n\n- Ragi-based cookie option.\n- Check whether jaggery or other sweeteners are used.\n- Better treated as an occasional alternative until its nutrition label is checked.\nListed around ₹338 on Amazon.\n\nThese are options to compare, not a claim that all three are nutritionally superior. Independent testing found that even digestive biscuits can contain substantial sugar and saturated fat. citeturn721475search0turn721475search15\n\n## What to look for on the packet\n\n| Nutrient (per 100g) | What to aim for |\n|---|---:|\n| Sugar | Under 10–15g |\n| Dietary fibre | 6g or more |\n| Saturated fat | As low as possible |\n| Sodium | Lower is better |\n| Ingredients | Whole grains, oats, millets |\n\n**My recommendation:** Start with McVitie's Digestive, but don't treat it as a health food. A handful of almonds or roasted chana alongside your chai would make a more nutritious breakfast snack.\n\n## One question to narrow it down\n\nWhat is your main health priority?\n\n- Weight loss\n- Better digestion and gut health\n- Controlling blood sugar\n- Heart health / cholesterol\n- Just a healthier everyday snack\n\nI can narrow this down to the best 3 biscuits available in India, with brand names and nutritional comparisons.",
+  "sources": [
+   {
+    "url": "https://www.unboxhealth.in/explore/category-list/cookies-biscuits/987d7728-3773-4553-98fd-a2ac0196fb3d",
+    "domain": "unboxhealth.in",
+    "outcome": "cited"
+   },
+   {
+    "url": "https://www.unboxhealth.in/explore/category-list/breakfast-cereals/755970d6-7fc6-474a-a1da-510609589be2",
+    "domain": "unboxhealth.in",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://consumeraffairs.gov.in/public/upload/admin/cmsfiles/consumer_products/Digestive_Biscuits_consumer_products.pdf",
+    "domain": "consumeraffairs.gov.in",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://consumeraffairs.nic.in/sites/default/files/file-uploads/comparative-test-by-consumers-association-of-india/Biscuits-English.pdf",
+    "domain": "consumeraffairs.nic.in",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://consumeraffairs.nic.in/sites/default/files/file-uploads/ctocpas/DigestiveBiscuits.pdf",
+    "domain": "consumeraffairs.nic.in",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://cleanplate.in/category/biscuits-and-cookies",
+    "domain": "cleanplate.in",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://cercindia.org/wp-content/uploads/2025/11/Buying-Guide-2025-April.pdf",
+    "domain": "cercindia.org",
+    "outcome": "cited"
+   },
+   {
+    "url": "https://agada.fit/best/healthiest-biscuits-and-cookies",
+    "domain": "agada.fit",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://egyankosh.ac.in/bitstream/123456789/11092/3/Unit-8.pdf",
+    "domain": "egyankosh.ac.in",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.unboxhealth.in/compare/parle-vs-mcvities/a218aef7-1a09-4c66-8b9d-7cee7245194b/39422998-b412-452d-b447-f9da2ff708f9",
+    "domain": "unboxhealth.in",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://cleanplate.in/product/open-secret-healthy-digestive-biscuit-high-fibre",
+    "domain": "cleanplate.in",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://cleanplate.in/product/britannia-nutrichoice-ragi-cookies",
+    "domain": "cleanplate.in",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://instamart.in/p/britannia-nutrichoice-5-grain-digestive-biscuits-FWZXWGPP8I",
+    "domain": "instamart.in",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.healthifyme.com/web/nutrifacts/whole-wheat-biscuits-9e769734aa",
+    "domain": "healthifyme.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://epubs.icar.org.in/index.php/IJAgS/article/view/99049",
+    "domain": "epubs.icar.org.in",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC8483942/",
+    "domain": "pmc.ncbi.nlm.nih.gov",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://mojidelight.com/healthy-biscuits-india-10-things-to-know-before-buying-healthy-biscuits-india/",
+    "domain": "mojidelight.com",
+    "outcome": "fetched"
+   }
+  ]
+ },
+ "perplexity": {
+  "prompt": "best biscute for morning chai, which is also healthy",
+  "answerText": "For a **healthier morning-chai biscuit**, choose a **whole-wheat, millet, ragi, or oats-based biscuit**—ideally low in sugar and made without hydrogenated fat. But even these are best as an occasional snack, not a daily breakfast.[[cite:https://www.indiatoday.in/health/story/is-chai-biscuit-good-for-your-health-what-a-dietitian-has-to-say-2756005-2025-07-15]][[cite:https://www.gaonconnection.com/rural-news/eating-biscuits-with-morning-tea-can-be-detrimental-to-health-know-the-dietitians-advice/articleshow/133199010.html]]\n\n## Best choices\n\n| Option | Why it’s better | What to check on the label |\n|---|---|---|\n| **Ragi or millet biscuit** | Usually higher in fibre and more filling than maida biscuits | “Ragi/millet” should appear among the first ingredients; low added sugar |\n| **Oats biscuit** | Good chai companion, with a more whole-grain feel | Avoid “oats flavour” products where maida is the main ingredient |\n| **Whole-wheat digestive-style biscuit** | Familiar taste and texture with more fibre than plain glucose biscuits | Look for whole wheat first, not refined flour/maida |\n| **Homemade atta, ragi, or oats biscuit** | You control sugar, oil, and ingredients | Bake with minimal ghee/oil and little or no sugar |\n\nDietitians specifically recommend checking the first three ingredients; refined flour, hydrogenated fats, or sugar near the top are warning signs.  Whole-wheat and millet-based options are also commonly suggested as better chai-time choices.[[cite:https://www.indiatoday.in/health/story/is-chai-biscuit-good-for-your-health-what-a-dietitian-has-to-say-2756005-2025-07-15]][[cite:https://www.anandabazar.com/health-and-wellness/healthy-snacks-to-go-with-your-tea-dgtl/cid/1572891]][[cite:https://www.indiatoday.in/lifestyle/food/story/healthy-tea-snacks-not-biscuits-rusks-2659861-2025-01-05]]\n\n## Best practical pick\n\nIf you want a ready-made option, pick a **ragi/millet or oats biscuit with whole grain as the first ingredient and no added sugar**. If you prefer the classic dunking experience, choose a **plain whole-wheat biscuit** and limit yourself to 1–2 pieces.[[cite:https://www.indiatoday.in/lifestyle/food/story/healthy-tea-snacks-not-biscuits-rusks-2659861-2025-01-05]][[cite:https://sitaramdiwanchand.com/blog/best-tea-biscuits-to-pair-with-chai/]]\n\n## Make it actually healthy\n\nPair the biscuit with protein so chai does not become just a sugar-and-refined-carb start to the day:\n\n- 1–2 biscuits + a boiled egg or a small bowl of curd\n- Biscuit + a handful of roasted chana or peanuts\n- Better daily alternative: roasted chana, makhana, sprouts, or a fruit with chai\n\nExperts note that biscuits—even “healthy” ones—are generally a small upgrade rather than a substitute for a balanced breakfast; whole grains, dal, fruit, vegetables, and nuts are more nutritious morning options.[[cite:https://www.gaonconnection.com/rural-news/eating-biscuits-with-morning-tea-can-be-detrimental-to-health-know-the-dietitians-advice/articleshow/133199010.html]][[cite:https://kabo.co.in/blogs/news/chai-biscuit-breakfast-healthy-swap]]\n\n**My pick:** a low-sugar **ragi or oats biscuit**, one or two pieces, alongside curd or roasted chana. It keeps the chai-biscuit ritual while avoiding the worst maida-and-sugar-heavy choices.[[cite:https://www.indiatoday.in/health/story/is-chai-biscuit-good-for-your-health-what-a-dietitian-has-to-say-2756005-2025-07-15]][[cite:https://www.indiatoday.in/lifestyle/food/story/healthy-tea-snacks-not-biscuits-rusks-2659861-2025-01-05]]",
+  "sources": [
+   {
+    "url": "https://www.indiatoday.in/health/story/is-chai-biscuit-good-for-your-health-what-a-dietitian-has-to-say-2756005-2025-07-15",
+    "domain": "indiatoday.in",
+    "outcome": "cited"
+   },
+   {
+    "url": "https://www.gaonconnection.com/rural-news/eating-biscuits-with-morning-tea-can-be-detrimental-to-health-know-the-dietitians-advice/articleshow/133199010.html",
+    "domain": "gaonconnection.com",
+    "outcome": "cited"
+   },
+   {
+    "url": "https://www.anandabazar.com/health-and-wellness/healthy-snacks-to-go-with-your-tea-dgtl/cid/1572891",
+    "domain": "anandabazar.com",
+    "outcome": "cited"
+   },
+   {
+    "url": "https://www.indiatoday.in/lifestyle/food/story/healthy-tea-snacks-not-biscuits-rusks-2659861-2025-01-05",
+    "domain": "indiatoday.in",
+    "outcome": "cited"
+   },
+   {
+    "url": "https://sitaramdiwanchand.com/blog/best-tea-biscuits-to-pair-with-chai/",
+    "domain": "sitaramdiwanchand.com",
+    "outcome": "cited"
+   },
+   {
+    "url": "https://kabo.co.in/blogs/news/chai-biscuit-breakfast-healthy-swap",
+    "domain": "kabo.co.in",
+    "outcome": "cited"
+   },
+   {
+    "url": "https://in.my-best.com/9615",
+    "domain": "in.my-best.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.indiafoodnetwork.in/food-stories/11-biscuits-that-complete-indias-tea-time-affair",
+    "domain": "indiafoodnetwork.in",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.ucook.org/936203/healthy-biscuits-that-go-perfectly-with-chai-anuradhabhaiya-healthybiscuit/",
+    "domain": "ucook.org",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.indiatoday.in/lifestyle/what-s-hot/story/sorry-to-break-this-to-you-but-chai-biscuit-is-not-a-healthy-way-to-start-your-morning-heres-why-2338533-2023-02-23",
+    "domain": "indiatoday.in",
+    "outcome": "fetched"
+   }
+  ]
+ },
+ "grok": {
+  "prompt": "best biscute for morning chai, which is also healthy",
+  "answerText": "**Digestive, high-bran, or oats-based biscuits** are among the best relatively healthy options for morning chai. They dunk well, offer more fiber than regular glucose/Marie biscuits, and pair classicly without being overly sweet.[[cite:https://www.ndtvshopping.com/grocery/5-best-healthy-biscuits-cremica-britannia-to-sunfeast-to-buy-for-everyday-snacking-tasty-and-guilt-free-9585203]]\n\n### Top store-bought picks\n- **Britannia NutriChoice Digestive (High Fibre or similar variants)**: Frequently ranked highly for taste, crunch, and nutrition among digestives in India. Higher fiber (often ~6–9g/100g depending on variant), moderate sugar compared to regular biscuits, and a toasty, slightly salty profile that complements chai. Good everyday choice.[[cite:https://food.ndtv.com/reviews/battle-of-biscuits-the-best-digestives-in-india-772976]]\n- **Cremica High Bran Biscuits**: Fiber-rich from bran, supports digestion and fullness, mild sweetness, no trans fat in typical formulations. Solid digestive-style option.[[cite:https://www.ndtvshopping.com/grocery/5-best-healthy-biscuits-cremica-britannia-to-sunfeast-to-buy-for-everyday-snacking-tasty-and-guilt-free-9585203]]\n- **Oats options** (e.g., Britannia NutriChoice Oats Milk & Almond, Sunfeast Farmlite Oats & Almonds, Unibic Oats Digestive): Rolled oats + some bran/nuts add fiber and a bit more staying power. Milder sweetness works well with chai.[[cite:https://www.ndtvshopping.com/grocery/5-best-healthy-biscuits-cremica-britannia-to-sunfeast-to-buy-for-everyday-snacking-tasty-and-guilt-free-9585203]]\n- Other notes: Look for 100% atta / whole wheat / high-bran labels, lower added sugar, and zero trans fat. Brands also offer zero-added-sugar or millet variants if available.\n\nThese are better than standard Parle-G, cream biscuits, or plain Marie for fiber and slower blood-sugar impact, but they are still processed snacks with refined elements, sugar, and fat—limit to 2–3 pieces.[[cite:https://www.indiatoday.in/health/story/is-chai-biscuit-good-for-your-health-what-a-dietitian-has-to-say-2756005-2025-07-15]]\n\n### Even better: homemade\nStore-bought “healthy” biscuits still trail homemade versions made with whole wheat (atta), ragi (finger millet), oats, jaggery, and ghee/coconut oil. These control ingredients, boost fiber/nutrients, and taste excellent dunked in chai.\n\nSimple directions for classic **atta biscuits**:\n- Cream ~½ cup ghee with ~½ cup powdered sugar or jaggery.\n- Mix in ~1½ cups atta, a pinch of baking powder, cardamom, and a little milk to form soft dough.\n- Shape, bake at ~160–180°C until crisp and golden (around 15–20 minutes). They firm up as they cool.[[cite:https://www.cookwithmanali.com/atta-biscuits/]]\n\n**Ragi versions** (swap in ragi flour or mix 50:50 with atta/oats + jaggery) add calcium, iron, and earthy flavor that pairs beautifully with chai. Many recipes use flax egg or just ghee for binding and stay eggless.[[cite:https://www.timesnownews.com/web-stories/food/guilt-free-ragi-millet-biscuits-with-chai-for-your-healthy-snacking/photostory/114119165.cms]]\n\n### Quick tips for a healthier morning\nExperts often note that plain chai + biscuit on an empty stomach can spike blood sugar and isn’t ideal for gut health long-term. Pair with a little protein/fat if possible (handful of nuts, or have the biscuits after something more substantial), or keep portions small.[[cite:https://www.business-standard.com/health/gut-healing-foods-to-replace-morning-chai-biscuit-nikita-bardia-tips-125110700424_1.html]]\n\nFor maximum health, roasted makhana, chana, or a few nuts are stronger everyday chai companions, but if you specifically want a biscuit, go with a high-fiber digestive/oats style or bake a batch of atta/ragi at home. Enjoy your chai!",
+  "sources": [
+   {
+    "url": "https://www.ndtvshopping.com/grocery/5-best-healthy-biscuits-cremica-britannia-to-sunfeast-to-buy-for-everyday-snacking-tasty-and-guilt-free-9585203",
+    "domain": "ndtvshopping.com",
+    "outcome": "cited"
+   },
+   {
+    "url": "https://food.ndtv.com/reviews/battle-of-biscuits-the-best-digestives-in-india-772976",
+    "domain": "food.ndtv.com",
+    "outcome": "cited"
+   },
+   {
+    "url": "https://www.indiatoday.in/health/story/is-chai-biscuit-good-for-your-health-what-a-dietitian-has-to-say-2756005-2025-07-15",
+    "domain": "indiatoday.in",
+    "outcome": "cited"
+   },
+   {
+    "url": "https://www.cookwithmanali.com/atta-biscuits/",
+    "domain": "cookwithmanali.com",
+    "outcome": "cited"
+   },
+   {
+    "url": "https://www.timesnownews.com/web-stories/food/guilt-free-ragi-millet-biscuits-with-chai-for-your-healthy-snacking/photostory/114119165.cms",
+    "domain": "timesnownews.com",
+    "outcome": "cited"
+   },
+   {
+    "url": "https://www.business-standard.com/health/gut-healing-foods-to-replace-morning-chai-biscuit-nikita-bardia-tips-125110700424_1.html",
+    "domain": "business-standard.com",
+    "outcome": "cited"
+   },
+   {
+    "url": "https://timesofindia.indiatimes.com/life-style/food-news/morning-chai-and-biscuits-are-harming-your-gut-health-coach-shares-8-healthy-foods-to-eat-instead/articleshow/125114314.cms",
+    "domain": "timesofindia.indiatimes.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.indiatoday.in/lifestyle/food/story/healthy-tea-snacks-not-biscuits-rusks-2659861-2025-01-05",
+    "domain": "indiatoday.in",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.slurrp.com/article/world-biscuit-day-2026-crisp-gluten-free-biscuit-recipes-to-pair-with-your-evening-chai-1779803012982",
+    "domain": "slurrp.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://happyapplevegan.com/blog/2025/10/7/wholesomely-cozy-chai-spiced-cookies",
+    "domain": "happyapplevegan.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://timesofindia.indiatimes.com/life-style/food-news/9-healthy-guilt-free-snacks-for-chai-time/articleshow/122498044.cms",
+    "domain": "timesofindia.indiatimes.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.ketoforindia.com/keto-chai-and-biscuit-india/",
+    "domain": "ketoforindia.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.ndtv.com/health/health-at-tea-time-dietitian-shares-what-to-eat-with-chai-to-avoid-blood-sugar-spikes-11194653",
+    "domain": "ndtv.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.indiatoday.in/lifestyle/what-s-hot/story/sorry-to-break-this-to-you-but-chai-biscuit-is-not-a-healthy-way-to-start-your-morning-heres-why-2338533-2023-02-23",
+    "domain": "indiatoday.in",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://rainbowplantlife.com/chewy-vegan-chai-spiced-cookies",
+    "domain": "rainbowplantlife.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://food.ndtv.com/health/are-biscuits-actually-a-healthy-teatime-snack-you-wont-believe-what-nutritionists-say-5815031",
+    "domain": "food.ndtv.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.nutribit.app/en/recipe/oats-atta-biscuits",
+    "domain": "nutribit.app",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://food.ndtv.com/food-drinks/5-desi-indian-biscuit-recipes-to-pair-with-your-evening-cup-of-chai-3743272",
+    "domain": "food.ndtv.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.hindustantimes.com/lifestyle/health/stanford-trained-health-coach-warns-biscuits-are-tea-biggest-enemy-shares-what-you-should-never-pair-with-chai-101761472278688.html",
+    "domain": "hindustantimes.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://sitaramdiwanchand.com/blog/best-tea-biscuits-to-pair-with-chai/",
+    "domain": "sitaramdiwanchand.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.thedailyjagran.com/lifestyle/is-chai-with-biscuits-bad-for-your-health-5-healthy-tea-time-snacks-youll-love-10254015",
+    "domain": "thedailyjagran.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://eathealthy365.com/your-ultimate-guide-to-perfect-tea-biscuit-pairings/",
+    "domain": "eathealthy365.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.joybuy.nl/blog/digestive-biscuits-tea-coffee/7lV7Zeok",
+    "domain": "joybuy.nl",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://eathealthy365.com/the-definitive-guide-to-tea-dunking-best-biscuits-ranked/",
+    "domain": "eathealthy365.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.healthshots.com/healthy-eating/superfoods/best-digestive-biscuits/",
+    "domain": "healthshots.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.eurekalert.org/news-releases/974726",
+    "domain": "eurekalert.org",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.telegraph.co.uk/columnists/2023/02/04/digestives-ranked-would-choose-mcvities-even-price/",
+    "domain": "telegraph.co.uk",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.independent.co.uk/life-style/food-and-drink/biscuit-tea-dunking-science-b2248551.html",
+    "domain": "independent.co.uk",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://foodnbeveragesprocessing.com/bisk-farm-expands-its-eat-fit-range-with-the-launch-of-nutritious-eat-fit-digestive-and-eat-fit-atta-marie-biscuits/",
+    "domain": "foodnbeveragesprocessing.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.bestreviewsonline.in/digestive-biscuits",
+    "domain": "bestreviewsonline.in",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.natashamohan.com/best-oats-biscuits-in-india/",
+    "domain": "natashamohan.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.thehealthfactory.in/products/zero-maida-digestive-honey-oats",
+    "domain": "thehealthfactory.in",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.amazon.in/gp/bestsellers/grocery/14801644031",
+    "domain": "amazon.in",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://reviews.indiatimes.com/hot-picks/best-digestive-biscuits-that-you-can-buy-for-the-elderly-in-your-family/articleshow/109888262.cms",
+    "domain": "reviews.indiatimes.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.bestreviewsonline.in/digestive-biscuits?sort=price-lowest-first",
+    "domain": "bestreviewsonline.in",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://nutriscan.app/calories-nutrition/britannia-nutrichoice-digestive",
+    "domain": "nutriscan.app",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://you-well.co.uk/are-mcvities-digestives-healthy/",
+    "domain": "you-well.co.uk",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.unboxhealth.in/compare/mcvities-vs-britannia/39422998-b412-452d-b447-f9da2ff708f9/1e4f64a1-cbb0-4427-92fb-06d7100464d5",
+    "domain": "unboxhealth.in",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.unboxhealth.in/explore/product/britannia-nutrichoice-high-fibre-digestive-biscuit/1e4f64a1-cbb0-4427-92fb-06d7100464d5",
+    "domain": "unboxhealth.in",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://blinkit.com/prn/britannia-nutrichoice-digestive-high-fibre-biscuit-0-maida/prid/392931",
+    "domain": "blinkit.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://goodbite.ai/product/britannia-nutrichoice-digestive-seeds",
+    "domain": "goodbite.ai",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.goodto.com/wellbeing/healthiest-biscuits-best-to-worst-revealed-41310",
+    "domain": "goodto.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.cookwithmanali.com/wprm_print/atta-biscuits",
+    "domain": "cookwithmanali.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.indianhealthyrecipes.com/eggless-crispy-finger-millet-ragi-butter-cookies/",
+    "domain": "indianhealthyrecipes.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.sugarfree-india.com/smart-recipes/cookies/ragi-biscuit/",
+    "domain": "sugarfree-india.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://timesofindia.indiatimes.com/life-style/home-garden/5-easy-healthy-biscuit-recipes-you-can-make-at-home-with-simple-ingredients/photostory/134955825.cms",
+    "domain": "timesofindia.indiatimes.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.jagran.com/lifestyle/food-news-the-ultimate-no-maida-no-sugar-ragi-cookie-recipe-better-than-bakery-40313053.html",
+    "domain": "jagran.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.instagram.com/popular/healthy-ragi-biscuits-recipes/",
+    "domain": "instagram.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.youtube.com/watch?v=TvOpspKGVFI",
+    "domain": "youtube.com",
+    "outcome": "fetched"
+   },
+   {
+    "url": "https://www.youtube.com/watch?v=mQMrhW_Eppk",
+    "domain": "youtube.com",
+    "outcome": "fetched"
+   }
+  ]
+ }
+}

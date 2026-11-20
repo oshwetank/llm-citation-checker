@@ -69,6 +69,27 @@
   const CHATGPT_RE = /\/backend-(?:api|anon)\/(?:f\/)?conversation(?:\/(?:resume|updates|stream))?(?:\?|$)|\/unauth-mweb\/conversation\/updates(?:\?|$)/i;
   const CHATGPT_SUBMIT_RE = /\/backend-(?:api|anon)\/(?:f\/)?conversation(?:\?|$)|\/unauth-mweb\/conversation\/updates(?:\?|$)/i;
   const CHATGPT_FOLLOW_RE = /\/conversation\/(?:resume|updates|stream)(?:\?|$)/i;
+  // ChatGPT's newer send (seen 12 Nov 2026 in a real recording): the page
+  // POSTs conversation/prepare, gets a "conduit" token, and the answer comes
+  // back over its WebSocket. No conversation POST leaves the page at all, so
+  // CHATGPT_SUBMIT_RE never matched and a campaign couldn't tell its prompt
+  // had gone. prepare is also sent while the user is still typing; only the
+  // one whose body says "client_prepare_state":"sent" is the send itself.
+  const CHATGPT_PREPARE_RE = /\/backend-(?:api|anon)\/(?:f\/)?conversation\/prepare(?:\?|$)/i;
+  const SENT_RE = /"client_prepare_state"\s*:\s*"sent"/;
+  const preparedSend = (url, body) => IS_CHATGPT && CHATGPT_PREPARE_RE.test(url || "") && typeof body === "string" && SENT_RE.test(body);
+  // The same, for a body that isn't plain text (a Request, a Blob, bytes):
+  // read from a copy, after the fact, so the page's own request is untouched.
+  const preparedSendLater = (url, input, body) => {
+    if (!IS_CHATGPT || !CHATGPT_PREPARE_RE.test(url || "") || typeof body === "string") return;
+    let read = null;
+    try {
+      if (body instanceof Blob) read = body.text();
+      else if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) read = Promise.resolve(new TextDecoder().decode(body));
+      else if (body == null && input instanceof Request) read = input.clone().text();
+    } catch (_) { read = null; }
+    if (read) read.then((t) => { if (SENT_RE.test(t || "")) signalSubmit("prepare"); }, () => {});
+  };
   // Any other event stream from ChatGPT's own API is still taken (0.73.1):
   // when ChatGPT moves its answer to a new address, the capture keeps
   // working instead of silently stopping, and the capture check names the
@@ -348,7 +369,13 @@
   // are kept as probes: stored apart from captures (never shown as answers),
   // for the owner to save and send ("Payloads it couldn't read").
   const GEMINI_PROBE_RE = /\/v1\/processSession\b|\/batchexecute\b/;
-  let geminiUpload = ""; // the last WebChannel upload that carried a prompt
+  // The last few WebChannel uploads, newest first (1.0.0). Gemini sends the
+  // question in one upload and then more of them that carry no question (a
+  // session setup, ~2 KB of ids and a token); keeping only the last one meant
+  // the answer was stored with the setup upload and no prompt (the owner's
+  // Gemini captures of 13 and 15 Nov 2026). The reader (lib/geminiChannel.js
+  // channelPrompt) takes the first upload that has a question in it.
+  let geminiUploads = [];
   function probe(url, method, reqBody, body) {
     if (!(IS_GEMINI || IS_CHATGPT) || !debugOn() || !body) return;
     try {
@@ -409,7 +436,7 @@
 
   // --- fetch patch (ChatGPT, Perplexity REST stream via fetch) ---
   const origFetch = window.fetch;
-  window.fetch = async function (...args) {
+  const citoFetch = async function (...args) {
     const input = args[0];
     const init = args[1];
     let url = "";
@@ -424,6 +451,8 @@
     }
 
     if (method === "POST" && SUBMIT_RE && SUBMIT_RE.test(url || "")) signalSubmit("fetch");
+    else if (method === "POST" && preparedSend(url, init && init.body)) signalSubmit("prepare");
+    else if (method === "POST") preparedSendLater(url, input, init && init.body);
     const isConv = (method === "POST" || (IS_PERPLEXITY && /socket\.io|sse/i.test(url)) || (IS_CHATGPT && CHATGPT_FOLLOW_RE.test(url || ""))) && CONV_RE.test(url || "");
     let reqBody = null;
     if (isConv) {
@@ -496,6 +525,14 @@
     }
     return resp;
   };
+  window.fetch = citoFetch;
+  // Still ours? (1.0.0) On the owner's computer another extension's inject.js
+  // ("patchedFetch") held the page's fetch, and this hook never saw a single
+  // ChatGPT request; the capture report said nothing about why. It now says
+  // so; ChatGPT's answer is then read from the conversation (content-iso.js).
+  const fetchHeld = (when) => { if (IS_TARGET && window.fetch !== citoFetch) health("fetch-taken", location.href, { method: when }); };
+  fetchHeld("start");
+  setTimeout(() => fetchHeld("later"), 8000);
 
   // --- XHR patch (Gemini's StreamGenerate is XHR, not fetch) ---
   const XHR = window.XMLHttpRequest;
@@ -548,7 +585,10 @@
         // answer so far. Frames run ~50 KB each, so only the newest data
         // frame and the largest are kept, never the whole stream, and they
         // are handed over once the stream has gone quiet.
-        if (this.__lcfc_post && /req\d+___data__=/.test(reqBody) && reqBody.length > 100) geminiUpload = reqBody; // not an acknowledgement (~40 chars)
+        if (this.__lcfc_post && /req\d+___data__=/.test(reqBody) && reqBody.length > 100) { // not an acknowledgement (~40 chars)
+          geminiUploads = [reqBody, ...geminiUploads.filter((u) => u !== reqBody)].slice(0, 6);
+          while (geminiUploads.length > 1 && geminiUploads.reduce((n, u) => n + u.length, 0) > 120000) geminiUploads.pop();
+        }
         if (!this.__lcfc_post && /[?&]RID=rpc\b/.test(this.__lcfc_url)) {
           let read = 0, lastData = "", bigData = "", fresh = false, quiet = null;
           const scan = () => {
@@ -574,7 +614,7 @@
             const frames = bigData && bigData !== lastData ? [bigData, lastData] : [lastData];
             const raw = frames.map((f) => `${f.length}\n${f}`).join("");
             lastData = ""; bigData = "";
-            emit({ url: xhr.__lcfc_url, reqBody: geminiUpload || "", transport: "webchannel", raw, capturedAt: Date.now() });
+            emit({ url: xhr.__lcfc_url, reqBody: geminiUploads.join("&"), transport: "webchannel", raw, capturedAt: Date.now() });
           };
           const grew = () => { scan(); if (quiet) clearTimeout(quiet); quiet = setTimeout(hand, 2500); };
           this.addEventListener("progress", grew);
@@ -598,6 +638,7 @@
       }
       if (this.__lcfc_post) dbg("xhr", { url: this.__lcfc_url.slice(0, 140), matched: !!this.__lcfc_conv });
       if (this.__lcfc_post && SUBMIT_RE && SUBMIT_RE.test(this.__lcfc_url)) signalSubmit("xhr");
+      else if (this.__lcfc_post && preparedSend(this.__lcfc_url, body)) signalSubmit("prepare");
       if (this.__lcfc_conv) {
         this.__lcfc_body = typeof body === "string" ? body : null;
         if (isBackgroundSubscription(this.__lcfc_body)) return send.call(this, body);

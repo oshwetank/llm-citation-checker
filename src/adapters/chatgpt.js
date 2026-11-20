@@ -24,6 +24,8 @@ import { walk, collectByKey, collectObjects, firstPath, isHttpUrl, domainOf } fr
 import { detectBrands } from "../lib/brands.js";
 import { isGenUi, readGenUi } from "../lib/genui.js";
 import { isConversationSource, readConversationSource, limitOfSource, promptOfSourceRequest } from "../lib/chatgptSource.js";
+import { isConversationJson, turnAsCapture } from "../lib/chatgptConversation.js";
+import { pictureProducts } from "../lib/productImages.js";
 
 export const ADAPTER_VERSION = "chatgpt@0.5.0";
 
@@ -245,7 +247,7 @@ export function tokenizeAnswerMarkup(text) {
 // calls with nearly identical arguments, which was mildly wasteful even
 // synchronously and would have doubled the cost of the AI tier for no
 // reason now that this call is async.
-async function detectBrandsForCapture(answerText, products, tracked, sources, places, prompt) {
+async function detectBrandsForCapture(answerText, products, tracked, sources, places, prompt, { keepLines = false } = {}) {
   if (!answerText) return { brands: [], entities: [] };
   // A card's "Listed at <store> + others" line names where it's sold, not a
   // brand the answer recommends (a resolved binding since 0.62.1). The
@@ -255,7 +257,12 @@ async function detectBrandsForCapture(answerText, products, tracked, sources, pl
   // tier runs AFTER the capture is stored (see background.js's
   // enrichCaptureWithAI) — inside here it blocked the write, so nothing
   // appeared in the UI until an on-device inference finished.
-  return detectBrands(answerText, cleanPassage(answerText), {
+  // A copy read off the page keeps its lines in the plain text too, as every
+  // other engine's does: flattened, a heading with no full stop ran into the
+  // first name under it ("Best optical stores 1. Titan Eye+") and the names
+  // read as words inside a sentence, so a card answer had no brands (1.0.0).
+  const plain = keepLines ? answerText.split("\n").map((l) => cleanPassage(l)).join("\n") : cleanPassage(answerText);
+  return detectBrands(answerText, plain, {
     products,
     places,
     sources,
@@ -786,6 +793,20 @@ function genUiBindings(nodes) {
 
 // Signed out (0.69.0): /unauth-mweb/conversation/updates, ndjson (see
 // lib/chatgptSource.js). Read by name; what it can't find stays empty.
+
+/*
+ * A copy read off ChatGPT's page by an older 1.0.0 build (16 Nov 2026): its
+ * cards bold the number and the name apart, which came out as
+ * "**1.****Titan Eye+**", and a price as a heading ("# **₹1,85,900**"). Read
+ * the way the page copy now writes them, so stored answers mend on re-read.
+ */
+export function tidyPageCopy(text) {
+  return String(text || "")
+    .replace(/\*\*(\d{1,2}[.)])\*\*(?=\*\*)/g, "$1 ")
+    .replace(/\*\*\*\*/g, "** **")
+    .replace(/^#{1,6} (.*)$/gm, (m, x) => (/\p{L}/u.test(x.replace(/\*/g, "").replace(/\b(?:Rs|INR|USD|EUR|GBP)\b/gi, "")) ? m : x.replace(/\*\*/g, "")));
+}
+
 async function adaptSource(rawCapture, opts, diag) {
   // ChatGPT's message-limit card is not an answer (0.78.1): no answer text,
   // and the limit on the record, so a campaign turn pauses for it and asks
@@ -799,7 +820,8 @@ async function adaptSource(rawCapture, opts, diag) {
   // the whole answer it flattened every list and heading into one line —
   // the structure brand detection reads (lib/brands.js), so names in a
   // signed-out list were missed.
-  const answerText = r ? r.answer.split(/\r?\n/).map((l) => (l.trim() ? cleanPassage(l) : "")).join("\n").replace(/\n{3,}/g, "\n\n").trim() : "";
+  let answerText = r ? r.answer.split(/\r?\n/).map((l) => (l.trim() ? cleanPassage(l) : "")).join("\n").replace(/\n{3,}/g, "\n\n").trim() : "";
+  if (pageCopy) answerText = tidyPageCopy(answerText);
   const sources = (r ? r.sources : []).map((x) => makeSource({
     url: x.url, domain: domainOf(x.url), title: x.title || domainOf(x.url), snippet: x.snippet || null,
     outcome: x.cited ? "cited" : "fetched", type: x.cited ? "citation" : "search_result", platformSpecific: {},
@@ -808,8 +830,10 @@ async function adaptSource(rawCapture, opts, diag) {
   // The signed-out page posts a form whose "prompt" field is the question.
   let userPrompt = (r && r.prompt) || promptOfSourceRequest(rawCapture.reqBody) || extractPrompt(rawCapture.reqBody);
   if (!userPrompt) { try { userPrompt = new URL(rawCapture.pageUrl).searchParams.get("q") || null; } catch (_) { /* no address */ } }
-  const products = (r && r.products) || [], places = (r && r.places) || [], images = (r && r.images) || [];
-  const { brands: brandMentions, entities: baseEntities } = await detectBrandsForCapture(answerText, products, opts.tracked, sources, places, userPrompt);
+  const images = (r && r.images) || [], places = (r && r.places) || [];
+  // Each card's picture, from the image titled with its name (lib/productImages.js).
+  const products = pictureProducts((r && r.products) || [], images);
+  const { brands: brandMentions, entities: baseEntities } = await detectBrandsForCapture(answerText, products, opts.tracked, sources, places, userPrompt, { keepLines: pageCopy });
   const entities = extractEntities(baseEntities, products, brandMentions, sources, places);
   if (pageCopy) diag.notes.push("read off the page: the network stream wasn't seen, so searches and pages read aren't known");
   else if (r && !r.queries.length) diag.notes.push("signed-out stream: no searches named in it");
@@ -830,6 +854,16 @@ async function adaptSource(rawCapture, opts, diag) {
 
 export async function adapt(rawCapture, opts = {}) {
   const diag = { adapterVersion: ADAPTER_VERSION, usedFallback: false, notes: [] };
+  // A conversation read from ChatGPT (1.0.0, lib/chatgptConversation.js):
+  // its latest turn becomes the stream lines read below. The stored raw stays
+  // the conversation, so Reprocess reads it the same way.
+  if (isConversationJson(rawCapture.raw, rawCapture.url)) {
+    let cap = null;
+    try { cap = turnAsCapture(JSON.parse(rawCapture.raw)); } catch (_) { cap = null; }
+    if (!cap) { diag.notes.push("conversation read: no finished turn in it"); return null; }
+    diag.notes.push("read from the conversation, not the stream");
+    rawCapture = { ...rawCapture, raw: cap.raw, reqBody: cap.reqBody };
+  }
   if (isConversationSource(rawCapture.raw, rawCapture.url)) return adaptSource(rawCapture, opts, diag);
   const nodes = parseSse(rawCapture.raw || "");
 
@@ -880,6 +914,8 @@ export async function adapt(rawCapture, opts = {}) {
     if (!have) images.push(im);
     else for (const k of ["sourceUrl", "attribution", "title"]) if (!have[k] && im[k]) have[k] = im[k];
   });
+  // A product with no picture of its own takes the image titled with its name.
+  products = pictureProducts(products, images);
 
   // Carousel presence: products carousel if any product; news if any dated/news
   // source; image carousel if an image-typed content reference exists; map if a

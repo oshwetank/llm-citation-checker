@@ -41,6 +41,15 @@ try {
 
 const PROMPT = "waterproof phone under 60000 in India";
 const UPLOAD = uploadBody(PROMPT);
+// 1.0.0: after the question Gemini sends a session-setup upload with no
+// question in it (ids and a token; ~2 KB). Made-up values, same shape. The
+// page hook used to keep only the last upload, so the answer was stored with
+// this one and no prompt (the owner's Gemini captures, 13 and 15 Nov 2026).
+const SETUP = (() => {
+  const enc = (n, b) => Buffer.concat([Buffer.from([(n << 3) | 2, b.length]), b]);
+  const inner = enc(1, Buffer.concat([enc(2, Buffer.from("cf41b0e0dd7d53e5")), enc(4, Buffer.from("0A1B2C3D-0000-4000-8000-000000000001")), enc(5, Buffer.from("x".repeat(100)))]));
+  return "count=1&ofs=0&req0___data__=" + encodeURIComponent(Buffer.from(Buffer.concat([enc(1, inner)])).toString("base64"));
+})();
 const STREAM = channelStream();
 const CH = "https://geminiweb-pa.clients6.google.com/v1/processSession";
 // Gemini's order: the upload, a tiny acknowledgement upload, then the
@@ -52,6 +61,7 @@ const PAGE = `<!doctype html><body>stub<script>
   (async () => {
     await xhr("POST", "${CH}?VER=8&RID=52484&AID=0&zx=a&t=1", ${JSON.stringify(UPLOAD)});
     await xhr("POST", "${CH}?VER=8&RID=52485&AID=3&zx=b&t=1", "count=1&ofs=2&req0___data__=IgIIAQ%3D%3D");
+    await xhr("POST", "${CH}?VER=8&RID=52486&AID=4&zx=e&t=1", ${JSON.stringify(SETUP)});
     await xhr("GET", "${CH}?VER=8&RID=rpc&SID=abc&AID=0&CI=0&TYPE=xmlhttp&zx=c&t=1");
     await xhr("GET", "${CH}?VER=8&RID=rpc&SID=abc&AID=9&CI=0&TYPE=xmlhttp&zx=d&t=1");
     document.title = "done";
@@ -97,9 +107,10 @@ try {
   check("the answer", /^For a \*\*waterproof phone/.test(rec.answerText || "") && /Kovo Aqua Pro/.test(rec.answerText || ""), (rec.answerText || "").slice(0, 80));
   check("three cited pages", (rec.sources || []).length === 3, JSON.stringify((rec.sources || []).map((s) => s.domain)));
   check("two product cards", (rec.products || []).length === 2 && rec.products[0].name === "Zento X9 5G", JSON.stringify((rec.products || []).map((x) => x.name)));
-  // 0.69.0: Google's session cookie lives on google.com; read by the page's
-  // address it is found, so the answer says it was asked signed in.
-  check("marked as asked signed in", rec.session && rec.session.signedIn === "in" && rec.session.private === false, JSON.stringify(rec.session));
+  // 1.0.0: Google's session cookie lives on google.com, which the extension
+  // has no access to (no new permission for 0.36 users), so Chrome doesn't
+  // show it. The answer must then say "unknown", never "signed out".
+  check("sign-in marked unknown, not signed out", rec.session && rec.session.signedIn === "unknown" && rec.session.private === false, JSON.stringify(rec.session));
   const probes = ((await msg({ type: "get-probes" })) || {}).probes || [];
   check("nothing kept as a probe", probes.length === 0, String(probes.length));
 

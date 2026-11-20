@@ -14,7 +14,9 @@ export const INTENTS = [...THEMES.map((t) => t[0]), "other"];
 export const AUDIENCES = ["consumer", "business", "public_sector", "mixed"];
 export const FUNNEL = ["awareness", "consideration", "decision", "post_purchase"];
 export const SCOPES = ["local", "national", "regional", "global"];
-export const ENTITY_TYPES = ["brand", "product", "retailer", "publisher", "institution", "place", "person", "other"];
+// "not_a_name" (1.0.0): the rules can mistake an ordinary word for a brand
+// ("Sugar", "Oats" heading a table's cells); the AI can say so.
+export const ENTITY_TYPES = ["brand", "product", "retailer", "publisher", "institution", "place", "person", "not_a_name", "other"];
 export const STANCES = ["recommended", "positive", "neutral", "negative", "advised_against", "mentioned"];
 
 const norm = (s) => String(s ?? "").normalize("NFKC").toLowerCase().replace(/[\s ]+/g, " ")
@@ -140,6 +142,11 @@ export function validateEntities(raw, { text, candidates = [] } = {}) {
     const item = { name, type: oneOf(e.type, ENTITY_TYPES) || "other" };
     const owner = clean(e.owner || e.parent, 60);
     if (owner && owner.toLowerCase() !== name.toLowerCase()) item.owner = owner;
+    // The brand a product is sold under (1.0.0): kept only when the answer
+    // writes it, or the product's own name starts with it.
+    const brand = clean(e.brand, 60);
+    if (brand && brand.toLowerCase() !== name.toLowerCase() && (textHas(text, brand) || name.toLowerCase().startsWith(brand.toLowerCase()))) item.brand = brand;
+    else if (brand && brand.toLowerCase() !== name.toLowerCase()) dropped.push({ field: "entity.brand", value: `${name}: ${brand}`, why: "that brand is not written in the answer" });
     const stance = oneOf(e.stance, STANCES);
     const quote = clean(e.quote, 300);
     if (stance && stance !== "mentioned") {
@@ -174,6 +181,7 @@ export function validateMissed(raw, { text, known = [], isPlausible = () => true
     if (knownLower.has(lower) || out.some((o) => o.name.toLowerCase() === lower)) continue;
     if (!textHas(text, name)) { dropped.push({ field: "missed", value: name, why: "not written in the answer" }); continue; }
     if (!isPlausible(name)) { dropped.push({ field: "missed", value: name, why: "a common word, place or currency, not a name" }); continue; }
+    if (e && e.type === "not_a_name") continue;
     const quote = clean(e && e.quote, 300);
     if (!quote || !quoteIn(text, quote) || !textHas(quote, name)) { dropped.push({ field: "missed", value: name, why: "no quote from the answer that has it" }); continue; }
     out.push({ name, type: oneOf(e.type, ENTITY_TYPES) || "brand", quote });

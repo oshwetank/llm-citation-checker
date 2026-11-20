@@ -84,13 +84,20 @@ export function verdict(engine, h, tabs = [], { paused = false } = {}) {
   const rec = h || {};
   const open = tabs.filter((t) => t.engine === engine);
   const dead = open.filter((t) => !t.alive);
-  const lastDrop = (rec.drops || [])[0];
+  // An empty side call (related questions, thread updates, a socket) after an
+  // answer was saved is not a lost answer (1.0.0): the owner's Perplexity
+  // showed "bad" with its answer saved a minute before.
+  const SIDE_CALL = /related|recent_thread_updates|graphql|suggest|\/ws\b|\/ws$/i;
+  const lastDrop = (rec.drops || []).find((d) => !(d.reason === "empty" && SIDE_CALL.test(d.path || "")));
+  // The page copy gave up: a question went out and no answer was found.
+  const gaveUp = open.map((t) => t.copy).filter((c) => c && /gave up/.test(c.stage || "")).sort((a, b) => (b.at || 0) - (a.at || 0))[0];
   const stored = rec.stored && rec.stored.at;
   const conv = rec.conv && rec.conv.at;
   if (paused) return { engine, status: "bad", line: REASON.paused };
   if (dead.length) return { engine, status: "bad", line: `${dead.length === 1 ? "An open tab is" : `${dead.length} open tabs are`} cut off from the extension (it was reloaded or turned off and on). Refresh ${dead.length === 1 ? "it" : "them"}.` };
   if (open.some((t) => t.alive && !t.marker)) return { engine, status: "bad", line: REASON["no-marker"] };
   if (lastDrop && (!stored || lastDrop.at > stored)) return { engine, status: "bad", line: `Last answer not saved: ${reasonText(lastDrop.reason)}` };
+  if (gaveUp && (!stored || gaveUp.at > stored)) return { engine, status: "bad", line: "A question was asked but its answer wasn't found, on the network or on the page. Copy the report and send it." };
   if (conv && (!stored || conv > stored + 60000)) return { engine, status: "warn", line: "A question went out but no answer has been saved since. If this stays, copy the report and send it." };
   const unknown = (rec.unknown || []).filter((u) => u.ev === "stream-unknown");
   if (!stored && unknown.length) return { engine, status: "warn", line: `Saw ${unknown.length} reply stream${unknown.length === 1 ? "" : "s"} it doesn't recognise, and no answer saved yet.` };
@@ -118,11 +125,14 @@ export function healthReport({ version, health, tabs = [], paused = false, count
     for (const tab of tabs.filter((x) => x.engine === e)) {
       lines.push(`tab ${tab.url || ""}: ${tab.alive ? "connected" : "NOT connected"}${tab.alive ? ` · marker ${tab.marker ? "ok" : "MISSING"} · requests seen ${tab.conv || 0} · handed over ${tab.forwarded || 0} · send failures ${tab.sendFailed || 0}${tab.mismatched ? ` · dropped for marker ${tab.mismatched}` : ""} · open ${Math.round((tab.ageMs || 0) / 60000)} min` : ""}`);
       if (tab.lastError) lines.push(`  last error: ${tab.lastError}`);
+      // 1.0.0: the engine's own send, and how far the page copy got, so a
+      // report says which step failed when a site changes its page.
+      if (tab.alive && (tab.sends || tab.copy)) lines.push(`  sends seen: ${tab.sends || 0}${tab.sendVia ? ` (${tab.sendVia})` : ""}${tab.copy ? ` · page copy: ${tab.copy.asked || 0} asked${tab.copy.via ? ` (${tab.copy.via})` : ""}, last step "${tab.copy.stage}" at ${t(tab.copy.at)} · on the page: ${tab.copy.users ?? "?"} questions, ${tab.copy.answers ?? "?"} answers, stop button ${tab.copy.stop ? "showing" : "not showing"}${tab.copy.dom ? ` · page: ${tab.copy.dom}` : ""}${tab.copy.conv ? ` · ${tab.copy.conv}` : ""}` : ""}`);
     }
     lines.push(`last conversation request: ${h.conv ? `${h.conv.method} ${h.conv.path} (${h.conv.status || "?"}) at ${t(h.conv.at)}` : "none"}`);
     lines.push(`last answer saved: ${h.stored ? t(h.stored.at) : "none"}`);
     for (const d of h.drops || []) lines.push(`dropped: ${d.reason}${d.path ? ` ${d.path}` : ""} at ${t(d.at)}`);
-    for (const u of h.unknown || []) lines.push(`${u.ev === "stream-taken" ? "stream taken (unfamiliar address)" : u.ev === "socket" ? "live socket not read" : "stream not recognised"}: ${u.method} ${u.path}${u.ctype ? ` [${u.ctype}]` : ""} at ${t(u.at)}`);
+    for (const u of h.unknown || []) lines.push(`${u.ev === "fetch-taken" ? "another extension holds this page's network calls, so answers are read from the conversation instead" : u.ev === "stream-taken" ? "stream taken (unfamiliar address)" : u.ev === "socket" ? "live socket not read" : "stream not recognised"}: ${u.method} ${u.path}${u.ctype ? ` [${u.ctype}]` : ""} at ${t(u.at)}`);
   }
   return lines.join("\n");
 }

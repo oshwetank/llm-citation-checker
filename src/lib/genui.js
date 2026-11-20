@@ -154,12 +154,12 @@ function formMarkdown(f) {
 
 function readCard(row, n, cites) {
   const items = [];
-  let last = 0, image = false;
+  let last = 0, image = false, imageQuery = "";
   const free = (s) => s.split("\n").forEach((l) => { if (l.trim()) items.push({ kind: "line", raw: l.trim() }); });
   for (const m of row.matchAll(ROW_ITEM_RE)) {
     free(row.slice(last, m.index));
     last = m.index + m[0].length;
-    if (m[0].startsWith("<AsyncImage")) image = true;
+    if (m[0].startsWith("<AsyncImage")) { image = true; if (!imageQuery) imageQuery = attr(m[0], "query") || ""; }
     else if (m[2] !== undefined) items.push({ kind: "badge", raw: m[2], tone: attr(m[1], "color") });
     else if (m[4] !== undefined) items.push({ kind: "title", raw: m[4], size: attr(m[3], "size") || "md" });
     else if (m[6] !== undefined) items.push({ kind: "text", raw: m[6], size: attr(m[5], "size"), tone: attr(m[5], "color") || attr(m[5], "tone") });
@@ -173,6 +173,13 @@ function readCard(row, n, cites) {
     const e = /<Entity\b([^>]*)\/>/.exec(items[nameAt].raw);
     name = attr(e[1], "value") || plain(items[nameAt].raw);
     ref = refsOf(attr(e[1], "ref") || "")[0] || null;
+    // No name came through (its binding wasn't sent): what is left is only a
+    // number and asterisks. The card's own image caption names the product
+    // ("boAt Nirvana 751 ANC headphones"), a better name than "2.".
+    if (!/[\p{L}\p{N}]{2,}/u.test(String(name).replace(/^[\s*\d.)-]+/, ""))) {
+      const cap = String(imageQuery || "").replace(/\b(?:wireless |bluetooth )?(?:headphones?|earbuds?|earphones?|photo|image|product)\b\s*$/i, "").trim();
+      if (cap) name = cap; else return null;
+    }
   } else {
     // A title that is only a price is the price, not the name (0.69.0: a
     // saree answer put "1. Pure Katan Silk…" in the medium title and
@@ -253,7 +260,17 @@ export function readGenUi(code, { bindings = {} } = {}) {
   // Values the layout binds by name ("{turn1product0.displayed_price}",
   // also "{turn1product0?.merchant}"), filled in from the turn's bindings;
   // one with no value is dropped rather than shown as code.
-  let text = String(code || "").replace(/\r\n/g, "\n").replace(/\{\s*([A-Za-z_]\w*)\??\.([A-Za-z_]\w*)\s*\}/g, (whole, id, field) => {
+  // An attribute bound to a value ("value={turn1product13.title}") is written
+  // back as a quoted attribute (1.0.0). Left as bare text, "Boat Nirvana 751"
+  // broke the tag's own reading and a card's name came out empty: the owner's
+  // headphones answer had headings "### **2. **", "### **3. **", "### **4. **"
+  // and the products stored under those names.
+  const boundAttr = (whole, name, id, field) => {
+    if (!/^turn\w*\d/.test(id)) return whole;
+    const v = bindings[id] && bindings[id][field];
+    return `${name}="${typeof v === "string" || typeof v === "number" ? String(v).replace(/"/g, "'") : ""}"`;
+  };
+  let text = String(code || "").replace(/\r\n/g, "\n").replace(/\b([A-Za-z]\w*)=\{\s*([A-Za-z_]\w*)\??\.([A-Za-z_]\w*)\s*\}/g, boundAttr).replace(/\{\s*([A-Za-z_]\w*)\??\.([A-Za-z_]\w*)\s*\}/g, (whole, id, field) => {
     if (!/^turn\w*\d/.test(id)) return whole;
     const v = bindings[id] && bindings[id][field];
     return typeof v === "string" || typeof v === "number" ? String(v) : "";

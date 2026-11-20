@@ -38,7 +38,7 @@
 
   // The capture check (0.73.1): this page's own record of what it saw, for
   // the worker to ask about (cs-ping) and for reasons a capture went nowhere.
-  const pageHealth = { loadedAt: Date.now(), conv: 0, lastConv: null, unknown: [], forwarded: 0, sendFailed: 0, mismatched: 0, lastError: "" };
+  const pageHealth = { loadedAt: Date.now(), conv: 0, lastConv: null, unknown: [], forwarded: 0, sendFailed: 0, mismatched: 0, lastError: "", sends: 0, sendVia: "", copy: null };
   // Whether the worker stored an answer from this engine since `since`
   // (0.84.0). The page copies below go by this, not by pageHealth's
   // lastForwardAt: after an engine changes its format its traffic is still
@@ -206,9 +206,16 @@
     if (data.type === "engine-submit") {
       engineSubmit.at = Date.now();
       engineSubmit.via = String(data.via || "").slice(0, 10);
+      // For the capture report (1.0.0): the engine's own send was seen.
+      pageHealth.sends++;
+      pageHealth.sendVia = engineSubmit.via;
       // Straight away, not on the next tick: if the engine redirects right
       // after its send, the run must already know not to hand the turn on.
       if (pageFacts.turnToken) reportSent(pageFacts.turnToken);
+      // The page copy also starts here (1.0.0): ChatGPT's own send request,
+      // not the key or button we guessed at, so a renamed Send button
+      // doesn't leave the answer uncaptured.
+      if (typeof pageFacts.onEngineSubmit === "function") pageFacts.onEngineSubmit();
       return;
     }
 
@@ -231,6 +238,11 @@
     if (data.type !== "raw-conversation") return;
 
     pageHealth.forwarded++;
+    // The question as the page shows it (1.0.0), for an engine whose request
+    // doesn't carry it readably: the owner's Gemini capture of 15 Nov 2026 had
+    // the question field of its upload empty. The background uses it only
+    // when the network copy has no question.
+    const pagePrompt = pagePromptNow();
     pageHealth.lastForwardAt = Date.now();
     tellWorker({
       type: "raw-conversation",
@@ -244,9 +256,23 @@
         end: typeof data.end === "string" ? data.end : null,
         capturedAt: data.capturedAt || Date.now(),
         pageUrl: location.href,
+        ...(pagePrompt ? { pagePrompt } : {}),
       },
     });
   });
+
+  // The last question on the page, Gemini only (its own markup, as its page
+  // copy below reads it). Other engines' requests carry the question.
+  function pagePromptNow() {
+    try {
+      if (!/(?:^|\.)gemini\.google\.com$/.test(location.hostname)) return null;
+      const all = document.querySelectorAll('user-query, .user-query-container, [data-test-id="user-query"]');
+      const u = all.length ? all[all.length - 1] : null;
+      if (!u) return null;
+      const t = String((u.querySelector(".query-text, .query-content, p") || u).innerText || "").replace(/^You said\s*/i, "").trim();
+      return t ? t.slice(0, 4000) : null;
+    } catch (_) { return null; }
+  }
 
   // The worker asks each engine tab how capture stands here (0.73.1). A tab
   // that doesn't answer has a script cut off from the extension.
@@ -275,11 +301,13 @@
       // and go between poll ticks, so "is the prompt now in the conversation"
       // is the more durable signal. Several selectors because this markup
       // changes; querySelectorAll on an unsupported one just yields nothing.
-      userTurn: '[data-message-author-role="user"], [data-testid^="conversation-turn"] [data-message-author-role="user"]',
+      // [data-turn-key]: ChatGPT's virtualized turns (Nov 2026), which carry no
+      // author-role wrapper in some modes.
+      userTurn: '[data-message-author-role="user"], [data-testid^="conversation-turn"] [data-message-author-role="user"], [data-turn-key]',
       // Conversation content, EXCLUDED when scanning the page for upstream
       // limit notices — see limitHit(). Any node carrying an author role is
       // prompt or answer text; a cap notice never has one.
-      turns: "[data-message-author-role]",
+      turns: "[data-message-author-role], [data-turn-key]",
     },
     gemini: {
       composer: ['rich-textarea div[contenteditable="true"]', "rich-textarea", 'div[contenteditable="true"]', "textarea"],
@@ -1136,7 +1164,8 @@
           // an engine that didn't reply (0.79.0).
           let answerChars = 0;
           try {
-            const msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
+            let msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
+            if (!msgs.length) msgs = [...document.querySelectorAll("[data-turn-key]")].filter((t) => { const h = t.querySelector("[data-conversation-role]"); return h && h.getAttribute("data-conversation-role") === "assistant"; });
             const last = msgs.length ? msgs[msgs.length - 1] : null;
             answerChars = last ? (last.innerText || last.textContent || "").trim().length : 0;
           } catch (_) {}
@@ -1210,6 +1239,13 @@
         if (citeUrl) { out += `[[cite:${citeUrl}]]`; continue; }
         if (tag === "strong" || tag === "b") {
           const t = inline(c, d + 1).trim();
+          // ChatGPT's cards (16 Nov 2026) bold the number and the name apart:
+          // "<strong>1.</strong><strong>Titan Eye+</strong>" came out as
+          // "**1.****Titan Eye+**", which no brand rule could read. A bold
+          // list number is written as a list number, and two bold runs that
+          // touch are kept apart.
+          if (/^\d{1,2}[.)]$/.test(t)) { out += `${t} `; continue; }
+          if (t && /\*\*$/.test(out)) out += " ";
           out += t ? `**${t}**` : "";
         } else if (tag === "em" || tag === "i") {
           const t = inline(c, d + 1).trim();
@@ -1257,7 +1293,11 @@
         if (c.nodeType !== 1) continue;
         const tag = (c.tagName || "").toLowerCase();
         if (/^h[1-6]$/.test(tag)) {
-          out += `\n${"#".repeat(Number(tag[1]))} ${inline(c).trim()}\n\n`;
+          const ht = inline(c).trim();
+          // A "heading" with no words in it is a card's price ("₹1,85,900"),
+          // not a section: a plain line.
+          if (!/\p{L}/u.test(ht.replace(/\*/g, "").replace(/\b(?:Rs|INR|USD|EUR|GBP)\b/gi, ""))) { if (ht) out += ht.replace(/\*\*/g, "") + "\n\n"; }
+          else out += `\n${"#".repeat(Number(tag[1]))} ${ht}\n\n`;
         } else if (tag === "p") {
           const t = inline(c).trim();
           if (t) out += t + "\n\n";
@@ -2044,8 +2084,6 @@
    */
   (function chatgptPageCopy() {
     if (!/(?:^|\.)(?:chatgpt\.com|chat\.openai\.com)$/.test(location.hostname)) return;
-    const USER = '[data-message-author-role="user"]';
-    const BOT = '[data-message-author-role="assistant"]';
     const STOP = '[data-testid="stop-button"], button[aria-label*="Stop" i]';
     const SETTLE_MS = 3000;          // answer text unchanged this long = finished
     const NETWORK_GRACE_MS = 2500;   // then this long for the stream's own copy
@@ -2053,55 +2091,246 @@
     let watch = null;
     let lastSig = "";
 
-    const lastOf = (sel) => { const all = document.querySelectorAll(sel); return all.length ? all[all.length - 1] : null; };
+    /*
+     * The thread, in both of ChatGPT's layouts (1.0.0). Until Nov 2026 every
+     * message sat in a div[data-message-author-role]. The owner's capture
+     * report of 13 Nov (page copy: "0 questions, 0 answers") and ChatGPT's own
+     * page code show why that stopped matching: the thread is now virtualized
+     * into div[data-turn-key] turns, each with a screen-reader heading marked
+     * data-conversation-role ("You said:" / "ChatGPT said:"), and the old
+     * wrapper is added only in some modes. Each role is read from the old
+     * wrapper where it exists, else from the turns.
+     */
+    /*
+     * Since 16 Nov 2026 a turn can hold the question AND the answer: the
+     * owner's report read "turns 1 · role headings 2", and the page copy,
+     * which took one heading per turn, never saw the answer and gave up
+     * after 6 minutes. So each message is found from its own heading: the
+     * widest box around the heading that holds no other heading, kept inside
+     * its turn and never reaching the composer.
+     */
+    const HEAD = "[data-conversation-role]";
+    const COMPOSER = "[data-composer-body], #prompt-textarea, form, textarea";
+    const messageOf = (h) => {
+      const turn = h.closest("[data-turn-key]");
+      if (turn && turn.querySelectorAll(HEAD).length === 1) return turn;
+      let el = h;
+      while (el.parentElement && el !== turn) {
+        const up = el.parentElement;
+        if (up === document.body || up.tagName === "MAIN" || up.querySelectorAll(HEAD).length > 1 || up.querySelector(COMPOSER)) break;
+        el = up;
+        if (el === turn) break;
+      }
+      return el;
+    };
+    const roleEls = (role) => {
+      const old = [...document.querySelectorAll(`[data-message-author-role="${role}"]`)];
+      if (old.length) return old;
+      const heads = [...document.querySelectorAll(HEAD)];
+      if (heads.length) return heads.filter((h) => h.getAttribute("data-conversation-role") === role).map(messageOf).filter((el, i, all) => all.indexOf(el) === i);
+      const out = [];
+      for (const t of document.querySelectorAll("[data-turn-key]")) {
+        const h = t.querySelector("[data-conversation-role]");
+        const inner = t.querySelector("[data-turn]");
+        const r = (h && h.getAttribute("data-conversation-role")) || t.getAttribute("data-turn") || (inner && inner.getAttribute("data-turn")) || "";
+        if (r === role) out.push(t);
+      }
+      return out;
+    };
+    const lastOfRole = (role) => { const all = roleEls(role); return all.length ? all[all.length - 1] : null; };
+    // A turn without its chrome: the hidden "You said:" heading, buttons,
+    // icons and the sent-time, which are not part of what was said.
+    const clean = (el) => {
+      if (!el || el.hasAttribute("data-message-author-role")) return el;
+      const c = el.cloneNode(true);
+      c.querySelectorAll('[data-conversation-role], [data-markdown-copy="exclude"], [data-user-message-sent-time], button, svg, style, script, textarea').forEach((n) => n.remove());
+      return c;
+    };
+    const textOf = (el) => {
+      if (!el) return "";
+      const c = clean(el);
+      return ((c === el ? el.innerText : c.textContent) || "").replace(/\u00a0/g, " ").trim();
+    };
+    // What the page looks like, for the capture report: attribute names and
+    // counts only, never text.
+    const domShape = () => `old wrapper ${document.querySelectorAll("[data-message-author-role]").length} · turns ${document.querySelectorAll("[data-turn-key]").length} · role headings ${document.querySelectorAll("[data-conversation-role]").length} · composer ${document.querySelector("[data-composer-body]") ? "yes" : "no"}`;
     // `before`: the questions on the page before this one. A key press or
     // click comes before the page adds the question, so it reads them then;
     // a campaign send is reported once the question is already on the page,
     // and its page was opened for that one question.
-    const asked = (before) => {
+    // Where the page copy got to, for the capture report (1.0.0): when it
+    // fails on the real site, the report says which step, so a renamed
+    // label on ChatGPT's page is found from one report, not guessed at.
+    const note = (stage, extra) => {
+      const c = pageHealth.copy || (pageHealth.copy = { asked: 0, via: "", stage: "", at: 0 });
+      Object.assign(c, { stage, at: Date.now(), users: roleEls("user").length, answers: roleEls("assistant").length, stop: !!document.querySelector(STOP), dom: domShape() }, extra || {});
+    };
+    const asked = (before, via) => {
       const at = Date.now();
       if (watch && at - watch.askedAt < 1500) return;
-      const u = lastOf(USER);
+      note("question sent; waiting for it on the page", { asked: ((pageHealth.copy && pageHealth.copy.asked) || 0) + 1, via: via || "" });
+      const u = lastOfRole("user");
       if (watch && watch.stop) watch.stop();
-      watch = before ? { ...before } : { userCount: document.querySelectorAll(USER).length, userText: u ? (u.innerText || "").trim() : "" };
+      watch = before ? { ...before } : { userCount: roleEls("user").length, userText: u ? textOf(u) : "" };
       Object.assign(watch, { askedAt: at, text: "", changedAt: 0, doneAt: 0, stop: null });
       const w = watch;
       w.stop = startClock(1000);
       const off = onClockTick(() => check(w));
+      const offConv = onClockTick(() => convTick(w));
       const prevStop = w.stop;
-      w.stop = () => { off(); prevStop(); };
+      w.stop = () => { off(); offConv(); prevStop(); };
     };
     const finish = (w) => { if (w.stop) { w.stop(); w.stop = null; } if (watch === w) watch = null; };
 
+    /*
+     * The finished turn, read from the conversation itself (1.0.0; the why
+     * is in src/lib/chatgptConversation.js). The owner's recording of 13 Nov
+     * 2026: another extension's inject.js ("patchedFetch") takes over the
+     * page's fetch, so CitoSkeleton's network hook never sees ChatGPT's
+     * requests, and the thread's markup keeps changing. This asks for the
+     * conversation the way ChatGPT's page does to draw it, from this script,
+     * which another extension's hook on the page can't reach. Only for a
+     * question asked in this tab, only that one conversation, and only until
+     * its answer is read.
+     */
+    const CONV_FIRST_MS = 5000, CONV_EVERY_MS = 4000;
+    const convId = () => (location.pathname.match(/\/c\/([0-9a-f][0-9a-f-]{15,})/i) || [])[1] || null;
+    const convNote = (status) => { const c = pageHealth.copy || (pageHealth.copy = { asked: 0, via: "", stage: "", at: 0 }); c.conv = status; };
+    /*
+     * Asked the way ChatGPT's own page asks (checked against the owner's
+     * recording of 13 Nov 2026: all 38 of the page's requests to
+     * /backend-api carry cookies plus a device and an account identifier, and
+     * not one carries an Authorization header). So: the page's own cookies,
+     * and the two identifiers the page sends, which the page keeps in cookies
+     * (oai-did, _account). No sign-in token is asked for, read or sent, and
+     * the identifiers are used only in this request to chatgpt.com. When
+     * they aren't accepted the request is made again with cookies alone.
+     */
+    const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const cookie = (name) => { try { const m = document.cookie.match(new RegExp("(?:^|; )" + name + "=([^;]*)")); return m ? decodeURIComponent(m[1]) : ""; } catch (_) { return ""; } };
+    /*
+     * Where the cookies aren't set (the owner's browser of 16 Nov 2026, whose
+     * reads were all 404 while the page's own read of the same address was
+     * 200 with both identifiers), the page states them itself: the account on
+     * <html data-theme-account-id>, the device in the page's start-up data.
+     */
+    const pageIds = { did: "", acct: "", from: "" };
+    const idsFromPage = () => {
+      if (pageIds.from) return pageIds;
+      pageIds.acct = document.documentElement.getAttribute("data-theme-account-id") || "";
+      for (const sc of document.scripts) {
+        const t = sc.textContent || "";
+        if (!pageIds.did) { const m = t.match(/\\?"DeviceId\\?"\s*:\s*\\?"([0-9a-f-]{36})/i); if (m) pageIds.did = m[1]; }
+        if (!pageIds.acct) { const m = t.match(/\\?"account_id\\?"\s*:\s*\\?"([0-9a-f-]{36})/i); if (m) pageIds.acct = m[1]; }
+        if (pageIds.did && pageIds.acct) break;
+      }
+      pageIds.from = "page";
+      return pageIds;
+    };
+    let idsSeen = "";
+    const headerSets = () => {
+      const plain = { accept: "application/json" };
+      const full = { ...plain };
+      let did = cookie("oai-did"), acct = cookie("_account");
+      if (!UUID.test(did) || !UUID.test(acct)) { const p = idsFromPage(); if (!UUID.test(did)) did = p.did; if (!UUID.test(acct)) acct = p.acct; }
+      idsSeen = `device id ${UUID.test(did) ? "yes" : "no"}, account id ${UUID.test(acct) ? "yes" : "no"}`;
+      const lang = document.documentElement.lang;
+      if (lang && /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(lang)) full["oai-language"] = lang;
+      if (UUID.test(did)) full["oai-device-id"] = did;
+      if (UUID.test(acct)) full["chatgpt-account-id"] = acct;
+      return Object.keys(full).length > 1 ? [full, plain] : [plain];
+    };
+    const getConv = async (id) => {
+      const addrs = [`/backend-api/conversations/${id}?num_turns=2&include_has_versions=true`, `/backend-api/conversation/${id}`];
+      let last = 0;
+      for (const addr of addrs) {
+        for (const headers of headerSets()) {
+          let r;
+          try { r = await fetch(addr, { credentials: "include", headers, cache: "no-store" }); } catch (_) { return { status: "network error" }; }
+          last = r.status;
+          if (r.status === 404) break;                                  // the other address
+          if (r.status === 401 || r.status === 403 || r.status === 400) continue; // the other header set
+          if (!r.ok) return { status: r.status };
+          return { status: r.status, addr, text: await r.text() };
+        }
+      }
+      return { status: last || 404 };
+    };
+    // The same test as latestTurn() in lib/chatgptConversation.js, which the
+    // adapter runs on what is sent: a question asked since `since`, with a
+    // finished answer after it. (A content script can't import that module.)
+    const turnDone = (conv, since) => {
+      let msgs = Array.isArray(conv && conv.messages) ? conv.messages : [];
+      if (!msgs.length && conv && conv.mapping) {
+        const seen = new Set(); let id = conv.current_node;
+        while (id && conv.mapping[id] && !seen.has(id)) { seen.add(id); if (conv.mapping[id].message) msgs.push(conv.mapping[id].message); id = conv.mapping[id].parent; }
+        msgs = msgs.reverse();
+      }
+      const role = (m) => m && m.author && m.author.role;
+      const text = (m) => (m && m.content && Array.isArray(m.content.parts) ? m.content.parts.filter((p) => typeof p === "string").join("").trim() : "");
+      let u = -1;
+      for (let i = msgs.length - 1; i >= 0; i--) if (role(msgs[i]) === "user" && text(msgs[i])) { u = i; break; }
+      if (u < 0) return false;
+      const asked = Number(msgs[u].create_time) * 1000;
+      if (asked && asked < since - 120000) return false; // an older question: not this one yet
+      const finals = msgs.slice(u + 1).filter((m) => role(m) === "assistant" && (m.content || {}).content_type === "text" && text(m) && (!m.recipient || m.recipient === "all"));
+      const last = finals[finals.length - 1];
+      return !!last && (!last.status || last.status === "finished_successfully");
+    };
+    const convTick = (w) => {
+      const now = Date.now();
+      if (w.convBusy || now - w.askedAt < CONV_FIRST_MS || now - (w.convAt || 0) < CONV_EVERY_MS) return;
+      w.convAt = now;
+      w.convBusy = true;
+      (async () => {
+        // The stream's own copy, when the network hook did see it, is as good.
+        if ((pageHealth.lastForwardAt || 0) > w.askedAt && await storedSince(w.askedAt)) { note("the stream's own copy was stored"); finish(w); return; }
+        const id = convId();
+        if (!id) { convNote("waiting for the conversation's address"); return; }
+        const res = await getConv(id);
+        if (!res.text) { convNote(`conversation read: ${res.status} (${idsSeen})`); return; }
+        let conv = null;
+        try { conv = JSON.parse(res.text); } catch (_) { convNote("conversation read: not JSON"); return; }
+        if (!turnDone(conv, w.askedAt)) { convNote("conversation read: answer not finished yet"); return; }
+        if (watch !== w) return;
+        tellWorker({ type: "raw-conversation", payload: { url: location.origin + res.addr.split("?")[0], reqBody: null, transport: "conversation-read", raw: res.text, end: "conversation", capturedAt: Date.now(), pageUrl: location.href } });
+        convNote("conversation read: ok");
+        note("read from the conversation");
+        finish(w);
+      })().catch(() => {}).finally(() => { w.convBusy = false; });
+    };
+
     const check = (w) => {
       const now = Date.now();
-      if (now - w.askedAt > GIVE_UP_MS) return finish(w);
-      const users = document.querySelectorAll(USER);
+      if (now - w.askedAt > GIVE_UP_MS) { note("gave up after 6 minutes"); return finish(w); }
+      const users = roleEls("user");
       const u = users.length ? users[users.length - 1] : null;
-      const prompt = u ? (u.innerText || "").trim() : "";
+      const prompt = u ? textOf(u) : "";
       // A new question must be on the page first.
-      if (!u || (users.length <= w.userCount && prompt === w.userText)) return;
-      const bot = lastOf(BOT);
-      if (!bot || (u.compareDocumentPosition(bot) & Node.DOCUMENT_POSITION_FOLLOWING) === 0) return;
-      const text = (bot.innerText || "").trim();
-      if (text !== w.text) { w.text = text; w.changedAt = now; w.doneAt = 0; return; }
-      if (text.length < 50 || document.querySelector(STOP) || now - w.changedAt < SETTLE_MS) return;
+      if (!u || (users.length <= w.userCount && prompt === w.userText)) { note(u ? "no new question on the page" : "no question found on the page"); return; }
+      const bot = lastOfRole("assistant");
+      if (!bot || (u.compareDocumentPosition(bot) & Node.DOCUMENT_POSITION_FOLLOWING) === 0) { note("no answer found under the question"); return; }
+      const text = textOf(bot);
+      if (text !== w.text) { w.text = text; w.changedAt = now; w.doneAt = 0; note("answer still being written"); return; }
+      if (text.length < 50) { note("answer too short to keep"); return; }
+      if (document.querySelector(STOP)) { note("stop button still showing"); return; }
+      if (now - w.changedAt < SETTLE_MS) return;
       if (!w.doneAt) { w.doneAt = now; return; }
       if (now - w.doneAt < NETWORK_GRACE_MS) return;
       // The stream's own copy was stored after the question: nothing to add.
       if (w.asking) return;
       if ((pageHealth.lastForwardAt || 0) > w.askedAt && w.storedChecked !== w.doneAt) {
         w.asking = true;
-        storedSince(w.askedAt).then((stored) => { w.asking = false; if (stored) finish(w); else w.storedChecked = w.doneAt; });
+        storedSince(w.askedAt).then((stored) => { w.asking = false; if (stored) { note("the stream's own copy was stored"); finish(w); } else w.storedChecked = w.doneAt; });
         return;
       }
-      const answer = domToMarkdown(bot).trim() || text;
+      const answer = domToMarkdown(clean(bot)).trim() || text;
       const sig = `${prompt}::${answer.length}::${answer.slice(-120)}`;
-      if (sig === lastSig) return finish(w);
+      if (sig === lastSig) { note("same answer as before, not copied again"); return finish(w); }
       lastSig = sig;
       const refs = [];
       const seen = new Set();
-      for (const a of bot.querySelectorAll("a[href]")) {
+      for (const a of clean(bot).querySelectorAll("a[href]")) {
         const href = a.href || "";
         if (!/^https?:/i.test(href) || /(?:^|\.)(?:chatgpt\.com|openai\.com)\//i.test(href.replace(/^https?:\/\//, "")) || seen.has(href)) continue;
         seen.add(href);
@@ -2110,7 +2339,7 @@
       }
       // Its pictures, as the stream's own image component (0.80.0).
       const pics = [];
-      for (const im of bot.querySelectorAll("img[src]")) {
+      for (const im of clean(bot).querySelectorAll("img[src]")) {
         const src = im.currentSrc || im.src || "";
         if (!/^https?:/i.test(src) || (im.naturalWidth && im.naturalWidth < 48) || pics.some((p) => p.thumbnail_url === src)) continue;
         const a = im.closest("a[href]");
@@ -2128,19 +2357,32 @@
         type: "raw-conversation",
         payload: { url: location.href, reqBody: null, transport: "page-copy", raw, end: "page", capturedAt: now, pageUrl: location.href },
       });
+      note("copied off the page");
       finish(w);
     };
 
     // The question going out: a campaign send (pageFacts.onAsked) or the
     // user's own Enter or send click in the composer.
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.target && e.target.closest && e.target.closest('#prompt-textarea, form, [contenteditable="true"]')) asked();
+      // ChatGPT's composer in Nov 2026 is a textarea inside [data-composer-body]
+      // with no <form> around it (the owner's recording), hence the wider match.
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.target && e.target.closest && e.target.closest('#prompt-textarea, form, [contenteditable="true"], [data-composer-body], textarea')) asked(undefined, "enter");
     }, true);
     document.addEventListener("click", (e) => {
       const b = e.target && e.target.closest && e.target.closest('#composer-submit-button, [data-testid="send-button"], button[aria-label*="Send" i]');
-      if (b) asked();
+      if (b) asked(undefined, "click");
     }, true);
-    pageFacts.onAsked = () => asked({ userCount: 0, userText: "" });
+    pageFacts.onAsked = () => asked({ userCount: 0, userText: "" }, "run");
+    // The page as it was while the question was being typed: a send seen
+    // on the network arrives after the page may already show the question,
+    // so the count from before it is the one to compare with.
+    let typing = null;
+    document.addEventListener("input", (e) => {
+      if (!e.target || !e.target.closest || !e.target.closest('#prompt-textarea, form, [contenteditable="true"], [data-composer-body], textarea')) return;
+      const u = lastOfRole("user");
+      typing = { userCount: roleEls("user").length, userText: u ? textOf(u) : "" };
+    }, true);
+    pageFacts.onEngineSubmit = () => { if (!watch || Date.now() - watch.askedAt > 1500) asked(typing || undefined, "network"); typing = null; };
   })();
 
   /* ---------- Gemini page copy (0.84.0) ----------

@@ -84,6 +84,25 @@ export function promptOfSourceRequest(reqBody) {
 }
 
 /**
+ * ChatGPT's fallback markdown as plain markdown: its escapes ("1\\.", "audio\\,")
+ * undone, and a price's doubled currency sign ("₹₹3,999": the layout writes
+ * the sign and the bound price carries it too) made single.
+ */
+export function fallbackToMarkdown(text) {
+  return String(text || "")
+    // Layout directives and button text the fallback spells out as words:
+    // "image_group{…}" and "urlCheck pricehttps://chatgpt.com/?hints=…".
+    .replace(/^\s*image_group\{[^\n]*\}\s*$/gm, "")
+    .replace(/\burl[^\n]*?https?:\/\/chatgpt\.com\/\?hints=[^\s)\]]+/g, "")
+    .replace(/\[([^\]]+)\]\(https?:\/\/chatgpt\.com\/\?hints=[^)]*\)/g, "$1")
+    .replace(/\\([.,!:;()'"=?&@%/-])/g, "$1")
+    .replace(/([₹$€£¥])\1+/g, "$1")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/**
  * The answer in a conversation-source stream: { answer, sources, queries,
  * conversationId, messageId, prompt, status } or null when it holds no text.
  */
@@ -97,6 +116,11 @@ export function readConversationSource(raw) {
   // from its generative-UI components. Signed out, these were all dropped,
   // so a campaign's answers showed no products, places or images.
   const products = new Map(), places = new Map(), images = new Map();
+  // ChatGPT's own plain-markdown version of a generated-UI answer (1.0.0), per
+  // message: { revision, text, order }. The owner's signed-out answer of 15 Nov
+  // 2026 had `markdown: ""` in all 26 of its content events, the whole answer
+  // being in `dil` (layout code), and no answer was read from 2.3 MB of data.
+  const fallbacks = [];
   let conversationId = null, prompt = null, status = null, order = 0;
   const addRef = (url, title, snippet, cited) => {
     if (!isUrl(url)) return;
@@ -108,7 +132,23 @@ export function readConversationSource(raw) {
     refs.set(u, cur);
   };
   for (const ev of events) {
+    // ChatGPT's own markdown for a generated-UI answer. Each event carries it
+    // twice: `dil` (clean) and inside `references[].modelDilV2` (the same with
+    // image-group directives and chatgpt.com link text left in). The clean one
+    // is used; the other only when there is no clean one.
+    const addFallback = (text, primary) => { if (typeof text === "string" && text.trim()) fallbacks.push({ messageId: ev.messageId || null, revision: typeof ev.revision === "number" ? ev.revision : -1, text, primary, order: order++ }); };
+    if (isObj(ev.dil)) addFallback(ev.dil.fallbackMarkdown, true);
+    if (Array.isArray(ev.references)) ev.references.forEach((r) => { if (isObj(r) && isObj(r.modelDilV2)) addFallback(r.modelDilV2.fallbackMarkdown, false); });
     walk(ev, (o) => {
+      // Products named by the answer's data bindings ({id: {title, displayed_price,
+      // merchant}}): the names a card's layout refers to.
+      if (isObj(o.modelDataBindings)) {
+        for (const v of Object.values(o.modelDataBindings)) {
+          if (!isObj(v) || typeof v.title !== "string") continue;
+          const name = v.title.trim();
+          if (name && name.length < 200 && !products.has(name)) products.set(name, { id: name, name, price: typeof v.displayed_price === "string" ? v.displayed_price : null, merchant: typeof v.merchant === "string" ? v.merchant : null, image: null, note: null, renderAs: "card" });
+        }
+      }
       if (o.componentName === "Entity" && isObj(o.state) && typeof o.state.value === "string") {
         const st = o.state, pay = isObj(st.action_payload) ? st.action_payload : {};
         const extra = isObj(pay.extraParams) ? pay.extraParams : {};
@@ -138,7 +178,13 @@ export function readConversationSource(raw) {
         else if (isObj(r)) addRef(r.url || r.href || r.link, r.title || r.name || r.attribution, r.snippet || r.description || r.text, true);
       });
       for (const k of ["approvedUrls", "canonicalApprovedUrls"]) if (Array.isArray(o[k])) o[k].forEach((u) => addRef(typeof u === "string" ? u : u && u.url, null, null, true));
-      for (const k of ["query", "queries", "search_query", "searchQuery"]) {
+      // Not a product card's click payload ({category, event_name, extraParams,
+      // query: "OPPO Find X9 Ultra"}): that is what clicking the card looks
+      // up, not a search the engine ran (1.0.0: the owner's signed-out answer
+      // listed ten phone names as its searches).
+      // Nor a product's own data ({offers, merchants, query: "deprecated"}).
+      const clickPayload = "event_name" in o || "extraParams" in o || "offers" in o || "merchants" in o || ("category" in o && "query" in o && !("queries" in o));
+      if (!clickPayload) for (const k of ["query", "queries", "search_query", "searchQuery"]) {
         const v = o[k];
         (Array.isArray(v) ? v : [v]).forEach((q) => { const t = typeof q === "string" ? q : q && q.q; if (t && t.trim() && t.length < 300 && !queries.includes(t.trim())) queries.push(t.trim()); });
       }
@@ -163,6 +209,18 @@ export function readConversationSource(raw) {
     }
   }
   answer = answer.trim();
+  if (!answer && fallbacks.length) {
+    // The newest, fullest of ChatGPT's own markdown for the message.
+    const sameMsg = fallbacks.filter((f) => !lastId || !f.messageId || f.messageId === lastId);
+    let pool = sameMsg.length ? sameMsg : fallbacks;
+    if (pool.some((f) => f.primary)) pool = pool.filter((f) => f.primary);
+    // The final revision (a stream sends snapshots, each newer one whole).
+    const best = pool.reduce((a, f) => (f.revision > a.revision || (f.revision === a.revision && f.order > a.order) ? f : a), pool[0]);
+    answer = fallbackToMarkdown(best.text);
+  }
   if (!answer) return null;
-  return { answer, sources: [...refs.values()], queries, conversationId, messageId: lastId, prompt, status, products: [...products.values()], places: [...places.values()], images: [...images.values()].slice(0, 60) };
+  // A name cut short with "…" next to the full one is the same product.
+  const productList = [...products.values()];
+  const whole = productList.filter((p) => !(/…$/.test(p.name) && productList.some((q) => q !== p && !/…$/.test(q.name) && q.name.startsWith(p.name.slice(0, -1)))));
+  return { answer, sources: [...refs.values()], queries, conversationId, messageId: lastId, prompt, status, products: whole, places: [...places.values()], images: [...images.values()].slice(0, 60) };
 }

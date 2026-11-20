@@ -159,7 +159,18 @@ try {
       btn: !!document.getElementById("dbFiltersBtn"),
       recentShown: [...document.querySelectorAll("#dashboard .db-recent")].some((x) => x.offsetParent !== null),
     }));
-    check("the history starts near the top: under 320px down", lay.list < 320, String(lay.list));
+    // 1.0.0: a new user also sees the Get started card above it, kept to one
+    // step so the first rows of history are still on a 900px laptop screen.
+    const shown = await page.evaluate(() => !!document.querySelector("#dashboard .gs"));
+    check("with the Get started card shown, still under 560px down", !shown || lay.list < 560, `${shown} ${lay.list}`);
+    // Hidden, as for anyone who has dismissed it: the 0.78.0 bound holds.
+    await page.evaluate(() => { localStorage.setItem("cito-gs-hidden", "1"); });
+    await page.reload();
+    await page.waitForTimeout(1500);
+    await page.evaluate(() => document.querySelector('[data-tab="dashboard"]').click());
+    await page.waitForSelector("#dashboard .db-list", { timeout: 15000 });
+    const top = await page.evaluate(() => Math.round(document.querySelector("#dashboard .db-list")?.getBoundingClientRect().top || 9999));
+    check("the history starts near the top: under 320px down", top < 320, String(top));
     check("the filters sit behind a Filters button, closed", lay.btn && !lay.open, JSON.stringify(lay));
     await page.click("#dbFiltersBtn");
     await page.waitForTimeout(250);
@@ -319,6 +330,31 @@ try {
     check("Open side by side opens the engines' answers compared", cmp.active === "analyze" && cmp.cmp, JSON.stringify(cmp));
     await page.evaluate(() => document.querySelector('[data-tab="dashboard"]').click());
     await page.waitForTimeout(800);
+  }
+
+  console.log("\nSelect all prompts at once");
+  {
+    await page.evaluate(() => document.querySelector(".db-clear")?.click());
+    await page.waitForTimeout(200);
+    const shown = await page.evaluate(() => {
+      const t = document.querySelector('.db-view[role="tab"] .db-n');
+      return t ? Number(t.textContent) : 0;
+    });
+    await page.evaluate(() => document.querySelector(".db-selall input")?.click());
+    await page.waitForTimeout(300);
+    const s1 = await page.evaluate(() => ({ label: document.querySelector(".db-selall")?.innerText || "", bar: document.querySelector(".db-selbar b")?.textContent || "", on: document.querySelector(".db-selall input")?.checked }));
+    check("Select all ticks every prompt in the list", shown > 1 && s1.bar === `${shown} selected` && s1.on && s1.label.includes(`(${shown})`), JSON.stringify({ shown, ...s1 }));
+    // One row unticked: Select all shows partly ticked.
+    await page.evaluate(() => document.querySelector(".db-row input[type=checkbox]")?.click());
+    await page.waitForTimeout(300);
+    const s2 = await page.evaluate(() => ({ ind: document.querySelector(".db-selall input")?.indeterminate, bar: document.querySelector(".db-selbar b")?.textContent || "" }));
+    check("with one unticked it is partly ticked", s2.ind === true && s2.bar === `${shown - 1} selected`, JSON.stringify(s2));
+    await page.evaluate(() => document.querySelector(".db-selall input")?.click());
+    await page.waitForTimeout(300);
+    await page.evaluate(() => document.querySelector(".db-selall input")?.click());
+    await page.waitForTimeout(300);
+    const s3 = await page.evaluate(() => ({ bar: !!document.querySelector(".db-selbar"), on: document.querySelector(".db-selall input")?.checked }));
+    check("ticked again it clears the selection", !s3.bar && s3.on === false, JSON.stringify(s3));
   }
 
   console.log("\nRemove, with Undo");

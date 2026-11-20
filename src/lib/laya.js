@@ -153,6 +153,7 @@ const TYPE_TEXT = {
   institution: "a public body, school or organisation",
   place: "a place",
   person: "a person",
+  not_a_name: "not a name at all: an ingredient, a kind of product, a feature or an ordinary word",
   other: "something else",
 };
 const STANCE_TEXT = {
