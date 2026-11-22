@@ -488,6 +488,33 @@ export function cleanPageCopy({ prompt, answer, promptClean }) {
   return { prompt: p, answer: lines.join("\n").trim() };
 }
 
+/* Grok's own word that a turn failed, in the REST copy (1.0.2). A live run on
+ * 22 Nov 2026 reached the free tier's limit after 10 prompts: every later
+ * turn was stored twice as an empty answer that "didn't search" — once from
+ * the gateway (which already said usage_limit_reached) and once from
+ * /load-responses, which carries the same thing as
+ * streamErrors: [{ message: "You've reached your usage limit…",
+ * usageLimitReached: {…} }] and was read as an ordinary empty answer. */
+export function restStreamError(nodes) {
+  let found = null;
+  const walk = (v, depth) => {
+    if (found || !v || typeof v !== "object" || depth > 5) return;
+    if (Array.isArray(v)) { for (const x of v) walk(x, depth + 1); return; }
+    for (const key of ["streamErrors", "stream_errors"]) {
+      const list = v[key];
+      if (!Array.isArray(list)) continue;
+      for (const e of list) {
+        if (!e || typeof e !== "object") continue;
+        if (e.usageLimitReached || e.usage_limit_reached) { found = "usage_limit_reached"; return; }
+        if (!found && typeof e.message === "string" && e.message) found = `stream_error: ${e.message.slice(0, 120)}`;
+      }
+    }
+    for (const k of Object.keys(v)) if (k !== "streamErrors" && k !== "stream_errors") walk(v[k], depth + 1);
+  };
+  walk(nodes, 0);
+  return found;
+}
+
 export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, options = {}) {
   const frames = parseFrames(raw);
   const gateway = readGateway(frames, reqBody);
@@ -521,6 +548,9 @@ export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, op
   const brandRes = detectBrands(textForDetection, textForDetection, { sources, tracked: options.tracked, prompt: userPrompt });
   const brandMentions = (brandRes && brandRes.brands) || [];
   const entities = (brandRes && brandRes.entities) || [];
+  // Only a turn that produced no answer is a refusal: an error after some
+  // text leaves that text as the answer.
+  const restError = !gateway && !answerText ? restStreamError(nodes) : null;
 
   return makeRecord({
     captureId,
@@ -547,7 +577,7 @@ export async function adapt({ captureId, raw, reqBody, capturedAt, pageUrl }, op
       transport: gateway ? "gateway" : pageCopy ? "page" : "rest",
       pageCopy: pageCopy || undefined,
       gatewayStatus: gateway ? gateway.status : undefined,
-      gatewayError: gateway && gateway.error ? gateway.error : undefined,
+      gatewayError: gateway && gateway.error ? gateway.error : restError || undefined,
       gatewayEvents: gateway ? gateway.eventTypes : undefined,
     },
   });

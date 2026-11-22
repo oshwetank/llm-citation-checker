@@ -14,12 +14,25 @@ Hugging Face; and, once accounts are switched on, when you sign in, share a camp
 code, open a code, or leave an email for updates. Nothing you capture ever leaves your
 device unless you choose to share that campaign: the AI runs on your computer.
 
-> **v1.0.1** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v1.0.2** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **1.0.2** (22 November 2026). Fixes from typing 151 questions across industries into all four engines and checking every stored answer against the engine's page.
+>   - **Brands in short answers.** Perplexity now often answers in two or three sentences of plain prose; those answers listed no brands at all. Names in a list ("Swiggy and Zomato"), names put forward as the pick ("Jio is the strongest starting point") and names bolded side by side are now found, and half names are made whole ("Asit Mehta & Associates", "Jeeva Pet Hospital"). A word of the question ("Seoul", "Insurance") and a map listing's keyword tail are no longer brands.
+>   - **What the answer showed, kept.** ChatGPT's "Official website" links, Gemini's comparison tables, its places' ratings and kinds and its product pictures, Perplexity's page dates, its "trusted" marks and every snippet it sent, and the full thread of its newer `/session/` pages. ChatGPT's section headings are no longer stored as products.
+>   - **More on screen.** Perplexity's "✓ Trusted" mark on each site; Gemini's places with their photo, address, hours, links and review quotes; how fast the answer began ("First words after 1.9 s"); company cards shown as the answer's "Picks", not as products; and a campaign run's totals count every question it sent, a failed one included.
+>   - **Campaigns ask once and send for sure.** Gemini answers `?q=` by itself now, so each campaign question went to it twice; and ChatGPT's pre-filled question could sit unsent until the turn timed out. Both fixed. Analyze lists your brand and your competitors wherever the answer names them, as the campaign board counts them.
+>   - **A usage limit is not an answer from memory.** When Grok's free tier ran out, each refused question was stored as an empty answer and Analyze called it "From memory", as if Grok had stopped searching. It now reads "No answer · usage limit" everywhere, and campaigns leave it out of the numbers.
+>   - **Gemini's question, once.** Gemini added a hidden "You said …" heading to each question, and the question was stored twice over ("Q Q"), so answers didn't match their prompts. Reprocess all repairs answers already stored.
+>   - **One answer, one record.** A ChatGPT card answer was stored up to three times while it was being laid out, and each Perplexity answer twice (its threads moved to /session/…). Copies now join into one answer.
+>   - **Local answers keep their places.** Gemini's map cards and ChatGPT's newer business listings are kept as places, with ratings and reviews, and the businesses are the brands — no longer "Hi", "Om", "Dr" or a section heading.
+>   - **Brands read the way you would, in more layouts.** Makers of more than one word (Follow Up Boss, Royal Canin, New Balance, Red Tape), names after a heading's label ("Best Overall: **Zoho CRM**"), bold lists of names, names bolded again and again, lists in a sentence ("options from ASICS, Brooks, New Balance, Adidas and Puma"), lender tables ("Central Bank of India"), lowercase makers (adidas) and acronyms that spell a word (TVS). Not brands any more: list labels ("Team features", "Privacy/Security"), chip names (RTX, Ryzen), honorifics, questions, category headings and publishers being quoted ("CNET and AARP note…").
+>   - **A card the reader can't follow no longer loses the answer.** One ChatGPT product card written slightly differently made "Reading the reply failed" and nothing was stored; now that card stays as text and the answer is kept. Reprocess all recovers answers lost this way.
+>   - **No layout code in answers.** Gemini's review carousels and suggested follow-ups, and ChatGPT's unfilled form options ("{v}"), no longer show as text.
+>   - **The capture report says where Gemini's page copy stopped**, as ChatGPT's already did, and the diagnostics log no longer fills with Perplexity's empty side requests (the same one is noted once per 10 minutes), so other engines' notes stay in it.
 > - **1.0.1** (19 November 2026).
 >   - **Product cards show their pictures.** A ChatGPT card answer whose products came without a picture (every card an empty cart, while "Images shown" had the phones) now gives each card the image titled with its name. Answers already captured show them too.
 > - **1.0.0: the release after 0.36** (November 2026).

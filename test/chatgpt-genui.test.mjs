@@ -144,5 +144,59 @@ console.log("\ncards that put the price in the large title");
   check("a price is never the headline", g.cards.every((c) => !/[€$]/.test(c.headline)), g.cards.map((c) => c.headline).join("|"));
 }
 
+console.log("a form option the layout fills from its data (1.0.2)");
+{
+  // A live run of 22 Nov 2026 showed "- ○ {v}" three times under a question.
+  const code = `<text>Rates start at 7.40%.</text>\n<radio-group label="Loan amount">\n  <radio value="a">Under 30 lakh</radio>\n  <radio value="{v}">{v}</radio>\n  <radio value="{v}">{v}</radio>\n</radio-group>\n<button onClick={() => issueNewTurn("Find my rates")}>Find my best home loan rates</button>`;
+  const md = readGenUi(code).markdown;
+  check("no \"{v}\" placeholder option", !/\{v\}/.test(md), JSON.stringify(md));
+  check("the real option stays", /- ○ Under 30 lakh/.test(md), JSON.stringify(md));
+}
+
+console.log("a card whose <Entity> isn't self-closing (1.0.2)");
+{
+  // A live run of 22 Nov 2026: one such card threw in readCard and the whole
+  // answer was lost ("Reading the reply failed").
+  const code = `<text>Top picks for low heat damage.</text>\n<row align=start gap={3}>\n  <AsyncImage query="Zento Airflow hair dryer" aspectRatio="1:1" maxWidth="108px"/>\n  <box flex="1" gap={1}>\n    <text size="lg">**1. <Entity ref="turn1product0" value="Zento Airflow Pro">**</text>\n    <text color="secondary" size="xs">₹14,996</text>\n  </box>\n</row>`;
+  let g = null, err = null;
+  try { g = readGenUi(code); } catch (e) { err = e; }
+  check("the answer is still read", !err, err && err.message);
+  check("and the card is named", g && g.cards.some((c) => c.name === "Zento Airflow Pro"), g && JSON.stringify(g.cards.map((c) => c.name)));
+}
+
+console.log("\na card's link to the brand's own site (1.0.2)");
+{
+  // Live run, 22 Nov 2026: ChatGPT's UK accounting-software cards each ended
+  // in an "Official … website" link; all were stripped as layout.
+  const code = [
+    `<row><box><title size="lg"><Entity value="QuickBooks" ref="turn0entity1"/></title>`,
+    `<text size="sm">Best for growing teams that want bank feeds.</text>`,
+    `<text color="secondary" size="xs"><Link url="https://quickbooks.intuit.com/uk/" title="Official QuickBooks website"/></text></box></row>`,
+    "",
+    `<text size="sm">Compare with <Link url="https://www.freeagent.com/" title="FreeAgent"/> if you bank with NatWest.</text>`,
+  ].join("\n");
+  const g = readGenUi(code);
+  check("the card keeps its link", /\[Official QuickBooks website\]\(https:\/\/quickbooks\.intuit\.com\/uk\/\)/.test(g.markdown), g.markdown);
+  check("a link in the text between cards is kept too", /\[FreeAgent\]\(https:\/\/www\.freeagent\.com\/\)/.test(g.markdown), g.markdown);
+  check("no layout code is left", !/<\/?Link\b/.test(g.markdown), g.markdown);
+  const bad = readGenUi(`<text><Link url="javascript:alert(1)" title="x"/></text>`);
+  check("only web addresses become links", !/javascript:/.test(bad.markdown), bad.markdown);
+}
+
+console.log("\na section's heading card is not a product (1.0.2)");
+{
+  // Live run, 22 Nov 2026: 124 of 137 ChatGPT answers stored their section
+  // heading card ("Best home espresso machines under ₹50,000", "My top 4
+  // picks") as a product, ahead of the real cards.
+  const code = [
+    `<row><box><title size="lg">Best home espresso machines under ₹50,000</title><badge color="green">Top recommendations</badge></box></row>`,
+    `<row><AsyncImage query="De'Longhi Dedica EC685"/><box><title size="lg"><Entity value="De'Longhi Dedica EC685" ref="turn0product1"/></title><text>₹22,900</text></box></row>`,
+    `<row><box><title size="lg">My top 4 picks</title></box></row>`,
+  ].join("\n");
+  const g = readGenUi(code);
+  check("only the real card is a card", g.cards.length === 1 && /Dedica/.test(g.cards[0].name), JSON.stringify(g.cards.map((c) => c.name)));
+  check("the heading is still in the text", /Best home espresso machines under ₹50,000/.test(g.markdown), g.markdown);
+}
+
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);

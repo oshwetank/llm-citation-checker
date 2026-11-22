@@ -84,7 +84,10 @@ try {
 
   console.log("\na brand-new capture");
   const { raw, reqBody } = fixture("chatgpt-genui-cards.txt");
-  await msg({ type: "raw-conversation", payload: { raw: raw.replace(/Zento/g, "Zentox"), reqBody, pageUrl: "https://chatgpt.com/", capturedAt: Date.now() } });
+  // A new reply has message ids of its own (1.0.2): copies sharing ids are one
+  // reply and are merged, so changing the text alone is not a new answer.
+  const fresh = raw.replace(/Zento/g, "Zentox").replace(/"(m-[a-z]+)"/g, '"$1-new"');
+  await msg({ type: "raw-conversation", payload: { raw: fresh, reqBody, pageUrl: "https://chatgpt.com/", capturedAt: Date.now() } });
   await page.waitForTimeout(1500);
   const s2 = await sent();
   check("refreshes the list (a new row has to come in)", (s2["get-records"] || 0) > (s1["get-records"] || 0));

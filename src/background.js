@@ -23,7 +23,7 @@ import {
 import { createErrorLog } from "./lib/errorlog.js";
 import { compareRuns } from "./lib/runCompare.js";
 import { BUILD } from "./lib/build.js";
-import { noteHealth, emptyHealth, healthReport, verdict, missedAnswers, ENGINES as HEALTH_ENGINES } from "./lib/captureHealth.js";
+import { noteHealth, emptyHealth, healthReport, verdict, missedAnswers, shouldNoteDrop, ENGINES as HEALTH_ENGINES } from "./lib/captureHealth.js";
 import { checkEnginesAuth, checkEngineAuth, AUTH_COOKIES } from "./lib/auth-check.js";
 import { buildDemoRecords, isDemoRecord } from "./lib/demo-data.js";
 import { buildCampaignXlsx, campaignCsvFiles, campaignExportCounts } from "./lib/campaignXlsx.js";
@@ -392,9 +392,11 @@ function noteCapture(engine, e) {
     const got = await chrome.storage.local.get(HEALTH_KEY);
     await chrome.storage.local.set({ [HEALTH_KEY]: noteHealth(got[HEALTH_KEY], engine, e) });
   }).catch(() => {});
-  if (e && e.kind === "drop" && e.reason !== "paused") logEvent(`capture:drop:${engine}`, "capture", `capture not saved: ${e.reason}`, { platform: engine, reason: e.reason, path: e.path || "" });
+  // The same empty side request again and again is one note (shouldNoteDrop).
+  if (e && e.kind === "drop" && shouldNoteDrop(lastDropNote, engine, e)) logEvent(`capture:drop:${engine}`, "capture", `capture not saved: ${e.reason}`, { platform: engine, reason: e.reason, path: e.path || "" });
   return healthChain;
 }
+const lastDropNote = new Map();
 const MISSED_DISMISSED_KEY = "citoMissedDismissed";
 const ENGINE_TAB_URLS = ["https://chatgpt.com/*", "https://chat.openai.com/*", "https://gemini.google.com/*", "https://www.perplexity.ai/*", "https://perplexity.ai/*", "https://grok.com/*"];
 // Each open engine tab, asked how capture stands there. No answer within
@@ -737,7 +739,12 @@ async function deriveAndStore(rawRow, rawText, settings, { settle = true } = {})
   // No question in the engine's own request: the one the page showed, once
   // there is an answer (so it can never turn an empty capture into a record).
   if (!record.userPrompt && rawRow.pagePrompt && record.answerChars) {
-    record.userPrompt = cleanPrompt(rawRow.pagePrompt);
+    // A question read twice over ("Q\n\nQ": Gemini's hidden "You said Q"
+    // heading before Q, read by builds up to 1.0.1) is the question once, so
+    // Reprocess all repairs what those builds stored.
+    const p = cleanPrompt(rawRow.pagePrompt);
+    const twice = typeof p === "string" && p.match(/^([\s\S]{3,}?)\s*\n\s*\n\s*([\s\S]+)$/);
+    record.userPrompt = twice && twice[1].trim() === twice[2].trim() ? twice[1].trim() : p;
     if (record._extraction && Array.isArray(record._extraction.notes)) record._extraction.notes.push("prompt: read off the page; the engine's request didn't carry it");
   }
 
@@ -4124,6 +4131,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const brands = effectiveTrackedBrands(profile, recs);
           const prompts = (await db.getAll("trackedPrompts")).filter((p) => p.profileId === msg.profileId)
             .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+          // What one run asked, engine by engine (1.0.2), so its totals count
+          // a turn that failed: the same plan "Retry missing" reads.
+          const shownRun = runId ? runs.find((r) => r.id === runId) : null;
+          const asked = shownRun && Array.isArray(shownRun.promptIds)
+            ? Object.fromEntries((shownRun.engines || []).map((e) => [e, shownRun.promptIds.length])) : null;
           sendResponse({
             mixedRuns: mixed,
             ok: true,
@@ -4132,7 +4144,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             // Seen from any brand (0.67.0, asked: "look at the entire data
             // for not just my brand but other competition as well"): the
             // board measures whichever brand is picked against the rest.
-            view: campaignView(recs, { profile, brands: msg.viewAs && brands.some((b) => b.name === msg.viewAs) ? brands.map((b) => ({ ...b, isOwn: b.name === msg.viewAs })) : brands, prompts, engineFilter: msg.engines || [] }),
+            view: campaignView(recs, { profile, brands: msg.viewAs && brands.some((b) => b.name === msg.viewAs) ? brands.map((b) => ({ ...b, isOwn: b.name === msg.viewAs })) : brands, prompts, asked, engineFilter: msg.engines || [] }),
             ownBrand: (brands.find((b) => b.isOwn) || {}).name || null,
             runId: runId || (latestMode ? "latest" : "all"),
             runs: runs.filter((r) => !live.has(r.id)).map((r) => ({ id: r.id, startedAt: r.startedAt, status: r.status, captured: r.captured || 0, expected: r.expected || 0, hasAnswers: all.some((x) => x.geo && x.geo.runId === r.id), engines: [...new Set(all.filter((x) => x.geo && x.geo.runId === r.id).map((x) => x.platform))] })),

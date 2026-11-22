@@ -142,6 +142,107 @@ export function channelPayloads(raw) {
   return out;
 }
 
+/*
+ * A map card's place, read off the stream (1.0.2). Gemini's answer names a
+ * place with <EntityCard entity_id="ChIJ…" entity_type="place" title="…"/>;
+ * its rating and kind come in the same stream just before "places/<that id>"
+ * ("4.7 stars rating", "🏨 Resort hotel"). Only the title was kept, so a
+ * hotel answer's six places had no rating or kind (live run, 22 Nov 2026).
+ * Read as text from the decoded payloads, not by field number: these
+ * records' layout isn't mapped, and the words are what the card shows.
+ */
+// Every text field of a protobuf payload, in order, at any depth: a field
+// that decodes as clean text is a string, any other one a message to open.
+// Exact strings, without the length and tag bytes a loose decode leaves on
+// them ("LBhawani Singh Rd…302015b").
+function protoStrings(bytes, out = [], depth = 0) {
+  const fields = depth < 40 ? protoFields(bytes) : null;
+  if (!fields) return out;
+  for (const [, t, v] of fields) {
+    if (t !== 2) continue;
+    const s = text(v);
+    if (s && s.length && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(s)) { out.push(s); continue; }
+    protoStrings(v, out, depth + 1);
+  }
+  return out;
+}
+
+export function channelPlaceDetails(raw) {
+  let text = "";
+  try { text = channelPayloads(raw).map((b) => protoStrings(b).join("\u0001")).join("\u0001"); } catch (_) { text = ""; }
+  return (id) => {
+    if (!text || !id) return {};
+    const marker = `places/${id}`;
+    for (let k = text.indexOf(marker); k >= 0; k = text.indexOf(marker, k + 1)) {
+      const win = text.slice(Math.max(0, k - 900), k);
+      const ratings = [...win.matchAll(/(\d(?:\.\d)?) stars rating/g)];
+      if (!ratings.length) continue;
+      const rating = Number(ratings[ratings.length - 1][1]);
+      const kinds = [...win.slice(ratings[ratings.length - 1].index).matchAll(/\p{Extended_Pictographic}️?\s([\p{L}][\p{L}\p{N} &'’/-]{1,40}?)(?=[^\p{L}\p{N} &'’/-]|$)/gu)];
+      const category = kinds.length ? kinds[0][1].trim() : null;
+      return { rating: rating >= 0 && rating <= 5 ? rating : null, category, ...placeExtras(text, k, id, win) };
+    }
+    return {};
+  };
+}
+
+/*
+ * The rest of a map card (1.0.2): its photo (just before the name), then
+ * after "places/<id>" its phone, address, Maps link, website and one-line
+ * description, its hours, and the reviews filed under "places/<id>/reviews/…"
+ * (age, then text). Same live run: all of it was in the stream and none was
+ * stored. Text pieces are separated by protobuf's control bytes; a piece's
+ * first character can be its own length byte, which is dropped when it isn't
+ * part of a word.
+ */
+const PIECE_SPLIT = /[\x00-\x1f\x7f-\x9f\ufffd]+/;
+const pieceText = (p) => String(p || "").replace(/^[^\p{L}\p{N}"“(]+/u, "").trim();
+function placeExtras(text, k, id, before) {
+  const out = {};
+  const photo = [...before.matchAll(/https:\/\/lh\d\.googleusercontent\.com\/(?:p|gps-cs-s|gps-proxy)\/[A-Za-z0-9_\-=]+/g)].pop();
+  if (photo) out.photo = photo[0].replace(/(=w\d+-h\d+(?:-k-no)?)[\s\S]*$/, "$1");
+  const reviewsAt = text.indexOf(`places/${id}/reviews/`, k);
+  const head = text.slice(k, reviewsAt > k && reviewsAt - k < 4000 ? reviewsAt : k + 2500);
+  const pieces = head.split(PIECE_SPLIT).map(pieceText).filter(Boolean);
+  const phone = head.match(/(?:\+\d{1,3}[ -]?)?\(?\d{2,5}\)?[ -]?\d{3,5}[ -]?\d{3,5}/);
+  if (phone) out.phone = phone[0].trim();
+  const address = pieces.find((p) => (p.match(/,/g) || []).length >= 2 && p.length >= 15 && p.length <= 200 && !/^https?:/.test(p));
+  if (address) out.address = address.replace(/^[\d +()-]{7,}\D?(?=\p{L})/u, "").replace(/[^\p{L}\p{N})]+$/u, "");
+  const urls = head.match(/https?:\/\/[^\s\x00-\x1f"·]+/g) || [];
+  const maps = urls.find((u) => /google\.[a-z.]+\/maps\/place/.test(u));
+  if (maps) out.mapsUrl = maps;
+  const site = urls.find((u) => !/google\.|gstatic\.|googleusercontent\./.test(u));
+  if (site) out.website = site;
+  const hours = head.match(/Open 24 hours|Opens? (?:at )?\d{1,2}(?::\d{2})?\s?[AP]M(?: \w{3})?|Closes? (?:at )?\d{1,2}(?::\d{2})?\s?[AP]M(?: \w{3})?|Closed(?: now| today)?/);
+  if (hours) out.hours = hours[0];
+  // The description: the last sentence-like piece before the reviews. A
+  // week's hours ("Mon-Sat: 10AM - 6PM, Sun: Closed") are the hours; the
+  // name said again is not a description. A lone framing letter stuck to
+  // the front ("bUpscale hotel…") is dropped.
+  const unframe = (s) => s.replace(/^[A-Za-z](?=\p{Lu}\p{Ll})/u, "");
+  const earlier = new Set(pieces.slice(0, -1).map((p) => p.toLowerCase()));
+  for (const p of pieces.filter((x) => x.length >= 20 && /\s/.test(x) && !/^https?:|places\//.test(x) && x !== address).reverse()) {
+    const s = unframe(p);
+    if (/\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\w*\s*[-–:]/.test(s) && /\d\s?[AP]M/i.test(s)) { out.hours = s.slice(0, 120); continue; }
+    if (earlier.has(s.toLowerCase()) || /\|/.test(s)) continue;
+    out.description = s.slice(0, 300);
+    break;
+  }
+  if (reviewsAt > k) {
+    const reviews = [];
+    const tail = text.slice(reviewsAt, reviewsAt + 12000);
+    for (const m of tail.matchAll(new RegExp(`places/${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/reviews/[A-Za-z0-9_-]+`, "g"))) {
+      const after = tail.slice(m.index + m[0].length, m.index + m[0].length + 2500).split(PIECE_SPLIT).map(pieceText).filter(Boolean);
+      const age = after.find((p) => /^(?:\d+|a|an) (?:years?|months?|weeks?|days?|hours?) ago/.test(p));
+      const body = after.find((p) => p.length >= 40 && /\s/.test(p) && !/^https?:/.test(p));
+      if (body) reviews.push({ text: body.slice(0, 400), ...(age ? { age: age.match(/^(?:\d+|a|an) \w+ ago/)[0] } : {}) });
+      if (reviews.length >= 3) break;
+    }
+    if (reviews.length) out.reviews = reviews;
+  }
+  return out;
+}
+
 const RESP = "2.7.1.4.4";
 
 function readProducts(resp) {

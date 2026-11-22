@@ -62,6 +62,9 @@ const NOISE = new Set([
   "spend", "pay", "look", "check", "try", "use", "want", "need", "up", "to", "with",
   "without", "under", "around", "about", "only", "both", "either", "here", "there",
   "then", "yes", "no", "not", "it", "its", "they", "you", "we",
+  // Honorifics (1.0.2): "Dr. Sanket Sheth is an MDS Endodontist" made "Dr" a
+  // brand in a dental-clinic answer (live run, 22 Nov 2026).
+  "dr", "mr", "mrs", "ms", "prof", "sr", "jr",
 ]);
 
 // Spec terms that read like names in a table cell or after a bullet label:
@@ -202,7 +205,7 @@ const SEPARATOR_CELL = /^:?-+:?$/;
 // already cover most comparison tables regardless of topic) — a much
 // stronger signal than guessing from position when it's present, and
 // harmless when it isn't (falls straight back to the old rule below).
-const NAME_HEADER_RE = /^(phones?|products?|items?|models?|devices?|names?|brands?|picks?|winners?|recommendations?|options?|choices?|hotels?|hostels?|resorts?|homestays?|stays?|propert(?:y|ies)|accommodations?|lodg(?:e|es|ings?)|places?|restaurants?|cafes?|venues?|stores?|shops?|showrooms?|dealers?|sellers?|retailers?|merchants?|compan(?:y|ies)|providers?|vendors?|apps?|tools?|services?|platforms?|software|schools?|colleges?|universit(?:y|ies)|institutes?|courses?|clinics?|hospitals?|doctors?|banks?|cards?|brokers?|funds?|insurers?|plans?|policies|cars?|bikes?|scooters?|laptops?|airlines?|operators?|agenc(?:y|ies)|websites?|sites?)$/i;
+const NAME_HEADER_RE = /^(phones?|products?|items?|models?|devices?|names?|brands?|picks?|winners?|recommendations?|options?|choices?|hotels?|hostels?|resorts?|homestays?|stays?|propert(?:y|ies)|accommodations?|lodg(?:e|es|ings?)|places?|restaurants?|cafes?|venues?|stores?|shops?|showrooms?|dealers?|sellers?|retailers?|merchants?|compan(?:y|ies)|providers?|vendors?|apps?|tools?|services?|platforms?|software|schools?|colleges?|universit(?:y|ies)|institutes?|courses?|clinics?|hospitals?|doctors?|banks?|cards?|brokers?|funds?|insurers?|plans?|policies|cars?|bikes?|scooters?|laptops?|airlines?|operators?|agenc(?:y|ies)|websites?|sites?|lenders?|institutions?|programs?|programmes?|insurance companies|product lines?)$/i;
 const cleanHeaderCell = (s) => String(s || "").replace(/[*_`]/g, "").trim();
 // "Hotel / Stay", "Hotel name", "Property (area)": the header names its
 // column when any one of its words does.
@@ -330,7 +333,13 @@ function cleanCandidateText(raw) {
   // recommendation" ("For Valorant/CS2/BGMI → Kreo Harpy") and "label: name"
   // ("Best Overall: iQOO Neo 10") both put the actual name AFTER — keep the
   // part after the LAST arrow/colon.
-  if (/\s+[—–|]\s+/.test(s)) s = s.split(/\s+[—–|]\s+/)[0].trim();
+  // Unless the part before is the label ("Best for Variety & Families —
+  // HelloFresh:", Gemini, live run of 22 Nov 2026): then the name is after.
+  if (/\s+[—–|]\s+/.test(s)) {
+    const parts = s.split(/\s+[—–|]\s+/);
+    s = (/^(?:best|top|most|ideal|great|good|our|my|budget|premium|cheapest|runner|honou?rable|pick|choice|editor|winner|overall|for)\b/i.test(parts[0]) && parts.length > 1
+      ? parts[parts.length - 1] : parts[0]).replace(/:\s*$/, "").trim();
+  }
   else if (/\s*→\s*/.test(s)) s = s.split(/\s*→\s*/).pop().trim();
   else if (s.includes(":")) s = s.split(":").pop().trim();
   // Strip leading list numbering left over from heading matches ("1. Vivo V70").
@@ -340,7 +349,9 @@ function cleanCandidateText(raw) {
   // cap and the brand was lost (1.0.0). A model's own brackets stay: they
   // are short and hold no spaces-separated sentence ("Phone (3a)").
   s = s.replace(/\s*\((?=[^)]*\s)[^)]{12,}\)\s*/g, " ").replace(/\s{2,}/g, " ").trim();
-  if (!s || s.endsWith(":") || s.length > 40) return "";
+  // A question is a label, never a name: ChatGPT's follow-up form ("**3.
+  // Expected monthly visitors?**") made "Expected" a brand (22 Nov 2026).
+  if (!s || s.endsWith(":") || /\?\s*$/.test(s) || s.length > 40) return "";
   return s;
 }
 
@@ -404,6 +415,109 @@ export function structuralCandidates(answerText) {
       const s = cleanCandidateText(it);
       if (s) out.push({ text: s, source: "example", group: null });
     }
+  }
+
+  // Names in bold inside a heading, after its label (1.0.2): "### 1. Best
+  // Overall for Indian Real Estate Workflows: **Sell.Do** (or **TeleCRM**)",
+  // "### 3. Best for Simplicity: **Pipedrive**" (Gemini, live run of 22 Nov
+  // 2026). The heading pattern stops at the first "*", so these were never
+  // read, and an answer whose picks are all named this way listed none of
+  // them. A bold span that IS the whole heading ("### **For Family Baths:
+  // Storage Water Heaters**") is the heading itself, read above as before.
+  {
+    let at = 0;
+    for (const line of answerText.split("\n")) {
+      if (/^\s*#{1,6}\s/.test(line)) {
+        const plain = line.replace(/^\s*#{1,6}\s*/, "").trim();
+        const spans = [...plain.matchAll(/\*\*([^*\n]{2,60})\*\*/g)];
+        const whole = spans.length === 1 && spans[0][0] === plain;
+        if (!whole) for (const m of spans) {
+          if (m.index === 0) continue; // a leading bold label is read above
+          // Named on purpose, like an "e.g." item: the label before it says
+          // what it is, so it needn't be written again underneath.
+          const s = cleanCandidateText(m[1]);
+          if (s) out.push({ text: s, source: "example", group: null });
+        }
+      }
+      at += line.length + 1;
+    }
+  }
+
+  // A list of bold names in a sentence (1.0.2): "such as **Imperial College
+  // Business School**, **IE Business School**, … and **Carnegie Mellon
+  // (Tepper)**", "(such as **Manipal**, **Amity**, **Sikkim Manipal**)"
+  // (Gemini, live run of 22 Nov 2026: the answer's brand list was
+  // "Business"). Two or more bold spans joined by nothing but commas, "and"
+  // and "or", each written as a name; bold emphasis ("**worth it**") is
+  // lowercase, and bold terms with words between them ("**BOM** tracking,
+  // **MRP**") are not a list.
+  for (const m of answerText.matchAll(/\*\*[^*\n]{2,60}\*\*(?:(?:,\s*(?:and\s+|or\s+)?|\s+(?:and|or)\s+)\*\*[^*\n]{2,60}\*\*)+/g)) {
+    const items = [...m[0].matchAll(/\*\*([^*\n]{2,60})\*\*/g)].map((x) => x[1].trim());
+    const nameLike = (it) => /^(?:\p{Lu}|\p{Ll}+\p{Lu})/u.test(it) && !/[:.!?]$/.test(it) && it.split(/\s+/).length <= 6 &&
+      // "**Step 2** and **Under 15000**" are steps and prices, not names.
+      !/^(?:Step|Option|Scenario|Tip|Day|Week|Phase|Part|Level|Round|Plan|Tier|Rule|Point|Method|Way|Top|Under|Over|Below|Above|Best|Rs|INR|USD|Price|Around|About|Up to|From)\b/i.test(it) &&
+      it.replace(/\s*\([^)]*\)/g, "").split(/\s+/).every((w, i) => i === 0 || /^(?:\p{Lu}|\p{N}|of|de|la|&|and|for|the)/u.test(w));
+    if (items.length < 2 || !items.every(nameLike)) continue;
+    for (const it of items) { const s = cleanCandidateText(it.replace(/\s*\([^)]*\)\s*$/, "")); if (s) out.push({ text: s, source: "example", group: null }); }
+  }
+
+  // A name the answer bolds again and again (1.0.2): "**HelloFresh** leads…",
+  // "Pick **HelloFresh** if…" (Gemini, live run of 22 Nov 2026) named four
+  // meal kits this way and the list found none. Bolded twice or more, written
+  // as a name, a few words at most; bold emphasis is lowercase.
+  {
+    const seen = new Map();
+    for (const m of answerText.matchAll(/\*\*([^*\n]{2,40})\*\*/g)) {
+      const it = m[1].trim();
+      if (!/^(?:\p{Lu}|\p{Ll}+\p{Lu})/u.test(it) || /[:.!?,]$/.test(it) || /\d/.test(it) || it.split(/\s+/).length > 3) continue;
+      if (!it.split(/\s+/).every((w, i) => i === 0 || /^(?:\p{Lu}|of|de|&)/u.test(w))) continue;
+      // A group, not a name: "**Public Sector Banks**" heads a table's rows,
+      // and the answer says "banks" in its own words.
+      const last = it.split(/\s+/).pop();
+      if (/s$/.test(last) && last.length > 3 && new RegExp(`(?<![\\p{L}])${escapeRegExp(last.toLowerCase())}(?![\\p{L}])`, "u").test(answerText)) continue;
+      seen.set(it, (seen.get(it) || 0) + 1);
+    }
+    for (const [it, n] of seen) if (n >= 2) { const s = cleanCandidateText(it); if (s) out.push({ text: s, source: "example", group: null }); }
+  }
+
+  // A bold list of names: "**Jira, Linear, ClickUp, Asana, and monday.com**
+  // consistently rank…" (Grok, live run of 22 Nov 2026) was one long phrase,
+  // and Jira, named only there, was missed.
+  for (const m of answerText.matchAll(/\*\*([^*\n]{5,200})\*\*/g)) {
+    const items = m[1].split(/,\s*(?:and\s+|or\s+)?|\s+and\s+|\s+or\s+/).map((x) => x.trim()).filter(Boolean);
+    if (items.length < 3) continue;
+    if (!items.every((it) => /^(?:\p{Lu}|\p{Ll}+[\p{Lu}.])/u.test(it) && it.split(/\s+/).length <= 3)) continue;
+    for (const it of items) { const s = cleanCandidateText(it); if (s) out.push({ text: s, source: "example", group: null }); }
+  }
+
+  // Makers an answer lists in a sentence (1.0.2): "you can get some very good
+  // options from ASICS, Brooks, New Balance, Adidas and Puma" (ChatGPT, live
+  // run of 22 Nov 2026) named five brands and the list found two. Only after
+  // a word that says what follows is a set of makers or picks ("brands",
+  // "options from", "insurers such as"), and only a list of three or more
+  // capitalised names: "cities such as Pune and Delhi" names places, and
+  // never says "brands".
+  // The noun may come a few words before the list, and the list may follow
+  // "include" or "are": "Top luxury wedding-hotel picks in Jaipur include The
+  // Leela Palace Jaipur, Fairmont Jaipur, JW Marriott Jaipur Resort & Spa,
+  // and Oberoi Rajvilas" (Perplexity, same run) gave no brands at all.
+  const makerList = /\b(?:brands?|makers?|manufacturers?|companies|labels|players|providers|insurers|lenders|banks|vendors|options|models|picks|alternatives|choices|names|hotels|venues|resorts|restaurants|clinics|hospitals|schools|colleges|universities|agencies|firms|platforms|apps|tools)\b[^.;:\n]{0,40}?\s+(?:like|such as|including|include|includes|are|from|e\.g\.,?|:)\s+([^.;:\n()]{5,300})/gi;
+  let ml;
+  while ((ml = makerList.exec(answerText))) {
+    const items = ml[1].replace(/[*_`]/g, "").split(/,\s*(?:and\s+|or\s+)?|\s+and\s+|\s+or\s+/).map((x) => x.trim()).filter(Boolean);
+    // The list ends where the names do: "…Adidas and Puma that suit flat feet".
+    // Up to three words, or up to six when every word is capitalised ("JW
+    // Marriott Jaipur Resort & Spa").
+    const names = [];
+    for (const it of items) {
+      const w = it.split(/\s+/);
+      const join = (x) => /^(?:of|de|la|&)$/.test(x);
+      if (!/^(?:\p{Lu}|\p{Ll}+\p{Lu})/u.test(it) || w.slice(1).some((x) => /^\p{Ll}/u.test(x) && !join(x))) break;
+      if (w.length > 6 || (w.length > 3 && !w.every((x) => /^\p{Lu}/u.test(x) || join(x)))) break;
+      names.push(it);
+    }
+    if (names.length < 3) continue;
+    for (const n of names) { const s = cleanCandidateText(n); if (s) out.push({ text: s, source: "example", group: null }); }
   }
 
   // Paragraph leads (e.g. "POCO F7 delivers...", "Realme P4 Power 5G packs...")
@@ -505,6 +619,7 @@ export const EDITORIAL_DOMAINS = new Set([
   "uol.com.br", "infobae.com", "nikkei.com", "itmedia.co.jp", "kakaku.com", "impress.co.jp", "sina.com.cn",
   "sohu.com", "163.com", "chosun.com", "aljazeera.com", "alarabiya.net", "scmp.com", "straitstimes.com",
   "smh.com.au", "abc.net.au", "cbc.ca", "news.com.au", "ndtv.com", "thehindu.com", "economictimes.indiatimes.com",
+  "gizmodo.com", "security.org", "tomsguide.com", "theverge.com", "lifehacker.com", "pcgamer.com",
 ]);
 
 function isMarketplaceDomain(domain) {
@@ -540,14 +655,20 @@ function isMarketplaceDomain(domain) {
 // double as adjectives or nouns out of this position (found, puts, calls,
 // prices) are left out entirely rather than guarded.
 const ATTRIB_VERBS =
-  "says?|said|reports?|reported|notes?|noted|lists?|listed|rates?|rated|ranks?|ranked|reviews?|reviewed|claims?|writes?|wrote|tested|recommends?|suggests?|estimates?|observes?";
+  "says?|said|reports?|reported|notes?|noted|lists?|listed|rates?|rated|ranks?|ranked|reviews?|reviewed|claims?|writes?|wrote|tested|recommends?|suggests?|estimates?|observes?" +
+  // A publisher quoted about the brands (1.0.2): "CNET and AARP note…",
+  // "Taste of Home likes its bold flavors", "The Kitchn praises…", "AARP gave
+  // it a lower taste score" (Gemini, live run of 22 Nov 2026).
+  "|likes?|liked|praises?|praised|gave|gives?|calls?|called|found|finds?|highlights?|highlighted|points? out|warns?|warned|scored?";
+// "CNET and AARP note…": the first of two publishers is quoted too.
 const ATTRIB_AFTER_RE = new RegExp(
-  `^[,;:]?\\s*(?:(?:also|now|currently|recently|already|still|further|however)\\s+|\\w+ly\\s+){0,2}(?:${ATTRIB_VERBS})\\b`,
-  "i"
+  `^[,;:]?\\s*(?:(?:and|&)\\s+(?:The\\s+)?\\p{Lu}[\\p{L}’'.]*(?:\\s+\\p{Lu}[\\p{L}’'.]*){0,3}\\s+)?(?:(?:also|now|currently|recently|already|still|further|however)\\s+|\\w+ly\\s+){0,2}(?:${ATTRIB_VERBS})\\b`,
+  "iu"
 );
 // Possessive attribution: "Gadgets 360's review put it third".
 const ATTRIB_POSSESSIVE_RE = /^['’]s\s+(review|report|test|testing|analysis|round-?up|verdict|listing)\b/i;
-const ATTRIB_BEFORE_RE = /\b(according to|per|via|source:?)\s+$/i;
+// …and the second of two after "per": "per CNET and The Kitchn".
+const ATTRIB_BEFORE_RE = /\b(?:according to|per|via|source:?)\s+(?:(?:The\s+)?\p{Lu}[\p{L}’'.]*(?:\s+\p{Lu}[\p{L}’'.]*){0,3}\s+(?:and|&)\s+)?$/iu;
 
 // True when EVERY occurrence of this name reads as an attribution.
 function alwaysAttributed(text, hits) {
@@ -656,6 +777,84 @@ export function vendorFromProductName(title) {
   return clean;
 }
 
+/*
+ * The maker of a product named in THIS answer (1.0.2). vendorFromProductName
+ * takes the first word, which is right for "Vivo V70" and wrong for every
+ * maker whose name is more than one word: the owner's-style live run of 22
+ * Nov 2026 (151 prompts, four engines) reported "Follow" for Follow Up Boss,
+ * "Royal" for Royal Canin, "Red" for Red Tape, and lost New Balance entirely
+ * ("New" is a noise word, so the vendor came back empty).
+ *
+ * What tells them apart is how the answer itself writes the first word. A
+ * one-word maker stands on its own somewhere ("Samsung's", "from Vivo",
+ * "Galaxy" after it in one place and "A56" in another); the first word of a
+ * longer name never does: every "Royal" is followed by "Canin". So the name
+ * grows by the next word while the answer never uses the shorter form without
+ * it, the next word is capitalised and carries no digit, and it isn't a plan
+ * or edition word ("Pro", "Plus"). Two words at most, or three when the
+ * middle one is a short joining word ("Follow Up Boss", "Bank of America").
+ */
+const COMMON_NAME_WORDS = new Set([
+  "red", "blue", "black", "white", "green", "yellow", "orange", "pink", "purple", "brown", "grey", "gray", "golden", "gold", "silver",
+  "royal", "real", "simple", "smart", "wise", "true", "pure", "fresh", "happy", "lucky", "big", "little", "old", "young", "first",
+  "general", "united", "national", "global", "american", "british", "indian", "modern", "urban", "natural", "bright", "clear",
+  "star", "sun", "sky", "ocean", "rock", "iron", "stone", "home", "house", "follow", "click", "open", "free", "fair", "good",
+  "great", "grand", "high", "next", "north", "south", "east", "west", "super", "magic", "living", "life", "health", "care", "mind",
+]);
+const EDITION_WORDS = new Set(["pro", "plus", "max", "ultra", "mini", "lite", "premium", "standard", "basic", "starter", "essentials", "enterprise", "business", "team", "teams", "personal", "home", "edition", "series", "neo", "prime", "elite", "advanced"]);
+export function vendorInAnswer(text, title) {
+  const words = String(title || "").trim().split(/\s+/);
+  let vendor = vendorFromProductName(title);
+  // A noise first word ("New") gives no vendor; it may still begin the name.
+  const startsName = vendor || (words.length > 1 && /^[A-Z][a-z]+$/.test(words[0]) && /^[A-Z]/.test(words[1]) ? words[0] : "");
+  if (!startsName || !text || startsName !== words[0].replace(/[^\w&.'’\-]/g, "")) return vendor;
+  // Only a first word that is ALSO an ordinary word needs the next one to be
+  // a name: "Royal", "Red", "New", "Follow", "Real". "Skechers Arch Fit",
+  // "Nike Structure 25" and "Zoho CRM" are their maker plus a model, however
+  // rarely the answer writes the maker alone; growing them split one brand's
+  // mentions across its models. Ordinary means: written in lowercase in this
+  // answer, a noise word, or one of the everyday words maker names are built
+  // from (colours, qualities) — language, not an industry list.
+  const first = words[0].replace(/[^\p{L}]/gu, "");
+  // A maker written in its own casing ("adidas", "boAt") is never an
+  // ordinary word, and its lowercase form is the name itself.
+  if (!/^\p{Lu}\p{Ll}/u.test(first)) return vendor;
+  const ordinary = isNoise(first) || COMMON_NAME_WORDS.has(first.toLowerCase()) ||
+    new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(first.toLowerCase())}(?![\\p{L}\\p{N}])`, "u").test(text);
+  if (!ordinary) return vendor;
+  const nameWord = (w) => !!w && /^[A-Z][\p{L}'’&.-]*$/u.test(w) && !/\d/.test(w) && !EDITION_WORDS.has(w.toLowerCase());
+  const standsAlone = (prefix, next) => {
+    // "Follow-up" is a different word, not "Follow" on its own.
+    const re = new RegExp(`(?<![\\p{L}\\p{N}-])${escapeRegExp(prefix)}(?![\\p{L}\\p{N}-])(\\s+(\\S+))?`, "gu");
+    for (const m of text.matchAll(re)) {
+      // "Follow Up Boss." and "Follow Up Boss," still continue the name.
+      const after = (m[2] || "").replace(/[*_`]/g, "").replace(/^[("'“‘]+|[^\p{L}\p{N}&'’-]+$/gu, "");
+      if (after !== next) return true;
+    }
+    return false;
+  };
+  // A short middle word: "of", "&", "Up", "Max".
+  const joiner = (w) => /^(?:of|de|la|and|&|[A-Z][a-z]{0,2})$/.test(w || "");
+  const short = joiner(words[1]);
+  const max = short ? 3 : 2;
+  let k = 1;
+  while (k < words.length && k < max && (nameWord(words[k]) || (k === 1 && short))) {
+    if (standsAlone(words.slice(0, k).join(" "), words[k])) break;
+    k++;
+  }
+  if (k === 1) return vendor;
+  // "Follow Up" can't end on a joining word: grow through it or not at all.
+  if (k === 2 && short) return vendor;
+  const name = words.slice(0, k).join(" ").replace(/[^\w&.'’\s-]/g, "");
+  // Named once, the longer reading is a guess either way: "Noise Airwave Max
+  // XR" in one table row is the maker Noise (brands-common-words). An answer
+  // that is about Red Tape or Royal Canin writes the name more than once.
+  const times = [...text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}-])${escapeRegExp(name)}(?![\\p{L}\\p{N}])`, "gu"))].length;
+  // A colour or quality word is never a maker alone, though ("Red").
+  if (times < 2 && !COMMON_NAME_WORDS.has(first.toLowerCase()) && vendor) return vendor;
+  return isNoise(name) ? vendor : name;
+}
+
 // A phrase that reads like a proper name ("Angel One", "Blue Tokai") rather than
 // prose ("Other great choices"). Brand names are title-cased; sentence fragments
 // have lowercase words after the first. Digits usually mean it's a model/product.
@@ -672,6 +871,12 @@ const CATEGORY_PLURAL_NOUNS = new Set([
   "accessories", "gadgets", "apps", "platforms", "tools", "services", "stores",
   "brands", "perfumes", "fragrances", "colognes", "necklaces", "sarees", "kurtas",
   "jewellers", "jewelers", "shops", "restaurants", "cafes", "hotels",
+  // Kinds of organisation heading a group of rows (1.0.2): "**Public Sector
+  // Banks**" read as the brand "Public Sector" (live run, 22 Nov 2026).
+  "banks", "lenders", "insurers", "companies", "firms", "schools", "colleges", "universities",
+  "hospitals", "clinics", "agencies", "providers", "funds", "brokers", "carriers", "airlines",
+  // …and what a heading is about: "### Indicative Home Loan Interest Rates".
+  "rates", "prices", "fees", "costs", "charges", "deals", "offers", "tips", "steps",
 ]);
 // A single bold word at the start of a line reads exactly like a one-word
 // brand ("**Nothing**", "**OnePlus**") — but a spec-sheet-style answer bolds
@@ -716,6 +921,11 @@ export function looksLikeProperName(phrase) {
   const words = String(phrase || "").trim().split(/\s+/);
   if (!words.length || words.length > 3) return false;
   if (/\d/.test(phrase)) return false;
+  // A describing compound ("Community-Focused", "Design-Forward",
+  // "Client-Facing", "Entry-Level") makes a phrase a heading (Gemini's
+  // section titles, live run of 22 Nov 2026). Makers joined by a hyphen
+  // ("Coca-Cola", "Rolls-Royce", "Mercedes-Benz") end in a name instead.
+  if (words.some((w) => /-(?:\p{L}+(?:ed|ing)|forward|level|friendly|first|based|free|only|ready|proof|centric|heavy|focused|oriented)$/iu.test(w.replace(/[^\p{L}-]/gu, "")))) return false;
   // A multi-word phrase ending in a category noun is a heading, not a brand.
   if (words.length > 1) {
     const last = words[words.length - 1].replace(/[^\w]/g, "").toLowerCase();
@@ -934,13 +1144,72 @@ export function isPlausibleProseName(phrase) {
   return true;
 }
 
-export function proseNameCandidates(text) {
-  const seen = new Map(); // lower -> { text, count, hasDigit }
-  const note = (phrase) => {
+/*
+ * What the engine read, as evidence for a name written only once (1.0.2).
+ * Perplexity's short answers (live run, 22 Nov 2026: 66 of 151 answers, two or
+ * three sentences, no list, no bold) name each pick once, often first in its
+ * sentence — "Groww is likely the easiest app…; if you want … Zerodha" — and
+ * the once-and-not-first rule above left all of them with no brands. A name
+ * that is also a page's site (groww.in) or written in a page's title is a name
+ * the engine found out there, which is evidence of its own and needs no word
+ * list. So is a name's own shape: a capital inside the word (HelloFresh,
+ * BambooHR) is not how English capitalises a sentence's first word.
+ */
+function proseSupport(sources) {
+  const sites = new Set(), titles = [], snippets = [];
+  for (const s of sources || []) {
+    const host = String((s && (s.domain || s.url)) || "").replace(/^https?:\/\//, "").split("/")[0].replace(/^www\./, "").toLowerCase();
+    const label = host.split(".")[0];
+    if (label && label.length >= 3) sites.add(label.replace(/[^a-z0-9]/g, ""));
+    if (s && s.title) titles.push(String(s.title));
+    if (s && s.snippet) snippets.push(String(s.snippet));
+  }
+  return { sites, titles, snippets };
+}
+// Written as a name inside a sentence of a page the engine read: capitalised
+// after a lowercase word or a comma ("apps like Groww and Zerodha"), where
+// English capitalises only names. A snippet is prose, unlike a title.
+const snippetBacked = (phrase, support) => {
+  if (!support || !support.snippets.length) return false;
+  // Not where it only opens a longer name ("Down" of "Down to Earth").
+  const re = new RegExp(`(?<=[\\p{Ll}\\p{N},;:)]\\s+)${escapeRegExp(phrase)}(?![\\p{L}\\p{N}])(?!\\s+(?:to|of|and|&|de|la|the|for|on)\\s+\\p{Lu})`, "u");
+  return support.snippets.some((t) => re.test(t));
+};
+// A CamelCase word in a title: Title Case never writes "HelloFresh".
+const camelInTitle = (phrase, support) => !!support && /\p{Ll}\p{Lu}/u.test(phrase) &&
+  support.titles.some((t) => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(phrase)}(?![\\p{L}\\p{N}])`, "u").test(t));
+const squash = (s) => String(s).toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+// A page's site with this name: "Groww" ↔ groww.in, "HelloFresh" ↔
+// hellofresh.com. Any name, however written.
+const siteBacked = (phrase, support) => {
+  const sq = squash(phrase);
+  return !!support && sq.length >= 2 && support.sites.has(sq);
+};
+// Written, capitals and all, in a page's title. Titles are Title Case, so a
+// single word there proves nothing ("Best Himalayan Treks"); a name of two
+// or more words written the same way does ("Tata Nexon Review").
+const titleBacked = (phrase, support) => {
+  if (!support || !/\s/.test(phrase)) return false;
+  const re = new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(phrase)}(?![\\p{L}\\p{N}])`, "u");
+  return support.titles.some((t) => re.test(t));
+};
+
+export function proseNameCandidates(text, sources = null, prompt = "") {
+  const support = sources ? proseSupport(sources) : null;
+  // With sources or a question to weigh a name against (1.0.2), "and" and a
+  // comma separate names instead of joining them: "Hawkins and Prestige",
+  // "Michelin, Continental, Bridgestone" are lists of picks, read whole they
+  // were one name the answer never wrote. Without them, the original reading.
+  const smart = !!(sources || prompt);
+  const promptWords = new Set(String(prompt || "").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean));
+  const seen = new Map(); // lower -> { text, count, hasDigit, initial, bold, listed, place }
+  const note = (phrase, initial = false, bold = false) => {
     const key = phrase.toLowerCase();
     const prev = seen.get(key);
-    if (prev) { prev.count += 1; return; }
-    seen.set(key, { text: phrase, count: 1, hasDigit: /\d/.test(phrase) });
+    if (prev) { prev.count += 1; if (!initial) prev.initial = false; if (bold) prev.bold = true; return prev; }
+    const c = { text: phrase, count: 1, hasDigit: /\d/.test(phrase), initial, bold, listed: false, place: false };
+    seen.set(key, c);
+    return c;
   };
 
   for (const line of String(text || "").split("\n")) {
@@ -953,6 +1222,9 @@ export function proseNameCandidates(text) {
     const tokens = [...region.matchAll(/\S+/g)].map((m) => ({ raw: m[0], at: m.index }));
     let run = [];
     let runStart = -1;
+    let runEnd = -1;
+    let runBold = false;
+    const lineRuns = []; // { c, start, end } in order, for lists
     const flush = () => {
       if (run.length) {
         // Trim connectors off both ends: a run may open on the sentence's own
@@ -968,14 +1240,37 @@ export function proseNameCandidates(text) {
         const phrase = run.join(" ").replace(/[.,;:!?]+$/, "").trim();
         // A model designation is evidence wherever it sits; position only
         // matters for a run that has nothing else going for it.
-        if (phrase && (!sentenceInitial || /\d/.test(phrase))) note(phrase);
+        // A sentence's first words are noted too, marked: they count only
+        // with evidence of their own (see proseSupport).
+        // "In India, Hawkins…": a run opening on a preposition is where or
+        // when the sentence is set, not a name.
+        if (phrase && smart && /^(?:In|At|On|From|Near|Across|Within|Under|Over|During|After|Before|Since|Across|Throughout|Outside)\s/.test(phrase)) { run = []; runStart = -1; runEnd = -1; runBold = false; return; }
+        if (phrase) {
+          const c = note(phrase, sentenceInitial && !/\d/.test(phrase), runBold === true);
+          lineRuns.push({ c, start: runStart, end: runEnd });
+          // "in Gurgaon", "across Pune": a place the sentence is set in.
+          // So is a list "in cities such as Pune, Delhi and Mumbai".
+          if (/(?:^|\s)(?:in|at|near|across|around|within|outside)(?:\s+[\p{Ll}-]+){0,3}?(?:\s+(?:such as|like|including|e\.g\.,?))?$/iu.test(before) &&
+            /(?:^|\s)(?:in|at|near|across|around|within|outside)$|(?:such as|like|including|e\.g\.,?)$/i.test(before)) c.place = true;
+          // Put forward as the answer: "Jio is often the strongest starting
+          // point", "Pampers Pure Protection is a good first option". English
+          // grammar, not a vocabulary: the same words the noise list holds.
+          if (smart && /^\s+(?:is|are|remains|stays|looks|seems)\s+(?:\w+\s+){0,2}?(?:the|a|an|another|one|your|our)\s+[^.;]{0,60}?\b(?:pick|picks|choice|choices|option|options|starting point|bet|buy|alternative|contender|winner|recommendation|fit|value)\b/i.test(region.slice(runEnd, runEnd + 140))) c.framed = true;
+        }
       }
       run = [];
       runStart = -1;
+      runEnd = -1;
+      runBold = false;
     };
 
     for (const tok of tokens) {
-      const bare = tok.raw.replace(/^[("'‘“]+/, "").replace(/[).,;:!?"'’”]+$/, "");
+      // Bold marks are emphasis, not part of the word: "the **Tata Nexon**
+      // is…" is a name in a sentence (1.0.2). A possessive is not part of it
+      // either ("Wirecutter’s top pick").
+      const bolded = /\*\*/.test(tok.raw);
+      const bare = tok.raw.replace(/^[("'‘“*_]+/, "").replace(/[).,;:!?"'’”*_]+$/, "").replace(/['’]s$/, "");
+      if (bolded && /^\*\*/.test(tok.raw.replace(/^[("'‘“]+/, "")) && run.length) flush();
       // A capitalised token, or a camelCase brand that opens lowercase
       // ("boAt Rockerz 512", "iPhone 15") — without the second form the run
       // started one token late and reported the product line ("Rockerz")
@@ -985,11 +1280,19 @@ export function proseNameCandidates(text) {
       // A parenthesised or bare model designation continues a run it follows
       // ("Nothing Phone (3a) Pro", "Realme 15 Pro").
       const isDesignation = run.length > 0 && /^[A-Za-z]*\d[A-Za-z0-9]*$/.test(bare);
-      const isConnector = run.length > 0 && PROSE_CONNECTORS.has(bare.toLowerCase());
+      const isConnector = run.length > 0 && PROSE_CONNECTORS.has(bare.toLowerCase()) && !(smart && bare.toLowerCase() === "and");
       if (isName || isDesignation || isConnector) {
         if (!run.length) runStart = tok.at;
         run.push(bare);
-        if (run.length >= 5) flush();
+        runEnd = tok.at + Math.max(0, tok.raw.indexOf(bare)) + bare.length;
+        // Bold is evidence only when it is exactly the name: "**Tata
+        // Nexon**", not "**EPA-registered repellent containing…**".
+        const closes = bolded && /\*\*[).,;:!?"'’”]*$/.test(tok.raw);
+        if (bolded && run.length === 1 && /^[("'‘“]*\*\*/.test(tok.raw)) runBold = "open";
+        if (closes) runBold = runBold === "open";
+        // A bold name ends where its bold does ("**Tata Nexon** Kia" is two),
+        // and, read smartly, at a comma ("Michelin, Continental").
+        if (run.length >= (smart ? 7 : 5) || closes || (smart && /[,;]["'’”)*]*$/.test(tok.raw))) flush();
         continue;
       }
       flush();
@@ -997,6 +1300,52 @@ export function proseNameCandidates(text) {
       if (/[.!?]$/.test(tok.raw)) runStart = -1;
     }
     flush();
+    // Names in a list: two or more joined by commas, "and", "or" ("Daikin
+    // and LG", "Michelin, Continental and Bridgestone"). A list is what an
+    // answer compares, so each is a name; a list set "in" somewhere is places.
+    if (smart) {
+      for (let i = 0; i + 1 < lineRuns.length; i++) {
+        const a = lineRuns[i], b = lineRuns[i + 1];
+        const gap = region.slice(a.end, b.start);
+        if (!/^[)"'’”*]*\s*(?:,|;|,?\s+(?:and|or|&|vs\.?|versus)\s+|\s+\/\s+)\s*(?:the\s+)?$/i.test(gap)) continue;
+        a.c.listed = b.c.listed = true;
+        if (a.c.place || b.c.place) a.c.place = b.c.place = true;
+      }
+    }
+  }
+
+  // Evidence a name needs (1.0.2). A model designation, or being written
+  // twice, as before; or the engine's own pages: a site of that name, or a
+  // title naming it (see siteBacked/titleBacked); or bold in a sentence, the
+  // answer setting the name apart. A sentence's first word has only the last
+  // three to go on, since every sentence capitalises its first word. Shapes
+  // the flattening of a page makes ("StrengthsBest", glued) and short
+  // acronyms ("ANC") need a site, or to recur. A single word of the question
+  // ("Chennai" in "…grocery delivery in Chennai") is what was asked about,
+  // not an answer to it, unless the answer returns to it.
+  // A name in a list, or written as a name in a page's snippet, is evidence
+  // too (see snippetBacked). A place ("in Gurgaon") is not a brand.
+  const LABEL_HEAD = /^(?:Step|Option|Scenario|Tip|Day|Week|Phase|Part|Level|Round|Plan|Tier|Rule|Point|Method|Way|Top|Under|Over|Below|Above|Best|Rs|INR|USD|Price|Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Q[1-4]|FY|H[12])\b/;
+  const evidence = (c) => {
+    if (c.place && !siteBacked(c.text, support)) return false;
+    // "**Step 2**", "**November 2026**": a label or a date, as boldProductNames refuses.
+    if (LABEL_HEAD.test(c.text)) return false;
+    // "**Common** issues": a generic word, bold or not (the curated sets).
+    if (!/\s/.test(c.text) && (GENERIC_SPEC_NOUNS.has(c.text.toLowerCase()) || CATEGORY_PLURAL_NOUNS.has(c.text.toLowerCase()))) return false;
+    const site = siteBacked(c.text, support);
+    const glued = isGluedArtifact(c.text), acronym = /^[A-Z0-9&]{2,4}$/.test(c.text) || /^(?:[A-Z]\.){1,3}[A-Z]?\.?$/.test(c.text);
+    const single = !/\s/.test(c.text);
+    if (single && promptWords.has(c.text.toLowerCase())) return c.count >= 2 && !c.initial;
+    if (acronym) return site || c.count >= 2;
+    if (glued) return site || c.count >= 2 || c.listed || c.framed || camelInTitle(c.text, support) || snippetBacked(c.text, support) || (!c.initial && c.hasDigit);
+    if (site || titleBacked(c.text, support) || c.bold || c.listed || c.framed || snippetBacked(c.text, support)) return true;
+    return !c.initial && (c.hasDigit || c.count >= 2);
+  };
+  if (support || prompt) {
+    return [...seen.values()]
+      .filter(evidence)
+      .map((c) => c.text)
+      .filter((p) => !PROMPT_STOPWORDS.has(p.toLowerCase()));
   }
 
   // A model designation is proof on its own; anything else has to recur.
@@ -1008,8 +1357,10 @@ export function proseNameCandidates(text) {
   //     than a company ("ANC", "OIS", "HDR"),
   //   - a bare geography or market qualifier ("India"), which every answer
   //     repeats and no answer means as a brand.
+  // Without sources or a question (the original contract, kept for callers
+  // that pass text alone): a designation, or written twice not first.
   return [...seen.values()]
-    .filter((c) => c.hasDigit || c.count >= 2)
+    .filter((c) => !c.initial && (c.hasDigit || c.count >= 2))
     .map((c) => c.text)
     .filter(isPlausibleProseName);
 }
@@ -1025,6 +1376,9 @@ export function proseNameCandidates(text) {
 const COMPONENT_CHIPS = new Set([
   "snapdragon", "dimensity", "exynos", "tensor", "helio", "bionic", "cortex", "kryo",
   "mali", "adreno", "geforce", "radeon", "supercomputing", "antutu", "geekbench",
+  // Laptop parts named like makers in a gaming-laptop answer (live run, 22
+  // Nov 2026): "RTX" and "Ryzen" reached the brand list beside Lenovo and HP.
+  "rtx", "gtx", "ryzen", "xeon", "threadripper",
   "qualcomm", "mediatek", "arm", "tsmc", "intel", "amd", "nvidia", "oled", "amoled",
   "retina", "gorilla", "battery", "processor", "chipset", "soc", "display", "camera",
   "refresh", "charging", "cooling", "storage", "durability", "thermal", "performance",
@@ -1143,6 +1497,11 @@ export function detectBrands(answerText, plainText, ctx = {}) {
 
   const { entities: markerEntities, productNames } = parseMarkers(answerText || "");
   const candidates = new Map(); // lowerName -> { name, category, description }
+  // Makers read off a model name ("adidas Supernova Solution 3"): written in
+  // lowercase on purpose, so the lowercase-fragment rule below spares them.
+  const modelMakers = new Set();
+  // A product's maker as this answer writes it: "Royal Canin", not "Royal".
+  const vendorIn =(title) => vendorInAnswer(text.replace(/[*_`]/g, ""), String(title || "").replace(/[*_`]/g, ""));
 
   // What the question was about, and whether the answer even has prose to
   // corroborate a name against (a pure table has none — see the section above).
@@ -1155,6 +1514,10 @@ export function detectBrands(answerText, plainText, ctx = {}) {
   // generic word and is never caught by this.
   const isPromptEcho = (name) => {
     if (!promptTokens.size) return false;
+    // A word written in capitals is an acronym, not the plural noun it
+    // spells: "TVS" (the scooter maker) is not "tvs" (televisions), and was
+    // dropped from every electric-scooter answer (live run, 22 Nov 2026).
+    if (String(name).split(/\s+/).some((w) => /^\p{Lu}{2,}$/u.test(w.replace(/[^\p{L}]/gu, "")))) return false;
     const words = String(name).toLowerCase().split(/\s+/)
       .map((w) => w.replace(/[^a-z0-9]/g, "")).filter(Boolean);
     if (!words.length) return false;
@@ -1172,11 +1535,16 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     const n = String(name || "").trim().replace(/[*_`]/g, "");
     const cap = MAX_LEN[trust] ?? MAX_LEN.default;
     if (!n || n.length < 2 || n.length > cap) return;
-    if (isNoise(n) || isNoise(n.split(/\s+/)[0])) return;
+    // A name starting with a filler word ("New Arrivals", "Best Overall") is
+    // a label — unless the answer only ever writes that word as the start of
+    // this name: "New Balance" (1.0.2).
+    // A name a listing gave whole ("The Root Canal Studio", a place card) is
+    // trusted as written, "The" and all.
+    if (isNoise(n) || (trust !== "trusted" && isNoise(n.split(/\s+/)[0]) && vendorIn(n) !== n)) return;
     if (trust !== "trusted" && isComponentOrChip(n)) return;
     // A name read off the answer's layout is written as a name: "near",
     // "hotels" and "the jetty" are table fragments, not brands.
-    if (trust === "structural" && /^[a-z][a-z\s'’.-]*$/.test(n)) return;
+    if (trust === "structural" && /^[a-z][a-z\s'’.-]*$/.test(n) && !modelMakers.has(n)) return;
     // "Hotel" on its own is the category, never the business.
     if (trust !== "trusted" && GENERIC_VENUE_RE.test(n)) return;
     const k = n.toLowerCase();
@@ -1184,6 +1552,11 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     const keepWhole = trust === "trusted";
     if (!prev) candidates.set(k, { name: n, category: category || null, description: description || null, keepWhole, shownOnly, weak, needsProse, groups: group ? new Set([group]) : new Set() });
     else {
+      // A cited site that matches a name the text already gave ("adidas"
+      // from a list item, adidas.co.in among the sources) backs that name;
+      // it must not turn it into a site name, which is matched as a squashed
+      // label written in capitals and lost "adidas" (live run, 22 Nov 2026).
+      if (category === "cited_domain" && !prev.category) { prev.domainBacked = true; return; }
       if (group) (prev.groups = prev.groups || new Set()).add(group);
       if (keepWhole) prev.keepWhole = true;
       if (shownOnly) prev.shownOnly = true;
@@ -1210,7 +1583,7 @@ export function detectBrands(answerText, plainText, ctx = {}) {
   // visible text for readability) — that IS a real citation event even when the
   // model never narrates the product's name in prose. Without this flag such
   // products silently vanish (0 text hits → dropped) despite being shown to the user.
-  productNames.forEach((p) => addCand(vendorFromProductName(p), "product_vendor", null, "default", true));
+  productNames.forEach((p) => addCand(vendorIn(p), "product_vendor", null, "default", true));
   (ctx.products || []).forEach((p) => {
     // shownOnly only for the product's actual BRAND (manufacturer) — a
     // marketplace that merely sells it (Amazon, Flipkart) isn't the brand
@@ -1233,7 +1606,15 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     else if (merchantName && !merchantIsSite && !isMarketplaceName(merchantName)) {
       addCand(merchantName, "product_vendor");
     } else {
-      addCand(vendorFromProductName(p.name), "product_vendor", null, "default", true);
+      // A card titled like a listing ("Cloud Based Manufacturing ERP
+      // Software", "Erp Next Software For…": Gemini, live run of 22 Nov
+      // 2026) starts with a describing word, not its maker: skip a first word
+      // the answer writes in lowercase, or in other capitals ("ERP").
+      const v = vendorIn(p.name);
+      const first = String(v || "").split(/\s+/)[0];
+      const otherCase = first && new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(first)}(?![\\p{L}\\p{N}])`, "iu").test(text) &&
+        ![...text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(first)}(?![\\p{L}\\p{N}])`, "giu"))].some((m) => m[0] === first);
+      if (!(v && !/\s/.test(v) && (lowercaseIn(text, v) || otherCase))) addCand(v, "product_vendor", null, "default", true);
     }
     // The product's own name starts with its maker ("boAt Rockerz 551", "JBL
     // Tune 520BT", "realme TechLife Studio H1"), whoever sells it (1.0.0):
@@ -1242,7 +1623,7 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     // "Studio H1"): "Modern Gold Drape Bar Necklace" starts with an
     // adjective, and its maker is the seller above. The same rule the
     // structural candidates below use.
-    if (!p.brand && p.name && /\d/.test(p.name)) addCand(vendorFromProductName(p.name), "product_vendor", null, "default", true);
+    if (!p.brand && p.name && /\d/.test(p.name)) addCand(vendorIn(p.name), "product_vendor", null, "default", true);
   });
   // Local/place answers: the businesses themselves are the brands (structured
   // listing data, not a text guess — trusted, long names OK, and "shown" by definition).
@@ -1274,7 +1655,13 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     // A heading sometimes names two alternatives at once ("Google Sheets / Excel",
     // "GIMP / Photoshop") — treat each side of " / " as its own candidate instead
     // of evaluating the joined phrase as one (wrong) name.
-    const parts = / \/ /.test(s) ? s.split(/ \/ /).map((p) => p.trim()).filter(Boolean) : [s];
+    // A table cell or list item naming alternatives with "or" is the same
+    // ("Real Geeks or Sierra Interactive", "Lofty or BoldTrail (kvCORE)",
+    // live run of 22 Nov 2026): read whole, it reported "Real". Only between
+    // two capitalised names, so "Black or White" in a heading is split too,
+    // but "phones or tablets" never reaches here as a name.
+    const alt = / \/ | or (?=[A-Z])/;
+    const parts = alt.test(s) ? s.split(/ \/ | or (?=[A-Z])/).map((p) => cleanCandidateText(p.replace(/\s*\([^)]*\)\s*$/, "")) || p.trim()).filter(Boolean) : [s];
     for (const part of parts) {
       // Gemini bolds its section headings ("### **For Family Baths: Storage
       // Water Heaters**"), so bold-vs-plain does not separate a name from a
@@ -1290,6 +1677,10 @@ export function detectBrands(answerText, plainText, ctx = {}) {
       // says the name again. Spec labels in that shape ("**Battery**: …")
       // are common words the answer also writes in lowercase, and go there.
       const needsProse = source === "section" || source === "heading";
+      // "Privacy/Security", "Features/riders": two ordinary words joined by a
+      // slash label a list item (live run, 22 Nov 2026); a name with a slash
+      // in it ("AC/DC") is written in capitals.
+      if (source !== "table" && source !== "table-guess" && /^\p{Lu}\p{Ll}+\/\p{L}\p{Ll}+$/u.test(part)) continue;
       const group = source === "section" ? groupOf(s) : null;
       if (looksLikeProperName(part)) {
         // A product named in a heading or list item is reported as its maker
@@ -1304,9 +1695,28 @@ export function detectBrands(answerText, plainText, ctx = {}) {
         addCand(trimmed, null, null, "structural", false, weak, needsProse, group);
         continue;
       }
+      // A cell under a name header written wholly as a name ("Bank of
+      // Maharashtra", "Central Bank of India", "State Bank of India (SBI)":
+      // Gemini's "Lender" column, live run of 22 Nov 2026) is that name, not
+      // its first word.
+      if (source === "table") {
+        const whole = part.replace(/\s*\(\p{Lu}{2,}\)\s*$/u, "").trim();
+        const w = whole.split(/\s+/);
+        // An organisation's name, not a product's: it joins words ("of",
+        // "&") or ends in what it is ("Bank", "Finance"). "Noise Airwave Max
+        // XR" and "Royal Canin Labrador Puppy" are a maker plus a model.
+        const org = w.slice(1).some((x) => /^(?:of|de|la|and|&|for)$/.test(x)) ||
+          /^(?:Banks?|Finance|Financial|Insurance|Assurance|Capital|Securities|Housing|University|College|Institute|School|Academy|Hospitals?|Clinic|Healthcare|Group|Holdings|Limited|Ltd|Inc|Corp|Corporation|Company|Co|Bancorp|Trust|Fund|Credit|Union|Motors|Airlines?|Airways|Telecom|Communications)$/.test(w[w.length - 1]);
+        if (org && w.length >= 2 && w.length <= 6 && !/\d/.test(whole) && w.every((x, i) => /^\p{Lu}/u.test(x) || (i > 0 && /^(?:of|de|la|and|&|for|the)$/.test(x)))) {
+          addCand(whole, null, null, "structural", false, weak, needsProse, group);
+          continue;
+        }
+      }
       // A venue is named whole: "Trekkers Hostel 12" and "Hotel Summit 9"
       // are businesses, not the maker "Trekkers" plus a model number.
-      if (VENUE_WORD_RE.test(part) && /[A-Z]/.test(part)) { addCand(part, null, null, "structural", false, weak, needsProse, group); continue; }
+      // Not a sentence-case label that happens to hold a venue word: "Clinic
+      // locations" headed a list in a live run (22 Nov 2026).
+      if (VENUE_WORD_RE.test(part) && /[A-Z]/.test(part) && !/^\p{Lu}\p{Ll}*(?:\s+\p{Ll}[\p{Ll}'’-]*)+$/u.test(part.trim())) { addCand(part, null, null, "structural", false, weak, needsProse, group); continue; }
       const hasDigit = /\d/.test(part);
       const words = part.trim().split(/\s+/);
       // A long product label ("Patanjali Ragi Digestive Cookies") is its
@@ -1316,14 +1726,22 @@ export function detectBrands(answerText, plainText, ctx = {}) {
       const lastWord = words[words.length - 1].replace(/[^\w]/g, "").toLowerCase();
       if (!hasDigit && words.length > 1 && /^[A-Z]/.test(words[0]) && !CATEGORY_PLURAL_NOUNS.has(lastWord)) {
         const sentenceCase = words.slice(1).every((w) => /^[a-z,.'’&-]+$/.test(w));
-        if (sentenceCase && words.length >= 3) continue;
+        // Two words count too when it's a list item's label: "Team features",
+        // "Practical advice" and "Entry-level alternative" were reported as
+        // the brands Team, Practical and Entry-level (live run, 22 Nov 2026).
+        // A table's first column can be conditions, not names (1.0.2): "If
+        // you are | What to buy" rows "Lactose intolerance", "Strict vegan"
+        // were reported as the brands Lactose and Strict (live run, 22 Nov
+        // 2026). A name in a table is written as one: "Whey Isolate", not
+        // "Whey isolate".
+        if (sentenceCase && (words.length >= 3 || source === "bullet" || source === "heading" || source === "section" || source === "table" || source === "table-guess")) continue;
         if (source !== "table" && source !== "table-guess") {
           const trimmed = trimDescriptors(answerText || text, part, shared);
           if (trimmed !== part && looksLikeProperName(trimmed)) { addCand(trimmed, null, null, "structural", false, weak, needsProse, group); continue; }
           // Only a list item's subject falls back to its first word. A
           // section heading that isn't a name once trimmed is a category
           // ("Millet & Zero-Refined-Sugar Options"), never a brand.
-          if (source === "bullet" || source === "example") { addCand(vendorFromProductName(part), null, null, "structural", false, weak, needsProse, group); continue; }
+          if (source === "bullet" || source === "example") { addCand(vendorIn(part), null, null, "structural", false, weak, needsProse, group); continue; }
         }
       }
       // vendorFromProductName only makes sense on a multi-word phrase — it
@@ -1334,14 +1752,26 @@ export function detectBrands(answerText, plainText, ctx = {}) {
       // / BGMI → Kreo Harpy") used to read as a brand: it has a digit, so the
       // digit-fallback fired, but there was nothing to extract a vendor FROM.
       const multiWord = part.trim().split(/\s+/).length > 1;
+      // "Budget-friendly", "Entry-level": a describing word, not a name.
+      if (!multiWord && /^\p{Lu}\p{Ll}+-\p{Ll}+$/u.test(part.trim())) continue;
+      // One word that opens on its number ("91springboard", "1mg",
+      // "7Eleven") is a name written that way, not a model with no maker:
+      // read for its maker, it came out empty (1.0.2, live run 22 Nov 2026).
+      if (!multiWord && /^\d+\p{L}{3,}[\p{L}\p{N}]*$/u.test(part.trim())) { addCand(part.trim(), null, null, "structural", false, weak, needsProse, group); continue; }
       if (source === "table" || source === "table-guess" || (hasDigit && multiWord)) {
         // A maker followed by a model number ("Noise Buds VS104") is a name
         // even when the answer also uses the word ("noise cancellation").
         // So is one followed by more capitalised words ("Noise Airwave Max
         // XR"); "Oats biscuit" is a description and gets no such pass.
         const titled = multiWord && part.trim().split(/\s+/).slice(1).some((w) => /^[A-Z]/.test(w));
-        if (multiWord && (hasDigit || titled)) fromModel.add(String(vendorFromProductName(part)).toLowerCase());
-        addCand(vendorFromProductName(part), null, null, "structural", false, weak, needsProse);
+        if (multiWord && (hasDigit || titled)) fromModel.add(String(vendorIn(part)).toLowerCase());
+        // "adidas Supernova Solution 3", "boAt Rockerz 551" (live run, 22 Nov
+        // 2026: adidas was missing from every answer that named it this way).
+        // Only one word of three letters or more, and only before a model
+        // with a number in it.
+        const maker = vendorIn(part);
+        if (hasDigit && multiWord && /^[a-z]+$/.test(maker) && maker.length >= 3 && !isNoise(maker) && /\d/.test(part.split(/\s+/).slice(1).join(" "))) modelMakers.add(maker);
+        addCand(maker, null, null, "structural", false, weak, needsProse);
       }
     }
   });
@@ -1372,7 +1802,32 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     const words = v.name.split(/\s+/);
     if (words.length < 2) continue;
     const headKey = words[0].toLowerCase();
-    if (candidates.has(headKey) && headKey !== k) candidates.delete(k);
+    if (!candidates.has(headKey) || headKey === k) continue;
+    // "Bank of Maharashtra", "Bank of India": a name joined by "of" is one
+    // name, never its first word (1.0.2).
+    if (/\s(?:of|de|la|&)\s/i.test(v.name)) { if (!candidates.get(headKey).keepWhole) candidates.delete(headKey); continue; }
+    // Unless the head is only ever the start of this name (1.0.2): "Red"
+    // from one table cell must not swallow "Red Tape" when the answer never
+    // writes "Red" without "Tape". Then the head goes, the name stays.
+    if (vendorIn(v.name).toLowerCase() === v.name.toLowerCase().replace(/[^\w&.'’\s-]/g, "") && !candidates.get(headKey).keepWhole) { candidates.delete(headKey); continue; }
+    candidates.delete(k);
+  }
+
+  // The other way round (1.0.2): a one-word guess that only ever starts a
+  // longer name the capture itself vouches for (a place listing, a marker)
+  // is that name's first word, not a brand: "Hi", "Om" and "Bombay" beside
+  // the listed clinics "Hi Tech Dental Clinic Bandra", "Om Datta Dental
+  // Clinic", "Bombay Dental Specialties" (live run, 22 Nov 2026).
+  {
+    const plain = text.replace(/[*_`]/g, "");
+    for (const [k, v] of [...candidates]) {
+      if (v.keepWhole || (v.category !== null && v.category !== "product_vendor") || /\s/.test(v.name)) continue;
+      const longer = [...candidates.values()].some((o) => o.keepWhole && o.name.toLowerCase().startsWith(k + " "));
+      if (!longer) continue;
+      const alone = [...plain.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(v.name)}(?![\\p{L}\\p{N}])(\\s+(\\S+))?`, "gu"))]
+        .some((m) => !m[2] || !/^\p{Lu}/u.test(m[2]));
+      if (!alone) candidates.delete(k);
+    }
   }
 
   // Same collapse, for the HYPHENATED form a brand's own domain often takes.
@@ -1423,10 +1878,13 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     // structured data — an entity marker, a product card, a place listing, a
     // cited domain, the user's own tracked list — has a category set and is
     // exempt: those are facts about the capture, not readings of its layout.
-    if (cand.category === null) {
+    if (cand.category === null && !cand.domainBacked) {
       // A brand that is also a word ("Noise" next to "noise cancellation")
       // is still written as a name somewhere in the prose; "Sugar" never is.
-      if (!fromModel.has(cand.name.toLowerCase()) && lowercaseIn(text, cand.name) && !namedMidSentence(text, cand.name)) continue;
+      // No word has a digit in it: "91springboard", written lowercase as the
+      // company writes itself, is a name (1.0.2; it headed a table row and
+      // was dropped from a coworking answer, live run of 22 Nov 2026).
+      if (!fromModel.has(cand.name.toLowerCase()) && !/\d/.test(cand.name) && lowercaseIn(text, cand.name) && !namedMidSentence(text, cand.name)) continue;
       if (cand.needsProse && proseExists && !namedInProse(text, cand.name) && !(cand.groups && cand.groups.size)) continue;
       if (isPromptEcho(cand.name)) continue;
     }
@@ -1537,20 +1995,34 @@ export function detectBrands(answerText, plainText, ctx = {}) {
   // claim is only recorded for a candidate that made it into `results`.
   if (!results.length) {
     const proseCands = new Map();
-    for (const raw of proseNameCandidates(answerText || "")) {
+    for (const raw of proseNameCandidates(answerText || "", ctx.sources || [], ctx.prompt || "")) {
       const cleaned = cleanCandidateText(raw);
       if (!cleaned) continue;
-      const part = looksLikeProperName(cleaned) ? cleaned : vendorFromProductName(cleaned);
+      // A name the prose writes without a model number is kept as written
+      // (1.0.2): cut to its first word, "Rahul de Cunha Pictures" was "Rahul"
+      // and "Parag Parikh Flexi Cap" was "Parag". A longer one keeps its two
+      // leading names ("Brooke Bond Red Label Natural" → "Brooke Bond"); one
+      // with a model number is still read for its maker ("Motorola Edge 60").
+      const w = cleaned.split(/\s+/);
+      const part = looksLikeProperName(cleaned) ? cleaned
+        : /\d/.test(cleaned) ? vendorIn(cleaned)
+        : w.length <= 4 ? cleaned
+        : /^\p{Lu}/u.test(w[1] || "") ? w.slice(0, 2).join(" ")
+        : vendorIn(cleaned);
       const n = String(part || "").trim().replace(/[*_`]/g, "");
       if (!n || n.length < 2 || n.length > MAX_LEN.structural) continue;
       if (isNoise(n) || isNoise(n.split(/\s+/)[0])) continue;
       if (isComponentOrChip(n) || isMarketplaceName(n)) continue;
       // Re-checked AFTER the head reduction: "India Rockerz 512" survives the
       // phrase-level test and then collapses to the bare qualifier "India".
-      if (!isPlausibleProseName(n)) continue;
+      // A name kept as the candidate pass vetted it is not re-judged by shape.
+      if (n !== cleaned && !isPlausibleProseName(n)) continue;
       if (isPromptEcho(n)) continue;
       const k = n.toLowerCase();
-      if (candidates.has(k) || proseCands.has(k)) continue;
+      // Only rejected candidates exist when this runs (results is empty): a
+      // label structure turned down ("Pampers Pure Protection is a good first
+      // option:") can still be a name the prose has evidence for (1.0.2).
+      if (proseCands.has(k)) continue;
       proseCands.set(k, { name: n, category: null, description: null, keepWhole: false, shownOnly: false, weak: false, needsProse: false });
     }
     if (proseCands.size) {
@@ -1569,7 +2041,7 @@ export function detectBrands(answerText, plainText, ctx = {}) {
   // Makers of products named in bold mid-sentence that nothing above found
   // (see boldProductNames). Added only; never replaces or removes a brand.
   for (const name of boldProductNames(answerText || "")) {
-    const vendor = vendorFromProductName(name);
+    const vendor = vendorIn(name);
     // The same exclusions the other passes make: chips, shops, and dates
     // ("**November 2026**").
     if (!vendor || isNoise(vendor) || isComponentOrChip(name) || isComponentOrChip(vendor) || isMarketplaceName(vendor)) continue;
@@ -1580,6 +2052,46 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     if (!hits.length) continue;
     const at = hits[0].index;
     results.push({ brand: vendor, count: hits.length, firstIndex: at, category: null, description: null, passages: [text.slice(Math.max(0, at - 110), at + 110).replace(/\s+/g, " ").trim()] });
+  }
+
+  // Names bolded side by side in one sentence (1.0.2): "Strong options
+  // include **Refine Labs** for demand generation, **Directive Consulting**
+  // for enterprise…", "use **Babbel** for structured lessons and **Busuu**
+  // for conversation". A live run of 22 Nov 2026 kept one of each such list
+  // and lost the rest. One bold phrase can be emphasis; two or more
+  // name-shaped ones in a sentence are the answer's list of picks. Labels
+  // ("**Price:**"), dates, spec terms and the generic nouns stay out.
+  {
+    const NAME_SHAPE = /^[\p{Lu}\d][\p{L}\p{N}&'’.+-]*(?:\s+(?:[\p{Lu}\d&][\p{L}\p{N}&'’.+-]*|of|and|&|de|la|the|for|von|van))*$/u;
+    const LABEL_START = /^(?:Step|Option|Scenario|Tip|Day|Week|Phase|Part|Level|Round|Plan|Tier|Rule|Point|Method|Way|Top|Under|Over|Below|Above|Best|Rs|INR|USD|Price|Pricing|Note|Why|How|What|Which|Pros|Cons|Verdict|Summary|Bottom|Key|Quick|Final|Overall|Budget|Premium|Value|Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b/;
+    const nameish = (s) => NAME_SHAPE.test(s) && s.split(/\s+/).length <= 5 && s.length <= 45 && !LABEL_START.test(s) &&
+      !isNoise(s) && (!isNoise(s.split(/\s+/)[0]) || /^The\s+\S/.test(s)) && !isComponentOrChip(s) && !isMarketplaceName(s) &&
+      !(!/\s/.test(s) && (GENERIC_SPEC_NOUNS.has(s.toLowerCase()) || CATEGORY_PLURAL_NOUNS.has(s.toLowerCase()))) &&
+      !/^[A-Z0-9]{2,4}$/.test(s) && !isPromptEcho(s);
+    const have = (n) => results.some((r) => { const b = r.brand.toLowerCase(), k = n.toLowerCase(); return b === k || k.startsWith(b + " ") || b.startsWith(k + " "); });
+    // Prose only: a table's bold cells and a heading's are layout, read by
+    // the structure pass ("**Low Light**" in a "Best for" column is a use).
+    const prose = String(answerText || "").split("\n").filter((l) => !/^\s*(?:\||#{1,6}\s)/.test(l)).join("\n");
+    for (const sentence of prose.split(/(?<=[.!?])\s+|\n/)) {
+      const bolds = [...sentence.matchAll(/\*\*([^*\n]{2,60}?)\*\*(?!\s*[:：])/g)].map((m) => m[1].trim().replace(/[.,;]+$/, ""));
+      const names = [...new Set(bolds.filter(nameish))];
+      // Two with one already found among them, or three or more.
+      if (names.length < 2 || (names.length < 3 && !names.some(have))) continue;
+      for (const n of names) {
+        // Bolded whole while the list holds only its start ("Asit" for
+        // "**Asit Mehta & Associates**"): the bold is the name.
+        // Only an organisation's name ("& Associates", "… Consulting"); a
+        // product's ("Royal Canin Labrador Puppy") keeps its maker.
+        const orgName = /\s&\s|&$/.test(n) || /\s(?:Associates|Partners|Counsellors|Advocates|Solicitors|Consultants|Consulting|Services|Hospitals?|Clinics?|College|University|School|Institute|Academy|Labs?|Studios?|Digital|Media|Group|Agency|Foundation|Trust)$/.test(n);
+        const shorter = orgName && results.find((r) => n.toLowerCase().startsWith(r.brand.toLowerCase() + " ") && !r.category);
+        if (shorter && !results.some((r) => r.brand.toLowerCase() === n.toLowerCase())) { shorter.brand = n; continue; }
+        if (have(n)) continue;
+        const hits = [...text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(n)}(?![\\p{L}\\p{N}])`, "gu"))];
+        if (!hits.length) continue;
+        const at = hits[0].index;
+        results.push({ brand: n, count: hits.length, firstIndex: at, category: null, description: null, passages: [text.slice(Math.max(0, at - 110), at + 110).replace(/\s+/g, " ").trim()] });
+      }
+    }
   }
 
   // Renaming a domain candidate to how the answer writes it can collide with a
@@ -1599,6 +2111,130 @@ export function detectBrands(answerText, plainText, ctx = {}) {
   }
   results.length = 0;
   results.push(...merged.values());
+
+  // Half a name made whole (1.0.2). In a live run of 22 Nov 2026 the answers
+  // wrote "Capital One", "Wells Fargo", "IIM Ahmedabad", "Tata AIA", "Asit
+  // Mehta & Associates" every time and the brand list said "Capital",
+  // "Wells", "IIM", "Tata", "Asit Mehta &". When every mention goes on with
+  // the same capitalised word, that word is part of the name if the name
+  // ends on "&", the word says what kind of organisation it is, or the
+  // engine's own pages write the longer name (a site "capitalone.com", a
+  // title "Wells Fargo Active Cash"). A word followed by a model number is a
+  // product line ("ASUS TUF A15"), and the maker stays the brand.
+  {
+    const ORG_WORD = /^(?:Associates|Partners|Counsellors|Advocates|Solicitors|Consultants|Hospitals?|Clinics?|College|University|School|Institute|Academy|Palace|Hotels?|Resorts?|Digital|Media|Group|Bank|Insurance|Finance|Capital|Securities|Labs?|Studios?|Technologies|Foundation|Trust|Center|Centre)$/;
+    const sites = new Set((ctx.sources || []).map((s) => String((s && (s.domain || s.url)) || "").replace(/^https?:\/\//, "").split("/")[0].replace(/^www\./, "").split(".")[0].toLowerCase()));
+    const titles = (ctx.sources || []).map((s) => String((s && s.title) || ""));
+    const STOPW = /^(?:The|And|Or|For|In|On|At|With|Is|Are|By|To|Of|A|An|It|If|But|vs|Vs|VS|Pro|Plus|Max|Ultra|Mini|Lite)$/;
+    for (const r of results) {
+      for (let step = 0; step < 2; step++) {
+        const re = new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(r.brand)}(?![\\p{L}\\p{N}])(?:\\*\\*)?[ \\t]+([\\p{Lu}][\\p{L}&’'.-]*)((?:[ \\t]+\\S+){0,3})`, "gu");
+        const all = [...text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(r.brand)}(?![\\p{L}\\p{N}])`, "gu"))].length;
+        const hits = [...text.matchAll(re)];
+        if (!all || hits.length !== all) break;
+        const next = hits[0][1].replace(/[.’']+$/, "");
+        if (!next || STOPW.test(next) || isNoise(next) || /\d/.test(next) || !hits.every((m) => m[1].replace(/[.’']+$/, "") === next)) break;
+        // A model number within the next few words ("Noise Airwave Max XR
+        // 120"), or a product-line word written in CamelCase ("realme
+        // TechLife", "Wakefit ShapeSense"): the maker stays the brand.
+        const after = (m) => text.slice(m.index + m[0].length - (m[2] || "").length, m.index + m[0].length - (m[2] || "").length + 60)
+          .replace(/[*_`]/g, " ").trim().split(/\s+/).slice(0, 3);
+        if (hits.some((m) => after(m).some((w) => /^[A-Za-z-]*\d/.test(w)))) break;
+        if (/\p{Ll}\p{Lu}/u.test(next) || /^\p{Lu}{2,}$/u.test(next)) break;
+        const longer = `${r.brand} ${next}`;
+        const sq = longer.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+        // A one-word brand that is also an ordinary word ("Capital", "Wells",
+        // "Blue"): written in lowercase somewhere in the answer or what the
+        // engine sent, and never on its own here, it is the first word of
+        // the name. The next word is not one of the question's.
+        // …and only where the name ends there ("Blue Dart covers…"): one that
+        // goes on ("Noise Airwave Max XR") is a product of that maker.
+        const endsThere = hits.every((m) => !/^\s*\p{Lu}/u.test(text.slice(m.index + m[0].length - (m[2] || "").length).replace(/^[*_`]+/, "")));
+        const ordinary = !/\s/.test(r.brand) && /^\p{Lu}\p{Ll}+$/u.test(r.brand) && hits.length >= 1 && endsThere &&
+          !promptTokens.has(next.toLowerCase()) &&
+          new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(r.brand.toLowerCase())}(?![\\p{L}\\p{N}])`, "u").test(
+            [text, ...titles, ...(ctx.sources || []).map((s) => String((s && s.snippet) || ""))].join("\n"));
+        // (A page title is no evidence here: review titles name products —
+        // "Kovo Weave review" — as often as companies.) A name the user
+        // tracks is theirs as written, never lengthened.
+        const backed = /&$/.test(r.brand) || ORG_WORD.test(next) || sites.has(sq) || ordinary;
+        const tracked = (ctx.tracked || []).some((t) => String(t.name || "").trim().toLowerCase() === r.brand.toLowerCase());
+        if (!backed || tracked || results.some((o) => o !== r && o.brand.toLowerCase() === longer.toLowerCase())) break;
+        r.brand = longer;
+      }
+    }
+  }
+
+  // Last tidy-up of the names (1.0.2, all from a live run of 22 Nov 2026).
+  {
+    // A map listing's title as its owner keyed it: "Jeff's Corporate Catering
+    // & Wedding Catering | Top Catering service for All Events | …", "SIEC
+    // Study Abroad, Overseas Education Consultant in New Delhi", "Uptown Rent
+    // a Car - Luxury Cars for Rent in Dubai". The name is the first part.
+    const listingName = (n) => {
+      let s = String(n);
+      if (/\s\|\s?|\s?\|\s/.test(s)) s = s.split(/\s*\|\s*/)[0];
+      if (s.length > 30) {
+        const m = /^(.{3,}?)\s*[-–—]\s+(.+)$/.exec(s) || /^(.{3,}?),\s+(.+)$/.exec(s) || /^(.{3,}?):\s+(.+)$/.exec(s);
+        if (m && (/\b(?:in|near|for|at)\s+\p{Lu}/u.test(m[2]) || /,/.test(m[2]) || /\b(?:service|services|consultants?|clinic|company|agency|rental|catering|centre|center|specialist|search|advisory)s?\b/i.test(m[2]) || /^\p{Lu}[\p{L}\s]{2,24}$/u.test(m[2]))) s = m[1];
+        // "…Consultants in Delhi", "…School (Arabian Ranches)": where it is.
+        s = s.replace(/\s+\([^)]{2,40}\)$/, "").replace(/\s+in\s+\p{Lu}[\p{L}.]+(?:\s+\p{Lu}[\p{L}.]+)?$/u, "");
+      }
+      return s.replace(/;.*$/, "").trim() || n;
+    };
+    for (const r of results) {
+      const clean = listingName(r.brand);
+      if (clean !== r.brand && clean.length >= 2 && !results.some((o) => o !== r && o.brand.toLowerCase() === clean.toLowerCase())) r.brand = clean;
+    }
+    // One word of the question is what was asked about ("Seoul", "Dubai",
+    // "Insurance", "MBA" for "online MBA programs"), not an answer to it —
+    // unless the question compares names ("Zerodha vs Groww").
+    // Only a word the question sets the scene with ("…in Seoul", "…for
+    // WordPress blogs", "…integrates with Shopify"): "best Motorola phone"
+    // asks about Motorola, and it stays.
+    const prompt = String(ctx.prompt || "").toLowerCase();
+    const compares = /\b(?:vs\.?|versus|or|compare[ds]?|better than|between)\b/.test(prompt);
+    if (!compares) {
+      for (let i = results.length - 1; i >= 0; i--) {
+        const b = results[i].brand;
+        if (/\s/.test(b) || (ctx.tracked || []).some((t) => String(t.name || "").toLowerCase() === b.toLowerCase())) continue;
+        // Read off text or a card's title ("Vitamin" of "Vitamin D3 2000 IU",
+        // "Learn" of "Learn Spanish…"); a place or a model-marked entity is
+        // a fact about the capture and stays.
+        if (results[i].category && !/^(?:cited_domain|product_vendor)$/.test(results[i].category)) continue;
+        if (new RegExp(`\\b(?:in|at|near|for|with|from|around|across)\\s+(?:the\\s+)?${escapeRegExp(b.toLowerCase())}\\b`).test(prompt)) { results.splice(i, 1); continue; }
+        // The question's own category word, which the answer also writes
+        // as a plain word ("Insurance" / "pet insurance", "Solar" / "solar
+        // panels"). A brand the question names ("Motorola") never is.
+        if (promptTokens.has(b.toLowerCase()) && lowercaseIn(text, b)) results.splice(i, 1);
+      }
+    }
+    // A fragment of a sentence, not a name: "approximately £18/month for…".
+    for (let i = results.length - 1; i >= 0; i--) if (/^\p{Ll}{4,}\s/u.test(results[i].brand) && (!results[i].category || results[i].category === "product_vendor")) results.splice(i, 1);
+  }
+
+  // A brand's short name counts as the brand (1.0.2). A Perplexity answer
+  // named "BHIVE" four times and "BHIVE Workspace" once, in its table, and
+  // reported BHIVE named once, fourth: it was named first. Only a short name
+  // shaped like a name of its own ("BHIVE", "WeWork", "M3M") and no other
+  // brand here starts with ("Tata" of "Tata Nexon" and "Tata Curvv" is not).
+  for (const r of results) {
+    const words = r.brand.split(/\s+/);
+    if (words.length < 2) continue;
+    const head = words[0];
+    if (!(/^\p{Lu}{3,}$/u.test(head) || /\p{Ll}\p{Lu}/u.test(head) || /\d/.test(head)) || isNoise(head)) continue;
+    if (results.some((o) => o !== r && (o.brand === head || o.brand.split(/\s+/)[0] === head))) continue;
+    const headHits = [...text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(head)}(?![\\p{L}\\p{N}])`, "gu"))].map((m) => m.index);
+    const fullAt = new Set([...text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(r.brand)}(?![\\p{L}\\p{N}])`, "giu"))].map((m) => m.index));
+    const extra = headHits.filter((i) => !fullAt.has(i));
+    if (!extra.length) continue;
+    r.count += extra.length;
+    if (extra[0] < r.firstIndex) {
+      r.firstIndex = extra[0];
+      const p = text.slice(Math.max(0, extra[0] - 110), extra[0] + 110).replace(/\s+/g, " ").trim();
+      if (!r.passages.includes(p)) r.passages.unshift(p);
+    }
+  }
 
   // Label against the user's tracked list (own / competitor) — presentation only.
   const tracked = (ctx.tracked || []).map((t) => ({

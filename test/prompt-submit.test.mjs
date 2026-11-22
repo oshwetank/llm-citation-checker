@@ -376,8 +376,31 @@ console.log("\nGemini: no native prefill exists, so the typing path is the only 
    * number because the saving is the entire point — a future refactor that
    * reintroduced a long unconditional wait would otherwise pass silently.
    */
-  check("Gemini submits promptly rather than waiting out a grace that can never fire",
-    r.submitAt != null && r.submitAt < 3000, `submitted at ${r.submitAt}ms`);
+  // 1.0.2: Gemini DOES send ?q= itself now (a live campaign of 22 Nov 2026
+  // asked every Gemini question twice), so it waits out the same native-submit
+  // grace as ChatGPT (~3.2 s from the composer) before typing. Still bounded:
+  // a long unconditional wait would fail here.
+  check("Gemini submits within the native-submit wait",
+    r.submitAt != null && r.submitAt < 5000, `submitted at ${r.submitAt}ms`);
+  check("no failure reported", r.gaveUp.length === 0, r.gaveUp.join(","));
+}
+
+console.log("\nGemini: the page sends ?q= itself (1.0.2) — never sent a second time");
+{
+  const r = await run(`
+    <rich-textarea><div contenteditable="true" id="g"></div></rich-textarea>
+    <button aria-label="Send message">send</button><div id="convo"></div>
+    <script>${RECORD_GEMINI}
+      const box=document.getElementById('g');
+      const fire=()=>{ if(!box.innerText.trim()) return; const t=box.innerText; box.innerHTML=''; window.__record(t); };
+      box.addEventListener('keydown',e=>{ if(e.key==='Enter') fire(); });
+      document.querySelector('button[aria-label="Send message"]').addEventListener('click',fire);
+      // Gemini's own deep-link send: it reads ?q= as the page loads and
+      // sends ~2 s later, the conversation opening at /app/<id> (as seen live).
+      const q0=new URLSearchParams(location.search).get('q');
+      setTimeout(()=>{ if(q0){ history.pushState(null,'','/app/abc123def456'); window.__record(q0); } }, 2000);
+    </script>`, { gemini: true });
+  check("submitted exactly once — Gemini's own send, not ours as well", r.submits === 1, `submits=${r.submits}`);
   check("no failure reported", r.gaveUp.length === 0, r.gaveUp.join(","));
 }
 
@@ -653,6 +676,30 @@ console.log("\nA send confirmed only by the engine's own submit request");
   check("no failure reported", r.gaveUp.length === 0, r.gaveUp.join(","));
   check("the turn reads as sent, confirmed on the wire", !!r.probe && r.probe.stage === "sent" && r.probe.sentWhy === "net",
     JSON.stringify(r.probe && { stage: r.probe.stage, why: r.probe.sentWhy }));
+}
+
+// 1.0.2, a live campaign of 22 Nov 2026: ChatGPT pre-filled the box from
+// ?q=, its "prepare … sent" request went out, and nothing else happened — the
+// question sat in the box and the turn timed out as "sent". 3 of 5 turns.
+console.log("\nChatGPT says \"prepare … sent\" but never sends: the runner presses Send");
+{
+  const r = await run(`
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <button id="composer-submit-button">send</button><div id="convo"></div>
+    <script>${RECORD_CHATGPT}
+      document.documentElement.setAttribute('data-lcfc-ch', 'CH-PREP');
+      const box = document.getElementById('prompt-textarea');
+      const q0 = new URLSearchParams(location.search).get('q');
+      setTimeout(() => {
+        box.textContent = q0;  // the ?q= pre-fill
+        window.postMessage({ __LCFC__: 'CH-PREP', type: 'engine-submit', via: 'prepare' }, location.origin);
+      }, 300);
+      document.getElementById('composer-submit-button').addEventListener('click', () => {
+        const t = box.innerText.trim(); if (!t) return; box.innerHTML = ''; window.__record(t);
+      });
+    </script>`, { waitMs: 20000 });
+  check("the question is sent, once", r.submits === 1, `submits=${r.submits}`);
+  check("no failure reported", r.gaveUp.length === 0, r.gaveUp.join(","));
 }
 
 // Gemini in a real run, in a hidden tab: a click or Enter was accepted but
