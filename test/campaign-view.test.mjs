@@ -193,5 +193,16 @@ console.log("\nLogos");
   check("no mark gives a letter badge", markSvg({ text: "smartprix.com" }).includes(">S</text>"));
 }
 
+console.log("\na run's totals count what it asked, a failed turn included (1.0.2)");
+{
+  // Live campaign, 22 Nov 2026: "12 answers from 12 prompts sent", ChatGPT
+  // "2/2", when 15 went out and ChatGPT was asked 5.
+  const vv = campaignView(recs, { profile, brands, prompts, asked: { chatgpt: 3, perplexity: 3, grok: 3 } });
+  const e = Object.fromEntries(vv.overview.engines.map((x) => [x.id, [x.answered, x.sent]]));
+  eq("Perplexity: 2 answered of the 3 it was asked", e.perplexity, [2, 3]);
+  eq("the run: answered of everything asked", [vv.overview.answered, vv.overview.sent], [5, 9]);
+  eq("Responses reads the same", [vv.overview.kpis.find((k) => k.id === "responses").value, vv.overview.kpis.find((k) => k.id === "responses").of], [5, 9]);
+}
+
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);

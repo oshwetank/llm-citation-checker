@@ -50,6 +50,18 @@ const attr = (tag, name) => {
   return m ? (m[1] !== undefined ? m[1] : m[2]) : null;
 };
 const refsOf = (s) => (String(s || "").match(/turn\d+[a-z]+\d+/g) || []);
+// A card's "Official website" link (1.0.2): <Link url="https://quickbooks.
+// intuit.com/uk/" title="Official QuickBooks website"/>. Stripped as layout
+// before, so the answer's links to the brands' own sites were lost: in a live
+// run of 22 Nov 2026, about 270 links ChatGPT showed across 82 answers. Kept
+// as a markdown link, the way every other linked name is kept.
+const linkMarkdown = (tag) => {
+  const url = attr(tag, "url") || attr(tag, "href");
+  if (!url || !/^https?:\/\//i.test(url)) return "";
+  const label = (attr(tag, "title") || attr(tag, "label") || "").trim() || url.replace(/^https?:\/\/(?:www\.)?/i, "").replace(/\/$/, "");
+  return `[${label.replace(/[[\]]/g, "")}](${url})`;
+};
+const LINK_TAG_RE = /<Link\b[^>]*?\/>|<Link\b[^>]*>[\s\S]*?<\/Link>/g;
 const plain = (s) => String(s || "")
   .replace(/<Entity\b[^>]*?value="([^"]*)"[^>]*\/>/g, "$1")
   .replace(/<Cite\b[^>]*\/>/g, "")
@@ -86,7 +98,9 @@ function inline(s, cites) {
       return ids.length ? `${PUA_OPEN}cite${ids.map((id) => PUA_MID + id).join("")}${PUA_CLOSE}` : "";
     })
     .replace(/<Entity\b[^>]*?value="([^"]*)"[^>]*\/>/g, "$1")
+    .replace(LINK_TAG_RE, (t) => { const m = linkMarkdown(t); return m ? `\u0002${m}\u0003` : ""; })
     .replace(new RegExp(String.raw`<\/?[A-Za-z][\w-]*\b${TAG_BODY}\/?>`, "g"), "")
+    .replace(/\u0002([^\u0003]*)\u0003/g, "$1")
     .replace(/[ \t]+/g, " ")
     .trim();
 }
@@ -144,7 +158,10 @@ function formMarkdown(f) {
   const out = [];
   f.groups.forEach((g) => {
     if (g.label) out.push(`**${g.label}**`, "");
-    g.options.forEach((o) => out.push(`- ${o === g.selected ? "●" : "○"} ${o}`));
+    // An option the layout fills in from its data ("{v}" in a mapped list) has
+    // no words of its own (1.0.2): a live run of 22 Nov 2026 showed "- ○ {v}"
+    // three times under a home-loan question. Left out.
+    g.options.filter((o) => !/^\{[^}]*\}$/.test(String(o).trim())).forEach((o) => out.push(`- ${o === g.selected ? "●" : "○"} ${o}`));
     out.push("");
   });
   f.checks.forEach((c) => out.push(`- ${c.checked ? "☑" : "☐"} ${c.label}`));
@@ -170,7 +187,10 @@ function readCard(row, n, cites) {
   let nameAt = items.findIndex((it) => /<Entity\b/.test(it.raw));
   let name = "", ref = null;
   if (nameAt >= 0) {
-    const e = /<Entity\b([^>]*)\/>/.exec(items[nameAt].raw);
+    // Self-closing or not (1.0.2): "<Entity value=… ref=…>" with no "/>"
+    // threw here, and the whole answer was lost (live run, 22 Nov 2026: a
+    // hair-dryer answer's product cards, "Reading the reply failed").
+    const e = /<Entity\b([^>]*?)\/?>/.exec(items[nameAt].raw) || [null, ""];
     name = attr(e[1], "value") || plain(items[nameAt].raw);
     ref = refsOf(attr(e[1], "ref") || "")[0] || null;
     // No name came through (its binding wasn't sent): what is left is only a
@@ -189,6 +209,11 @@ function readCard(row, n, cites) {
     if (nameAt < 0) nameAt = items.findIndex((it) => it.kind === "title" && !onlyPrice(it));
     if (nameAt < 0) return null;
     name = plain(items[nameAt].raw).replace(/^\d+\.\s*/, "");
+    // A section's own heading card (1.0.2): "Best home espresso machines
+    // under ₹50,000" with a "Top recommendations" badge, no product and no
+    // picture, was stored as a product priced ₹50,000 by the brand "Best"
+    // (live run, 22 Nov 2026). Left as text, it reads as the heading it is.
+    if (!image && /^(?:the\s+)?(?:best|top|our|my|recommended|here are|picks?)\b/i.test(name)) return null;
   }
   const parts = items.map((it, i) => {
     if (i === nameAt) {
@@ -239,6 +264,7 @@ function textMarkdown(text, cites) {
       return ids.length ? `${PUA_OPEN}cite${ids.map((id) => PUA_MID + id).join("")}${PUA_CLOSE}` : "";
     })
     .replace(/<Entity\b[^>]*?value="([^"]*)"[^>]*\/>/g, "$1")
+    .replace(LINK_TAG_RE, (t) => linkMarkdown(t))
     .replace(/<AsyncImage\b[^>]*\/>/g, "")
     .replace(/<badge\b[^>]*>([\s\S]*?)<\/badge>/g, (_, t) => `\n*${t.trim()}*\n`)
     .replace(/<title\b[^>]*size="lg"[^>]*>([\s\S]*?)<\/title>/g, (_, t) => `\n\n### ${t.trim()}\n`)
@@ -293,7 +319,10 @@ export function readGenUi(code, { bindings = {} } = {}) {
   // 2. Cards: each <row> with a name in it.
   const cards = [];
   text = text.replace(/<row\b[^>]*>([\s\S]*?)<\/row>/g, (whole, row) => {
-    const c = readCard(row, cards.length + 1, cites);
+    // One card the reader can't follow leaves that card as text; it never
+    // costs the whole answer (1.0.2).
+    let c = null;
+    try { c = readCard(row, cards.length + 1, cites); } catch (_) { c = null; }
     if (!c) return whole;
     cards.push(c.card);
     return hold(c.block);

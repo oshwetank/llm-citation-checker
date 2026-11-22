@@ -38,7 +38,9 @@ export function answerKey(rec) {
   const q = norm(rec.userPrompt);
   if (!q) return null;
   if (rec.conversationId) return `${p}|conv:${rec.conversationId}|${q}`;
-  const path = url && url.pathname.match(/^\/(?:c|chat|app|search)\/[^/]+/);
+  // Perplexity's threads moved to /session/<id> (seen 22 Nov 2026): each
+  // turn arrived in two formats and, with no key, was stored twice.
+  const path = url && url.pathname.match(/^\/(?:c|chat|app|search|session)\/[^/]+/);
   if (path) return `${p}|path:${path[0]}|${q}`;
   return null;
 }
@@ -48,12 +50,27 @@ export function answerKey(rec) {
 // Copies of one answer differ in how far the stream got, not in what it said;
 // a regenerated or re-asked answer in the same conversation says something
 // else somewhere, even when it opens the same way.
-const letters = (s) => String(s || "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+// Citation markers are where a copy points, not what it says (1.0.2): a
+// Perplexity answer's network copy cited two pages at its end and its page
+// copy one, and the two short copies of one answer were stored as two
+// (live run, 22 Nov 2026: 18 Perplexity answers stored twice).
+const letters = (s) => String(s || "").replace(/\[\[cite:[^\]]*\]\]/g, "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+// A copy taken while a card answer was still being laid out (1.0.2) carries
+// the layout's own code where the cards go ("<AsyncImage query=…>", then
+// "1. BHIVE…", then "BHIVE…"): a live run of 22 Nov 2026 stored one ChatGPT
+// turn three times, its copies identical for 431 letters and different from
+// the first card on. So a long identical opening is one answer too: 300
+// letters and at least 60% of the shorter copy. A regenerated answer says
+// something else within its first sentences.
+const SHARED_OPENING = 300;
 function textsAgree(a, b) {
   const x = letters(a.answerText), y = letters(b.answerText);
   const n = Math.min(x.length, y.length);
   if (n < 40) return true;
-  return x.slice(0, n) === y.slice(0, n);
+  if (x.slice(0, n) === y.slice(0, n)) return true;
+  let k = 0;
+  while (k < n && x[k] === y[k]) k++;
+  return k >= SHARED_OPENING && k >= 0.6 * n;
 }
 
 /* Two records are copies of one answer: the same answer key, captured within
@@ -71,7 +88,23 @@ export function sameAnswer(a, b, windowMs = SAME_ANSWER_WINDOW_MS) {
   if (!k || k !== answerKey(b)) return false;
   const byId = /\|(?:reply|turn):/.test(k);
   if (Math.abs((a.capturedAt || 0) - (b.capturedAt || 0)) > (byId ? Math.max(windowMs, SAME_REPLY_WINDOW_MS) : windowMs)) return false;
-  return byId || textsAgree(a, b);
+  if (byId) return true;
+  // ChatGPT's own message ids (1.0.2): an early copy's ids are all among a
+  // later copy's when they are one reply, however differently their texts
+  // read. A card answer's copies taken mid-layout opened "## Best home loan
+  // rates" and the finished one "As of 22 November…" (live run, 22 Nov
+  // 2026), so no text test could join them; a regenerated reply gets ids of
+  // its own.
+  const ids = (r) => (r.platformSpecific && Array.isArray(r.platformSpecific.messageIds) ? r.platformSpecific.messageIds : []);
+  const ia = ids(a), ib = ids(b);
+  if (ia.length >= 2 && ib.length >= 2) {
+    const [small, big] = ia.length <= ib.length ? [ia, new Set(ib)] : [ib, new Set(ia)];
+    const shared = small.filter((x) => big.has(x)).length;
+    if (shared === small.length) return true;
+    // At most the question's own id in common: two replies to it.
+    if (shared <= 1) return false;
+  }
+  return textsAgree(a, b);
 }
 
 /** A copy read off the page's text rather than its network traffic. */
@@ -109,14 +142,21 @@ export function mergeAnswers(records) {
   const out = { ...best, captureId: first.captureId, capturedAt: first.capturedAt };
 
   // Pages: the best copy's order first, then any others; cited wins.
+  // Except where the kept text marks its own citations ([[cite:URL]], how a
+  // Perplexity answer read off the network stores them, 1.0.2): that text is
+  // the one shown, and its markers are every page it cites, so another copy
+  // can't make one of its other pages cited. A page copy that matched a
+  // site's badge marked a second page of that site cited (live run, 22 Nov
+  // 2026: 4 answers counted a page the answer never cited).
+  const ownCites = new Set([...String(best.answerText || "").matchAll(/\[\[cite:(https?:\/\/[^\]\s]+)\]\]/g)].map((m) => urlKey({ url: m[1] })));
   const pages = new Map();
   for (const r of [best, ...list.filter((r) => r !== best)]) {
     for (const s of r.sources || []) {
       const k = urlKey(s);
       if (!k) continue;
       const prev = pages.get(k);
-      if (!prev) pages.set(k, { ...s });
-      else if (s.outcome === "cited" && prev.outcome !== "cited") pages.set(k, { ...prev, ...s, outcome: "cited" });
+      if (!prev) pages.set(k, ownCites.size && r !== best && s.outcome === "cited" && !ownCites.has(k) ? { ...s, outcome: "fetched" } : { ...s });
+      else if (s.outcome === "cited" && prev.outcome !== "cited" && (!ownCites.size || ownCites.has(k))) pages.set(k, { ...prev, ...s, outcome: "cited" });
     }
   }
   out.sources = [...pages.values()];

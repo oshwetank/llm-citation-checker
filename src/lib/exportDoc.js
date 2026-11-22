@@ -108,6 +108,11 @@ function fmtDate(ts) {
  */
 function markdownToHtml(raw, placeholders) {
   let text = esc(raw).replace(/\r\n?/g, "\n");
+  // A line break the engine wrote as "<br>" (1.0.2): Gemini breaks lines in
+  // a table cell that way ("**HDFC Life** <br>*Click 2 Protect*"), and Analyze
+  // printed "<br>" 15 times in one answer (live run, 22 Nov 2026). Escaped
+  // above like all text; only this exact tag is given back, as a break.
+  text = text.replace(/&lt;br\s*\/?&gt;/gi, "\u0007");
   // Links, "[Hotel Pinecrest](https://www.google.com/travel/…)": Gemini links
   // every hotel it names. Left as text they printed as the bracket, the name
   // and a 200-character address, which is not the answer as it was shown
@@ -240,7 +245,7 @@ function markdownToHtml(raw, placeholders) {
   if (placeholders && placeholders.length) {
     html = html.replace(PLACEHOLDER_RE, (_, n) => placeholders[Number(n)] ?? "");
   }
-  return html;
+  return html.replace(/\u0007/g, "<br>");
 }
 
 /* ---------- ChatGPT: inline citation markers -> numbered footnotes ---------- */

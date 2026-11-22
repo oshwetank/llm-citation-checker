@@ -2,7 +2,8 @@
  * The capture check's record and verdicts (src/lib/captureHealth.js, 0.73.1).
  * Run: node test/capture-health.test.mjs
  */
-import { emptyHealth, noteHealth, verdict, healthReport , missedAnswers, MISSED_AFTER_MS } from "../src/lib/captureHealth.js";
+import * as CH from "../src/lib/captureHealth.js";
+const { emptyHealth, noteHealth, verdict, healthReport , missedAnswers, MISSED_AFTER_MS } = CH;
 
 let failures = 0;
 function check(label, cond, detail = "") {
@@ -67,6 +68,23 @@ console.log("\nan answer asked by hand that never arrived (0.84.0)");
   check("an older answer doesn't count for a newer question", missedAnswers(h, T + 120_000).map((x) => x.engine).join() === "chatgpt");
   check("dismissed: left alone", missedAnswers(h, T + 120_000, { chatgpt: T + 1 }).length === 0);
   check("half an hour on: no longer news", missedAnswers(h, T + 31 * 60_000).length === 0);
+}
+
+console.log("\nthe same empty side request is one note (1.0.2)");
+{
+  // A live run of 22 Nov 2026: Perplexity's side requests wrote 190 of the
+  // log's 200 capture notes. Read off the module so this file still runs (and
+  // fails) on the old code.
+  const should = CH.shouldNoteDrop || (() => true);
+  const seen = new Map();
+  const T = 1_000_000;
+  const drop = { reason: "empty", path: "/rest/sse/related-queries/:id" };
+  check("the first is noted", should(seen, "perplexity", drop, T) === true);
+  check("the same again within 10 minutes is not", should(seen, "perplexity", drop, T + 60_000) === false);
+  check("another address is", should(seen, "perplexity", { reason: "empty", path: "/rest/perplexity_ask/graphql" }, T + 61_000) === true);
+  check("another engine is", should(seen, "gemini", drop, T + 62_000) === true);
+  check("an error always is", should(seen, "chatgpt", { reason: "error" }, T) && should(seen, "chatgpt", { reason: "error" }, T + 1));
+  check("after 10 minutes, noted again", should(seen, "perplexity", drop, T + 11 * 60_000) === true);
 }
 
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");

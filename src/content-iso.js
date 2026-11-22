@@ -269,9 +269,26 @@
       const all = document.querySelectorAll('user-query, .user-query-container, [data-test-id="user-query"]');
       const u = all.length ? all[all.length - 1] : null;
       if (!u) return null;
-      const t = String((u.querySelector(".query-text, .query-content, p") || u).innerText || "").replace(/^You said\s*/i, "").trim();
+      const t = geminiQuestionText(u);
       return t ? t.slice(0, 4000) : null;
     } catch (_) { return null; }
+  }
+
+  /* A Gemini question as the reader sees it (1.0.2). Since Nov 2026 the
+   * question block holds a screen-reader heading, "You said <question>",
+   * before the question itself (h5.cdk-visually-hidden), so its text read
+   * "You said Q\n\nQ"; with "You said" cut off, every Gemini question in a
+   * live run of 22 Nov 2026 was stored twice over and matched no prompt.
+   * The question's own lines (p.query-text-line) come first; failing those,
+   * the block without anything hidden from sight. */
+  function geminiQuestionText(u) {
+    if (!u) return "";
+    const lines = [...u.querySelectorAll("p.query-text-line, .query-text-line")].map((p) => (p.innerText || p.textContent || "").trim());
+    if (lines.some(Boolean)) return lines.join("\n").trim();
+    const box = u.querySelector(".query-text, .query-content, p") || u;
+    const c = box.cloneNode(true);
+    c.querySelectorAll('.cdk-visually-hidden, .screen-reader-user-query-label, [class*="visually-hidden"], [class*="sr-only"], [aria-hidden="true"]').forEach((n) => n.remove());
+    return String(c.textContent || "").replace(/^\s*You said\s*/i, "").replace(/[ \t]+/g, " ").trim();
   }
 
   // The worker asks each engine tab how capture stands here (0.73.1). A tab
@@ -628,9 +645,19 @@
       const submittedWhy = () => {
         // Each turn loads a fresh document, so any submit request seen in
         // it — ours, or the engine's own from ?q= — is this turn's prompt.
-        if (engineSubmit.at) return "net";
+        // ChatGPT's "prepare … sent" is not proof on its own (1.0.2): in a
+        // live campaign of 22 Nov 2026 it came from the ?q= pre-fill while
+        // the question sat unsent in the box, the turn was taken as sent and
+        // timed out 90 s later — 3 of 5 ChatGPT turns, again on retry. It
+        // counts once the page shows the send (conversation address, stop
+        // button, the question in the transcript), checked below.
+        if (engineSubmit.at && engineSubmit.via !== "prepare") return "net";
         const path = location.pathname;
-        if (injected && path !== startPath && CONVERSATION_PATH && CONVERSATION_PATH.test(path)) return "url";
+        if (engineSubmit.at && plat === "chatgpt" && path !== startPath && CONVERSATION_PATH && CONVERSATION_PATH.test(path)) return "net";
+        // Gemini doesn't route a fresh page anywhere on its own (unlike
+        // Grok's /tos-gate hop), so /app/<id> before we type is its own
+        // ?q= submit (1.0.2).
+        if ((injected || plat === "gemini") && path !== startPath && CONVERSATION_PATH && CONVERSATION_PATH.test(path)) return "url";
         if (pick(sel.streaming)) return "stream";
         try {
           const turns = document.querySelectorAll(sel.userTurn || "[data-message-author-role='user']");
@@ -836,7 +863,12 @@
        * already survivable — the "did the text actually land" check below
        * re-inserts — but a short settle avoids the thrash.
        */
-      const GRACE_AFTER_COMPOSER = plat === "gemini" ? 2 : 8;  // ~0.8s / ~3.2s
+      // Gemini now sends ?q= itself too (1.0.2): a live campaign of 22 Nov
+      // 2026 asked every Gemini prompt twice — its own send from ?q=, then
+      // ours typed 0.8s later — two conversations, two answers per prompt.
+      // It gets ChatGPT's wait, and its conversation address counts as sent
+      // even before anything is typed (see submittedWhy).
+      const GRACE_AFTER_COMPOSER = 8;  // ~3.2s
       const MAX_WAIT_TICKS = 75;       // ~30s for the composer to appear
       // Was 20 (~8s). Real failures traced to "send control never accepted
       // the prompt" showed the button simply never found within that window
@@ -1000,6 +1032,10 @@
         // to keep waiting, so fall straight through to sending.
         const prefilled = norm(composerText(box)) === want;
         if (ticks - composerSeenTick < GRACE_AFTER_COMPOSER && !prefilled) return;
+        // The page said it sent ("prepare") a moment ago: give that 8 s to
+        // show before doing anything, so a real send is never doubled. After
+        // that, a question still sitting in the box was not sent (1.0.2).
+        if (engineSubmit.at && engineSubmit.via === "prepare" && Date.now() - engineSubmit.at < 8000) return;
 
         if (!injected) {
           if (prefilled) T("prefilled");
@@ -1887,9 +1923,25 @@
         //      domain even where the DOM text itself isn't cut (as seen
         //      above: "gadgets.beebom" with the ".com" already dropped by
         //      Perplexity's own label formatting, not by this code).
+        // A badge names a site, not a page. Where the markup also gives the
+        // exact cited URLs (data-pplx-citation-url, below), a site with an
+        // exact citation is settled by those: matching its badge too marked
+        // every other page of that site cited (live run, 22 Nov 2026: 4 of
+        // 134 network-read answers had a second getbelong.com / rupeezy.in /
+        // legalfirms.in / gadgets360.com page counted as cited that the
+        // answer never cited). Badges still decide for sites with none.
+        const exactHosts = new Set();
+        try {
+          document.querySelectorAll("[data-pplx-citation-url]").forEach((node) => {
+            const u = (node.getAttribute("data-pplx-citation-url") || "").toLowerCase();
+            const h = (u.split("/")[2] || "").replace(/^www\./, "");
+            if (h) exactHosts.add(h);
+          });
+        } catch (_) {}
         sources.forEach((s) => {
           const d = (s.url || "").toLowerCase();
           const host = (d.split("/")[2] || "").replace(/^www\./, "");
+          if (exactHosts.has(host)) return;
           const hostNoDots = host.replace(/\./g, "");
           const titleStripped = s.title ? s.title.toLowerCase().replace(/[^a-z0-9]/g, "") : "";
           const cited = [...citeBadges].some((b) =>
@@ -2040,8 +2092,57 @@
             () => void chrome.runtime.lastError
           );
         } catch (_) {}
+        // (Guarded: the harvest tests run this function on its own.)
+        if (plat === "perplexity" && typeof readPerplexityThread === "function") readPerplexityThread(promptText);
       }
     };
+
+    // Perplexity's thread, read from its own address (1.0.2). On its newer
+    // /session/<id> pages the answer doesn't come through the page's fetch at
+    // all, so the network hook sees nothing and only the page copy above was
+    // stored: in a live run of 22 Nov 2026 that was 17 of 151 answers, each
+    // with one source per citation where the page showed "+1" or "+2" more.
+    // The page itself then loads /rest/thread/<id>, which holds the finished
+    // answer as the same blocks the stream carries (searches, every result,
+    // every citation): the adapter reads it like a stream. It is read once
+    // the answer has settled, and again while Perplexity still calls it
+    // unfinished; the copies fold into one answer with the page copy.
+    let threadReadKey = "";
+    let threadTimer = null;
+    const pplxNorm = (s) => String(s || "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+    function readPerplexityThread(promptText, tries = 0) {
+      const m = location.pathname.match(/^\/(?:session|search)\/([^/?#]+)/);
+      if (!m) return;
+      const slug = m[1];
+      clearTimeout(threadTimer);
+      threadTimer = setTimeout(async () => {
+        try {
+          // The block kinds the page itself asks for (its own request, 22 Nov
+          // 2026): without them the thread may come back in an older shape.
+          const uses = ["answer_modes", "media_items", "inline_entity_cards", "place_widgets", "search_result_widgets", "inline_images", "diff_blocks", "entity_group_v2", "answer_tabs", "pending_followups", "inline_claims", "unified_assets", "workflow_steps", "workflow_widgets", "navigation_results"];
+          const qs = `with_parent_info=true&with_schematized_response=true&source=default&limit=20&offset=0&from_first=false&with_first_entry=true&with_latest_entry=false${uses.map((u) => `&supported_block_use_cases=${u}`).join("")}`;
+          const r = await fetch(`/rest/thread/${encodeURIComponent(slug)}?${qs}`, { credentials: "include", headers: { accept: "application/json" }, cache: "no-store" });
+          if (!r.ok) return;
+          const text = await r.text();
+          let thread = null;
+          try { thread = JSON.parse(text); } catch (_) { return; }
+          const entries = (thread && Array.isArray(thread.entries)) ? thread.entries : [];
+          const entry = entries.filter((e) => pplxNorm(e && e.query_str) === pplxNorm(promptText)).pop();
+          if (!entry) return;
+          if (entry.status !== "COMPLETED") { if (tries < 4) readPerplexityThread(promptText, tries + 1); return; }
+          const key = `${slug}|${entry.uuid || entry.backend_uuid}|${entry.entry_updated_datetime || ""}`;
+          if (key === threadReadKey) return;
+          threadReadKey = key;
+          // Just this question's entry, shaped as the stream's last message,
+          // so the adapter reads its blocks as it reads a stream's.
+          const raw = `event: message\ndata: ${JSON.stringify({ ...entry, final_sse_message: true })}\n\n`;
+          chrome.runtime.sendMessage({
+            type: "raw-conversation",
+            payload: { url: `${location.origin}/rest/thread/${slug}`, reqBody: JSON.stringify({ query: promptText }), transport: "thread-read", raw, end: "thread", capturedAt: Date.now(), pageUrl: location.href },
+          }, () => void chrome.runtime.lastError);
+        } catch (_) { /* never in the page's way */ }
+      }, tries ? 5000 : 3000);
+    }
 
     const observer = new MutationObserver(() => {
       scheduleHarvest(1200);
@@ -2400,12 +2501,21 @@
     let watch = null, lastSig = "";
     const all = (sel) => document.querySelectorAll(sel);
     const lastOf = (sel) => { const a = all(sel); return a.length ? a[a.length - 1] : null; };
-    const promptOf = (u) => String((u && (u.querySelector(".query-text, .query-content, p") || u).innerText) || "").replace(/^You said\s*/i, "").trim();
+    const promptOf = (u) => geminiQuestionText(u);
     const finish = (w) => { if (w.stop) { w.stop(); w.stop = null; } if (watch === w) watch = null; };
-    const asked = () => {
+    /* Where the page copy got to, for the capture report (1.0.2), the way
+     * ChatGPT's reports it. A live run on 22 Nov 2026 had Gemini answer on
+     * the page with nothing stored and nothing in the report to say why. */
+    const note = (stage, extra) => {
+      const c = pageHealth.copy || (pageHealth.copy = { asked: 0, via: "", stage: "", at: 0 });
+      if (c.stage === stage && !extra) return;
+      Object.assign(c, { stage, at: Date.now(), users: all("user-query").length || all(USER).length, answers: all("model-response").length || all(BOT).length, stop: !!document.querySelector(STOP) }, extra || {});
+    };
+    const asked = (via) => {
       const at = Date.now();
       if (watch && at - watch.askedAt < 1500) return;
       if (watch && watch.stop) watch.stop();
+      note("question sent; waiting for it on the page", { asked: ((pageHealth.copy && pageHealth.copy.asked) || 0) + 1, via: via || "" });
       const u = lastOf(USER);
       const w = watch = { userCount: all(USER).length, userText: promptOf(u), askedAt: at, text: "", changedAt: 0, doneAt: 0, stop: null };
       const stopClock = startClock(1000);
@@ -2414,28 +2524,30 @@
     };
     const check = (w) => {
       const now = Date.now();
-      if (now - w.askedAt > GIVE_UP_MS) return finish(w);
+      if (now - w.askedAt > GIVE_UP_MS) { note("gave up after 6 minutes"); return finish(w); }
       const users = all(USER);
       const u = users.length ? users[users.length - 1] : null;
       const prompt = promptOf(u);
-      if (!u || (users.length <= w.userCount && prompt === w.userText)) return;
+      if (!u || (users.length <= w.userCount && prompt === w.userText)) { note(u ? "no new question on the page" : "no question found on the page"); return; }
       const bot = lastOf(BOT);
-      if (!bot || (u.compareDocumentPosition(bot) & Node.DOCUMENT_POSITION_FOLLOWING) === 0) return;
+      if (!bot || (u.compareDocumentPosition(bot) & Node.DOCUMENT_POSITION_FOLLOWING) === 0) { note("no answer found under the question"); return; }
       const body = bot.querySelector("message-content, .markdown, .model-response-text") || bot;
       const text = (body.innerText || "").trim();
-      if (text !== w.text) { w.text = text; w.changedAt = now; w.doneAt = 0; return; }
-      if (text.length < 30 || document.querySelector(STOP) || now - w.changedAt < SETTLE_MS) return;
+      if (text !== w.text) { w.text = text; w.changedAt = now; w.doneAt = 0; note("answer still being written"); return; }
+      if (text.length < 30) { note("answer too short to keep"); return; }
+      if (document.querySelector(STOP)) { note("stop button still showing"); return; }
+      if (now - w.changedAt < SETTLE_MS) return;
       if (!w.doneAt) { w.doneAt = now; return; }
       if (now - w.doneAt < NETWORK_GRACE_MS) return;
       if (w.asking) return;
       if ((pageHealth.lastForwardAt || 0) > w.askedAt && w.storedChecked !== w.doneAt) {
         w.asking = true;
-        storedSince(w.askedAt).then((stored) => { w.asking = false; if (stored) finish(w); else w.storedChecked = w.doneAt; });
+        storedSince(w.askedAt).then((stored) => { w.asking = false; if (stored) { note("the stream's own copy was stored"); finish(w); } else w.storedChecked = w.doneAt; });
         return;
       }
       const markdown = domToMarkdown(body).trim() || text;
       const sig = `${prompt}::${markdown.length}::${markdown.slice(-120)}`;
-      if (sig === lastSig) return finish(w);
+      if (sig === lastSig) { note("same answer as before, not copied again"); return finish(w); }
       lastSig = sig;
       const links = [], seen = new Set();
       for (const a of bot.querySelectorAll("a[href]")) {
@@ -2456,12 +2568,13 @@
       const conversationId = (location.pathname.match(/\/app\/([\w-]+)/) || [])[1] || null;
       const raw = JSON.stringify({ format: "cito-page-copy", v: 1, platform: "gemini", prompt, markdown, links, images, conversationId });
       tellWorker({ type: "raw-conversation", payload: { url: location.href, reqBody: null, transport: "page-copy", raw, end: "page", capturedAt: now, pageUrl: location.href } });
+      note("copied off the page");
       finish(w);
     };
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.target && e.target.closest && e.target.closest('rich-textarea, [contenteditable="true"], textarea')) asked();
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.target && e.target.closest && e.target.closest('rich-textarea, [contenteditable="true"], textarea')) asked("enter");
     }, true);
-    document.addEventListener("click", (e) => { if (e.target && e.target.closest && e.target.closest('button[aria-label*="Send" i], .send-button, [data-test-id="send-button"]')) asked(); }, true);
-    pageFacts.onAsked = () => asked();
+    document.addEventListener("click", (e) => { if (e.target && e.target.closest && e.target.closest('button[aria-label*="Send" i], .send-button, [data-test-id="send-button"]')) asked("click"); }, true);
+    pageFacts.onAsked = () => asked("run");
   })();
 })();

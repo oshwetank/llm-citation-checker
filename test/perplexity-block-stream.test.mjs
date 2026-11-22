@@ -114,5 +114,36 @@ console.log("\nThe legacy format still reads the old way");
   check("and is marked legacy", r.platformSpecific.transport === "legacy", r.platformSpecific.transport);
 }
 
+console.log("\nevery snippet a page came with (1.0.2)");
+{
+  // Live run, 22 Nov 2026: the cited economictimes page came first with a
+  // snippet naming BHIVE, last with one that didn't; only the last was kept.
+  const U = "https://economictimes.example/bhive-largest-coworking";
+  const ev = (o) => `event: message\ndata: ${JSON.stringify({ query_str: "top coworking spaces in Bangalore", ...o })}\n\n`;
+  const raw =
+    ev({ blocks: [{ intended_usage: "web_results", web_result_block: { web_results: [{ name: "BHIVE opens the largest space", url: U, snippet: "BHIVE Workspace has opened the world's largest coworking space for startups." }] } }] }) +
+    ev({ final_sse_message: true, status: "COMPLETED", blocks: [
+      { intended_usage: "ask_text", markdown_block: { answer: "BHIVE Workspace is the largest option.[1]" } },
+      { intended_usage: "web_results", web_result_block: { web_results: [{ name: "BHIVE opens the largest space", url: U, snippet: "The facility was inaugurated by the Chief Minister." }] } },
+    ] });
+  const rec = await adapt({ captureId: "s", raw, reqBody: JSON.stringify({ query_str: "top coworking spaces in Bangalore" }), pageUrl: "https://www.perplexity.ai/search/x", capturedAt: 1 });
+  const s = rec.sources.find((x) => x.url === U) || {};
+  check("the last snippet is still first", /^The facility was inaugurated/.test(s.snippet || ""), s.snippet);
+  check("and the earlier one, naming the brand, is kept", /BHIVE Workspace has opened/.test(s.snippet || ""), s.snippet);
+}
+
+console.log("\na page's date and trust badge, as the stream sends them (1.0.2)");
+{
+  const U = "https://reviews.example/coworking";
+  const raw = `event: message\ndata: ${JSON.stringify({ query_str: "top coworking spaces", final_sse_message: true, status: "COMPLETED", blocks: [
+    { intended_usage: "ask_text", markdown_block: { answer: "Hivebase is the pick.[1]" } },
+    { intended_usage: "web_results", web_result_block: { web_results: [{ name: "Coworking review", url: U, snippet: "Hivebase…", timestamp: "2026-10-22T00:00:00", trust: { level: 1, name: "trusted", type_of_trust: "trusted" } }] } },
+  ] })}\n\n`;
+  const rec = await adapt({ captureId: "d", raw, reqBody: JSON.stringify({ query_str: "top coworking spaces" }), pageUrl: "https://www.perplexity.ai/search/x", capturedAt: 1 });
+  const ps = (rec.sources.find((s) => s.url === U) || {}).platformSpecific || {};
+  check("its date", ps.pubDate === Date.parse("2026-10-22T00:00:00Z"), JSON.stringify(ps));
+  check("its trusted badge", ps.trusted === true, JSON.stringify(ps));
+}
+
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);

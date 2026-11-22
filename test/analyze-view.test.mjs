@@ -320,5 +320,25 @@ check("in.jbl.com is JBL's (subdomain)", isBrandSite("in.jbl.com", "JBL"));
 check("pineappleexpress.com is not Apple's", !isBrandSite("pineappleexpress.com", "Apple"));
 check("an unknown blog stays Other", siteKindOf("someones-notes.example", { brands: ["Zento"] }) === "Other");
 
+console.log("\na tracked name the answer writes is listed, as the campaign board counts it (1.0.2)");
+{
+  // Live campaign, 22 Nov 2026: the board counted Delhivery in answers whose
+  // Analyze list left it out.
+  const rec = {
+    captureId: "t1", platform: "gemini", searched: true, sources: [], products: [], places: [],
+    answerText: "**Shiprocket** gives small sellers access to 25+ couriers (including Delhivery, XpressBees, and Blue Dart). Delhivery also ships direct.",
+    brandMentions: [{ brand: "Shiprocket", count: 1, firstIndex: 2 }, { brand: "XpressBees", count: 1, firstIndex: 86 }],
+  };
+  const own = { name: "Delhivery", url: "delhivery.com", competitors: ["Blue Dart", "DTDC"] };
+  const rows = brandsView(rec, { own, knownBrands: [] }).rows;
+  const names = rows.map((r) => r.name);
+  check("your brand is listed", names.includes("Delhivery"), names.join(", "));
+  check("with both its mentions", (rows.find((r) => r.name === "Delhivery") || {}).count === 2, JSON.stringify(rows.find((r) => r.name === "Delhivery")));
+  check("in the answer's order", names.indexOf("Shiprocket") < names.indexOf("Delhivery") && names.indexOf("Delhivery") < names.indexOf("XpressBees"), names.join(", "));
+  check("a tracked competitor the answer names too", names.includes("Blue Dart"), names.join(", "));
+  check("but not one it doesn't name", !names.includes("DTDC"), names.join(", "));
+  check("and the your-brand tile counts it", /Named 2nd/.test(JSON.stringify(yourBrandView(rec, own, { knownBrands: [] }))));
+}
+
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
 process.exit(failures ? 1 : 0);

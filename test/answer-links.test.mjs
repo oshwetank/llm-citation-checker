@@ -59,5 +59,16 @@ console.log("\nBooking sites are where people book, not 'Other'");
   check("the owner's own booking site is theirs", siteKindOf("makemytrip.com", { ...ctx, ownBrand: "MakeMyTrip" }) === "Your site");
 }
 
+console.log("\nA line break written as <br> (1.0.2)");
+{
+  // Gemini's term-insurance table, live run of 22 Nov 2026: Analyze printed
+  // "<br>" fifteen times.
+  const out = html("| Insurer & Plan | CSR |\n| :--- | :--- |\n| **HDFC Life** <br>*Click 2 Protect* | 99.72% |\n| **Axis Max Life**<br/>*Smart Term* | 99.80% |");
+  check("it is a line break", (out.match(/<br>/g) || []).length === 2, out);
+  check("never printed as text", !/&lt;br/.test(out), out);
+  const other = html("Use <b>bold</b> and <script>x</script> here.");
+  check("no other tag is let through", !/<script>|<b>/.test(other) && /&lt;script&gt;/.test(other), other);
+}
+
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
 process.exit(failures ? 1 : 0);

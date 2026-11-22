@@ -847,6 +847,10 @@ async function hydrate(captureId) {
   const rec = r.ok ? r.record : null;
   // Product cards stored without their picture (before 1.0.1) take the image
   // titled with their name, so they show it without being read again.
+  // Gemini's cards carry their pictures as a list (`images`), and Analyze
+  // drew none of them: 569 product pictures over 33 answers of a live run
+  // (22 Nov 2026) never showed (1.0.2). The first is the card's picture.
+  if (rec && Array.isArray(rec.products)) rec.products = rec.products.map((p) => (p && !p.image && Array.isArray(p.images) && typeof p.images[0] === "string" && /^https?:\/\//.test(p.images[0]) ? { ...p, image: p.images[0] } : p));
   if (rec && Array.isArray(rec.products) && rec.products.some((p) => p && !p.image)) rec.products = pictureProducts(rec.products, rec.images);
   if (rec) FULL.set(captureId, rec);
   return rec;
@@ -1553,6 +1557,8 @@ function renderAnalyzePopup(rec, root) {
   const strip = el("div", { className: "ap-strip" });
   const chip = (text, on, title, cls) => strip.append(el("span", { className: `ap-chip${on ? " on" : ""}${cls ? " " + cls : ""}`, title }, text));
   if (rec.searched) chip(searches.count ? `Searched the web · ${searches.count} search${searches.count === 1 ? "" : "es"}` : "Searched the web", true, "The engine searched the web before answering", "searched");
+  // An empty answer (1.0.2) didn't answer from memory either: say what it was.
+  else if (answerKind(rec).id === "noanswer") chip(answerKind(rec).limit ? "No answer · usage limit" : "No answer", true, answerKind(rec).limit ? "The engine refused: its usage limit was reached" : "No answer text came back", "memory");
   else chip("No web search", true, "Answered from what the model already knows", "memory");
   chip(rec.sources.length ? `${rec.sources.length} read · ${cited} cited` : "No pages", rec.sources.length > 0, "Pages the engine opened, and how many it cited");
   if ((rec.products || []).length) chip(`${rec.products.length} products`, true, "Product cards in the answer");
@@ -1584,6 +1590,7 @@ function renderAnalyzePopup(rec, root) {
     images: [["overview", "Overview"], ["pictures", "Pictures"], ["sources", "Sources"], ["ads", "Ads"], ["answer", "Answer"]],
     info: [["overview", "Overview"], ["parts", "Parts"], ["sources", "Sources"], ["ads", "Ads"], ["answer", "Answer"]],
     memory: [["overview", "Overview"], ["answer", "Answer"]],
+    noanswer: [["overview", "Overview"]],
   }[kind.id].filter(([id]) => id !== "ads" || (rec.ads || []).length);
   if (apTab !== "engines" && !TABS.some(([id]) => id === apTab)) apTab = "overview";
   const tl = el("nav", { className: "ap-tabs", role: "tablist", "aria-label": "Parts of this answer" });
@@ -1684,6 +1691,13 @@ function renderAnalyzePopup(rec, root) {
     const sec = apSection("ap-ads", "Ad shown with the answer", ads.length > 1 ? ads.length : "", apPill("Sponsored", "warn", "Paid placement, not part of the answer"));
     ads.forEach((a) => sec.append(adCardEl(a)));
     wrap.append(sec);
+  }
+  if (kind.id === "noanswer") {
+    wrap.append(el("section", { className: "ap-sec ap-memory", id: "ap-noanswer" },
+      el("b", {}, kind.limit ? "No answer: usage limit reached" : "No answer"),
+      el("span", {}, kind.limit
+        ? `${engineLabel} refused this question because its usage limit was reached, so there is no answer, search or citation to show. It is left out of a campaign's numbers.`
+        : `${engineLabel} sent no answer text for this question, so there is nothing to show. Ask it again, or use "Retry missing" in a campaign.`)));
   }
   if (kind.id === "memory") {
     wrap.append(el("section", { className: "ap-sec ap-memory", id: "ap-memory" },
@@ -2270,10 +2284,20 @@ function renderAnalyzeTab(rec, root) {
   const strip = el("div", { className: "ap-strip at-strip" });
   const chip = (text, on, title, cls) => strip.append(el("span", { className: `ap-chip${on ? " on" : ""}${cls ? " " + cls : ""}`, title }, text));
   if (rec.searched) chip(searches.count ? `Searched the web · ${searches.count} search${searches.count === 1 ? "" : "es"}` : "Searched the web", true, "The engine searched the web before answering", "searched");
+  // An empty answer (1.0.2) didn't answer from memory either: say what it was.
+  else if (answerKind(rec).id === "noanswer") chip(answerKind(rec).limit ? "No answer · usage limit" : "No answer", true, answerKind(rec).limit ? "The engine refused: its usage limit was reached" : "No answer text came back", "memory");
   else chip("No web search", true, "Answered from what the model already knows", "memory");
   chip(rec.sources.length ? `${rec.sources.length} pages read · ${pages.rows.length} cited` : "No pages", rec.sources.length > 0, "Pages the engine opened, and how many it cited");
-  if ((rec.products || []).length) chip(`${rec.products.length} product cards`, true, "Product cards in the answer");
+  // The same count the products section shows (1.0.2): the chip counted every
+  // stored copy of a card, "8 product cards" over a list of 6.
+  if ((rec.products || []).length) { const pc = (productsView(rec) || { rows: [] }).rows.length || rec.products.length; if (atCardsArePicks(rec)) chip(`${pc} picks`, true, "The answer's picks, as cards"); else chip(`${pc} product cards`, true, "Product cards in the answer"); }
   if ((rec.places || []).length) chip(`Map · ${rec.places.length} places`, true, "Places on a map");
+  // How fast the answer began (1.0.2): the engine's own server figure, which
+  // only sat in Technical details as "Time to first token".
+  {
+    const ttf = rec.platformSpecific && rec.platformSpecific.ttfvtMs;
+    if (Number.isFinite(ttf) && ttf > 0) chip(`First words after ${(ttf / 1000).toFixed(1)} s`, false, "How long the engine took to start answering, as it reported it");
+  }
   if ((rec.images || []).length) chip(`${rec.images.length} images`, true, "Images from the web");
   if ((rec.ads || []).length) chip(`Ad · ${adAdvertisers(rec)}`, true, "A sponsored card shown with the answer", "ad");
   hero.append(strip);
@@ -2560,7 +2584,9 @@ function atRenderAnswer(rec, { loading, tabs, currentId, brandNames, own }) {
   const cited = sources.filter((s) => s.outcome === "cited");
   const nSearch = searchesView(rec, brandNames).count;
   const didSearch = !!(rec.searched || sources.length);
-  const step = !didSearch ? ["Answered without searching the web", "memory"]
+  const empty = answerKind(rec).id === "noanswer";
+  const step = empty ? [answerKind(rec).limit ? "No answer: usage limit reached" : "No answer", "memory"]
+    : !didSearch ? ["Answered without searching the web", "memory"]
     : rec.platform === "perplexity" ? [[nSearch ? `Searched ${plural(nSearch, "query", "queries")}` : "", `Reviewed ${plural(sources.length, "source")}`].filter(Boolean).join(" · "), "plain"]
     : rec.platform === "chatgpt" ? [sources.length ? `Searched ${plural(sources.length, "site")}` : "Searched the web", "pill"]
     : rec.platform === "grok" ? [[nSearch ? `Searched ${plural(nSearch, "time")}` : "Searched", plural(sources.length, "web page and post", "web pages and posts")].join(" · "), "plain"]
@@ -2606,7 +2632,9 @@ function atRenderAnswer(rec, { loading, tabs, currentId, brandNames, own }) {
     body.append(g);
   }
   if (!rec.answerText) {
-    body.append(el("p", { className: "ap-note" }, rec.hasAnswerText === false || !rec.answerChars
+    body.append(el("p", { className: "ap-note" }, empty
+      ? (answerKind(rec).limit ? `${atEngineLabel(rec.platform)} sent its usage-limit notice instead of an answer, so there is no text to show.` : "The engine sent no answer text for this question.")
+      : rec.hasAnswerText === false || !rec.answerChars
       ? "The answer text wasn't captured for this answer — the analysis on the left comes from its searches, pages and cards."
       : "Loading the answer text…"));
     return { el: aside, blocks: [], footnotes: [] };
@@ -2804,6 +2832,12 @@ function atRenderSingle(main, rec, ctx) {
 
   /* 3. what led the answer */
   if (kind.id === "memory") add(atMemorySection(rec, { brands, mentions, engineLabel }));
+  if (kind.id === "noanswer") add(el("section", { className: "at-memory", id: "at-noanswer", "data-rail": "No answer" },
+    el("div", { className: "at-memory-note" },
+      el("div", { className: "at-memory-head" }, glyphEl("noglobe", 20), el("h2", { className: "at-h" }, kind.limit ? "No answer: usage limit reached" : "No answer")),
+      el("p", {}, kind.limit
+        ? `${engineLabel} refused this question because its usage limit was reached. Nothing was searched, read or cited, and this is not an answer from memory.`
+        : `${engineLabel} sent no answer text for this question. Nothing was searched, read or cited.`))));
   const products = productsView(rec, { own, knownBrands });
   if (products) add(atProductsSection(rec, products, { engineLabel, own }), products.rows.length);
   if ((rec.places || []).length) add(atPlacesSection(rec, own), rec.places.length);
@@ -2851,6 +2885,7 @@ function atGlance(rec, { brands, pages, searches, fnByUrl, kind, engineLabel, an
     images: "Pictures came first, then the text.",
     info: "Text only, no cards, map or pictures.",
     memory: "No web search: nothing was read or cited.",
+    noanswer: kind.limit ? "No answer: the engine's usage limit was reached." : "No answer text came back.",
   }[kind.id] || ""));
   const named = brands.rows.filter((r) => r.position > 0).sort((a, b) => a.position - b.position);
   const tiles = el("div", { className: "at-kpis" });
@@ -3608,6 +3643,7 @@ function sitesListEl(dv, { fnByUrl = new Map(), openCited = false, onCite = null
       el("span", { className: "site-rank" }, String(i + 1)),
       el("span", { className: "site-name" },
         el("b", {}, d.domain),
+        d.trusted ? el("span", { className: "site-pill", title: "Perplexity marks this site as trusted" }, "✓ Trusted") : null,
         el("span", { className: "site-kind" }, el("i", { style: `background:var(${AP_KIND_VAR[d.kind] || "--kind-other"})` }), d.kind,
           extra && extra.pos ? el("span", { className: "site-pos", title: "Its best place in the engine's results" }, ` · #${extra.pos}`) : null),
         extra && extra.names.length ? el("span", { className: "site-names", title: "Brands its pages name, in their titles or snippets" }, `names ${atList(extra.names.slice(0, 3))}${extra.names.length > 3 ? ` +${extra.names.length - 3}` : ""}`) : null),
@@ -3780,12 +3816,22 @@ function atSitesSection(rec, dv, { fnByUrl, pages, own, ctxKinds, positions, kno
  * name it, and the stores it lists in the order it lists them (the brand's
  * own store marked). Then where the cards send buyers first, and what the
  * capture doesn't hold: each store's own price. */
+// ChatGPT's answer cards for companies (insurers, banks, coworking spaces)
+// carry no price, seller or offers: they are the answer's picks, and were
+// listed under "Products and where to buy" (1.0.2).
+function atCardsArePicks(rec) {
+  const ps = (rec.products || []).filter(Boolean);
+  return ps.length > 0 && ps.every((p) => p.renderAs === "answer-card" && !p.price && !p.merchant && !(p.offers || []).length);
+}
+
 function atProductsSection(rec, pv, { engineLabel, own }) {
-  const sec = atSection("at-products", "Products and where to buy", pv.rows.length, el("span", { className: "ap-muted" }, `in the order ${engineLabel} showed them`));
+  const picks = atCardsArePicks(rec);
+  const title = picks ? "Picks in the answer" : "Products and where to buy";
+  const sec = atSection("at-products", title, pv.rows.length, el("span", { className: "ap-muted" }, `in the order ${engineLabel} showed them`));
   sec.classList.add("at-products-sec");
-  sec.dataset.rail = "Products and where to buy";
+  sec.dataset.rail = title;
   const table = el("div", { className: "at-prod-table", role: "table", "aria-labelledby": "at-products-h" });
-  table.append(el("div", { className: "at-prod-row at-th", role: "row" }, ...["#", "Product", "Price", "Rating", "Brand", "Where to buy"].map((h) => el("span", { role: "columnheader" }, h))));
+  table.append(el("div", { className: "at-prod-row at-th", role: "row" }, ...["#", picks ? "Pick" : "Product", "Price", "Rating", "Brand", picks ? "Listing" : "Where to buy"].map((h) => el("span", { role: "columnheader" }, h))));
   pv.rows.forEach((r, i) => {
     const p = rec.products[i] || {};
     const imgHost = atProxied(r.image) ? "the engine’s copy" : atHost(r.image);
@@ -4017,7 +4063,15 @@ function atPlacesSection(rec, own) {
     if (sup) feeds.set(sup.code, (feeds.get(sup.code) || 0) + 1);
     table.append(el("div", { className: `at-tr${mine ? " mine" : ""}`, role: "row" },
       el("span", { role: "cell" }, el("span", { className: "ap-pin" }, String(i + 1))),
-      el("span", { role: "cell", className: "ap-brand-cell" }, el("span", { className: "ap-brand-name" }, p.name || "—"), el("span", { className: "ap-brand-sub" }, p.address || p.hours || "")),
+      // Its photo, description and a review quote too, when the card had
+      // them (Gemini's, 1.0.2).
+      el("span", { role: "cell", className: "ap-brand-cell", title: p.description || "" },
+        p.image ? withImage(el("span", { className: "at-thumb" }, glyphEl("pin", 18)), p.image, p.name) : null,
+        el("span", { className: "ap-brand-name" }, p.name || "—"),
+        el("span", { className: "ap-brand-sub" }, [p.address, p.hours].filter(Boolean).join(" · ")),
+        p.description && !String(p.description).toLowerCase().startsWith(String(p.name || "").toLowerCase().slice(0, 20)) ? el("span", { className: "ap-brand-sub" }, p.description) : null,
+        (p.reviewQuotes || []).length ? el("span", { className: "ap-brand-sub ap-muted", title: p.reviewQuotes.map((q) => `${q.age ? q.age + ": " : ""}${q.text}`).join("\n\n") },
+          `“${p.reviewQuotes[0].text.slice(0, 140)}${p.reviewQuotes[0].text.length > 140 ? "…" : ""}”${p.reviewQuotes[0].age ? ` — ${p.reviewQuotes[0].age}` : ""}${p.reviewQuotes.length > 1 ? ` · +${p.reviewQuotes.length - 1} more` : ""}`) : null),
       el("span", { role: "cell" }, p.rating != null ? `★ ${p.rating}${p.reviews ? ` (${Number(p.reviews).toLocaleString()})` : ""}` : "—"),
       el("span", { role: "cell", className: "at-ellipsis" }, [p.category, p.priceRange].filter(Boolean).join(" · ") || "—"),
       el("span", { role: "cell" }, links),

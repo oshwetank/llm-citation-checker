@@ -101,7 +101,7 @@ const AGE_BANDS = [["Under a month", 31], ["1–3 months", 92], ["3–6 months",
  * @param {object} o  profile, brands (own flagged), prompts (tracked prompts),
  *   engineFilter (engines the board is limited to)
  */
-export function campaignView(recs, { profile, brands, prompts = [], engineFilter = [] } = {}) {
+export function campaignView(recs, { profile, brands, prompts = [], engineFilter = [], asked = null } = {}) {
   const own = brands.find((b) => b.isOwn) || brands[0] || { name: "" };
   const rivals = brands.filter((b) => b !== own);
   const engines = ENGINE_ORDER.filter((e) => (recs.some((r) => r.platform === e) || ((profile && profile.engines) || []).includes(e))
@@ -166,13 +166,19 @@ export function campaignView(recs, { profile, brands, prompts = [], engineFilter
   for (const p of pmap.values()) for (const c of Object.values(p.cells)) if (c.rec) topicByAnswer.set(c.rec, topicOf(p));
 
   // ---- overview
+  // What was asked, not only what came back (1.0.2): a turn that failed left
+  // no record, so a partial run read "12 answers from 12 prompts sent" and
+  // ChatGPT "2/2" when 15 went out and ChatGPT was asked 5 (live campaign,
+  // 22 Nov 2026). `asked` is the shown run's own plan (the one "Retry
+  // missing" reads), engine by engine; without it, what was stored.
   const engineRows = engines.map((e) => {
     const sent = byEngine(recs, e), got = byEngine(ok, e);
     const firsts = countBy(got.map(firstOf).filter(Boolean), (x) => x);
     const top = [...firsts].sort((a, b) => b[1] - a[1])[0];
     const limited = sent.filter((r) => !answered(r) && usageLimitOf(r)).length;
+    const planned = asked && Number.isFinite(asked[e]) ? asked[e] : 0;
     return {
-      id: e, label: ENGINE_LABEL[e], sent: sent.length, answered: got.length, limited,
+      id: e, label: ENGINE_LABEL[e], sent: Math.max(sent.length, planned), answered: got.length, limited,
       own: perEngine[e] ? perEngine[e][own.name] : null,
       searches: got.reduce((n, r) => n + queriesOf(r).length, 0),
       read: got.reduce((n, r) => n + (r.sources || []).length, 0),
@@ -188,13 +194,13 @@ export function campaignView(recs, { profile, brands, prompts = [], engineFilter
   const split = (key) => engines.map((e) => ({ engine: e, value: perEngine[e] ? perEngine[e][own.name][key] : null }));
   const o = all[own.name] || {};
   const overview = {
-    own: own.name, sent: recs.length, answered: ok.length,
+    own: own.name, sent: Math.max(recs.length, engineRows.reduce((n, x) => n + x.sent, 0)), answered: ok.length,
     kpis: [
       { id: "sov", label: "Share of voice", value: o.sov ?? 0, unit: "%", ...rankOn("sov"), split: split("sov") },
       { id: "vis", label: "Visibility", value: o.vis ?? 0, unit: "%", ...rankOn("vis"), split: split("vis") },
       { id: "pos", label: "Average position", value: o.pos, unit: "", ...rankOn("pos", true), split: split("pos") },
       { id: "mentions", label: "Mentions", value: o.mentions ?? 0, unit: "", ...rankOn("mentions"), split: split("mentions") },
-      { id: "responses", label: "Responses", value: ok.length, unit: "", of: recs.length, split: engineRows.map((x) => ({ engine: x.id, value: x.answered, of: x.sent })) },
+      { id: "responses", label: "Responses", value: ok.length, unit: "", of: Math.max(recs.length, engineRows.reduce((n, x) => n + x.sent, 0)), split: engineRows.map((x) => ({ engine: x.id, value: x.answered, of: x.sent })) },
     ],
     engines: engineRows,
   };

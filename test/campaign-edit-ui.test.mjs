@@ -150,7 +150,11 @@ try {
   const d = await dl;
   check("Download the Excel template saves an .xlsx", d && d.suggestedFilename() === "prompts-template.xlsx", d && d.suggestedFilename());
   if (d) {
-    const rows = await parseXlsx(readFileSync(await d.path()).buffer);
+    // A Buffer can be a view into a larger pooled ArrayBuffer (Node 26 pools
+    // small file reads): `.buffer` alone handed parseXlsx bytes before and
+    // after the file, and it found no worksheet. Copy out exactly the file.
+    const buf = readFileSync(await d.path());
+    const rows = await parseXlsx(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
     const back = rowsToPrompts(rows);
     check("with Prompt, Primary tag and Secondary tag, reading back with the primary first", rows[0].join("|") === "Prompt|Primary tag|Secondary tag" && back[0].tags[0] === "Buying guide", rows[0].join("|"));
   }

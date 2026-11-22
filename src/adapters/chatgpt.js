@@ -549,7 +549,13 @@ function extractPlaces(nodes) {
   const byKey = new Map();
   walk({ nodes }, (value) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) return;
-    if (value.category !== "local_business") return;
+    // A generated-layout answer's place component (1.0.2) carries the label
+    // in its action instead: { value, action_payload: { category:
+    // "local_business", … }, entity_data }. A live run of 22 Nov 2026 asked
+    // for dental clinics in Mumbai; ChatGPT showed five rated clinics and the
+    // record had no places, with "Hi", "Om" and "Dr" as its brands.
+    const category = value.category || (value.action_payload && value.action_payload.category);
+    if (category !== "local_business") return;
     const ed = value.entity_data;
     if (!ed || typeof ed !== "object") return;
     const key = ed.id || value.name || ed.name;

@@ -23,6 +23,7 @@ import { computeBrandMatrix, sameBrand } from "./funnel-omitted.js";
 import { normalizeMentions } from "./mention-list.js";
 import { siteKindOf, isBrandSite, normDomain, KIND_GROUPS } from "./siteKind.js";
 import { extractBrandAspects } from "./aspects.js";
+import { usageLimitOf } from "./geo.js";
 
 const ORD = (n) => {
   const s = ["th", "st", "nd", "rd"], v = n % 100;
@@ -56,6 +57,16 @@ export function knownVendors(rec) {
 
 /** What led the answer, from what the capture actually holds. */
 export function answerKind(rec) {
+  // Nothing came back (1.0.2): an engine's usage-limit notice, a turn cut off
+  // before any text. Grok's free-tier limit was stored this way on every turn
+  // after the tenth of a live run (22 Nov 2026), and Analyze called each one
+  // "From memory", as if Grok had answered without searching.
+  // Only when the record says how long its answer is: a record without
+  // either field (a summary row, a test stand-in) isn't known to be empty.
+  const noText = typeof rec.answerChars === "number" ? rec.answerChars === 0 : typeof rec.answerText === "string" && !rec.answerText.trim();
+  if (noText && !(rec.brandMentions || []).length && !(rec.sources || []).length && !(rec.products || []).length && !(rec.places || []).length) {
+    return usageLimitOf(rec) ? { id: "noanswer", label: "No answer · usage limit", limit: true } : { id: "noanswer", label: "No answer" };
+  }
   if (!rec.searched && !(rec.sources || []).length) return { id: "memory", label: "From memory" };
   if ((rec.places || []).length) return { id: "local", label: "Local" };
   if ((rec.products || []).length) return { id: "shopping", label: "Shopping" };
@@ -135,9 +146,29 @@ export function searchesView(rec, brandNames = []) {
 
 /* ---------- brands, and what backs each one ---------- */
 
-function cleanBrands(rec, knownBrands) {
-  return normalizeMentions(rec.brandMentions || [], knownBrands || []);
+// Names the user tracks (their brand, a campaign's competitors) that the
+// answer writes but detection missed are listed too (1.0.2): in a live
+// campaign of 22 Nov 2026 the board counted Delhivery in five answers whose
+// Analyze brand list left it out ("…couriers (including Delhivery,
+// XpressBees, and Blue Dart)"). Counted the way the board counts — the name
+// as written, whole words — and placed where the answer first names it.
+function cleanBrands(rec, knownBrands, tracked = []) {
+  const list = normalizeMentions(rec.brandMentions || [], knownBrands || []);
+  const text = String(rec.answerText || "").replace(/\[\[cite:[^\]]*\]\]/g, "");
+  for (const name of new Set((tracked || []).filter(Boolean).map((n) => String(n).trim()))) {
+    if (!name || list.some((b) => sameBrand(b.brand, name))) continue;
+    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const hits = [...text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])${esc}(?![\\p{L}\\p{N}])`, "giu"))];
+    if (!hits.length) continue;
+    const at = hits[0].index;
+    const row = { brand: name, count: hits.length, firstIndex: at, category: null, description: null, passages: [text.slice(Math.max(0, at - 110), at + 110).replace(/\s+/g, " ").trim()], tracked: true };
+    const i = list.findIndex((b) => b.count > 0 && Number.isFinite(b.firstIndex) && b.firstIndex > at);
+    if (i < 0) { const j = list.findIndex((b) => !(b.count > 0)); list.splice(j < 0 ? list.length : j, 0, row); }
+    else list.splice(i, 0, row);
+  }
+  return list;
 }
+const trackedOf = (own) => (own ? [own.name, ...(own.competitors || [])] : []);
 
 function namedOrder(list) {
   return list.filter((b) => b.count > 0).map((b) => b.brand);
@@ -154,7 +185,7 @@ function namedOrder(list) {
  * next time.
  */
 export function brandsView(rec, { own, knownBrands, previous } = {}) {
-  const list = cleanBrands(rec, knownBrands);
+  const list = cleanBrands(rec, knownBrands, trackedOf(own));
   const sources = rec.sources || [];
   const matrix = computeBrandMatrix(rec);
   const matrixFor = (name) => (matrix.brands || []).find((m) => sameBrand(m.brand, name));
@@ -356,7 +387,9 @@ export function productsView(rec, { own, knownBrands } = {}) {
     const pages = need.length ? [...new Set(cited.filter(names).map((s) => normDomain(s.domain || s.url)).filter(Boolean))] : [];
     return {
       n: i + 1, name, brand, isYou: !!own && !!brand && sameBrand(own.name, brand),
-      price: p.price || "", rating: p.rating ?? null, reviews: p.reviews ?? null, image: p.image || "",
+      price: p.price || "", rating: p.rating ?? null, reviews: p.reviews ?? null,
+      // Gemini's cards keep their pictures as a list (1.0.2).
+      image: p.image || (Array.isArray(p.images) && typeof p.images[0] === "string" ? p.images[0] : ""),
       stores: merchantList(p).map((s) => ({ name: s, own: storeIsBrand(s, brand, own) })),
       otherStores: /\bothers?\b/i.test(p.merchant || ""),
       pages,
@@ -455,7 +488,10 @@ export function domainsView(rec, { own, knownBrands } = {}) {
       byDomain.set(domain, d);
     }
     if (cited) d.cited++; else d.read++;
-    d.pages.push({ title: s.title || "", url: s.url || "", cited, n: cited ? ++citedN : null });
+    // Perplexity's own "trusted" shield on the page (1.0.2).
+    const trusted = !!(s.platformSpecific && s.platformSpecific.trusted);
+    if (trusted) d.trusted = true;
+    d.pages.push({ title: s.title || "", url: s.url || "", cited, n: cited ? ++citedN : null, trusted });
   });
   const rows = [...byDomain.values()];
   rows.forEach((d) => d.pages.sort((a, b) => (b.cited - a.cited) || ((a.n || 0) - (b.n || 0))));
@@ -483,7 +519,8 @@ export function ownBrandFor(rec, profiles = []) {
   const live = (profiles || []).filter((p) => p && !p.deletedAt && p.brand && p.brand.name);
   if (rec.geo && rec.geo.profileId) {
     const p = live.find((x) => x.id === rec.geo.profileId);
-    if (p) return { name: p.brand.name, url: p.brand.url || "", source: "campaign", campaign: p.name };
+    // Its competitors too, so Analyze lists them as the board counts them.
+    if (p) return { name: p.brand.name, url: p.brand.url || "", source: "campaign", campaign: p.name, competitors: (p.competitors || []).map((c) => c && (c.name || c)).filter((c) => typeof c === "string") };
   }
   const tagged = (rec.brandMentions || []).find((b) => b.relation === "own");
   if (tagged) return { name: tagged.brand, url: "", source: "settings" };
@@ -497,7 +534,7 @@ export function ownBrandFor(rec, profiles = []) {
 /** Four numbers for your brand: where it was named, cited pages, cards, map or images. */
 export function yourBrandView(rec, own, { knownBrands, previous, max = 4 } = {}) {
   if (!own) return null;
-  const list = cleanBrands(rec, knownBrands);
+  const list = cleanBrands(rec, knownBrands, trackedOf(own));
   const named = namedOrder(list);
   const pos = named.findIndex((n) => sameBrand(n, own.name)) + 1;
   const mention = list.find((b) => sameBrand(b.brand, own.name));

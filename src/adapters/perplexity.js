@@ -169,6 +169,27 @@ function collectQueries(value, out, depth = 0) {
   }
 }
 
+// A result's own date, in milliseconds; none when it is missing or empty.
+function pubDateOfResult(obj) {
+  const v = obj && (obj.timestamp || obj.published_date || obj.date);
+  if (typeof v !== "string" || !/^\d{4}-\d{2}-\d{2}/.test(v)) return null;
+  const t = Date.parse(v.length === 19 ? v + "Z" : v);
+  return Number.isFinite(t) && t > 0 ? t : null;
+}
+
+// Pages with a snippet, anywhere in a block (search results, a workflow
+// step's sources, patches' values): url -> every distinct snippet.
+function noteSnippets(o, out, depth = 0) {
+  if (!o || typeof o !== "object" || depth > 12) return;
+  if (Array.isArray(o)) { for (const x of o) noteSnippets(x, out, depth + 1); return; }
+  if (typeof o.url === "string" && typeof o.snippet === "string" && o.snippet.trim()) {
+    const s = o.snippet.replace(/\s+/g, " ").trim();
+    if (!out.has(o.url)) out.set(o.url, new Set());
+    out.get(o.url).add(s);
+  }
+  for (const v of Object.values(o)) if (v && typeof v === "object") noteSnippets(v, out, depth + 1);
+}
+
 function readBlockStream(nodes) {
   const events = nodes.filter((n) => n && typeof n === "object" && Array.isArray(n.blocks));
   if (!events.length) return null;
@@ -176,6 +197,7 @@ function readBlockStream(nodes) {
   let mdAnswer = "";
   let workflow = null;
   let results = [];
+  const snippets = new Map(); // url -> Set of every snippet it came with
   const queries = [];
   let prompt = "";
   let model = null;
@@ -204,9 +226,25 @@ function readBlockStream(nodes) {
       }
       const wr = b.web_result_block;
       if (wr && Array.isArray(wr.web_results)) results = wr.web_results.filter((r) => r && typeof r === "object");
+      noteSnippets(b, snippets);
       const { workflow_block: _w, diff_block: _d, markdown_block: _m, web_result_block: _r, ...rest } = b;
       collectQueries(rest, queries);
     }
+  }
+  // Every snippet a page came with (1.0.2). Perplexity sends a page's search
+  // snippet, then a different one once it has read it; only the last was
+  // kept. On a live run of 22 Nov 2026 the cited economictimes.com page came
+  // first with "BHIVE Workspace … has opened the world's largest coworking
+  // space" and last with "The facility was inaugurated by…", and Analyze said
+  // no page the engine sent named BHIVE. The last stays first; others follow.
+  if (snippets.size) {
+    results = results.map((r) => {
+      const all = snippets.get(r.url);
+      if (!all || all.size < 2) return r;
+      const first = typeof r.snippet === "string" ? r.snippet.trim() : "";
+      const more = [...all].filter((s) => s !== first && !first.includes(s));
+      return more.length ? { ...r, snippet: [first, ...more].filter(Boolean).join(" … ").slice(0, 1200) } : r;
+    });
   }
   // A workflow step names its tool. "fetch_url" is Perplexity opening one
   // address directly; its "queries" item holds that address, which used to
@@ -518,7 +556,15 @@ function extractSources(nodes) {
           // rather than dropped — it's exactly the kind of engine-specific
           // signal worth surfacing instead of flattening every platform
           // into a shared lowest common denominator.
-          trusted: obj.trusted === true ? true : null,
+          // The stream says it as an object (1.0.2): "trust": {"name":
+          // "trusted", "type_of_trust": "trusted"}. Only the page copy's
+          // `trusted: true` was read, so 113 network-read answers of a live
+          // run (22 Nov 2026) lost every shield.
+          trusted: obj.trusted === true || (obj.trust && typeof obj.trust === "object" && (obj.trust.type_of_trust === "trusted" || obj.trust.name === "trusted")) ? true : null,
+          // The page's date as Perplexity sends it ("timestamp":
+          // "2026-10-22T00:00:00"), which Analyze shows beside each page.
+          // Dropped before (1.0.2: 134 of 151 answers carried them).
+          ...(pubDateOfResult(obj) ? { pubDate: pubDateOfResult(obj) } : {}),
         },
       })
     );

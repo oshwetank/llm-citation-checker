@@ -50,6 +50,22 @@ export function noteHealth(state, engine, e) {
  * @returns {{engine: string, askedAt: number, tabId: number|null}[]}
  */
 export const MISSED_AFTER_MS = 90 * 1000;
+/* Whether a dropped capture gets a note in the error log (1.0.2). In a live
+ * run of 22 Nov 2026 Perplexity's related-questions and GraphQL socket
+ * requests wrote 190 of the log's 200 capture notes, pushing every other
+ * engine's out before a diagnostics export could show them. The same engine,
+ * reason and address is noted once per `everyMs`; an error always is.
+ * `seen` is the caller's Map of when each was last noted. */
+export const DROP_NOTE_EVERY_MS = 10 * 60 * 1000;
+export function shouldNoteDrop(seen, engine, e, now = Date.now(), everyMs = DROP_NOTE_EVERY_MS) {
+  if (!e || e.reason === "paused") return false;
+  if (e.reason === "error") return true;
+  const key = `${engine}|${e.reason}|${e.path || ""}`;
+  if (now - (seen.get(key) || -Infinity) < everyMs) return false;
+  seen.set(key, now);
+  return true;
+}
+
 export function missedAnswers(state, now = Date.now(), dismissed = {}, { afterMs = MISSED_AFTER_MS, staleMs = 30 * 60 * 1000 } = {}) {
   const out = [];
   for (const engine of ENGINES) {

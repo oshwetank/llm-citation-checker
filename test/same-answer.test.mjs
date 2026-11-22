@@ -62,6 +62,24 @@ console.log("\nWhich answer a record belongs to");
   const sameStart = { ...first, answerText: first.answerText.slice(0, 70) + " Prices change daily, so check before you book anything at all." };
   check("even one that opens with the same words", !sameAnswer(first, sameStart));
   check("but a copy that is still streaming joins it", sameAnswer(first, { ...first, answerText: first.answerText.slice(0, 60) + "…" }) && sameAnswer(first, { ...first, answerText: "" }));
+  // 1.0.2, live run of 22 Nov 2026: a card answer's copies taken while it
+  // was laid out read the same for hundreds of letters, then differ where the
+  // cards go ("<AsyncImage …>", then "1. BHIVE…", then "BHIVE…").
+  const opening = "Bangalore has some of India's strongest coworking options for startups, from affordable founder-focused communities to premium managed offices. The best choice depends on your team size, budget and whether you need a fixed desk or a private cabin. Ranked by startup suitability, flexibility, location and workspace offering, with indicative prices that are not confirmed quotes. ";
+  const early = { ...chat("Top coworking spaces"), answerText: opening + '<AsyncImage query="BHIVE Workspace HSR Layout" aspectRatio="5:4">' };
+  const mid = { ...chat("Top coworking spaces"), answerText: opening + "1. BHIVE Workspace — best overall for early-stage startups, with multiple locations." };
+  const done = { ...chat("Top coworking spaces"), answerText: opening + "BHIVE Workspace — best overall for early-stage startups, with multiple locations across the city and day passes from ₹499." };
+  check("a card answer's copies taken mid-layout are one answer", sameAnswer(early, mid) && sameAnswer(mid, done) && sameAnswer(early, done));
+  // Copies of one ChatGPT reply share its message ids even when the layout
+  // made their texts open differently ("## Best home loan rates…" mid-layout,
+  // "As of 22 November…" finished); a regenerated reply has ids of its own.
+  const ids = (list) => ({ platformSpecific: { messageIds: list } });
+  const midLayout = { ...chat("Best home loan rates"), answerText: "## Best home loan rates in India\n\n| Bank | Rate |", ...ids(["u1", "a1", "a2"]) };
+  const finished = { ...chat("Best home loan rates"), answerText: "As of 22 November, the lowest advertised home loan rates start at 7.40% from two public-sector banks.", ...ids(["u1", "a1", "a2", "a3", "a4"]) };
+  const regenerated = { ...chat("Best home loan rates"), answerText: "As of 22 November, the lowest advertised home loan rates start at 7.40% from two public-sector banks.", ...ids(["u1", "b1", "b2"]) };
+  check("copies of one ChatGPT reply join by its message ids", sameAnswer(midLayout, finished));
+  check("a regenerated reply, with ids of its own, does not", !sameAnswer(midLayout, regenerated));
+  check("Perplexity's /session/ threads have a key, so their copies join", answerKey({ platform: "perplexity", pageUrl: "https://www.perplexity.ai/session/333343b7-a90a", userPrompt: "x" }) === "perplexity|path:/session/333343b7-a90a|x");
   check("nothing to go on, nothing joined", answerKey({ platform: "gemini", pageUrl: "https://gemini.google.com/app", userPrompt: "x" }) === null);
   check("different engines never join", answerKey({ ...copies[0], platform: "perplexity" }) !== answerKey(copies[0]));
 }
@@ -108,6 +126,43 @@ console.log("\na page-text copy made when the conversation was reopened (0.62.1)
   check("a prompt read since 0.62.1 (already clean) keeps a leading You", cleanPageCopy({ prompt: "Youtube or Vimeo for a course", answer: "x", promptClean: true }).prompt === "Youtube or Vimeo for a course");
   const other = copy("other", 0, { pageUrl: "https://grok.com/c/11111111-2222-3333-4444-555555555555?rid=ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee", answerText: answer, answerChars: answer.length });
   check("another reply in the same conversation stays its own answer", !sameAnswer(other, late));
+}
+
+console.log("\na Perplexity answer whose text marks its own citations (1.0.2)");
+{
+  // Live run, 22 Nov 2026: the network copy cites one getbelong.com page; the
+  // page copy matched the site's badge and marked its second page cited too.
+  const P = "https://www.perplexity.ai/search/abc-123";
+  const A = "https://getbelong.com/blog/trading-apps", B = "https://getbelong.com/blog/trading-apps.md", C = "https://other.example/x";
+  const src = (url, outcome) => ({ url, domain: new URL(url).host, title: url, outcome });
+  const base = { platform: "perplexity", pageUrl: P, userPrompt: "which stock trading app is best for beginners in India", fanout: { search: [], shopping: [], image: [] }, brandMentions: [], products: [], places: [], images: [], searched: true };
+  const text = `Zerodha suits most beginners.[[cite:${A}]] Groww is simpler to start with and has a clean app for first-time investors.`;
+  const net = { ...base, captureId: "net", capturedAt: T0, answerText: text, answerChars: text.length, sources: [src(A, "cited"), src(B, "fetched"), src(C, "fetched")] };
+  const pageCopy = { ...base, captureId: "page", capturedAt: T0 + 3000, answerText: "Zerodha suits most beginners. Groww is simpler.", answerChars: 46, sources: [src(A, "cited"), src(B, "cited"), src(C, "cited")] };
+  const m = mergeAnswers([net, pageCopy]);
+  const out = (u) => (m.sources.find((s) => s.url === u) || {}).outcome;
+  check("the page the text cites stays cited", out(A) === "cited");
+  check("another page of the same site is not made cited by the page copy", out(B) === "fetched", out(B));
+  check("nor is any page the text doesn't cite", out(C) === "fetched", out(C));
+  // Without markers in the kept text (ChatGPT, Gemini…), cited in any copy still wins.
+  const plainNet = { ...net, answerText: "Zerodha suits most beginners. Groww is simpler to start with and has a clean app.", answerChars: 80 };
+  const m2 = mergeAnswers([plainNet, pageCopy]);
+  check("a text without its own markers still takes another copy's citations", (m2.sources.find((s) => s.url === B) || {}).outcome === "cited");
+}
+
+console.log("\na short answer's network and page copies, citing differently (1.0.2)");
+{
+  // Live run, 22 Nov 2026: one /session/ answer stored twice, 3 s apart — the
+  // network copy citing tech.co and fitsmallbusiness.com, the page copy only
+  // the second. Under 300 letters, so the shared-opening rule couldn't join them.
+  const P = "https://www.perplexity.ai/session/2a0c67b8-ed0e-434b-ae2f-b5f4b44a6ef2";
+  const body = "For most restaurants, Wix is the best all-around choice: it offers restaurant-focused features, customizable templates, and integrations for reservations and delivery.  If you want a dedicated restaurant platform with less setup, consider GloriaFood instead.";
+  const base = { platform: "perplexity", pageUrl: P, userPrompt: "which website builder is best for a restaurant", sources: [], fanout: { search: [], shopping: [], image: [] } };
+  const net = { ...base, captureId: "net", capturedAt: T0, answerText: body + "[[cite:https://tech.co/website-builders/best-restaurant-website-builder]][[cite:https://fitsmallbusiness.com/best-restaurant-website-builder/]]" };
+  const page = { ...base, captureId: "page", capturedAt: T0 + 3700, answerText: body + "[[cite:https://fitsmallbusiness.com/best-restaurant-website-builder/]]" };
+  check("they are one answer", sameAnswer(net, page));
+  const other = { ...page, captureId: "other", answerText: "For most restaurants, Squarespace is the simplest choice for a menu site with online ordering built in." };
+  check("a different answer on the same page still isn't", !sameAnswer(net, other));
 }
 
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");

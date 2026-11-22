@@ -51,8 +51,12 @@ const CH = "https://geminiweb-pa.clients6.google.com/v1/processSession";
 // The upload as on 15 Nov 2026: the question field there, and empty.
 const EMPTY_Q = uploadBody("");
 // `answer`: whether the stream brings an answer (else only "Searching the web").
-const PAGE = (answer) => `<!doctype html><body>
-  <user-query><span class="cdk-visually-hidden">You said</span><div class="query-text"><p>${QUESTION}</p></div></user-query>
+// The question block since Nov 2026 (the live page of 22 Nov 2026, text
+// changed): a screen-reader heading carrying the whole question, then the
+// question's own line. Read whole, it gave "Q\n\nQ".
+const QUESTION_NOV22 = `<div class="user-query-container"><div class="query-content"><div class="query-bubble-anchor"><span class="user-query-bubble-with-background"><span class="horizontal-container"><div class="query-text gds-body-l"><h5 class="cdk-visually-hidden screen-reader-user-query-label"><span>You said</span> ${QUESTION}</h5><p class="query-text-line">${QUESTION}</p></div></span></span></div></div></div>`;
+const PAGE = (answer, nov22) => `<!doctype html><body>
+  ${nov22 ? QUESTION_NOV22 : `<user-query><span class="cdk-visually-hidden">You said</span><div class="query-text"><p>${QUESTION}</p></div></user-query>`}
   <script>
   const xhr = (method, url, body) => new Promise((done) => { const x = new XMLHttpRequest(); x.open(method, url); x.onloadend = done; x.send(body); });
   (async () => {
@@ -72,7 +76,7 @@ try {
     const body = req.method() === "GET" ? (/zx=ans/.test(req.url()) ? channelStream() : channelStream({ steps: 0 })) : "51\n[[0,[\"c\",\"abc\",null,8]]]";
     return route.fulfill({ status: 200, headers: { "access-control-allow-origin": "https://gemini.google.com", "access-control-allow-credentials": "true", "content-type": "text/plain" }, body });
   });
-  await context.route(/^https:\/\/gemini\.google\.com\//, (route) => route.fulfill({ status: 200, contentType: "text/html", body: PAGE(!/status-only/.test(route.request().url())) }));
+  await context.route(/^https:\/\/gemini\.google\.com\//, (route) => route.fulfill({ status: 200, contentType: "text/html", body: PAGE(!/status-only/.test(route.request().url()), /hidden-heading/.test(route.request().url())) }));
   let sw = context.serviceWorkers()[0];
   if (!sw) sw = await context.waitForEvent("serviceworker", { timeout: 20000 });
   const extId = sw.url().split("/")[2];
@@ -99,6 +103,18 @@ try {
   const rec = (recs[0] && ((await msg({ type: "get-record", captureId: recs[0].captureId })) || {}).record) || {};
   check("with the question the page showed", rec.userPrompt === QUESTION, JSON.stringify(rec.userPrompt));
   check("and says where it came from", ((rec._extraction || {}).notes || []).some((n) => /read off the page/.test(n)), JSON.stringify((rec._extraction || {}).notes));
+  await p.close();
+
+  console.log("\nthe question block with its screen-reader heading (Nov 2026)");
+  // The same answer again would be merged into the record above.
+  await msg({ type: "clear-all" });
+  const q = await context.newPage();
+  await q.goto("https://gemini.google.com/app/hidden-heading");
+  await q.waitForFunction(() => document.title === "done", null, { timeout: 15000 }).catch(() => {});
+  let recs2 = [];
+  for (let i = 0; i < 20 && !recs2.length; i++) { await q.waitForTimeout(500); recs2 = await records(); }
+  const rec2 = (recs2[0] && ((await msg({ type: "get-record", captureId: recs2[0].captureId })) || {}).record) || {};
+  check("the question once, not twice", rec2.userPrompt === QUESTION, JSON.stringify(rec2.userPrompt));
 } catch (e) {
   failures++;
   console.log(`  ✗ crashed: ${e.stack || e}`);

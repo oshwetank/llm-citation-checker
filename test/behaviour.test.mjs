@@ -136,7 +136,10 @@ console.log("\nlong business names are not dropped (was: 40-char cap silently at
     "Divyaaishwarya Jewellers - Best Bridal Store in Mumbai | 22kt Real Gold Temple Jewellery",
     "Silver Queen Jewellery - Imitation, Costume and Art Jewellery Shop in Santacruz",
   ];
-  longOnes.forEach((n) => check(`kept: "${n.slice(0, 30)}…" (${n.length} chars)`, names.includes(n)));
+  // Kept under its name: the listing's keyword tail ("| 22kt Real Gold
+  // Temple Jewellery", "- Best Bridal Store in Mumbai") is cut since 1.0.2,
+  // so the business is there by the name its listing starts with.
+  longOnes.forEach((n) => check(`kept: "${n.slice(0, 30)}…" (${n.length} chars)`, names.some((x) => x.length >= 8 && n.startsWith(x)), names.join(" | ")));
 }
 
 /* --- Regression: cleanPassage must strip ALL three PUA marker kinds ---

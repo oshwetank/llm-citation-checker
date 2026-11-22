@@ -24,7 +24,7 @@ const PRICE_RANGE_RE = new RegExp(`(?:${PRICE_RE.source})\\s*[-–—]\\s*\\S*\\
 import { makeRecord, makeSource } from "../schema.js";
 import { walk, isHttpUrl, domainOf } from "../lib/deep.js";
 import { detectBrands } from "../lib/brands.js";
-import { isChannelText, readGeminiChannel, channelPrompt } from "../lib/geminiChannel.js";
+import { isChannelText, readGeminiChannel, channelPrompt, channelPlaceDetails } from "../lib/geminiChannel.js";
 
 export const ADAPTER_VERSION = "gemini@0.4.0";
 
@@ -364,10 +364,40 @@ export function stripCardPlaceholders(text) {
   clean = clean.replace(/^[ \t]*<EntityCard\b([^>]*)\/?>[ \t]*\n?/gm, (m, attrs) => {
     const kind = (/\bentity_type="([^"]*)"/.exec(attrs) || [])[1] || "entity";
     const title = (/\btitle="([^"]*)"/.exec(attrs) || [])[1] || null;
-    cards.push({ kind, title });
+    const id = (/\bentity_id="([^"]*)"/.exec(attrs) || [])[1] || null;
+    cards.push({ kind, title, ...(id ? { id } : {}) });
+    return "";
+  });
+  // Review carousels and a suggested follow-up (1.0.2): "<Carousel>" holding
+  // "<UgcReview entity_id=… review_type="place"/>" lines under a place, and
+  // "<FollowUp label=… query=…/>" at the end. A live run of 22 Nov 2026
+  // stored them as answer text, so Analyze showed "<Carousel>" mid-answer.
+  // A carousel is kept by kind and how many reviews it held.
+  // A comparison table (1.0.2): "<ProductComparisonTable title=…>" holding a
+  // JSON list of products and their specs. Stored as written, Analyze showed
+  // the tag and the JSON (live run, 22 Nov 2026). Written out as the table it
+  // is, the name column first; the internal product_id is left out.
+  clean = clean.replace(/^[ \t]*<ProductComparisonTable\b([^>]*)>\s*([\s\S]*?)\s*<\/ProductComparisonTable>[ \t]*\n?/gm, (m, attrs, body) => {
+    let rows = null;
+    try { rows = JSON.parse(body); } catch (_) { rows = null; }
+    if (!Array.isArray(rows) || !rows.length || typeof rows[0] !== "object") return "";
+    const title = (/\btitle="([^"]*)"/.exec(attrs) || [])[1] || "";
+    const cols = [...new Set(rows.flatMap((r) => Object.keys(r || {})))].filter((k) => k !== "product_id" && k !== "display_name");
+    const cell = (v) => String(v == null ? "" : v).replace(/\|/g, "/").replace(/\s*\n\s*/g, " ");
+    const lines = [
+      `| Product | ${cols.join(" | ")} |`,
+      `|${" --- |".repeat(cols.length + 1)}`,
+      ...rows.map((r) => `| **${cell(r.display_name)}** | ${cols.map((c) => cell(r[c])).join(" | ")} |`),
+    ];
+    cards.push({ kind: "comparison", title, count: rows.length });
+    return `${title ? `**${title}**\n\n` : ""}${lines.join("\n")}\n\n`;
+  });
+  clean = clean.replace(/^[ \t]*<Carousel\b[^>]*>[\s\S]*?<\/Carousel>[ \t]*\n?/gm, (m) => {
+    cards.push({ kind: "reviews", count: (m.match(/<UgcReview\b/g) || []).length });
     return "";
   });
   clean = clean
+    .replace(/^[ \t]*<(?:UgcReview|FollowUp)\b[^>]*\/>[ \t]*\n?/gm, "")
     .replace(/\[([^\]\n]+)\]\(_link\)/g, "$1")
     // Any other card tag of the same kind ("<SomethingCard … />") on a line of its own.
     .replace(/^[ \t]*<[A-Z][A-Za-z]*Card\b[^>]*\/>[ \t]*\n?/gm, "")
@@ -447,13 +477,37 @@ async function adaptChannel(rawCapture, opts, diag) {
     ...(p.images.length ? { images: p.images } : {}),
   }));
   const userPrompt = channelUserPrompt(rawCapture);
-  const brandMentions = await extractBrandMentions(answer, { products, places: [], sources, tracked: opts.tracked, prompt: userPrompt });
+  // The businesses its map cards name (1.0.2). The cards were read since
+  // 0.84 but only kept as layout: a live run of 22 Nov 2026 asked for
+  // coworking spaces in Bangalore, Gemini showed eight places with ratings,
+  // and the record had no places and named its section headings as brands.
+  // A place card is a Maps lookup, so it also means Gemini searched.
+  const places = [];
+  const placeInfo = cards.some((c) => c && c.kind === "place" && c.id) ? channelPlaceDetails(rawCapture.raw) : null;
+  for (const c of cards) {
+    const name = c && c.kind === "place" && typeof c.title === "string" ? c.title.trim() : "";
+    if (!name || places.some((p) => p.name.toLowerCase() === name.toLowerCase())) continue;
+    // Its rating and kind, as the card shows them (1.0.2; see channelPlaceDetails).
+    const info = placeInfo && c.id ? placeInfo(c.id) : {};
+    // …and the rest of its card: phone, address, links, hours, photo,
+    // description and up to three review quotes (`reviewQuotes`; `reviews`
+    // is a count elsewhere).
+    const keep = (k, v) => (v != null && v !== "" ? { [k]: v } : {});
+    places.push({
+      name, ...keep("category", info.category), ...keep("rating", info.rating), ...keep("placeId", c.id),
+      ...keep("phone", info.phone), ...keep("address", info.address), ...keep("website", info.website), ...keep("mapsUrl", info.mapsUrl),
+      ...keep("hours", info.hours), ...keep("image", info.photo), ...keep("description", info.description),
+      ...(info.reviews && info.reviews.length ? { reviewQuotes: info.reviews } : {}),
+    });
+  }
+  const brandMentions = await extractBrandMentions(answer, { products, places, sources, tracked: opts.tracked, prompt: userPrompt });
   const seenE = new Set();
   const entities = [];
   const addE = (t, c) => { const k = c + "|" + (t || "").toLowerCase(); if (t && !seenE.has(k)) { seenE.add(k); entities.push({ text: t, category: c }); } };
   products.forEach((p) => { addE(p.name, "Product"); if (p.merchant) addE(p.merchant, "Retailer"); });
   brandMentions.forEach((b) => addE(b.brand, b.category === "place" ? "Place" : "Brand"));
-  const searched = !!(r && (r.sources.length || r.searchLabels.length || r.products.length));
+  places.forEach((p) => addE(p.name, "Place"));
+  const searched = !!(r && (r.sources.length || r.searchLabels.length || r.products.length || places.length));
   if (r && !r.searchLabels.length) diag.notes.push(FANOUT_UNSUPPORTED_NOTE);
   return makeRecord({
     captureId: rawCapture.captureId,
@@ -467,11 +521,11 @@ async function adaptChannel(rawCapture, opts, diag) {
     ...(r && r.responseId ? { turnId: r.responseId } : {}),
     ...(r && r.conversationId ? { conversationId: r.conversationId } : {}),
     searched,
-    turnUseCase: products.length ? "shopping" : sources.length ? "web" : "general",
+    turnUseCase: places.length ? "local" : products.length ? "shopping" : sources.length ? "web" : "general",
     fanout: { search: [], shopping: [], image: [] },
     sources,
     products,
-    places: [],
+    places,
     entities,
     brandMentions,
     answerChars: answer.length,
