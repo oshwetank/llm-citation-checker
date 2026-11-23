@@ -76,6 +76,8 @@ const NOISE = new Set([
   // Labels a "**Word:**" bullet opens with.
   "watch-out", "watch-outs", "watchout", "watchouts", "strengths", "weaknesses", "trade-off", "trade-offs",
   "tradeoff", "tradeoffs", "important", "caveat", "caveats", "limitations", "drawbacks", "downsides", "upsides",
+  // Price bands in cost tables (stress run): "Standard", "Economy", "Estimated".
+  "standard", "economy", "estimated", "approximate", "luxury", "mid-range", "midrange", "high-end",
 ]);
 
 // Spec terms that read like names in a table cell or after a bullet label:
@@ -2317,6 +2319,37 @@ export function detectBrands(answerText, plainText, ctx = {}) {
       r.firstIndex = extra[0];
       const p = text.slice(Math.max(0, extra[0] - 110), extra[0] + 110).replace(/\s+/g, " ").trim();
       if (!r.passages.includes(p)) r.passages.unshift(p);
+    }
+  }
+
+  // Names listed beside a found brand (1.0.4): "I can estimate the total cost
+  // for Asian Paints, Berger and Nerolac" kept Asian Paints and lost the
+  // other two (stress run, 23 Nov 2026). The list rule for short answers only
+  // runs when nothing else was found; a list that holds one brand already is
+  // a list of brands. Split on commas, "and", "or" — never "&", so "Marks &
+  // Spencer" stays one name — and each name passes the same checks.
+  {
+    const have = new Set(results.map((r) => r.brand.toLowerCase()));
+    const NAME = "[A-Z][\\p{L}0-9.'’-]*(?: [A-Z][\\p{L}0-9.'’-]*){0,2}";
+    // "A, B and C", and "A vs B vs C" ("compare Asian Paints vs Berger vs Nerolac").
+    const LIST = new RegExp(`${NAME}(?:(?:, | vs\\.? )${NAME})*,? (?:and|or|vs\\.?) ${NAME}`, "gu");
+    const flat = text.replace(/\*\*/g, "");
+    for (const m of flat.matchAll(LIST)) {
+      const items = m[0].split(/, (?:and |or )?| (?:and|or|vs\.?) /).map((s) => s.trim().replace(/[.'’]+$/, "")).filter(Boolean);
+      // A sentence's opening word ("For Asian Paints, …"), not a word a
+      // region shares with a brand ("Asian").
+      const OPENERS = /^(?:in|at|on|for|to|with|by|from|the|a|an|of|near|under|over|across|between|like|including|both|either)$/i;
+      while (items.length && items[0].includes(" ") && (isNoise(items[0].split(" ")[0]) || OPENERS.test(items[0].split(" ")[0]))) items[0] = items[0].split(" ").slice(1).join(" ");
+      if (items.length < 2 || !items.some((it) => have.has(it.toLowerCase()))) continue;
+      for (const it of items) {
+        const k = it.toLowerCase();
+        if (!it || have.has(k) || isNoise(it) || isNoise(it.split(" ")[0]) || PROMPT_STOPWORDS.has(k) || promptTokens.has(k) || !looksLikeProperName(it)) continue;
+        const hits = [...flat.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(it)}(?![\\p{L}\\p{N}])`, "gu"))].map((x) => x.index);
+        if (!hits.length) continue;
+        have.add(k);
+        const at = text.indexOf(it);
+        results.push({ brand: it, count: hits.length, firstIndex: at >= 0 ? at : hits[0], category: null, description: null, passages: [flat.slice(Math.max(0, hits[0] - 110), hits[0] + 110).replace(/\s+/g, " ").trim()], relation: null });
+      }
     }
   }
 

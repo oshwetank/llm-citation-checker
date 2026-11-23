@@ -60,5 +60,19 @@ console.log("\nLabels, headings and plain words are not brands");
   check("a sentence opener is not a brand", !b.includes("However"), JSON.stringify(b));
 }
 
+console.log("\nNames listed beside a found brand (1.0.4, stress run)");
+{
+  const p = "Painting cost per sq ft in Hyderabad in 2026";
+  const b = names("| Tier | Cost |\n|---|---|\n| **Economy** | ₹12 |\n| **Standard** | ₹18 |\n\n**Asian Paints** is the most used. I can estimate the total cost for Asian Paints, Berger and Nerolac.", p);
+  check("the rest of a list that holds a brand are brands", has(b, "Berger") && has(b, "Nerolac"), JSON.stringify(b));
+  check("price bands in a cost table are not", !b.includes("Economy") && !b.includes("Standard"), JSON.stringify(b));
+  const v = names("**Asian Paints** leads on reviews. Would you like me to compare Asian Paints vs Berger vs Nerolac?", p);
+  check("so are names compared with \"vs\"", has(v, "Berger") && has(v, "Nerolac"), JSON.stringify(v));
+  const c = names("**Asian Paints** has painters in Mumbai, Pune and Delhi.", p);
+  check("a list of cities beside a brand is not", !c.some((x) => /Mumbai|Pune|Delhi/.test(x)), JSON.stringify(c));
+  const n = names("Painters in Mumbai, Pune and Delhi charge more.", p);
+  check("a list with no brand in it adds nothing", !n.some((x) => /Mumbai|Pune|Delhi/.test(x)), JSON.stringify(n));
+}
+
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);

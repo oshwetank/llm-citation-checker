@@ -652,7 +652,7 @@ function markGenUiCited(nodes, sources, textRefs) {
 // The pictures of each <AsyncImage>, in the order the images appear in the
 // answer: appData.opGenui.componentResults[<component id>].state.images.
 // Returns one list per image component.
-function genUiImages(nodes) {
+function genUiImages(nodes, types = ["async_image"]) {
   const byId = new Map();
   const put = (id, list) => {
     if (!Array.isArray(list)) return;
@@ -677,7 +677,7 @@ function genUiImages(nodes) {
     }
   });
   const order = [];
-  collectObjects({ nodes }, (o) => o.type === "async_image" && typeof o.component_resolution_id === "string").forEach((o) => {
+  collectObjects({ nodes }, (o) => types.includes(o.type) && typeof o.component_resolution_id === "string").forEach((o) => {
     if (!order.includes(o.component_resolution_id)) order.push(o.component_resolution_id);
   });
   return order.map((id) => byId.get(id) || []);
@@ -919,6 +919,15 @@ export async function adapt(rawCapture, opts = {}) {
       bl.image = pic ? { url: pic.url, sourceUrl: pic.sourceUrl || null, title: pic.title || null } : null;
     });
   }
+  // Card markup outside a card answer (1.0.4, stress run): "**<Entity
+  // value="Indigo Paints" category="brand" …>**" reached the answer text as
+  // tags, and an emptied bold as "****". The name is what the reader saw.
+  if (!genui) {
+    answerText = answerText
+      .replace(/<Entity\s+value="([^"]*)"[^>\n]*>?/g, "$1")
+      .replace(/<\/Entity>/g, "")
+      .replace(/\*\*\*\*/g, "");
+  }
   const referenceTypes = extractReferenceTypes(nodes, answerText);
   const userPrompt = extractPrompt(rawCapture.reqBody);
   const { brands: brandMentions, entities: baseEntities } = await detectBrandsForCapture(answerText, products, opts.tracked, sources, places, userPrompt);
@@ -931,6 +940,13 @@ export async function adapt(rawCapture, opts = {}) {
     const have = images.find((x) => x.url === im.url);
     if (!have) images.push(im);
     else for (const k of ["sourceUrl", "attribution", "title"]) if (!have[k] && im[k]) have[k] = im[k];
+  });
+  // Every picture of an image carousel (<AsyncImageGroup>, 1.0.4): the answer
+  // showed them all, but only single <AsyncImage> pictures were kept, so an
+  // answer with three carousels stored 1 of its 10 pictures (stress run,
+  // 23 Nov 2026). Cards keep their own pictures above; these are the answer's.
+  if (genui) genUiImages(nodes, ["async_image_group"]).flat().forEach((im) => {
+    if (im && im.url && !images.some((x) => x.url === im.url)) images.push(im);
   });
   // A product with no picture of its own takes the image titled with its name.
   products = pictureProducts(products, images);
