@@ -792,6 +792,16 @@ function tabBar() {
     goSection(CV_SECTIONS[n][0]);
     document.getElementById(`${CV_SECTIONS[n][0]}-tab`)?.focus();
   };
+  // The open section's tab in sight (1.0.4). The bar is rebuilt on every
+  // pick and starts scrolled to the left, so in the popup picking a tab past
+  // the edge hid it again, and a board reopened on "Signals" showed no tab
+  // as open. Only the bar scrolls, never the page.
+  requestAnimationFrame(() => {
+    const on = bar.querySelector(".cv-tab.on");
+    if (!on || bar.scrollWidth <= bar.clientWidth) return;
+    const left = on.getBoundingClientRect().left - bar.getBoundingClientRect().left + bar.scrollLeft;
+    bar.scrollLeft = Math.max(0, left - (bar.clientWidth - on.offsetWidth) / 2);
+  });
   return bar;
 }
 
