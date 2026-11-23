@@ -14,12 +14,18 @@ Hugging Face; and, once accounts are switched on, when you sign in, share a camp
 code, open a code, or leave an email for updates. Nothing you capture ever leaves your
 device unless you choose to share that campaign: the AI runs on your computer.
 
-> **v1.0.2** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v1.0.3** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **1.0.3** (23 November 2026). Fixes from a 530-question campaign run (CRM software and running shoes) on ChatGPT, Gemini and Perplexity.
+>   - **Gemini asked once.** Each campaign question was sent to Gemini 3 to 5 times, each a new conversation in your history; it is now sent once.
+>   - **No false limits.** A Perplexity source card that mentions "rate limits" no longer pauses Perplexity for 30 minutes.
+>   - **Queue and controls.** Run stays on every other campaign's page while one runs, and queues it; one engine cooling down no longer makes the run say "Paused".
+>   - **Smoother while a run goes.** Setting up a campaign no longer loses what you typed, and the panel no longer floods the extension with background checks.
+>   - **Board and brands.** An empty copy never replaces an answer; names in "**Name:**" bullets (Gemini's usual layout) are found, and "CRM", "However", plan tiers and bullet labels are no longer brands. Share of voice counts every written mention.
 > - **1.0.2** (22 November 2026). Fixes from typing 151 questions across industries into all four engines and checking every stored answer against the engine's page.
 >   - **Brands in short answers.** Perplexity now often answers in two or three sentences of plain prose; those answers listed no brands at all. Names in a list ("Swiggy and Zomato"), names put forward as the pick ("Jio is the strongest starting point") and names bolded side by side are now found, and half names are made whole ("Asit Mehta & Associates", "Jeeva Pet Hospital"). A word of the question ("Seoul", "Insurance") and a map listing's keyword tail are no longer brands.
 >   - **What the answer showed, kept.** ChatGPT's "Official website" links, Gemini's comparison tables, its places' ratings and kinds and its product pictures, Perplexity's page dates, its "trusted" marks and every snippet it sent, and the full thread of its newer `/session/` pages. ChatGPT's section headings are no longer stored as products.

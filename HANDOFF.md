@@ -38,6 +38,18 @@ The store's version was 0.36. 1.0.0 is the first release since; the store pack i
 - **The update test now tests the update.** `test/upgrade-capture.test.mjs` used to load the new build over the old one in the same profile, and Chrome kept running the old service-worker script: every check after the "update" tested the old background. The profile's stored worker scripts are now dropped between the runs (as a store update does) and the test checks that `build-info` answers with this build. CI runs it from v0.80.0 and from v0.36.0 (`--from 4d5a046`).
 - **Help for a first-time user** (`src/lib/onboarding.js`, tested by `getting-started.test` and `onboarding-ui.test`): Get started on the Dashboard (five steps, ticked by what was done; `cito-gs-*` in localStorage), "Based on N answers…" and **What to do next** on a campaign's overview, example prompts in setup (**Fill in examples**), `ui/help.html` (linked from Get started and About), and the welcome guide's **What's changed** step for an update from before 0.80 (`citoUpdatedFrom`, recorded on update by `background.js`). All of it is translated; the language picker marks the five translations beta.
 
+## Live run of 23 Nov 2026 (1.0.3)
+
+Two campaigns of 265 prompts each (small-business CRM, running shoes) on ChatGPT, Gemini and Perplexity, with an independent check of every stored answer (harness in live-harness/audit/r2, not in this repository). Each fix has a test that fails on the old code.
+
+- **Gemini duplicates.** `dropQ()` put back the address the page started on, with no history state; Gemini, already at /app/<id>, re-sent the question into 3 to 5 new conversations. It now only removes q, keeps the state, and leaves Gemini's address alone (`prompt-submit.test`). Not yet confirmed against live Gemini.
+- **False rate limit.** Links to other sites are left out of the limit-notice scan (Perplexity's source cards sit outside .prose).
+- **Queue.** The header is live only on the running campaign's page (`cpHolding`), so Run queues from any other; `userPaused` separates Pause from an engine's cooldown (`campaign-combined-ui.test`).
+- **Panel.** A capture no longer rebuilds an open setup form (`campaign-setup-hold.test`); the capture-missed check is single-flight (`capture-missed-poll.test`).
+- **Board.** A copy with an answer always beats one without (ChatGPT's /conversation/resume), in `oneCapturePerPrompt` and `latestAnswers`.
+- **Brands.** `cleanCandidateText` keeps the name before a closing colon when it is name-shaped and not a label the answer writes in lower case; "A B & C D" labels split; new NOISE and category words (`brands-label-bullets.test`).
+- **Left:** one-off bold names in prose and plain-prose names (Gemini's recall gap); numbered "**Label:**" checklist items; Stop leaves the run's tabs open by design, so repeated stop-and-run piles up tabs.
+
 ## Live run of 22 Nov 2026 (1.0.2)
 
 151 questions across industries (shoes, CRMs, insurance, clinics, hotels, SaaS, banks…) were typed by Playwright into ChatGPT, Gemini, Perplexity and Grok in one signed-in Chromium with the unpacked extension, and every stored record was compared with what the engine's page showed (answer text, bold names, links, whether it searched). The harness is not in this repository; the fixes it led to are, each with a test written for it.
