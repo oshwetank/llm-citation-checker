@@ -181,6 +181,22 @@ export function tabsForEngine(plat) {
   return TABS_PER_ENGINE[plat] || CONCURRENT_TABS_PER_ENGINE;
 }
 
+/* A fresh tab every N prompts (1.0.4). One tab kept for a whole run carries
+ * every page it has loaded: in a 1,280-prompt stress run the two engines'
+ * three tabs held 6.3 GB after an hour, and ChatGPT's web app is known to
+ * slow down as one tab's state grows (its client keeps conversation state
+ * and an un-virtualised transcript). Closing the tab and opening a new one
+ * is what a person does; it adds nothing to the account's request rate. */
+export const TAB_RECYCLE_EVERY = { chatgpt: 20 };
+export const TAB_RECYCLE_DEFAULT = 40;
+export function tabRecycleEvery(plat) {
+  return TAB_RECYCLE_EVERY[plat] || TAB_RECYCLE_DEFAULT;
+}
+/** Is it time for this leg's turn to open in a fresh tab? */
+export function needsFreshTab(plat, turnsInTab) {
+  return (turnsInTab || 0) >= tabRecycleEvery(plat);
+}
+
 // Tabs are started this far apart rather than all at once, so the very first
 // submissions across tabs don't land in the same instant — a burst is a much
 // stronger automation signal than the same volume spread out even slightly.

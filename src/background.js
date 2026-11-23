@@ -18,7 +18,7 @@ import { db } from "./lib/db.js";
 import {
   turnBudgetMs, legEta, runTookMs, INTER_PROMPT_MIN_MS, INTER_PROMPT_MAX_MS,
   CONCURRENT_TABS_PER_ENGINE, tabsForEngine, LEG_START_STAGGER_MS, shardPrompts,
-  parseCooldownFromNotice, formatCooldown,
+  parseCooldownFromNotice, formatCooldown, needsFreshTab, tabRecycleEvery,
 } from "./lib/pacing.js";
 import { createErrorLog } from "./lib/errorlog.js";
 import { compareRuns } from "./lib/runCompare.js";
@@ -364,6 +364,14 @@ async function importCampaignBundle(bundle, { from = "" } = {}) {
 
 chrome.runtime.onInstalled.addListener((details) => {
   if (details && details.reason === "update") repairOnce().catch((e) => logErr("repair", e));
+  // An update or reload of the extension is the same browser session: its
+  // tabs keep their ids. Chrome clears session storage all the same, so the
+  // run's session nonce no longer matched and a run in flight was restored
+  // as if the browser had restarted: its tabs forgotten, new ones opened on
+  // Resume and the old ones left open (stress run, 23 Nov 2026, 1.0.4). The
+  // new worker takes over the run's nonce. Not on "chrome_update": that is a
+  // browser restart.
+  if (details && details.reason === "update") adoptRunSessionNonce().catch((e) => logErr("adoptRunSessionNonce", e));
   syncSignup();
   // The version updated from (1.0.0): the guide starts with what changed for
   // people coming from before the redesign (ui/welcome.js).
@@ -1274,6 +1282,17 @@ const DURATION_WINDOW = 10; // per-platform rolling window of turn durations, fo
 // resolving without throwing is not proof the tab is still ours).
 const SESSION_NONCE_KEY = "lcfcSessionNonce";
 let sessionNonceCache = null;
+// After an extension update/reload (see onInstalled): the run's own nonce,
+// when this session hasn't been given one yet by anything else.
+async function adoptRunSessionNonce() {
+  const snap = (await chrome.storage.local.get(LOADER_STATE_KEY))[LOADER_STATE_KEY];
+  if (!snap || !snap.running || !snap.sessionNonce) return;
+  const got = await chrome.storage.session.get(SESSION_NONCE_KEY);
+  if (got[SESSION_NONCE_KEY] && got[SESSION_NONCE_KEY] !== sessionNonceCache) return;
+  if (sessionNonceCache && sessionNonceCache !== snap.sessionNonce && loader.running) return; // already restored
+  await chrome.storage.session.set({ [SESSION_NONCE_KEY]: snap.sessionNonce });
+  sessionNonceCache = snap.sessionNonce;
+}
 async function ensureSessionNonce() {
   if (sessionNonceCache) return sessionNonceCache;
   try {
@@ -2470,6 +2489,24 @@ async function loaderRunLeg(plat, leg) {
     }
     return;
   }
+
+  // A fresh tab every N prompts (1.0.4, see pacing.js needsFreshTab). The new
+  // tab becomes this leg's before the old one closes, so the close is never
+  // read as "tab closed" for the turn. If Chrome refuses, the old tab carries on.
+  if (needsFreshTab(plat, leg.turnsInTab)) {
+    const old = leg.tabId;
+    try {
+      const prev = await chrome.tabs.get(old);
+      const fresh = await chrome.tabs.create({ windowId: prev.windowId, url: "about:blank", active: false, index: prev.index + 1 });
+      chrome.tabs.update(fresh.id, { autoDiscardable: false }).catch(() => {});
+      leg.tabId = fresh.id;
+      leg.turnsInTab = 0;
+      leg.tabsOpened = (leg.tabsOpened || 0) + 1;
+      chrome.tabs.remove(old).catch(() => {});
+      logEvent(`run:fresh-tab:${plat}`, "turn", `a fresh ${plat} tab after ${tabRecycleEvery(plat)} prompts`, { platform: plat, runId: loader.runId });
+    } catch (_) { leg.turnsInTab = 0; }
+  }
+  leg.turnsInTab = (leg.turnsInTab || 0) + 1;
 
   const prompt = leg.prompts[leg.idx];
   const q = encodeURIComponent(prompt);
@@ -4603,6 +4640,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, ...loaderStatus() });
           break;
         case "loader-resume": {
+          // A run saved before the worker restarted is picked up first, so
+          // Resume works at once instead of after the next heartbeat (1.0.4).
+          if (!loader.running) await restoreRunIfAny().catch((err) => logErr("restoreRunIfAny", err));
           // Resume clears BOTH kinds of pause with one click: a manual pause
           // (loader.paused) and any platform sitting out a rate-limit
           // cooldown (leg.paused) — there's only one Resume button, and the
@@ -4665,6 +4705,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           startNextQueued();
           break;
         case "loader-status":
+          // Same for the status the panel polls: a run in flight before an
+          // update shows (paused, "interrupted") instead of nothing (1.0.4).
+          if (!loader.running) await restoreRunIfAny().catch((err) => logErr("restoreRunIfAny", err));
           sendResponse({ ok: true, ...loaderStatus() });
           break;
 

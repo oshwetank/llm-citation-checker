@@ -356,7 +356,7 @@ console.log("\nGemini: no native prefill exists, so the typing path is the only 
       const fire=()=>{ if(!box.innerText.trim()) return; const t=box.innerText; box.innerHTML=''; window.__record(t); };
       box.addEventListener('keydown',e=>{ if(e.key==='Enter') fire(); });
       document.querySelector('button[aria-label="Send message"]').addEventListener('click',fire);
-    </script>`, { gemini: true });
+    </script>`, { gemini: true, waitMs: 16000 });
   check("submitted exactly once", r.submits === 1, `submits=${r.submits}`);
   check("the prompt text is correct", r.text === PROMPT, JSON.stringify(r.text));
 
@@ -378,10 +378,12 @@ console.log("\nGemini: no native prefill exists, so the typing path is the only 
    */
   // 1.0.2: Gemini DOES send ?q= itself now (a live campaign of 22 Nov 2026
   // asked every Gemini question twice), so it waits out the same native-submit
-  // grace as ChatGPT (~3.2 s from the composer) before typing. Still bounded:
-  // a long unconditional wait would fail here.
-  check("Gemini submits within the native-submit wait",
-    r.submitAt != null && r.submitAt < 5000, `submitted at ${r.submitAt}ms`);
+  // grace as ChatGPT (~3.2 s from the composer) before typing. 1.0.4: ~10 s,
+  // because a slow Gemini page fills the box from ?q= well before it sends,
+  // and sending on top of that asked it 2 to 4 times. Still bounded: a long
+  // unconditional wait would fail here.
+  check("Gemini submits within its own-send wait",
+    r.submitAt != null && r.submitAt < 13000, `submitted at ${r.submitAt}ms`);
   check("no failure reported", r.gaveUp.length === 0, r.gaveUp.join(","));
 }
 
@@ -492,6 +494,24 @@ console.log("\nNO false positive: the ANSWER is about rate limits (the run must 
     r.limits.length === 0, JSON.stringify(r.limits));
   check("the prompt ran normally, exactly once", r.submits === 1, `submits=${r.submits}`);
   check("no submit failure either", r.gaveUp.length === 0, r.gaveUp.join(","));
+}
+
+console.log("\nA slow Gemini fills the box from ?q= and sends it itself 5 s later: asked once (1.0.4)");
+{
+  const r = await run(`
+    <rich-textarea><div contenteditable="true" id="g"></div></rich-textarea>
+    <button aria-label="Send message">send</button><div id="convo"></div>
+    <script>${RECORD_GEMINI}
+      const box=document.getElementById('g');
+      const fire=()=>{ if(!box.innerText.trim()) return; const t=box.innerText; box.innerHTML=''; window.__record(t);
+        history.pushState({}, '', '/app/0b38d0c40341c1d0'); };
+      box.addEventListener('keydown',e=>{ if(e.key==='Enter') fire(); });
+      document.querySelector('button[aria-label="Send message"]').addEventListener('click',fire);
+      const q=new URLSearchParams(location.search).get('q');
+      setTimeout(()=>{ box.textContent=q; }, 300);
+      setTimeout(fire, 5000);
+    </script>`, { gemini: true, waitMs: 14000 });
+  check("Gemini got the question once", r.submits === 1, `submits=${r.submits}`);
 }
 
 console.log("\nChatGPT's /c/local-… address is not proof the question was sent (1.0.4)");

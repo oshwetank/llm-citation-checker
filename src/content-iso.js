@@ -814,6 +814,13 @@
         /rate.?limit(?:ed|s)?\b/i,
         /too many requests/i,
         /please (?:wait|try again) (?:a|in) .{0,20}(?:moment|minute|hour)/i,
+        // ChatGPT's two throttling notices (1.0.4): "You're making requests
+        // too quickly. We've temporarily limited access to your conversations"
+        // and "Our systems have detected unusual activity". Both mean stop
+        // asking for a while, not retry.
+        /making requests too quickly/i,
+        /temporarily limited access/i,
+        /detected unusual activity/i,
       ];
 
       /* Visible text OUTSIDE the transcript, capped for cost.
@@ -906,6 +913,7 @@
       // It gets ChatGPT's wait, and its conversation address counts as sent
       // even before anything is typed (see submittedWhy).
       const GRACE_AFTER_COMPOSER = 8;  // ~3.2s
+      const GEMINI_OWN_SEND_TICKS = 25; // ~10s: Gemini sends ?q= itself
       const MAX_WAIT_TICKS = 75;       // ~30s for the composer to appear
       // Was 20 (~8s). Real failures traced to "send control never accepted
       // the prompt" showed the button simply never found within that window
@@ -1068,6 +1076,12 @@
         // text, it clearly consumed ?q= and chose not to submit — no reason
         // to keep waiting, so fall straight through to sending.
         const prefilled = norm(composerText(box)) === want;
+        // Not on Gemini (1.0.4): it fills the box from ?q= and THEN sends it
+        // itself. On a slow page the gap between the two grew, the script
+        // read the filled box as "chose not to send" and sent too, so Gemini
+        // got the question 2 to 4 times (stress run, 23 Nov 2026, while the
+        // machine was short of memory). Gemini gets ~10 s to send its own.
+        if (plat === "gemini" && ticks - composerSeenTick < GEMINI_OWN_SEND_TICKS) return;
         if (ticks - composerSeenTick < GRACE_AFTER_COMPOSER && !prefilled) return;
         // The page said it sent ("prepare") a moment ago: give that 8 s to
         // show before doing anything, so a real send is never doubled. After

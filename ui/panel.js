@@ -11688,7 +11688,29 @@ function syncOverflowEdges(root = document) {
   document.addEventListener("scroll", (e) => { if (e.target && e.target.matches && e.target.matches(OVERFLOW_ROWS)) syncOverflowEdges(e.target.parentNode || document); }, true);
   window.addEventListener("resize", later);
   later();
+  // A mouse wheel scrolls these rows sideways (1.0.4): their scrollbar is
+  // hidden, so at 820 px a campaign's Searches and Signals tabs could only be
+  // reached with a trackpad or the keyboard. A sideways swipe is left alone.
+  document.addEventListener("wheel", (e) => {
+    const row = e.target && e.target.closest && e.target.closest(OVERFLOW_ROWS);
+    if (!row || Math.abs(e.deltaX) > Math.abs(e.deltaY) || row.scrollWidth - row.clientWidth <= 2) return;
+    const before = row.scrollLeft;
+    row.scrollLeft += e.deltaY;
+    if (row.scrollLeft !== before) e.preventDefault();
+  }, { passive: false });
 }
+
+/* Text cut off with "…" shows in full on hover (1.0.4): citation and page
+ * titles, product names and prompts were cut with no way to read them. Any
+ * element whose text overflows and has no tooltip gets its own text as one,
+ * the moment the pointer reaches it. */
+document.addEventListener("mouseover", (e) => {
+  const n = e.target;
+  if (!n || n.nodeType !== 1 || n.title || n.children.length > 3) return;
+  if (n.scrollWidth <= n.clientWidth + 1) return;
+  const text = (n.textContent || "").trim();
+  if (text && text.length > 3) n.title = text.length > 400 ? `${text.slice(0, 397)}…` : text;
+}, true);
 
 /* A model download in progress, shown in the app bar on every page
  * (0.84.0): it used to show only in Settings, so leaving the page made it
