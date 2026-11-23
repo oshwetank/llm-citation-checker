@@ -272,6 +272,12 @@ export function partitionRecords(records) {
  * earliest. A record without a run or prompt (older captures) is kept as is.
  */
 const moreComplete = (a, b) => {
+  // A copy with an answer always beats one without. ChatGPT's
+  // /conversation/resume stream arrives seconds after the answer with the
+  // same sources and no text or question (live run, 23 Nov 2026); on sources
+  // alone it could win and the prompt would show no brands at all.
+  const ha = (a.answerChars || 0) > 0, hb = (b.answerChars || 0) > 0;
+  if (ha !== hb) return ha;
   const sa = (a.sources || []).length;
   const sb = (b.sources || []).length;
   if (sa !== sb) return sa > sb;
@@ -312,7 +318,9 @@ export function latestAnswers(records) {
     const g = r.geo || {};
     const key = `${g.promptId || String(r.userPrompt || "").trim().toLowerCase()}|${r.platform}`;
     const cur = best.get(key);
-    if (!cur || (r.capturedAt || 0) > (cur.capturedAt || 0)) best.set(key, r);
+    // Newest wins, but never an empty copy over an answer (see moreComplete).
+    const has = (x) => (x.answerChars || 0) > 0;
+    if (!cur || (has(r) && !has(cur)) || (has(r) === has(cur) && (r.capturedAt || 0) > (cur.capturedAt || 0))) best.set(key, r);
   }
   return [...best.values()];
 }

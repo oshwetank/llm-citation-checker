@@ -12,7 +12,7 @@ import {
   isTracked, partitionRecords, selectTracked,
   normName, domainOfUrl, domainMatches, bucketKey, runDue, runVolume,
   allTags, availableEngines, ENGINES, MAX_PROFILES,
-  hasSignal, turnAnswered, usageLimitOf, countCompletedForRun,
+  hasSignal, turnAnswered, usageLimitOf, countCompletedForRun, latestAnswers,
 } from "../src/lib/geo.js";
 import { adapt as adaptChatGpt } from "../src/adapters/chatgpt.js";
 import { makeRecord } from "../src/schema.js";
@@ -534,6 +534,21 @@ console.log("\nmentions of a tracked brand count what the answer writes (1.0.2)"
   check("a capitalised brand written all lowercase is still the word, not the brand", p3.find((p) => p.name === "Noise").mentions === 0, JSON.stringify(p3));
   const p4 = brandPresence(rec("Use Delhivery.[[cite:https://delhivery.com/x]] Delhivery is fast.", [{ brand: "Delhivery", count: 3, firstIndex: 4 }]), brands);
   check("the detector's higher count stands", p4.find((p) => p.name === "Delhivery").mentions === 3, JSON.stringify(p4));
+}
+
+console.log("\nAn empty copy never stands in for the answer (live run, 23 Nov 2026)");
+{
+  // ChatGPT's /conversation/resume: same conversation, same sources, no text
+  // or question, captured 3 s after the real answer.
+  const geo = { profileId: "p", runId: "r1", promptId: "q24" };
+  const real = { captureId: "real", platform: "chatgpt", geo, capturedAt: 1000, answerChars: 2252, answerText: "x", userPrompt: "Best CRM", sources: new Array(14).fill({ url: "https://a.com" }) };
+  const empty = { captureId: "empty", platform: "chatgpt", geo, capturedAt: 4000, answerChars: 0, answerText: "", userPrompt: null, sources: new Array(15).fill({ url: "https://a.com" }) };
+  const one = selectTracked([real, empty], { profileId: "p" });
+  check("one copy per prompt keeps the answer, even when the empty copy has more sources", one.length === 1 && one[0].captureId === "real", JSON.stringify(one.map((r) => r.captureId)));
+  const latest = latestAnswers([real, empty]);
+  check("the newest-answer view keeps the answer over a newer empty copy", latest.length === 1 && latest[0].captureId === "real", JSON.stringify(latest.map((r) => r.captureId)));
+  const newer = { ...real, captureId: "newer", capturedAt: 9000, geo: { ...geo, runId: "r2" } };
+  check("a newer answer still replaces an older one", latestAnswers([real, empty, newer])[0].captureId === "newer");
 }
 
 console.log(failures ? `\nFAILED (${failures})` : "\nALL PASSED");
