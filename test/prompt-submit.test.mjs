@@ -494,6 +494,27 @@ console.log("\nNO false positive: the ANSWER is about rate limits (the run must 
   check("no submit failure either", r.gaveUp.length === 0, r.gaveUp.join(","));
 }
 
+console.log("\nGemini sends ?q= itself and moves to its conversation: the address is left alone");
+{
+  // Live run, 23 Nov 2026: once Gemini had moved to /app/<id>, the script put
+  // back the address the page started on; Gemini sent the question again
+  // into 3 to 5 new conversations, and its address flipped ~100 times a
+  // minute. The page below sends from ?q= by itself, as Gemini now does.
+  const r = await run(`
+    <rich-textarea><div contenteditable="true" id="g"></div></rich-textarea>
+    <button aria-label="Send message">send</button>
+    <div id="convo"></div>
+    <script>${RECORD_GEMINI}
+      window.__paths = [];
+      const rs = history.replaceState.bind(history);
+      history.replaceState = (s, t, u) => { window.__paths.push(String(u)); return rs(s, t, u); };
+      setTimeout(() => { const q = new URLSearchParams(location.search).get('q'); if (!q) return;
+        window.__record(q); history.pushState({ app: 1 }, '', '/app/abc123?q=' + encodeURIComponent(q)); }, 1200);
+    </script>`, { gemini: true, waitMs: 12000 });
+  check("the question went out once", r.submits === 1, `submits=${r.submits}`);
+  check("the address stays on Gemini's conversation", r.url.startsWith("/app/abc123"), r.url);
+}
+
 console.log("\nNO false positive: a source card outside the answer mentions rate limits");
 {
   // Perplexity draws its source cards outside the answer block: a link to

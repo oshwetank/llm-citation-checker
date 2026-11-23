@@ -672,7 +672,25 @@
        * dies as a generic timeout 90 seconds later. Worth naming outright. */
       const signedOut = () => /\/auth\/|\/login|accounts\.google\.com/i.test(location.pathname + location.host);
 
-      const dropQ = () => { try { history.replaceState(null, "", bareUrl); } catch (_) {} };
+      /* Take ?q= out of the address once it has served its purpose, so a
+       * reload can't send the question again. Only the q is removed: the
+       * path the engine has moved to and its history state stay. This used
+       * to put back the address the page started on, with no state. On
+       * Gemini, already at /app/<id>, that dropped it back on the new-chat
+       * page while its question was going out, and Gemini sent the question
+       * again, 3 to 5 times, each a new conversation; its address then
+       * flipped between the two ~100 times a minute (live run, 23 Nov 2026).
+       * Gemini reads ?q= itself and keeps its own address, so it is left
+       * alone there. */
+      const dropQ = () => {
+        if (plat === "gemini") return;
+        try {
+          const u = new URL(location.href);
+          if (!u.searchParams.has("q")) return;
+          u.searchParams.delete("q");
+          history.replaceState(history.state, "", u.pathname + u.search + u.hash);
+        } catch (_) { /* best effort */ }
+      };
 
       // ChatGPT also pre-fills the composer from ?q= without submitting.
       // Typing on top of that produced the prompt twice in one turn, so the
