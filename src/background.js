@@ -38,7 +38,7 @@ import { checkEmail } from "./lib/emailCheck.js";
 import { citedUrls, pageVerdict, pageSummary, wordCount, PAGE_TTL_MS } from "./lib/pageText.js";
 import { isPublicHttpUrl } from "./lib/safeUrl.js";
 import { mayHandle, onEngineSite } from "./lib/senderGate.js";
-import { appendRing } from "./lib/netlog.js";
+import { appendRing, cleanEntry } from "./lib/netlog.js";
 import { offersFrom, attachOffers, productUpdateFrom, productPanelFrom, formChoicesFrom, cardIndexFor } from "./lib/offers.js";
 import { searchAnswers } from "./lib/answerSearch.js";
 import { answerKey, sameAnswer, mergeAnswers, SAME_ANSWER_WINDOW_MS, SAME_REPLY_WINDOW_MS } from "./lib/sameAnswer.js";
@@ -816,6 +816,30 @@ function netlogAppend(entries) {
   }).catch((e) => logErr("netlog", e));
   return netlogChain;
 }
+
+/* ChatGPT's own requests, seen by the browser (1.0.4, Debug capture only).
+ * The page hook only sees requests made through the page's fetch. On some
+ * accounts ChatGPT shows a question at /c/local-… and no send is ever seen
+ * there, so whether the send left the tab at all (and what came back) was
+ * unknowable. chrome.webRequest sees every request the tab makes. It is an
+ * optional permission, asked for when Debug capture is turned on, so an
+ * update asks nobody for anything; and it only reads, method, path (ids
+ * masked), status and error, into the same ring as the page's entries. */
+const WEBREQUEST_FILTER = { urls: ["https://chatgpt.com/backend-api/*"] };
+let webRequestArmed = false;
+async function armWebRequestLog() {
+  if (webRequestArmed || !chrome.webRequest || !chrome.webRequest.onCompleted) return;
+  webRequestArmed = true;
+  const note = async (d, error) => {
+    if (!(await getSettings()).debugCapture) return;
+    let u; try { u = new URL(d.url); } catch (_) { return; }
+    netlogAppend([cleanEntry({ t: d.timeStamp, page: "chatgpt.com", kind: "webRequest", method: d.method, host: u.host, path: u.pathname, status: error ? 0 : d.statusCode, type: error ? `error: ${error}`.slice(0, 60) : d.type })]);
+  };
+  chrome.webRequest.onCompleted.addListener((d) => { note(d).catch(() => {}); }, WEBREQUEST_FILTER);
+  chrome.webRequest.onErrorOccurred.addListener((d) => { note(d, d.error || "failed").catch(() => {}); }, WEBREQUEST_FILTER);
+}
+armWebRequestLog().catch(() => {});
+chrome.permissions?.onAdded?.addListener(() => { armWebRequestLog().catch(() => {}); });
 
 // Gemini replies kept as probes (0.62.1, Debug capture only; content-main.js
 // GEMINI_PROBE_RE): the newest 20, in session storage, never derived into an

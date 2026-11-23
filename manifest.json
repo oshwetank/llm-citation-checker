@@ -18,6 +18,9 @@
     "scripting",
     "favicon"
   ],
+  "optional_permissions": [
+    "webRequest"
+  ],
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",

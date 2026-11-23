@@ -10916,6 +10916,17 @@ async function loadSettings() {
   renderStorageMeter();
 }
 ["#setRetention", "#setMaxMB", "#setDebug", "#setHandoffKeep"].forEach((id) => $(id)?.addEventListener(id === "#setDebug" || id === "#setHandoffKeep" ? "change" : "input", () => { abJustSaved = false; updateSettingsStatus(); }));
+// Turning on Debug capture also asks Chrome to let the extension see
+// ChatGPT's own requests (1.0.4: chrome.webRequest, optional, read only), so
+// the report can show whether a question that stayed at /c/local-… ever left
+// the tab. From this click, as Chrome requires. Refusing changes nothing
+// else: Debug capture still records what the page itself sees.
+$("#setDebug")?.addEventListener("change", (e) => {
+  if (!e.target.checked || !chrome.permissions) return;
+  chrome.permissions.contains({ permissions: ["webRequest"] })
+    .then((has) => has || chrome.permissions.request({ permissions: ["webRequest"] }))
+    .catch(() => false);
+});
 // Turning on "Read the cited pages" asks Chrome for access to any site,
 // from this click (Chrome only shows its prompt in answer to a click). If
 // it's refused the switch goes back off and says why (0.62.0).
