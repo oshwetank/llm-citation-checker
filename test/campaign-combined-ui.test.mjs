@@ -147,8 +147,30 @@ try {
   console.log("\na second campaign waits its turn");
   const start = await ask({ type: "geo-run-start", profileId: seeded.profileId, skipAuthCheck: true });
   check("the first campaign starts", start && start.ok && !start.queued, JSON.stringify(start).slice(0, 200));
-  const q = await ask({ type: "geo-run-start", profileId: seeded.second, skipAuthCheck: true });
-  check("the second is queued, not refused", q && q.ok && q.queued && q.position === 1, JSON.stringify(q));
+  // Through the page, as the owner does it (live run, 23 Nov 2026): the
+  // second campaign's page keeps its Run button while the first runs, and
+  // offers no Pause or Stop for a run that isn't its own.
+  const shown = (sel) => page.evaluate((s) => { const b = document.querySelector(s); return !!(b && b.offsetParent); }, sel);
+  await page.evaluate(() => document.querySelector('[data-tab="loader"]')?.click());
+  await page.waitForTimeout(800);
+  const openCampaign = async (first) => {
+    await page.evaluate((first) => { const chips = [...document.querySelectorAll("#cpHead .geo-chip:not(.add)")]; const c = first ? chips[0] : chips.find((x) => !x.classList.contains("active")); c && c.click(); }, first);
+    await page.waitForTimeout(2500); // a status poll or two
+  };
+  const activeId = () => page.evaluate(() => document.getElementById("cpHead")?.dataset.profileId);
+  if ((await activeId()) !== seeded.second) await openCampaign(false);
+  check("the second campaign's page is open", (await activeId()) === seeded.second, await activeId());
+  check("it keeps its Run button while another campaign runs", await shown("#cpHead .cp-run:not(.cp-run-private)"));
+  check("and offers no Pause or Stop for the other campaign's run", !(await shown("#cpHead .cp-pause")) && !(await shown("#cpHead .cp-live.danger")));
+  await page.evaluate(() => { window.confirm = () => true; });
+  await page.click("#cpHead .cp-run:not(.cp-run-private)");
+  await page.waitForTimeout(2500);
+  const q = await ask({ type: "run-queue" });
+  check("pressing Run there queues it", q.queue.length === 1 && q.queue[0].profileId === seeded.second, JSON.stringify(q.queue));
+  check("and the page says it is queued", await page.evaluate(() => { const n = document.getElementById("cpQueued"); return !!(n && !n.hidden && /Queued/.test(n.textContent)); }));
+  await openCampaign(true);
+  if ((await activeId()) !== seeded.profileId) await openCampaign(false);
+  check("the running campaign's own page shows Pause and Stop", (await activeId()) === seeded.profileId && await shown("#cpHead .cp-pause") && !(await shown("#cpHead .cp-run:not(.cp-run-private)")));
   const again = await ask({ type: "geo-run-start", profileId: seeded.profileId });
   check("the one running can't be queued behind itself", again && !again.ok, JSON.stringify(again));
   const list = await ask({ type: "run-queue" });

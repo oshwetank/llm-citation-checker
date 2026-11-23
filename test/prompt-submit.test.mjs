@@ -494,6 +494,25 @@ console.log("\nNO false positive: the ANSWER is about rate limits (the run must 
   check("no submit failure either", r.gaveUp.length === 0, r.gaveUp.join(","));
 }
 
+console.log("\nNO false positive: a source card outside the answer mentions rate limits");
+{
+  // Perplexity draws its source cards outside the answer block: a link to
+  // the cited site with a snippet. One for a CRM comparison ("…API, rate
+  // limits, bulk writes…") paused a live campaign for 30 minutes.
+  const r = await run(`
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <button id="composer-submit-button">send</button>
+    <div id="convo"><div data-message-author-role="assistant">Copper and HubSpot both suit small teams.</div></div>
+    <div class="sources"><a href="https://prospeo.io/s/copper-vs-hubspot"><div>prospeo</div>
+      <span>Copper vs HubSpot for GTM teams: per-seat prices, which plan unlocks the API, rate limits, bulk writes, webhooks</span></a></div>
+    <script>${RECORD_CHATGPT}
+      setTimeout(()=>{ const q=new URLSearchParams(location.search).get('q');
+        if(q) window.__record(q); }, 1000);
+    </script>`, { waitMs: 8000 });
+  check("no limit was reported from a source card's snippet", r.limits.length === 0, JSON.stringify(r.limits));
+  check("the prompt ran normally, exactly once", r.submits === 1, `submits=${r.submits}`);
+}
+
 console.log("\nNO false positive: the user's own PROMPT is about rate limits");
 {
   const r = await run(`

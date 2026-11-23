@@ -2396,6 +2396,10 @@ function loaderStatus() {
     profileId: (loader.options && loader.options.geo && loader.options.geo.profileId) || null,
     running: loader.running,
     paused: loader.paused || anyPlatformPaused,
+    // Paused by the user, not one engine sitting out a limit: the header's
+    // Pause/Resume reads this, so a cooldown on one engine no longer says
+    // "Paused" (and hides Pause) while the others keep running.
+    userPaused: !!loader.paused,
     total: totalTasks,
     done: loader.done,
     idx: totalIdx,
@@ -2443,7 +2447,6 @@ async function loaderRunLeg(plat, leg) {
       loader.running = false;
       syncGeoRun("done");
       startNextQueued();
-    startNextQueued();
       notifyRunComplete();
       closeRunTabs();
     }

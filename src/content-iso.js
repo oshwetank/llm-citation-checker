@@ -796,6 +796,9 @@
        * subtree), as are <script>/<style>, whose textContent is never visible
        * but would otherwise match happily.
        */
+      const offSite = (a) => {
+        try { const u = new URL(a.getAttribute("href") || "", location.href); return /^https?:$/.test(u.protocol) && u.hostname !== location.hostname; } catch (_) { return false; }
+      };
       const chromeText = (cap = 4000) => {
         if (!document.body) return "";
         let out = "";
@@ -806,6 +809,12 @@
                 const tag = node.tagName;
                 if (tag === "SCRIPT" || tag === "STYLE" || tag === "NOSCRIPT") return NodeFilter.FILTER_REJECT;
                 if (sel.turns && node.matches && node.matches(sel.turns)) return NodeFilter.FILTER_REJECT;
+                // A link to another site is a source card, never the engine's
+                // own notice. Perplexity's cards sit outside .prose; one
+                // reading "per-seat prices, API rate limits, bulk writes…"
+                // paused a CRM campaign's Perplexity leg for 30 minutes
+                // (live run, 23 Nov 2026).
+                if (tag === "A" && offSite(node)) return NodeFilter.FILTER_REJECT;
                 return NodeFilter.FILTER_SKIP;
               }
               return NodeFilter.FILTER_ACCEPT;

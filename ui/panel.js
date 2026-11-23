@@ -6886,8 +6886,14 @@ async function loadGeo() {
   // rebuilt: rebuilding it on every capture bounced the reader back to the
   // top (0.62.2, reported). Progress keeps updating on its own poll.
   if (cpFromBroadcast && cpHolding(active) && document.getElementById("cpHead")) return;
+  // A new capture never changes a setup form either. While a run went on,
+  // setting up or editing another campaign was rebuilt every 2–3 s by the
+  // run's captures: a half-typed competitor, prompts pasted but not yet
+  // added, and the cursor were all lost (live run, 23 Nov 2026).
+  if (cpFromBroadcast && cpSetupOnScreen()) return;
   renderCampaigns();
 }
+function cpSetupOnScreen() { return !!document.querySelector("#loader .cs-card-details"); }
 // A run for this campaign is in progress (renderLoaderStatus keeps cpLive).
 let cpFromBroadcast = false; // set while refreshFromBroadcast's load() runs
 function cpHolding(profile) { return !!(profile && cpLive.live && cpLive.profileId === profile.id); }
@@ -8892,7 +8898,13 @@ async function openImportDialog() {
 }
 
 function renderCampaignHead(profile) {
-  const head = el("section", { className: `card cp-head${cpLive.live ? " live" : ""}${cpLive.paused ? " paused" : ""}`, id: "cpHead", "aria-labelledby": "cpName" });
+  // Live (Pause / Stop in place of Run) only on the page of the campaign that
+  // is running. On every other campaign's page Run stays, and queues the run
+  // behind it: with "any run going" here, Run was hidden on every page, the
+  // queue could not be reached at all, and another campaign's page offered
+  // Pause and Stop for a run it wasn't running (live run, 23 Nov 2026).
+  const holding = cpHolding(profile);
+  const head = el("section", { className: `card cp-head${holding ? " live" : ""}${holding && cpLive.paused ? " paused" : ""}`, id: "cpHead", "data-profile-id": profile.id, "aria-labelledby": "cpName" });
   head.append(el("div", { className: "cp-switch" }, el("span", { className: "muted small" }, `Campaigns · ${GEO_PROFILES.length} of ${MAX_PROFILES}`), renderCampaignSwitcher()));
 
   const vol = runVolume(GEO_PROMPTS, profile.engines || []);
@@ -10053,7 +10065,11 @@ function renderLoaderStatus(s) {
   box.textContent = "";
   const wasLive = cpLive.live;
   const wasProfile = cpLive.profileId;
-  cpLive = { live: !!(s && s.total && s.running), paused: !!(s && s.running && s.paused), profileId: (s && s.running && s.profileId) || null };
+  // Paused means the user pressed Pause; one engine cooling down while the
+  // others run is shown on that engine (userPaused is absent from a worker
+  // older than this page, so fall back to paused).
+  const userPaused = s && (s.userPaused !== undefined ? s.userPaused : s.paused);
+  cpLive = { live: !!(s && s.total && s.running), paused: !!(s && s.running && userPaused), profileId: (s && s.running && s.profileId) || null };
   // The run just ended: its campaign's page, held still while it ran, is
   // drawn once with the finished run on the board.
   if (wasLive && !cpLive.live && wasProfile && geoActive() && geoActive().id === wasProfile) setTimeout(() => loadGeo(), 0);
@@ -10066,8 +10082,9 @@ function renderLoaderStatus(s) {
   }
   const cpHead = document.getElementById("cpHead");
   if (cpHead) {
-    cpHead.classList.toggle("live", cpLive.live);
-    cpHead.classList.toggle("paused", cpLive.paused);
+    const ours = cpLive.live && cpHead.dataset.profileId === cpLive.profileId;
+    cpHead.classList.toggle("live", ours);
+    cpHead.classList.toggle("paused", ours && cpLive.paused);
   }
   if (!s || !s.total) { loaderWasRunning = false; return; }
 
@@ -10096,7 +10113,7 @@ function renderLoaderStatus(s) {
   }
   loaderWasRunning = true;
 
-  const state = s.paused ? "Paused" : "Running";
+  const state = cpLive.paused ? "Paused" : "Running";
   const summary = el("div", { className: "loader-summary" },
     el("b", {}, state), ` — ${s.done}/${s.total} done`,
     s.activeMs ? el("span", { className: "muted loader-active" }, ` · running ${fmtDuration(s.activeMs)}`) : "",
@@ -11732,13 +11749,26 @@ function syncOverflowEdges(root = document) {
         el("div", { className: "missed-btns" }, refresh, report, close)));
     }
   };
+  // One check at a time, one timer. Every capture calls check(), and two
+  // checks in flight together each set a 20 s timer, so the loops multiplied
+  // with every burst of captures and never stopped: after an hour of a
+  // campaign run, the open panels sent hundreds of capture-missed requests
+  // every few seconds and slowed the worker (live run, 23 Nov 2026).
   let t = 0;
+  let inFlight = false;
+  let again = false;
   const check = async () => {
     clearTimeout(t);
-    let afterMs;
-    try { afterMs = Number(localStorage.getItem("cito-test-missed-after")) || undefined; } catch (_) { /* none */ }
-    const r = await send({ type: "capture-missed", afterMs }).catch(() => null);
-    draw((r && r.ok && r.missed) || []);
+    if (inFlight) { again = true; return; }
+    inFlight = true;
+    try {
+      let afterMs;
+      try { afterMs = Number(localStorage.getItem("cito-test-missed-after")) || undefined; } catch (_) { /* none */ }
+      const r = await send({ type: "capture-missed", afterMs }).catch(() => null);
+      draw((r && r.ok && r.missed) || []);
+    } finally { inFlight = false; }
+    if (again) { again = false; check(); return; }
+    clearTimeout(t);
     t = setTimeout(check, 20000);
   };
   try { chrome.runtime.onMessage.addListener((m) => { if (m && (m.type === "new-capture" || m.type === "capture-updated")) check(); }); } catch (_) { /* not in the extension */ }
