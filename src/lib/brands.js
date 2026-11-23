@@ -65,6 +65,17 @@ const NOISE = new Set([
   // Honorifics (1.0.2): "Dr. Sanket Sheth is an MDS Endodontist" made "Dr" a
   // brand in a dental-clinic answer (live run, 22 Nov 2026).
   "dr", "mr", "mrs", "ms", "prof", "sr", "jr",
+  // Live run of 23 Nov 2026 (530 CRM and running-shoe questions): the kind
+  // of software asked about, written as an acronym ("CRM" was a brand in 38
+  // answers); sentence openers and the word after a bold label ("However",
+  // "Widely", "Popular"); and plan tiers ("**Basic**, **Professional**").
+  "crm", "crms", "erp", "ats", "cms", "lms", "hrms", "saas",
+  "however", "moreover", "additionally", "alternatively", "overall", "ultimately", "meanwhile",
+  "widely", "popular", "traditional", "hybrid",
+  "basic", "starter", "professional", "enterprise", "essentials", "ultimate",
+  // Labels a "**Word:**" bullet opens with.
+  "watch-out", "watch-outs", "watchout", "watchouts", "strengths", "weaknesses", "trade-off", "trade-offs",
+  "tradeoff", "tradeoffs", "important", "caveat", "caveats", "limitations", "drawbacks", "downsides", "upsides",
 ]);
 
 // Spec terms that read like names in a table cell or after a bullet label:
@@ -341,6 +352,17 @@ function cleanCandidateText(raw) {
       ? parts[parts.length - 1] : parts[0]).replace(/:\s*$/, "").trim();
   }
   else if (/\s*→\s*/.test(s)) s = s.split(/\s*→\s*/).pop().trim();
+  // "**TaxDome:** Widely used by…" — the colon ends the bold, so the name is
+  // before it. Taking the part after the last colon left nothing, and every
+  // bullet in Gemini's commonest layout ("* **Name:** description") was lost
+  // (live run, 23 Nov 2026: TaxDome, HubSpot CRM, Zoho CRM missed). Only a
+  // name-shaped label counts: "**Key features:**" is still a label.
+  else if (/^[^:]+:\s*$/.test(s)) {
+    const before = s.replace(/:\s*$/, "").trim();
+    const halves = before.split(/\s+(?:&|and)\s+/);
+    const named = looksLikeProperName(before) || (halves.length === 2 && halves.every((h) => h.split(/\s+/).length >= 2 && looksLikeProperName(h)));
+    s = named && !isNoise(before) && !isNoise(before.split(/\s+/)[0]) ? before : "";
+  }
   else if (s.includes(":")) s = s.split(":").pop().trim();
   // Strip leading list numbering left over from heading matches ("1. Vivo V70").
   s = s.replace(/^\d+[.)]\s*/, "").trim();
@@ -396,8 +418,26 @@ export function structuralCandidates(answerText) {
       // A bold label opening a list item ("- **Cremica High Bran Biscuits**:
       // fibre-rich…") is that item's subject; a bold heading line is not.
       const src = source === "heading" && !/#/.test(lead) && /^[ \t]*(?:\d+[.)]|[-*•])/.test(lead) ? "bullet" : source;
+      // A "**Label:**" whose every word the answer also writes in lower case
+      // is a section label ("**Sales & Marketing:**", "**Key Features:**"),
+      // not a name: "TaxDome", "Karbon" and "HubSpot" never are.
+      if (/:\s*$/.test(m[1])) {
+        const ws = s.split(/\s+/).filter((w) => !/^(?:&|and|of|for|the)$/i.test(w));
+        const low = answerText.toLowerCase() !== answerText ? answerText : "";
+        if (ws.length && ws.every((w) => new RegExp(`(^|[^\\p{L}])${escapeRegExp(w.toLowerCase())}(?![\\p{L}])`, "u").test(low))) continue;
+      }
       const at = m.index + (m[0].startsWith("\n") ? 1 : 0);
-      out.push({ text: s, source: src, group: source === "section" || /#/.test(lead) ? groupOf(at) : null });
+      const group = source === "section" || /#/.test(lead) ? groupOf(at) : null;
+      // Two names in one label: "* **HubSpot CRM & Zoho CRM:** Popular
+      // options…" (Gemini, live run of 23 Nov 2026) is two picks. Only when
+      // each side is a name of two words or more: "Marks & Spencer" and
+      // "Barnes & Noble" are one brand.
+      const pair = s.split(/\s+(?:&|and)\s+/);
+      if (pair.length === 2 && pair.every((p) => p.split(/\s+/).length >= 2 && looksLikeProperName(p))) {
+        for (const p of pair) out.push({ text: p, source: src, group });
+        continue;
+      }
+      out.push({ text: s, source: src, group });
     }
   }
 
@@ -877,6 +917,10 @@ const CATEGORY_PLURAL_NOUNS = new Set([
   "hospitals", "clinics", "agencies", "providers", "funds", "brokers", "carriers", "airlines",
   // …and what a heading is about: "### Indicative Home Loan Interest Rates".
   "rates", "prices", "fees", "costs", "charges", "deals", "offers", "tips", "steps",
+  // Software and sportswear headings (live run, 23 Nov 2026): "**Traditional
+  // sales & relationship CRMs**" became the brand "Traditional".
+  "crms", "systems", "solutions", "suites", "vendors", "integrations", "plans", "tiers",
+  "trainers", "runners", "boots", "socks", "shorts", "jackets", "tights", "vests", "sandals", "bras", "caps",
 ]);
 // A single bold word at the start of a line reads exactly like a one-word
 // brand ("**Nothing**", "**OnePlus**") — but a spec-sheet-style answer bolds
