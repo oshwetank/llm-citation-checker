@@ -807,7 +807,7 @@
        * transcript (banners, toasts, the composer area) is eligible.
        */
       const LIMIT_PATTERNS = [
-        /you'?ve (?:reached|hit) (?:your|the) .{0,40}limit/i,
+        /you'?ve (?:reached|hit) (?:your|the|our) .{0,40}limit/i,
         /you'?ve (?:reached|hit) the .{0,30}(?:usage )?cap/i,
         /(?:usage|message|request) (?:cap|limit|quota) (?:reached|exceeded)/i,
         /exceeded your .{0,30}quota/i,

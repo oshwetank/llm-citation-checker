@@ -858,6 +858,18 @@ async function adaptSource(rawCapture, opts, diag) {
   });
 }
 
+/** ChatGPT's refusal of a send, when the reply is a JSON error rather than a
+ * stream: the message, if it is about a limit. */
+export function limitDetailOf(raw) {
+  const t = String(raw || "").trim();
+  if (!t.startsWith("{") || t.length > 4000) return null;
+  try {
+    const j = JSON.parse(t);
+    const d = typeof j.detail === "string" ? j.detail : j.detail && typeof j.detail.message === "string" ? j.detail.message : typeof j.message === "string" ? j.message : "";
+    return /limit|too many|try again later|too quickly|unusual activity/i.test(d) ? d : null;
+  } catch (_) { return null; }
+}
+
 export async function adapt(rawCapture, opts = {}) {
   const diag = { adapterVersion: ADAPTER_VERSION, usedFallback: false, notes: [] };
   // A conversation read from ChatGPT (1.0.0, lib/chatgptConversation.js):
@@ -975,6 +987,13 @@ export async function adapt(rawCapture, opts = {}) {
   // answer's search touched.
   const enginesNamed = enginesNamedIn(rawCapture.raw);
   if (enginesNamed.length) platformSpecific.enginesNamed = enginesNamed;
+  // ChatGPT's hourly cap comes back as plain JSON instead of a stream (1.0.4,
+  // stress run of 23 Nov 2026): {"detail":"You've reached our limit of
+  // messages per hour. Please try again later."}. Stored as an empty answer,
+  // 22 turns counted as done. Marked, it pauses ChatGPT like any limit and
+  // the prompt is asked again when the cooldown ends (usageLimitOf).
+  const capDetail = limitDetailOf(rawCapture.raw);
+  if (capDetail && !answerText.trim()) platformSpecific.gatewayError = `usage_limit_reached: ${capDetail.slice(0, 120)}`;
 
   return makeRecord({
     captureId: rawCapture.captureId,
