@@ -494,6 +494,44 @@ console.log("\nNO false positive: the ANSWER is about rate limits (the run must 
   check("no submit failure either", r.gaveUp.length === 0, r.gaveUp.join(","));
 }
 
+console.log("\nChatGPT's /c/local-… address is not proof the question was sent (1.0.4)");
+{
+  // The owner's Birla Opus campaign, 23 Nov 2026: the click moved ChatGPT to
+  // /c/local-chatgpt-…, the question showed in the transcript, and nothing
+  // was ever sent. The turn was taken as sent and timed out 90 s later.
+  const r = await run(`
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <button id="composer-submit-button">send</button>
+    <div id="convo"></div>
+    <script>
+      document.getElementById('composer-submit-button').addEventListener('click', () => {
+        const box = document.getElementById('prompt-textarea'); const t = box.textContent; if (!t) return;
+        box.textContent = '';
+        const d = document.createElement('div'); d.setAttribute('data-message-author-role', 'user'); d.textContent = t;
+        document.getElementById('convo').appendChild(d);
+        history.pushState({}, '', '/c/local-chatgpt-1234abcd');
+      });
+    </script>`, { waitMs: 22000 });
+  check("the turn fails fast, saying the question never left", r.gaveUp.some((g) => /stayed local/.test(g)), JSON.stringify(r.gaveUp));
+}
+{
+  const r = await run(`
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <button id="composer-submit-button">send</button>
+    <div id="convo"></div>
+    <script>
+      document.getElementById('composer-submit-button').addEventListener('click', () => {
+        const box = document.getElementById('prompt-textarea'); const t = box.textContent; if (!t) return;
+        box.textContent = '';
+        const d = document.createElement('div'); d.setAttribute('data-message-author-role', 'user'); d.textContent = t;
+        document.getElementById('convo').appendChild(d);
+        history.pushState({}, '', '/c/local-chatgpt-1234abcd');
+        setTimeout(() => history.replaceState({}, '', '/c/6b03b81f-12c4-83ee-9967-03e7510b85ae'), 2000);
+      });
+    </script>`, { waitMs: 14000 });
+  check("once ChatGPT gives the real address, the question counts as sent", r.gaveUp.length === 0, JSON.stringify(r.gaveUp));
+}
+
 console.log("\nGemini sends ?q= itself and moves to its conversation: the address is left alone");
 {
   // Live run, 23 Nov 2026: once Gemini had moved to /app/<id>, the script put

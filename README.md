@@ -14,12 +14,14 @@ Hugging Face; and, once accounts are switched on, when you sign in, share a camp
 code, open a code, or leave an email for updates. Nothing you capture ever leaves your
 device unless you choose to share that campaign: the AI runs on your computer.
 
-> **v1.0.3** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v1.0.4** — ChatGPT, Gemini, Perplexity and Grok. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **1.0.4** (23 November 2026). ChatGPT turns that showed the question but never sent it.
+>   - **No more silent ChatGPT timeouts.** On some accounts ChatGPT shows a new conversation at a temporary address (/c/local-…) before its servers have it. That no longer counts as sent: the turn waits for ChatGPT's own request, a real conversation or the answer, and otherwise fails in ~10 s saying the question never left, so "Retry missing" can ask it again.
 > - **1.0.3** (23 November 2026). Fixes from a 530-question campaign run (CRM software and running shoes) on ChatGPT, Gemini and Perplexity.
 >   - **Gemini asked once.** Each campaign question was sent to Gemini 3 to 5 times, each a new conversation in your history; it is now sent once.
 >   - **No false limits.** A Perplexity source card that mentions "rate limits" no longer pauses Perplexity for 30 minutes.

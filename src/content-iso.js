@@ -653,12 +653,21 @@
         // button, the question in the transcript), checked below.
         if (engineSubmit.at && engineSubmit.via !== "prepare") return "net";
         const path = location.pathname;
-        if (engineSubmit.at && plat === "chatgpt" && path !== startPath && CONVERSATION_PATH && CONVERSATION_PATH.test(path)) return "net";
+        // ChatGPT's /c/local-… address and the question in its transcript
+        // appear on the page BEFORE its servers have the conversation (1.0.4).
+        // In the owner's Birla Opus campaign of 23 Nov 2026, 32 of 42 ChatGPT
+        // turns reached /c/local-chatgpt-…, were taken as sent, and timed out
+        // 90 s later with no request, no answer on the page and nothing
+        // stored. Only ChatGPT's own request, a real conversation address or
+        // the answer starting count while the address is still local.
+        const local = localConversation();
+        if (engineSubmit.at && plat === "chatgpt" && !local && path !== startPath && CONVERSATION_PATH && CONVERSATION_PATH.test(path)) return "net";
         // Gemini doesn't route a fresh page anywhere on its own (unlike
         // Grok's /tos-gate hop), so /app/<id> before we type is its own
         // ?q= submit (1.0.2).
-        if ((injected || plat === "gemini") && path !== startPath && CONVERSATION_PATH && CONVERSATION_PATH.test(path)) return "url";
+        if ((injected || plat === "gemini") && !local && path !== startPath && CONVERSATION_PATH && CONVERSATION_PATH.test(path)) return "url";
         if (pick(sel.streaming)) return "stream";
+        if (local) return null;
         try {
           const turns = document.querySelectorAll(sel.userTurn || "[data-message-author-role='user']");
           for (const t of turns) if (norm(t.innerText).includes(want.slice(0, 40))) return "turn";
@@ -666,6 +675,7 @@
         return null;
       };
       const submitted = () => submittedWhy() !== null;
+      function localConversation() { return plat === "chatgpt" && /\/c\/local-/i.test(location.pathname); }
 
       /* Signed out is a distinct, common, and completely silent failure: the
        * tab lands on a login page, no composer ever appears, and the turn
@@ -1111,7 +1121,9 @@
           if (!clearedTick) { clearedTick = ticks; T("cleared"); }
           if (ticks - clearedTick > CONFIRM_TICKS) {
             stopLoop();
-            giveUp("send emptied the composer but the prompt never reached the conversation");
+            giveUp(localConversation()
+              ? "ChatGPT showed the question but never sent it (its address stayed local)"
+              : "send emptied the composer but the prompt never reached the conversation");
           }
           return;
         }
