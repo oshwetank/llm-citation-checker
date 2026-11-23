@@ -93,6 +93,21 @@ console.log("\nnames bolded side by side in a sentence");
   check("but not a table's use-case column", !u.some((x) => /Low Light|Zoom Shots/.test(x)), u.join(", "));
 }
 
+console.log("\ntwo names joined by \"&\"");
+{
+  const t = "| Courier | Why |\n|---|---|\n| **DTDC & Delhivery** | cheapest surface |\n| **Shiprocket** | aggregator |\n\nDTDC is cheapest for small parcels, while Delhivery covers more PIN codes.";
+  const b = brandsOf(t, "cheapest courier in India");
+  check("are two brands when each is also written alone", has(b, ["DTDC", "Delhivery"]) && !b.includes("DTDC & Delhivery"), b.join(", "));
+  const j = brandsOf("| Brand | Why |\n|---|---|\n| **Johnson & Johnson** | baby care |\n| **Himalaya** | herbal |\n\nJohnson & Johnson and Himalaya both make gentle shampoos.", "best baby shampoo");
+  check("but one name when its halves never are (Johnson & Johnson)", j.includes("Johnson & Johnson"), j.join(", "));
+}
+
+console.log("\nan abbreviation the answer spells out");
+{
+  const b = brandsOf("For cash-on-delivery (COD) orders, **Delhivery** and **Blue Dart** lead. **COD** remittance takes 2 days; keep your Return to Origin (RTO) rate low with **Shiprocket**.", "which courier is most reliable for cash on delivery orders");
+  check("is a term, not a brand (COD, RTO)", !b.includes("COD") && !b.includes("RTO") && has(b, ["Delhivery", "Blue Dart"]), b.join(", "));
+}
+
 console.log("\nthe engine's pages as evidence");
 {
   const src = [{ url: "https://groww.in/blog/x", domain: "groww.in", title: "Groww app review", snippet: "" }];

@@ -381,7 +381,22 @@ export function brandPresence(rec, trackedBrands) {
   return trackedBrands.map((b) => {
     const key = normName(b.name);
     const hit = mentions.find((m) => mentionMatchesBrand(m, key));
-    const count = hit ? Number(hit.count) || 0 : 0;
+    // Mentions as the answer writes the tracked name (1.0.2), the same
+    // evidence Visibility already uses: whole words, a capitalised brand not
+    // counted where it's written all lowercase, citation markers left out.
+    // The detector's count alone left an answer that named the brand once —
+    // but that the detector missed — at 0 mentions while it counted for
+    // Visibility, and a name glued to another ("DTDC & Delhivery") took both
+    // brands' mentions: DTDC read 5.9% share of voice for 12.9% (live
+    // campaign, 22 Nov 2026). The larger of the two counts is kept.
+    let textCount = 0;
+    if (key) {
+      const plain = text.replace(/\[\[cite:[^\]]*\]\]/g, " ");
+      const nm = String(b.name);
+      const upper = /[A-Z]/.test(nm);
+      for (const m of plain.matchAll(wordRe(nm, "gi"))) if (!(upper && m[0] === m[0].toLowerCase())) textCount++;
+    }
+    const count = Math.max(hit ? Number(hit.count) || 0 : 0, textCount);
     // Where the brand first appears in the prose, which sets its rank.
     //
     // Prefer the detector's own index: it already resolved overlaps and

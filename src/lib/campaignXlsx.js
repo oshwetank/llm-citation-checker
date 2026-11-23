@@ -64,7 +64,7 @@ const fanoutOf = (rec) => {
  * The eight raw tables as arrays of rows, plus what the summaries need.
  * bundle: { profile, prompts, runs, records, brands, answerText: "excerpt" | "full" | "none" }
  */
-export function campaignFacts({ profile = {}, prompts = [], runs = [], records = [], brands = [], answerText = "excerpt" } = {}) {
+export function campaignFacts({ profile = {}, prompts = [], runs = [], records = [], brands = [], answerText = "excerpt", runNumbers = null } = {}) {
   const own = brands.find((b) => b.isOwn) || brands[0] || { name: (profile.brand && profile.brand.name) || "Your brand", url: (profile.brand && profile.brand.url) || "" };
   const OWN = own.name;
   const ownDom = domainOfUrl(own.url);
@@ -72,8 +72,11 @@ export function campaignFacts({ profile = {}, prompts = [], runs = [], records =
   const brandType = (b) => (b.isOwn ? "You" : b.auto ? "Found in the answers" : "Competitor");
 
   const runsWith = runs.filter((r) => records.some((x) => x.geo && x.geo.runId === r.id)).sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
-  const runLabel = new Map(runsWith.map((r, i) => [r.id, `Run ${i + 1}`]));
-  const runs2 = runsWith.map((r, i) => ({ id: r.id, label: `Run ${i + 1}`, date: new Date(r.startedAt || 0) }));
+  // A run keeps its number in the campaign (1.0.2): exporting only the latest
+  // run called it "Run 1" while the board called it "Run 2".
+  const runNo = (r, i) => (runNumbers && Number.isFinite(runNumbers[r.id]) ? runNumbers[r.id] : i + 1);
+  const runLabel = new Map(runsWith.map((r, i) => [r.id, `Run ${runNo(r, i)}`]));
+  const runs2 = runsWith.map((r, i) => ({ id: r.id, label: `Run ${runNo(r, i)}`, date: new Date(r.startedAt || 0) }));
   const promptsSorted = [...prompts].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
   const pid = new Map(promptsSorted.map((p, i) => [p.id, `P${String(i + 1).padStart(2, "0")}`]));
   const promptRows = promptsSorted.filter((p) => records.some((r) => r.geo && r.geo.promptId === p.id)).map((p) => ({ id: pid.get(p.id), text: p.text || "", tags: (p.tags || []).join(", ") }));

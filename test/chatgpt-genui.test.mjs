@@ -196,6 +196,10 @@ console.log("\na section's heading card is not a product (1.0.2)");
   const g = readGenUi(code);
   check("only the real card is a card", g.cards.length === 1 && /Dedica/.test(g.cards[0].name), JSON.stringify(g.cards.map((c) => c.name)));
   check("the heading is still in the text", /Best home espresso machines under ₹50,000/.test(g.markdown), g.markdown);
+  // A header row carries a Share button whatever its title says (live
+  // campaign, 22 Nov 2026: "COD courier comparison" listed as a product).
+  const h2 = readGenUi(`<row><box><title size="lg">COD courier comparison</title>\n<button label="Share" variant="ghost" size="sm"/></box></row>\n<row><box><title size="lg"><Entity value="Delhivery" ref="turn0entity1"/></title><text>Wide COD network.</text></box></row>`);
+  check("a row with the section's Share button is a heading, not a card", h2.cards.length === 1 && h2.cards[0].name === "Delhivery", JSON.stringify(h2.cards.map((c) => c.name)));
 }
 
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");

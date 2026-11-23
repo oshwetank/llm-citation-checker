@@ -3963,6 +3963,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           let runs = (await db.getAll("geoRuns")).filter((r) => r.profileId === msg.profileId)
             .filter((r) => records.some((x) => x.geo && x.geo.runId === r.id))
             .sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
+          // Each run's number in the whole campaign, before any narrowing, so
+          // an export of the latest run says "Run 2" as the board does (1.0.2).
+          const runNumbers = Object.fromEntries(runs.map((r, i) => [r.id, i + 1]));
           if (msg.scope === "latest" && runs.length) {
             const last = runs[runs.length - 1];
             runs = [last];
@@ -3970,7 +3973,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }
           const prompts = (await db.getAll("trackedPrompts")).filter((t) => t.profileId === msg.profileId);
           const bundle = {
-            profile, prompts, runs, records, brands: effectiveTrackedBrands(profile, records),
+            profile, prompts, runs, records, runNumbers, brands: effectiveTrackedBrands(profile, records),
             include: msg.include, answerText: msg.text === "full" ? "full" : "excerpt", generatedAt: Date.now(),
           };
           const slug = String(profile.name || "campaign").replace(/[^\w]+/g, "-").replace(/^-|-$/g, "").toLowerCase() || "campaign";

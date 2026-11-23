@@ -519,5 +519,22 @@ console.log("\nwhen a campaign turn is answered (0.62.2)");
   check("Grok's usage limit is read off the capture", usageLimitOf(gw({ gatewayError: "usage_limit_reached" })) === "usage_limit_reached" && usageLimitOf(gw({ gatewayError: "stream_error" })) === null);
 }
 
+console.log("\nmentions of a tracked brand count what the answer writes (1.0.2)");
+{
+  // Live campaign, 22 Nov 2026: an answer naming DTDC once that the detector
+  // missed counted for Visibility with 0 mentions, and "DTDC & Delhivery" as
+  // one detected name took both brands' mentions.
+  const brands = [{ name: "Delhivery", isOwn: true }, { name: "DTDC" }, { name: "Noise" }];
+  const rec = (answerText, brandMentions) => ({ answerText, brandMentions, sources: [] });
+  const p1 = brandPresence(rec("Compare DTDC with Shiprocket before you sign; DTDC is cheapest.", []), brands);
+  check("a brand the detector missed has its written mentions", p1.find((p) => p.name === "DTDC").mentions === 2, JSON.stringify(p1));
+  const p2 = brandPresence(rec("**DTDC & Delhivery** are cheapest. Delhivery covers more PIN codes.", [{ brand: "DTDC & Delhivery", count: 1, firstIndex: 2 }]), brands);
+  check("a name glued to another still counts for each", p2.find((p) => p.name === "Delhivery").mentions === 2 && p2.find((p) => p.name === "DTDC").mentions === 1, JSON.stringify(p2.map((p) => [p.name, p.mentions])));
+  const p3 = brandPresence(rec("Strong noise cancellation matters more than noise floor specs.", []), brands);
+  check("a capitalised brand written all lowercase is still the word, not the brand", p3.find((p) => p.name === "Noise").mentions === 0, JSON.stringify(p3));
+  const p4 = brandPresence(rec("Use Delhivery.[[cite:https://delhivery.com/x]] Delhivery is fast.", [{ brand: "Delhivery", count: 3, firstIndex: 4 }]), brands);
+  check("the detector's higher count stands", p4.find((p) => p.name === "Delhivery").mentions === 3, JSON.stringify(p4));
+}
+
 console.log(failures ? `\nFAILED (${failures})` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);

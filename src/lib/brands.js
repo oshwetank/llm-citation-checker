@@ -2211,6 +2211,46 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     }
     // A fragment of a sentence, not a name: "approximately £18/month for…".
     for (let i = results.length - 1; i >= 0; i--) if (/^\p{Ll}{4,}\s/u.test(results[i].brand) && (!results[i].category || results[i].category === "product_vendor")) results.splice(i, 1);
+    // An abbreviation the answer spells out ("cash-on-delivery (COD)",
+    // "Return to Origin (RTO)") is a term, not a brand: a live campaign of
+    // 22 Nov 2026 offered "COD" as a competitor to add.
+    for (let i = results.length - 1; i >= 0; i--) {
+      const b = results[i].brand;
+      if (!/^\p{Lu}{2,6}$/u.test(b) || results[i].category === "place") continue;
+      const re = new RegExp(`((?:[\\p{L}]+[\\s-]+){1,6})\\(${escapeRegExp(b)}s?\\)`, "giu");
+      const spelled = [...text.matchAll(re)].some((m) => {
+        const words = m[1].trim().split(/[\s-]+/).filter((w) => !/^(?:of|on|to|the|and|for|a|an|&)$/i.test(w));
+        return words.slice(-b.length).map((w) => w[0].toUpperCase()).join("") === b.toUpperCase();
+      });
+      if (spelled) results.splice(i, 1);
+    }
+    // Two names joined by "&" ("DTDC & Delhivery", a Gemini table cell in a
+    // live campaign of 22 Nov 2026) are two brands when the answer also
+    // writes each one on its own; "Johnson & Johnson" and "Marks & Spencer"
+    // never do, and stay whole.
+    for (let i = results.length - 1; i >= 0; i--) {
+      const r = results[i];
+      const m = /^(.{2,40}?)\s+&\s+(.{2,40})$/.exec(r.brand);
+      if (!m || r.category === "place" || r.keepWhole) continue;
+      const sides = [m[1].trim(), m[2].trim()];
+      if (sides[0].toLowerCase() === sides[1].toLowerCase()) continue;
+      const alone = (s) => {
+        const all = [...text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(s)}(?![\\p{L}\\p{N}])`, "gu"))].length;
+        const joined = [...text.matchAll(new RegExp(escapeRegExp(r.brand), "gu"))].length;
+        return all - joined;
+      };
+      const counts = sides.map(alone);
+      if (counts.some((c) => c < 1)) continue;
+      results.splice(i, 1);
+      for (const [j, s] of sides.entries()) {
+        const have = results.find((o) => o.brand.toLowerCase() === s.toLowerCase());
+        // Its own mentions plus the joined ones.
+        const n = counts[j] + r.count;
+        if (have) { have.count = Math.max(have.count, n); continue; }
+        const at = text.search(new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(s)}(?![\\p{L}\\p{N}])`, "u"));
+        results.push({ brand: s, count: n, firstIndex: at >= 0 ? at : r.firstIndex, category: null, description: null, passages: r.passages });
+      }
+    }
   }
 
   // A brand's short name counts as the brand (1.0.2). A Perplexity answer
