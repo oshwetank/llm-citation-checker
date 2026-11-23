@@ -802,6 +802,8 @@ function showTab(name) {
 
   document.querySelectorAll("[data-tab]").forEach((b) => b.classList.remove("active"));
   document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
+  // Answers a run captured while another tab was open (runCaptureArrived).
+  if (runStale && (name === "analyze" || name === "dashboard")) setTimeout(refreshStaleRunData, 0);
   const btn = document.querySelector(`[data-tab="${name}"]`);
   if (btn) btn.classList.add("active");
   const panel = document.getElementById(name);
@@ -1354,6 +1356,33 @@ function showToast(text, variant = "success", ms = variant === "error" ? 7000 : 
  * meant to hold steady has even been built; and a burst of broadcasts has to
  * collapse into one rebuild rather than several back-to-back.
  */
+/* A campaign run's captures (1.0.4). Each one used to reload everything:
+ * every stored answer re-read, and Analyze, the Dashboard and Compare
+ * redrawn, in every open panel, for each answer, while the Campaigns page
+ * itself shows none of them until the run ends. On a big store that kept
+ * the worker busy for seconds per answer (status replies took 5–8 s, a
+ * popup took over 30 s to open) and the page visibly blinked on every
+ * capture (stress run, 23 Nov 2026; first fixed in 0.62.2, back since).
+ * Now a run's capture only marks the data stale: it is reloaded at most
+ * every 30 s while a tab that shows answers is open, and otherwise once,
+ * when such a tab is opened. Captures asked by hand still refresh at once. */
+const RUN_REFRESH_MS = 30000;
+let runStale = false;
+let runRefreshAt = 0;
+let runRefreshTimer = null;
+function runCaptureArrived() {
+  runStale = true;
+  const active = document.querySelector(".panel.active")?.id;
+  if (active === "loader" || active === "about" || active === "ask") return; // shows none of them
+  if (runRefreshTimer) return;
+  runRefreshTimer = setTimeout(() => { runRefreshTimer = null; refreshStaleRunData(); }, Math.max(400, RUN_REFRESH_MS - (Date.now() - runRefreshAt)));
+}
+function refreshStaleRunData() {
+  if (!runStale) return;
+  runStale = false;
+  runRefreshAt = Date.now();
+  refreshFromBroadcast();
+}
 let refreshPending = null;
 function refreshFromBroadcast() {
   if (refreshPending) return; // a refresh is already queued — it will pick this up too
@@ -1381,7 +1410,7 @@ function patchFromBroadcast(captureId) {
       FULL.delete(id);
       const r = await send({ type: "get-record-light", captureId: id });
       const i = ALL_RECORDS.findIndex((x) => x.captureId === id);
-      if (!r.ok || !r.record || i < 0) { refreshFromBroadcast(); return; } // new or gone: the whole list
+      if (!r.ok || !r.record || i < 0) { if (cpLive.live) runCaptureArrived(); else refreshFromBroadcast(); return; } // new or gone: the whole list (during a run: when it's next due)
       ALL_RECORDS[i] = r.record;
     }
     RECORDS = includeTrackedInAdhoc ? ALL_RECORDS : partitionRecords(ALL_RECORDS).adhoc;
@@ -1402,7 +1431,8 @@ const announced = new Set();
 let lastAnnounced = 0;
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type === "new-capture") {
-    refreshFromBroadcast();
+    if (msg.duringRun) runCaptureArrived();
+    else refreshFromBroadcast();
     // Once per answer, and at most one notice every 15 s however many come.
     if (!msg.duringRun && msg.captureId && !announced.has(msg.captureId) && Date.now() - lastAnnounced > 15000) {
       lastAnnounced = Date.now();
@@ -10073,6 +10103,8 @@ function renderLoaderStatus(s) {
   // The run just ended: its campaign's page, held still while it ran, is
   // drawn once with the finished run on the board.
   if (wasLive && !cpLive.live && wasProfile && geoActive() && geoActive().id === wasProfile) setTimeout(() => loadGeo(), 0);
+  // The run's answers, held back while it ran (runCaptureArrived), now.
+  if (wasLive && !cpLive.live && runStale) setTimeout(refreshStaleRunData, 0);
   // The run history is drawn once per render; when a run ends, redraw it so
   // it doesn't keep saying "Running".
   if (wasLive && !cpLive.live) {
