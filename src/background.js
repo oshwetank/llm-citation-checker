@@ -377,15 +377,23 @@ chrome.runtime.onInstalled.addListener((details) => {
   // people coming from before the redesign (ui/welcome.js).
   if (details && details.reason === "update" && details.previousVersion) chrome.storage.local.set({ citoUpdatedFrom: details.previousVersion }).catch(() => {});
   if (details && (details.reason === "install" || details.reason === "update")) openWelcomeOnce();
-  chrome.tabs.query({ url: AI_TAB_MATCHES }, (tabs) => {
+  // A run's own tabs are left alone (1.0.4): reloading them dropped the
+  // question each was on ("page reloaded and lost the prompt"), and the run
+  // loads its next question in them anyway, with the new scripts.
+  const runTabs = new Set();
+  chrome.storage.local.get(LOADER_STATE_KEY).then((got) => {
+    const snap = got[LOADER_STATE_KEY];
+    if (snap && snap.running) for (const pd of Object.values(snap.platforms || {})) for (const leg of legsOf(pd)) if (leg.tabId != null) runTabs.add(leg.tabId);
+  }).catch(() => {}).finally(() => chrome.tabs.query({ url: AI_TAB_MATCHES }, (tabs) => {
     for (const t of tabs || []) {
+      if (runTabs.has(t.id)) continue;
       try {
         chrome.tabs.reload(t.id);
       } catch (_) {
         /* tab may be discarded/closed */
       }
     }
-  });
+  }));
   ensureHeartbeatAlarm();
 });
 

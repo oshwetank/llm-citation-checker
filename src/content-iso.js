@@ -821,6 +821,12 @@
         /making requests too quickly/i,
         /temporarily limited access/i,
         /detected unusual activity/i,
+        // "We're doing a quick check to keep ChatGPT reliable. Try again in
+        // 19 minutes." (stress run, 23 Nov 2026, after ~85 prompts in 40
+        // minutes). Unmatched, every prompt in those 19 minutes was typed,
+        // never sent, and counted failed.
+        /quick check to keep \w+ reliable/i,
+        /try again in \d+ ?(?:seconds?|minutes?|mins?|hours?)\b/i,
       ];
 
       /* Visible text OUTSIDE the transcript, capped for cost.

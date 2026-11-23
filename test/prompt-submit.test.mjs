@@ -573,6 +573,21 @@ console.log("\nGemini sends ?q= itself and moves to its conversation: the addres
   check("the address stays on Gemini's conversation", r.url.startsWith("/app/abc123"), r.url);
 }
 
+console.log("\nRate limit: ChatGPT's \"quick check\" notice pauses the engine (1.0.4)");
+{
+  // Stress run, 23 Nov 2026: after ~85 prompts in 40 minutes ChatGPT showed
+  // this under an inert send button; unmatched, every prompt for 19 minutes
+  // was typed, never sent, and counted failed.
+  const r = await run(`
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <button id="composer-submit-button" aria-disabled="true">send</button>
+    <div id="convo"></div>
+    <div class="composer-notice">We're doing a quick check to keep ChatGPT reliable. Try again in 19 minutes.</div>`, { waitMs: 8000 });
+  check("the limit was reported", r.limits.length === 1, JSON.stringify(r.limits));
+  check("with the wait it gave", /19 minutes/.test(r.limits[0] || ""), JSON.stringify(r.limits[0]));
+  check("nothing was submitted", r.submits === 0, `submits=${r.submits}`);
+}
+
 console.log("\nNO false positive: a source card outside the answer mentions rate limits");
 {
   // Perplexity draws its source cards outside the answer block: a link to
