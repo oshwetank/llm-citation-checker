@@ -56,6 +56,8 @@ export const ENGINES = [
   { id: "gemini", label: "Gemini", host: "gemini.google.com", available: true },
   { id: "perplexity", label: "Perplexity", host: "perplexity.ai", available: true },
   { id: "grok", label: "Grok", host: "grok.com", available: true },
+  // Google AI Mode (1.0.5): turned on in Settings, which asks Chrome for google.com.
+  { id: "aimode", label: "AI Mode", host: "google.com", available: true, beta: true },
 ];
 
 export const availableEngines = () => ENGINES.filter((e) => e.available);
@@ -272,6 +274,12 @@ export function partitionRecords(records) {
  * earliest. A record without a run or prompt (older captures) is kept as is.
  */
 const moreComplete = (a, b) => {
+  // A copy with an answer always beats one without. ChatGPT's
+  // /conversation/resume stream arrives seconds after the answer with the
+  // same sources and no text or question (live run, 23 Nov 2026); on sources
+  // alone it could win and the prompt would show no brands at all.
+  const ha = (a.answerChars || 0) > 0, hb = (b.answerChars || 0) > 0;
+  if (ha !== hb) return ha;
   const sa = (a.sources || []).length;
   const sb = (b.sources || []).length;
   if (sa !== sb) return sa > sb;
@@ -312,7 +320,9 @@ export function latestAnswers(records) {
     const g = r.geo || {};
     const key = `${g.promptId || String(r.userPrompt || "").trim().toLowerCase()}|${r.platform}`;
     const cur = best.get(key);
-    if (!cur || (r.capturedAt || 0) > (cur.capturedAt || 0)) best.set(key, r);
+    // Newest wins, but never an empty copy over an answer (see moreComplete).
+    const has = (x) => (x.answerChars || 0) > 0;
+    if (!cur || (has(r) && !has(cur)) || (has(r) === has(cur) && (r.capturedAt || 0) > (cur.capturedAt || 0))) best.set(key, r);
   }
   return [...best.values()];
 }
@@ -381,7 +391,22 @@ export function brandPresence(rec, trackedBrands) {
   return trackedBrands.map((b) => {
     const key = normName(b.name);
     const hit = mentions.find((m) => mentionMatchesBrand(m, key));
-    const count = hit ? Number(hit.count) || 0 : 0;
+    // Mentions as the answer writes the tracked name (1.0.2), the same
+    // evidence Visibility already uses: whole words, a capitalised brand not
+    // counted where it's written all lowercase, citation markers left out.
+    // The detector's count alone left an answer that named the brand once —
+    // but that the detector missed — at 0 mentions while it counted for
+    // Visibility, and a name glued to another ("DTDC & Delhivery") took both
+    // brands' mentions: DTDC read 5.9% share of voice for 12.9% (live
+    // campaign, 22 Nov 2026). The larger of the two counts is kept.
+    let textCount = 0;
+    if (key) {
+      const plain = text.replace(/\[\[cite:[^\]]*\]\]/g, " ");
+      const nm = String(b.name);
+      const upper = /[A-Z]/.test(nm);
+      for (const m of plain.matchAll(wordRe(nm, "gi"))) if (!(upper && m[0] === m[0].toLowerCase())) textCount++;
+    }
+    const count = Math.max(hit ? Number(hit.count) || 0 : 0, textCount);
     // Where the brand first appears in the prose, which sets its rank.
     //
     // Prefer the detector's own index: it already resolved overlaps and

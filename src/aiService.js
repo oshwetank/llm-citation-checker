@@ -30,7 +30,7 @@ import { TIERS, pickTier, MODEL_FAMILY, MODEL_LICENCE } from "./lib/llmTiers.js"
 import { aiCheckRecord, applyAi, aiKey } from "./lib/aiCheck.js";
 import { LAYA_VERSION } from "./lib/laya.js";
 import { textMatches } from "./lib/textMatch.js";
-import { ask as runAsk } from "./lib/assistant.js";
+import { askPlanned } from "./lib/assistant.js";
 import { isPlausibleProseName } from "./lib/brands.js";
 import { nanoAvailability, nanoGenerate, nanoDownload } from "./lib/nanoEngine.js";
 import { BENCH_RECORD, benchVerdict, chooseEngine } from "./lib/aiBench.js";
@@ -51,14 +51,17 @@ const QUEUE_PAUSE_MS = 3000;
 
 export function combineProgress(bar, p, expected) {
   const st = String((p && p.status) || "");
-  if (/ready|done/.test(st)) { bar.pct = 100; return { status: st, pct: 100, loaded: p.loaded || 0, total: p.total || 0 }; }
+  // Only the whole model being ready is 100% (1.0.5): one file's "done"
+  // showed 100% with 0.9 of 1.5 GB downloaded, for minutes.
+  if (/ready/.test(st)) { bar.pct = 100; return { status: st, pct: 100, loaded: p.loaded || 0, total: p.total || 0 }; }
   if (p.file && p.total) bar.files.set(p.file, { loaded: Math.min(p.loaded || 0, p.total), total: p.total });
+  else if (p.file && /done/.test(st) && p.loaded) bar.files.set(p.file, { loaded: p.loaded, total: p.loaded });
   let loaded = 0, total = 0;
   for (const f of bar.files.values()) { loaded += f.loaded; total += f.total; }
   // A file not started yet isn't in the sum: the model's size stands in.
   const whole = Math.max(total, Number(expected) || 0);
   let pct = whole ? (loaded * 100) / whole : null;
-  if (/progress_total/.test(st) && p.pct != null) pct = Math.max(pct || 0, Number(p.pct) || 0);
+  if (/progress_total/.test(st) && p.pct != null && !whole) pct = Math.max(pct || 0, Number(p.pct) || 0);
   if (pct != null) bar.pct = Math.max(bar.pct, Math.min(99, pct));
   return { status: st, pct: Math.round(bar.pct), loaded, total: whole || total };
 }
@@ -202,6 +205,42 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
     })();
     return { ok: true, started: true };
   }
+  // Search by meaning (1.0.5, lib/meaningEngine.js): an optional download
+  // (~135 MB) that lets Ask and the Dashboard find answers by what they mean.
+  let meaningDownloading = null, meaningProgress = null;
+  async function downloadMeaning({ device } = {}) {
+    if (meaningDownloading) return { ok: true, already: true };
+    resetBar("meaning");
+    meaningProgress = { status: "meaning-initiate", pct: 0 };
+    meaningDownloading = (async () => {
+      try {
+        // One model download at a time (1.0.0).
+        if (downloading) { meaningProgress = { status: "meaning-waiting", pct: 0 }; await downloading.catch(() => {}); }
+        if (layaDownloading) { meaningProgress = { status: "meaning-waiting", pct: 0 }; await layaDownloading.catch(() => {}); }
+        const info = await llm("meaning-load", { device: device || "webgpu" }, 2 * 60 * 60 * 1000);
+        await setState({ meaning: { downloadedAt: Date.now(), device: info.device, error: null } });
+        meaningProgress = { status: "meaning-ready", pct: 100 };
+      } catch (e) {
+        meaningProgress = null;
+        await setState({ meaning: { ...((await getState()).meaning || {}), error: String(e && e.message || e) } });
+        logErr("meaning-download", e);
+      } finally { meaningDownloading = null; broadcast({ type: "ai-state" }); }
+    })();
+    broadcast({ type: "ai-state" });
+    return { ok: true, started: true };
+  }
+  async function removeMeaning() {
+    try { await llm("meaning-remove", {}, 120000); } catch (e) { logErr("meaning-remove", e); }
+    await setState({ meaning: { downloadedAt: null, error: null } });
+    broadcast({ type: "ai-state" });
+    return { ok: true };
+  }
+  /** Passage ids by meaning, best first; null when the model isn't on. */
+  async function meaningRank(query, docs) {
+    const state = await getState();
+    if (!(state.meaning && state.meaning.downloadedAt) || !docs || !docs.length) return null;
+    try { const r = await llm("meaning-rank", { query, docs }, 10 * 60 * 1000); return r && r.ids ? r.ids : null; } catch (e) { logErr("meaning-rank", e); return null; }
+  }
   async function removeLaya() {
     const state = await getState();
     const spec = layaSpecOf(state);
@@ -268,6 +307,7 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
       tier: state.tier || null, model: spec ? { id: spec.id, label: spec.label, params: spec.params, repo: spec.repo } : null,
       custom: state.custom && state.custom.repo ? { repo: state.custom.repo } : null,
       ready: !!eng, engine: eng ? { id: eng.id, label: eng.label } : null, engineChoice: state.engine || "auto",
+      meaning: (() => { const m = state.meaning || {}; return { ready: !!m.downloadedAt, downloadedAt: m.downloadedAt || null, device: m.device || null, error: m.error || null, downloading: !!meaningDownloading, progress: meaningProgress, bytes: 135500000 }; })(),
       laya: (() => { const sp = layaSpecOf(state); const l = state.laya || {}; return { ready: layaReady(state), label: sp.label, repo: sp.repo, bytes: sp.bytes || null, custom: !!l.custom, downloadedAt: l.downloadedAt || null, device: l.device || null, error: l.error || null, downloading: !!layaDownloading, progress: layaProgress, msPerAnswer: l.msPerAnswer || null }; })(),
       labeller: state.labeller || "auto", labelsBy: await (async () => { const lb = await labeller(state); return lb ? { id: lb.id, label: lb.label } : null; })(),
       nano: await nanoAvailability(), nanoFetching: !!nanoFetching, nanoError: state.nanoError || null, bench: state.bench || null, paused: !!isBusy(),
@@ -294,7 +334,10 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
   const combine = (kind, p, expected) => combineProgress(bars[kind], p, expected);
   function onProgress(p) {
     if (!p) return;
-    if (/^laya-/.test(p.status || "")) {
+    if (/^meaning-/.test(p.status || "")) {
+      if (!bars.meaning) resetBar("meaning");
+      meaningProgress = combine("meaning", p, 135500000);
+    } else if (/^laya-/.test(p.status || "")) {
       getState().then((st) => { layaProgress = combine("laya", p, (layaSpecOf(st) || {}).bytes); }).catch(() => {});
     } else {
       getState().then((st) => { progress = combine("llm", p, (specOf(st) || {}).bytes); }).catch(() => {});
@@ -492,21 +535,22 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
    * built-in model with the read-only tools in lib/assistantTools.js.
    * A test stand-in may carry a script of replies instead of a model.
    */
-  async function askQuestion({ question, history = [], data, onStep = null }) {
+  async function askQuestion({ question, data, onStep = null, context = {}, previous = null, plan = null }) {
+    // 1.0.5: Ask plans the question in code and answers from the boards'
+    // numbers (lib/assistant.js askPlanned). A model, when one is on, only
+    // writes the reply; with none, a template does, so Ask works either way.
     const state = await getState();
-    const eng = await engine(state);
-    if (!eng) throw new Error("The built-in AI isn't set up.");
-    let generate;
-    if (state.custom && Array.isArray(state.custom.script)) {
+    const eng = await engine(state).catch(() => null);
+    let generate = null;
+    if (eng && state.custom && Array.isArray(state.custom.script)) {
       const script = [...state.custom.script];
       generate = async () => ({ text: script.length ? script.shift() : "" });
-    } else {
-      await eng.prepare();
-      generate = eng.generate;
+    } else if (eng) {
+      try { await eng.prepare(); generate = eng.generate; } catch (_) { generate = null; }
     }
     const t0 = Date.now();
-    const r = await runAsk({ question, history, generate, data, onStep });
-    return { ...r, ms: Date.now() - t0, model: eng.label, engine: eng.id };
+    const r = await askPlanned({ question, data, generate, context, previous, plan, onStep, meaning: meaningRank });
+    return { ...r, ms: Date.now() - t0, model: generate && eng ? eng.label : null, engine: generate && eng ? eng.id : null };
   }
 
   async function setEngine(choice) {
@@ -516,5 +560,5 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
     return { ok: true };
   }
 
-  return { askQuestion, checkNow, getState, setState, status, hardware, download, remove, enqueue, kick, attach, saveNano, onProgress, specOf, llm, engine, labeller, benchmark, useNano, setEngine, downloadLaya, removeLaya, setLabeller, cancelDownload };
+  return { downloadMeaning, removeMeaning, meaningRank, askQuestion, checkNow, getState, setState, status, hardware, download, remove, enqueue, kick, attach, saveNano, onProgress, specOf, llm, engine, labeller, benchmark, useNano, setEngine, downloadLaya, removeLaya, setLabeller, cancelDownload };
 }

@@ -12,7 +12,7 @@ import {
   isTracked, partitionRecords, selectTracked,
   normName, domainOfUrl, domainMatches, bucketKey, runDue, runVolume,
   allTags, availableEngines, ENGINES, MAX_PROFILES,
-  hasSignal, turnAnswered, usageLimitOf, countCompletedForRun,
+  hasSignal, turnAnswered, usageLimitOf, countCompletedForRun, latestAnswers,
 } from "../src/lib/geo.js";
 import { adapt as adaptChatGpt } from "../src/adapters/chatgpt.js";
 import { makeRecord } from "../src/schema.js";
@@ -103,8 +103,8 @@ console.log("\nengine registry reflects what can actually run");
     avail.join(",")
   );
   check("claude is not registered at all", !ENGINES.some((e) => e.id === "claude"));
-  check("all 4 registered engines are available",
-    ENGINES.filter((e) => e.available).length === 4 && ENGINES.length === 4);
+  check("all 5 registered engines are available (AI Mode, 1.0.5)",
+    ENGINES.filter((e) => e.available).length === 5 && ENGINES.length === 5);
   // A profile requesting an engine that isn't registered must have it
   // silently dropped, not silently kept — this is the save-time backstop
   // for a value that reached makeProfile some other way (a hand-built
@@ -517,6 +517,38 @@ console.log("\nwhen a campaign turn is answered (0.62.2)");
   check("a Gemini stream with no answer yet doesn't finish the turn", hasSignal(gem(0)) && !turnAnswered(gem(0)));
   check("with its answer it does", turnAnswered(gem(1400)));
   check("Grok's usage limit is read off the capture", usageLimitOf(gw({ gatewayError: "usage_limit_reached" })) === "usage_limit_reached" && usageLimitOf(gw({ gatewayError: "stream_error" })) === null);
+}
+
+console.log("\nmentions of a tracked brand count what the answer writes (1.0.2)");
+{
+  // Live campaign, 22 Nov 2026: an answer naming DTDC once that the detector
+  // missed counted for Visibility with 0 mentions, and "DTDC & Delhivery" as
+  // one detected name took both brands' mentions.
+  const brands = [{ name: "Delhivery", isOwn: true }, { name: "DTDC" }, { name: "Noise" }];
+  const rec = (answerText, brandMentions) => ({ answerText, brandMentions, sources: [] });
+  const p1 = brandPresence(rec("Compare DTDC with Shiprocket before you sign; DTDC is cheapest.", []), brands);
+  check("a brand the detector missed has its written mentions", p1.find((p) => p.name === "DTDC").mentions === 2, JSON.stringify(p1));
+  const p2 = brandPresence(rec("**DTDC & Delhivery** are cheapest. Delhivery covers more PIN codes.", [{ brand: "DTDC & Delhivery", count: 1, firstIndex: 2 }]), brands);
+  check("a name glued to another still counts for each", p2.find((p) => p.name === "Delhivery").mentions === 2 && p2.find((p) => p.name === "DTDC").mentions === 1, JSON.stringify(p2.map((p) => [p.name, p.mentions])));
+  const p3 = brandPresence(rec("Strong noise cancellation matters more than noise floor specs.", []), brands);
+  check("a capitalised brand written all lowercase is still the word, not the brand", p3.find((p) => p.name === "Noise").mentions === 0, JSON.stringify(p3));
+  const p4 = brandPresence(rec("Use Delhivery.[[cite:https://delhivery.com/x]] Delhivery is fast.", [{ brand: "Delhivery", count: 3, firstIndex: 4 }]), brands);
+  check("the detector's higher count stands", p4.find((p) => p.name === "Delhivery").mentions === 3, JSON.stringify(p4));
+}
+
+console.log("\nAn empty copy never stands in for the answer (live run, 23 Nov 2026)");
+{
+  // ChatGPT's /conversation/resume: same conversation, same sources, no text
+  // or question, captured 3 s after the real answer.
+  const geo = { profileId: "p", runId: "r1", promptId: "q24" };
+  const real = { captureId: "real", platform: "chatgpt", geo, capturedAt: 1000, answerChars: 2252, answerText: "x", userPrompt: "Best CRM", sources: new Array(14).fill({ url: "https://a.com" }) };
+  const empty = { captureId: "empty", platform: "chatgpt", geo, capturedAt: 4000, answerChars: 0, answerText: "", userPrompt: null, sources: new Array(15).fill({ url: "https://a.com" }) };
+  const one = selectTracked([real, empty], { profileId: "p" });
+  check("one copy per prompt keeps the answer, even when the empty copy has more sources", one.length === 1 && one[0].captureId === "real", JSON.stringify(one.map((r) => r.captureId)));
+  const latest = latestAnswers([real, empty]);
+  check("the newest-answer view keeps the answer over a newer empty copy", latest.length === 1 && latest[0].captureId === "real", JSON.stringify(latest.map((r) => r.captureId)));
+  const newer = { ...real, captureId: "newer", capturedAt: 9000, geo: { ...geo, runId: "r2" } };
+  check("a newer answer still replaces an older one", latestAnswers([real, empty, newer])[0].captureId === "newer");
 }
 
 console.log(failures ? `\nFAILED (${failures})` : "\nALL PASSED");

@@ -39,6 +39,8 @@ export function escapeRegExp(s) {
 // Generic stop-words: formatting/adjective noise that shows up as a "name" in
 // any vertical. Deliberately contains no industry nouns.
 const NOISE = new Set([
+  // AI Mode's bullet labels (1.0.5): "**User Sentiment:**", "**Rating:**".
+  "user", "sentiment", "rating", "ratings",
   "the", "a", "an", "and", "or", "for", "if", "our", "my", "your", "this", "that",
   "best", "top", "good", "great", "better", "ideal", "overall", "budget", "value",
   "premium", "cheap", "affordable", "recommended", "recommendation", "pick", "picks",
@@ -65,6 +67,19 @@ const NOISE = new Set([
   // Honorifics (1.0.2): "Dr. Sanket Sheth is an MDS Endodontist" made "Dr" a
   // brand in a dental-clinic answer (live run, 22 Nov 2026).
   "dr", "mr", "mrs", "ms", "prof", "sr", "jr",
+  // Live run of 23 Nov 2026 (530 CRM and running-shoe questions): the kind
+  // of software asked about, written as an acronym ("CRM" was a brand in 38
+  // answers); sentence openers and the word after a bold label ("However",
+  // "Widely", "Popular"); and plan tiers ("**Basic**, **Professional**").
+  "crm", "crms", "erp", "ats", "cms", "lms", "hrms", "saas",
+  "however", "moreover", "additionally", "alternatively", "overall", "ultimately", "meanwhile",
+  "widely", "popular", "traditional", "hybrid",
+  "basic", "starter", "professional", "enterprise", "essentials", "ultimate",
+  // Labels a "**Word:**" bullet opens with.
+  "watch-out", "watch-outs", "watchout", "watchouts", "strengths", "weaknesses", "trade-off", "trade-offs",
+  "tradeoff", "tradeoffs", "important", "caveat", "caveats", "limitations", "drawbacks", "downsides", "upsides",
+  // Price bands in cost tables (stress run): "Standard", "Economy", "Estimated".
+  "standard", "economy", "estimated", "approximate", "luxury", "mid-range", "midrange", "high-end",
 ]);
 
 // Spec terms that read like names in a table cell or after a bullet label:
@@ -341,6 +356,17 @@ function cleanCandidateText(raw) {
       ? parts[parts.length - 1] : parts[0]).replace(/:\s*$/, "").trim();
   }
   else if (/\s*→\s*/.test(s)) s = s.split(/\s*→\s*/).pop().trim();
+  // "**TaxDome:** Widely used by…" — the colon ends the bold, so the name is
+  // before it. Taking the part after the last colon left nothing, and every
+  // bullet in Gemini's commonest layout ("* **Name:** description") was lost
+  // (live run, 23 Nov 2026: TaxDome, HubSpot CRM, Zoho CRM missed). Only a
+  // name-shaped label counts: "**Key features:**" is still a label.
+  else if (/^[^:]+:\s*$/.test(s)) {
+    const before = s.replace(/:\s*$/, "").trim();
+    const halves = before.split(/\s+(?:&|and)\s+/);
+    const named = looksLikeProperName(before) || (halves.length === 2 && halves.every((h) => h.split(/\s+/).length >= 2 && looksLikeProperName(h)));
+    s = named && !isNoise(before) && !isNoise(before.split(/\s+/)[0]) ? before : "";
+  }
   else if (s.includes(":")) s = s.split(":").pop().trim();
   // Strip leading list numbering left over from heading matches ("1. Vivo V70").
   s = s.replace(/^\d+[.)]\s*/, "").trim();
@@ -396,8 +422,26 @@ export function structuralCandidates(answerText) {
       // A bold label opening a list item ("- **Cremica High Bran Biscuits**:
       // fibre-rich…") is that item's subject; a bold heading line is not.
       const src = source === "heading" && !/#/.test(lead) && /^[ \t]*(?:\d+[.)]|[-*•])/.test(lead) ? "bullet" : source;
+      // A "**Label:**" whose every word the answer also writes in lower case
+      // is a section label ("**Sales & Marketing:**", "**Key Features:**"),
+      // not a name: "TaxDome", "Karbon" and "HubSpot" never are.
+      if (/:\s*$/.test(m[1])) {
+        const ws = s.split(/\s+/).filter((w) => !/^(?:&|and|of|for|the)$/i.test(w));
+        const low = answerText.toLowerCase() !== answerText ? answerText : "";
+        if (ws.length && ws.every((w) => new RegExp(`(^|[^\\p{L}])${escapeRegExp(w.toLowerCase())}(?![\\p{L}])`, "u").test(low))) continue;
+      }
       const at = m.index + (m[0].startsWith("\n") ? 1 : 0);
-      out.push({ text: s, source: src, group: source === "section" || /#/.test(lead) ? groupOf(at) : null });
+      const group = source === "section" || /#/.test(lead) ? groupOf(at) : null;
+      // Two names in one label: "* **HubSpot CRM & Zoho CRM:** Popular
+      // options…" (Gemini, live run of 23 Nov 2026) is two picks. Only when
+      // each side is a name of two words or more: "Marks & Spencer" and
+      // "Barnes & Noble" are one brand.
+      const pair = s.split(/\s+(?:&|and)\s+/);
+      if (pair.length === 2 && pair.every((p) => p.split(/\s+/).length >= 2 && looksLikeProperName(p))) {
+        for (const p of pair) out.push({ text: p, source: src, group });
+        continue;
+      }
+      out.push({ text: s, source: src, group });
     }
   }
 
@@ -877,6 +921,10 @@ const CATEGORY_PLURAL_NOUNS = new Set([
   "hospitals", "clinics", "agencies", "providers", "funds", "brokers", "carriers", "airlines",
   // …and what a heading is about: "### Indicative Home Loan Interest Rates".
   "rates", "prices", "fees", "costs", "charges", "deals", "offers", "tips", "steps",
+  // Software and sportswear headings (live run, 23 Nov 2026): "**Traditional
+  // sales & relationship CRMs**" became the brand "Traditional".
+  "crms", "systems", "solutions", "suites", "vendors", "integrations", "plans", "tiers",
+  "trainers", "runners", "boots", "socks", "shorts", "jackets", "tights", "vests", "sandals", "bras", "caps",
 ]);
 // A single bold word at the start of a line reads exactly like a one-word
 // brand ("**Nothing**", "**OnePlus**") — but a spec-sheet-style answer bolds
@@ -2211,6 +2259,46 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     }
     // A fragment of a sentence, not a name: "approximately £18/month for…".
     for (let i = results.length - 1; i >= 0; i--) if (/^\p{Ll}{4,}\s/u.test(results[i].brand) && (!results[i].category || results[i].category === "product_vendor")) results.splice(i, 1);
+    // An abbreviation the answer spells out ("cash-on-delivery (COD)",
+    // "Return to Origin (RTO)") is a term, not a brand: a live campaign of
+    // 22 Nov 2026 offered "COD" as a competitor to add.
+    for (let i = results.length - 1; i >= 0; i--) {
+      const b = results[i].brand;
+      if (!/^\p{Lu}{2,6}$/u.test(b) || results[i].category === "place") continue;
+      const re = new RegExp(`((?:[\\p{L}]+[\\s-]+){1,6})\\(${escapeRegExp(b)}s?\\)`, "giu");
+      const spelled = [...text.matchAll(re)].some((m) => {
+        const words = m[1].trim().split(/[\s-]+/).filter((w) => !/^(?:of|on|to|the|and|for|a|an|&)$/i.test(w));
+        return words.slice(-b.length).map((w) => w[0].toUpperCase()).join("") === b.toUpperCase();
+      });
+      if (spelled) results.splice(i, 1);
+    }
+    // Two names joined by "&" ("DTDC & Delhivery", a Gemini table cell in a
+    // live campaign of 22 Nov 2026) are two brands when the answer also
+    // writes each one on its own; "Johnson & Johnson" and "Marks & Spencer"
+    // never do, and stay whole.
+    for (let i = results.length - 1; i >= 0; i--) {
+      const r = results[i];
+      const m = /^(.{2,40}?)\s+&\s+(.{2,40})$/.exec(r.brand);
+      if (!m || r.category === "place" || r.keepWhole) continue;
+      const sides = [m[1].trim(), m[2].trim()];
+      if (sides[0].toLowerCase() === sides[1].toLowerCase()) continue;
+      const alone = (s) => {
+        const all = [...text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(s)}(?![\\p{L}\\p{N}])`, "gu"))].length;
+        const joined = [...text.matchAll(new RegExp(escapeRegExp(r.brand), "gu"))].length;
+        return all - joined;
+      };
+      const counts = sides.map(alone);
+      if (counts.some((c) => c < 1)) continue;
+      results.splice(i, 1);
+      for (const [j, s] of sides.entries()) {
+        const have = results.find((o) => o.brand.toLowerCase() === s.toLowerCase());
+        // Its own mentions plus the joined ones.
+        const n = counts[j] + r.count;
+        if (have) { have.count = Math.max(have.count, n); continue; }
+        const at = text.search(new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(s)}(?![\\p{L}\\p{N}])`, "u"));
+        results.push({ brand: s, count: n, firstIndex: at >= 0 ? at : r.firstIndex, category: null, description: null, passages: r.passages });
+      }
+    }
   }
 
   // A brand's short name counts as the brand (1.0.2). A Perplexity answer
@@ -2233,6 +2321,37 @@ export function detectBrands(answerText, plainText, ctx = {}) {
       r.firstIndex = extra[0];
       const p = text.slice(Math.max(0, extra[0] - 110), extra[0] + 110).replace(/\s+/g, " ").trim();
       if (!r.passages.includes(p)) r.passages.unshift(p);
+    }
+  }
+
+  // Names listed beside a found brand (1.0.4): "I can estimate the total cost
+  // for Asian Paints, Berger and Nerolac" kept Asian Paints and lost the
+  // other two (stress run, 23 Nov 2026). The list rule for short answers only
+  // runs when nothing else was found; a list that holds one brand already is
+  // a list of brands. Split on commas, "and", "or" — never "&", so "Marks &
+  // Spencer" stays one name — and each name passes the same checks.
+  {
+    const have = new Set(results.map((r) => r.brand.toLowerCase()));
+    const NAME = "[A-Z][\\p{L}0-9.'’-]*(?: [A-Z][\\p{L}0-9.'’-]*){0,2}";
+    // "A, B and C", and "A vs B vs C" ("compare Asian Paints vs Berger vs Nerolac").
+    const LIST = new RegExp(`${NAME}(?:(?:, | vs\\.? )${NAME})*,? (?:and|or|vs\\.?) ${NAME}`, "gu");
+    const flat = text.replace(/\*\*/g, "");
+    for (const m of flat.matchAll(LIST)) {
+      const items = m[0].split(/, (?:and |or )?| (?:and|or|vs\.?) /).map((s) => s.trim().replace(/[.'’]+$/, "")).filter(Boolean);
+      // A sentence's opening word ("For Asian Paints, …"), not a word a
+      // region shares with a brand ("Asian").
+      const OPENERS = /^(?:in|at|on|for|to|with|by|from|the|a|an|of|near|under|over|across|between|like|including|both|either)$/i;
+      while (items.length && items[0].includes(" ") && (isNoise(items[0].split(" ")[0]) || OPENERS.test(items[0].split(" ")[0]))) items[0] = items[0].split(" ").slice(1).join(" ");
+      if (items.length < 2 || !items.some((it) => have.has(it.toLowerCase()))) continue;
+      for (const it of items) {
+        const k = it.toLowerCase();
+        if (!it || have.has(k) || isNoise(it) || isNoise(it.split(" ")[0]) || PROMPT_STOPWORDS.has(k) || promptTokens.has(k) || !looksLikeProperName(it)) continue;
+        const hits = [...flat.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(it)}(?![\\p{L}\\p{N}])`, "gu"))].map((x) => x.index);
+        if (!hits.length) continue;
+        have.add(k);
+        const at = text.indexOf(it);
+        results.push({ brand: it, count: hits.length, firstIndex: at >= 0 ? at : hits[0], category: null, description: null, passages: [flat.slice(Math.max(0, hits[0] - 110), hits[0] + 110).replace(/\s+/g, " ").trim()], relation: null });
+      }
     }
   }
 

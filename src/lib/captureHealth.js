@@ -13,7 +13,7 @@
  * Never a prompt, an answer or a query value.
  */
 
-export const ENGINES = ["chatgpt", "gemini", "perplexity", "grok"];
+export const ENGINES = ["chatgpt", "gemini", "perplexity", "grok", "aimode"];
 const KEEP = 8;
 
 export function emptyHealth() {

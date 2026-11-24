@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "__MSG_appName__",
-  "version": "1.0.2",
+  "version": "1.0.5",
   "minimum_chrome_version": "111",
   "description": "__MSG_appDesc__",
   "default_locale": "en",
@@ -17,6 +17,9 @@
     "offscreen",
     "scripting",
     "favicon"
+  ],
+  "optional_permissions": [
+    "webRequest"
   ],
   "host_permissions": [
     "https://chatgpt.com/*",

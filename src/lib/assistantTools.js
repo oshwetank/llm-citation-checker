@@ -21,7 +21,7 @@ import { campaignInsights, brandTrend } from "./insights.js";
 import { GLOSSARY } from "./glossary.js";
 
 const DAY = 24 * 60 * 60 * 1000;
-const ENGINES = ["chatgpt", "gemini", "perplexity", "grok"];
+const ENGINES = ["chatgpt", "gemini", "perplexity", "grok", "aimode"];
 const r1 = (x) => (x == null ? null : Math.round(x * 10) / 10);
 const clip = (s, n) => { const t = String(s || "").replace(/\s+/g, " ").trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
 

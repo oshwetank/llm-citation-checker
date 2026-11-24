@@ -36,7 +36,7 @@
             </button>
             <div class="brand-text">
               <button type="button" class="brand-title" id="brandTitle">CitoSkeleton</button>
-              <span class="version-badge">v1.0.2</span>
+              <span class="version-badge">v1.0.5</span>
               <span class="brand-sub">ChatGPT, Gemini, Perplexity &amp; Grok</span>
             </div>
             <!-- Pause capture (0.66.0), in the popup and the tab. -->
@@ -343,6 +343,29 @@
                         <input type="checkbox" id="setHandoffKeep" role="switch" />
                         <span class="ab-switch-track" aria-hidden="true"><span class="ab-switch-knob"></span></span>
                         <span class="ab-switch-text" id="setHandoffKeepText">Off</span>
+                      </label>
+                    </div>
+                    <div class="ab-row">
+                      <label class="ab-row-text" for="setCareful">
+                        <b>Careful pace</b>
+                        <span>Runs more slowly so the AI sites are less likely to limit you: ChatGPT and AI Mode in one tab, AI Mode a minute or two between questions (at most 30 an hour). Off: every engine runs fast, two tabs each.</span>
+                      </label>
+                      <label class="ab-switch">
+                        <input type="checkbox" id="setCareful" role="switch" />
+                        <span class="ab-switch-track" aria-hidden="true"><span class="ab-switch-knob"></span></span>
+                        <span class="ab-switch-text" id="setCarefulText">Off</span>
+                      </label>
+                    </div>
+                    <div class="ab-row">
+                      <label class="ab-row-text" for="setAiMode">
+                        <b>Google AI Mode <span class="beta">beta</span></b>
+                        <span>Capture AI Mode's answers (google.com/search?udm=50) and use it in campaigns, slowly: Google may ask you to confirm you're not a robot, and a run then waits for you. Asks Chrome for google.com; nothing else on Google is read.</span>
+                        <span class="ab-note" id="setAiModeNote" role="status" hidden></span>
+                      </label>
+                      <label class="ab-switch">
+                        <input type="checkbox" id="setAiMode" role="switch" />
+                        <span class="ab-switch-track" aria-hidden="true"><span class="ab-switch-knob"></span></span>
+                        <span class="ab-switch-text" id="setAiModeText">Off</span>
                       </label>
                     </div>
                     <div class="ab-row">

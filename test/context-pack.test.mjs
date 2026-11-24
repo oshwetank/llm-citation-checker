@@ -44,7 +44,7 @@ check("cited, read, searches and the answer itself", /Best gym earbuds — https
 const k = buildPack({ engine: "claude", task: "custom", question: "Where does Kovo beat us?", parts: askParts({ question: "Where does Kovo beat us?", answer: "Kovo is first in 2 answers.", steps: [{ tool: "rival_wins" }], results: [{ rivals: [{ brand: "Kovo", namedFirst: 2 }] }] }) });
 check("Ask's question, reply and lookups", /What I asked CitoSkeleton's assistant/.test(k.text) && /Looked up: rival_wins/.test(k.text) && /"namedFirst": 2/.test(k.text));
 check("a custom task adds no canned request", !k.text.includes(TASKS.explain.ask) && /My question: Where does Kovo beat us\?/.test(k.text));
-check("five engines, each with an https address", Object.keys(ENGINES).join() === "chatgpt,claude,gemini,perplexity,grok" && Object.values(ENGINES).every((e) => e.url.startsWith("https://")));
+check("six engines, each with an https address", Object.keys(ENGINES).join() === "chatgpt,claude,gemini,perplexity,grok,aimode" && Object.values(ENGINES).every((e) => e.url.startsWith("https://")));
 
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);

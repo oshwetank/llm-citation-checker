@@ -652,7 +652,7 @@ function markGenUiCited(nodes, sources, textRefs) {
 // The pictures of each <AsyncImage>, in the order the images appear in the
 // answer: appData.opGenui.componentResults[<component id>].state.images.
 // Returns one list per image component.
-function genUiImages(nodes) {
+function genUiImages(nodes, types = ["async_image"]) {
   const byId = new Map();
   const put = (id, list) => {
     if (!Array.isArray(list)) return;
@@ -677,7 +677,7 @@ function genUiImages(nodes) {
     }
   });
   const order = [];
-  collectObjects({ nodes }, (o) => o.type === "async_image" && typeof o.component_resolution_id === "string").forEach((o) => {
+  collectObjects({ nodes }, (o) => types.includes(o.type) && typeof o.component_resolution_id === "string").forEach((o) => {
     if (!order.includes(o.component_resolution_id)) order.push(o.component_resolution_id);
   });
   return order.map((id) => byId.get(id) || []);
@@ -858,6 +858,18 @@ async function adaptSource(rawCapture, opts, diag) {
   });
 }
 
+/** ChatGPT's refusal of a send, when the reply is a JSON error rather than a
+ * stream: the message, if it is about a limit. */
+export function limitDetailOf(raw) {
+  const t = String(raw || "").trim();
+  if (!t.startsWith("{") || t.length > 4000) return null;
+  try {
+    const j = JSON.parse(t);
+    const d = typeof j.detail === "string" ? j.detail : j.detail && typeof j.detail.message === "string" ? j.detail.message : typeof j.message === "string" ? j.message : "";
+    return /limit|too many|try again later|too quickly|unusual activity/i.test(d) ? d : null;
+  } catch (_) { return null; }
+}
+
 export async function adapt(rawCapture, opts = {}) {
   const diag = { adapterVersion: ADAPTER_VERSION, usedFallback: false, notes: [] };
   // A conversation read from ChatGPT (1.0.0, lib/chatgptConversation.js):
@@ -907,6 +919,15 @@ export async function adapt(rawCapture, opts = {}) {
       bl.image = pic ? { url: pic.url, sourceUrl: pic.sourceUrl || null, title: pic.title || null } : null;
     });
   }
+  // Card markup outside a card answer (1.0.4, stress run): "**<Entity
+  // value="Indigo Paints" category="brand" …>**" reached the answer text as
+  // tags, and an emptied bold as "****". The name is what the reader saw.
+  if (!genui) {
+    answerText = answerText
+      .replace(/<Entity\s+value="([^"]*)"[^>\n]*>?/g, "$1")
+      .replace(/<\/Entity>/g, "")
+      .replace(/\*\*\*\*/g, "");
+  }
   const referenceTypes = extractReferenceTypes(nodes, answerText);
   const userPrompt = extractPrompt(rawCapture.reqBody);
   const { brands: brandMentions, entities: baseEntities } = await detectBrandsForCapture(answerText, products, opts.tracked, sources, places, userPrompt);
@@ -919,6 +940,13 @@ export async function adapt(rawCapture, opts = {}) {
     const have = images.find((x) => x.url === im.url);
     if (!have) images.push(im);
     else for (const k of ["sourceUrl", "attribution", "title"]) if (!have[k] && im[k]) have[k] = im[k];
+  });
+  // Every picture of an image carousel (<AsyncImageGroup>, 1.0.4): the answer
+  // showed them all, but only single <AsyncImage> pictures were kept, so an
+  // answer with three carousels stored 1 of its 10 pictures (stress run,
+  // 23 Nov 2026). Cards keep their own pictures above; these are the answer's.
+  if (genui) genUiImages(nodes, ["async_image_group"]).flat().forEach((im) => {
+    if (im && im.url && !images.some((x) => x.url === im.url)) images.push(im);
   });
   // A product with no picture of its own takes the image titled with its name.
   products = pictureProducts(products, images);
@@ -975,6 +1003,13 @@ export async function adapt(rawCapture, opts = {}) {
   // answer's search touched.
   const enginesNamed = enginesNamedIn(rawCapture.raw);
   if (enginesNamed.length) platformSpecific.enginesNamed = enginesNamed;
+  // ChatGPT's hourly cap comes back as plain JSON instead of a stream (1.0.4,
+  // stress run of 23 Nov 2026): {"detail":"You've reached our limit of
+  // messages per hour. Please try again later."}. Stored as an empty answer,
+  // 22 turns counted as done. Marked, it pauses ChatGPT like any limit and
+  // the prompt is asked again when the cooldown ends (usageLimitOf).
+  const capDetail = limitDetailOf(rawCapture.raw);
+  if (capDetail && !answerText.trim()) platformSpecific.gatewayError = `usage_limit_reached: ${capDetail.slice(0, 120)}`;
 
   return makeRecord({
     captureId: rawCapture.captureId,

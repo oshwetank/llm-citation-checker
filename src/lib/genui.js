@@ -170,6 +170,11 @@ function formMarkdown(f) {
 }
 
 function readCard(row, n, cites) {
+  // A section's header row carries its own Share button ("<title>COD courier
+  // comparison</title><button label="Share" …>"); a card never does (1.0.2,
+  // live campaign of 22 Nov 2026 — the header was listed as a product). Left
+  // as text, it reads as the heading it is.
+  if (/<button\b[^>]*\blabel="Share"/i.test(row) && !/<Entity\b|<AsyncImage\b/.test(row)) return null;
   const items = [];
   let last = 0, image = false, imageQuery = "";
   const free = (s) => s.split("\n").forEach((l) => { if (l.trim()) items.push({ kind: "line", raw: l.trim() }); });

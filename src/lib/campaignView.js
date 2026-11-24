@@ -28,7 +28,7 @@ import { siteKindOf, normDomain } from "./siteKind.js";
 import { answerKind, adsView, resultPositions } from "./analyzeView.js";
 import { parseQueryOperators } from "./fanout.js";
 
-const ENGINE_LABEL = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok" };
+const ENGINE_LABEL = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok", aimode: "AI Mode" };
 const r1 = (x) => (x == null ? null : Math.round(x * 10) / 10);
 const pctOf = (n, d) => (d ? Math.round((n / d) * 1000) / 10 : 0);
 const answered = (r) => (r.answerChars || 0) > 0;

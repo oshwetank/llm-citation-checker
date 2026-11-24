@@ -80,6 +80,9 @@ let engine = null;
 const getEngine = () => (engine = engine || import("../src/lib/llmEngine.js"));
 let laya = null;
 const getLaya = () => (laya = laya || import("../src/lib/layaEngine.js"));
+// Search by meaning (1.0.5, src/lib/meaningEngine.js).
+let meaning = null;
+const getMeaning = () => (meaning = meaning || import("../src/lib/meaningEngine.js"));
 let lastProgress = 0;
 const sendProgress = (p) => {
   const progress = { status: p.status, file: p.file || null, loaded: p.loaded || 0, total: p.total || 0, pct: p.progress ?? null };
@@ -117,6 +120,11 @@ async function llmOp(op, args = {}) {
       const { layaCheckRecord } = await import("../src/lib/laya.js");
       return layaCheckRecord(args.record, (items) => L.run(items), { tok: L.encoder(), model: args.label || "Laya", maxLen: st.maxLen, headMaxLen: st.headMaxLen, temperature: st.temperature });
     }
+    case "meaning-load": { const M = await getMeaning(); return M.load({ ...args, onProgress: (p) => sendProgress({ ...(p || {}), status: `meaning-${(p && p.status) || "progress"}` }) }); }
+    case "meaning-status": return (await getMeaning()).status();
+    case "meaning-cached": return (await getMeaning()).cachedBytes(args);
+    case "meaning-remove": return (await getMeaning()).removeCached(args);
+    case "meaning-rank": return (await getMeaning()).rank(args);
     default: throw new Error(`unknown op ${op}`);
   }
 }

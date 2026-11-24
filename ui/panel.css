@@ -7559,3 +7559,13 @@ body.popup .cap-toggle { min-block-size: 26px; min-inline-size: 32px; justify-co
 /* Prompts to start from (1.0.0). */
 .cs-examples { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-block-end: 8px; }
 .cs-example-cat { flex: 1 1 200px; min-inline-size: 160px; }
+
+/* Ask's scope, ask-back and notes (1.0.5). */
+.ask-scope { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0 8px; }
+.ask-scope-chip { border: 1px solid var(--border); background: transparent; border-radius: 999px; padding: 2px 10px; font: inherit; font-size: 12px; color: var(--fg-primary); cursor: pointer; max-width: 100%; }
+select.ask-scope-chip { appearance: auto; padding-inline-end: 6px; }
+.ask-scope-chip:hover, .ask-scope-chip:focus-visible { border-color: var(--accent); }
+.ask-scope-n { font-size: 12px; color: var(--fg-secondary); }
+.ask-choices { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.ask-notes { margin-top: 6px; font-size: 12px; color: var(--fg-secondary); }
+.ask-off-note { margin: 0 0 10px; font-size: 13px; color: var(--fg-secondary); }

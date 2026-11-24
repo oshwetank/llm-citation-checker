@@ -93,7 +93,10 @@ const SEED_CAMPAIGN = async (seeds) => {
     const promptId = prompts.get(rec.userPrompt);
     const tags = (seeds.find((s) => s[2] === rec.userPrompt) || [])[3] || [];
     await put("derived", { ...rec, capturedAt: t2 + 1000, geo: { profileId, runId: r2, promptId, tags } });
+    // Run 1 doesn't name the own brand at all: out of the brand list AND the
+    // text, since mentions are counted from what the answer writes (1.0.3).
     await put("derived", { ...rec, captureId: `${rec.captureId}-r1`, capturedAt: t1 + 1000,
+      answerText: String(rec.answerText || "").split(own).join("another option"),
       brandMentions: (rec.brandMentions || []).filter((m) => m.brand !== own), geo: { profileId, runId: r1, promptId, tags } });
   }
   return { own, competitors, answers: derived.length, prompts: prompts.size };

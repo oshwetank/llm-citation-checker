@@ -72,6 +72,20 @@ console.log("\nEach engine's submit request is reported");
   check("Gemini: StreamGenerate over XHR", submits().length === 1 && submits()[0].via === "xhr", JSON.stringify(submits()));
 }
 {
+  // 1.0.5: Gemini's send is now an upload to its WebChannel. Unseen, the
+  // submit loop pressed send again: 2–3 conversations per question (live,
+  // 24 Nov 2026). The channel's housekeeping posts there too, and is not a send.
+  const { w, submits } = loadPage("gemini.google.com");
+  const ping = new w.XMLHttpRequest();
+  ping.open("POST", "https://geminiweb-pa.clients6.google.com/v1/processSession?VER=8&RID=12&SID=x");
+  ping.send("count=1&ofs=3&req0___data__=%5B%5D");
+  check("Gemini: the channel's small housekeeping post is not a send", submits().length === 0, JSON.stringify(submits()));
+  const up = new w.XMLHttpRequest();
+  up.open("POST", "https://geminiweb-pa.clients6.google.com/v1/processSession?VER=8&RID=13&SID=x");
+  up.send(`count=1&ofs=4&req0___data__=${"Q".repeat(2400)}`);
+  check("Gemini: the question's upload to processSession is the send", submits().length === 1 && submits()[0].via === "xhr", JSON.stringify(submits()));
+}
+{
   const { w, submits } = loadPage("www.perplexity.ai");
   await post(w, "/rest/sse/perplexity_ask");
   check("Perplexity: POST /rest/sse/perplexity_ask", submits().length === 1, JSON.stringify(submits()));

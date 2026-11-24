@@ -22,7 +22,7 @@ const S = FRESH();
 export function resetCampaignViewState() { Object.assign(S, FRESH()); }
 export function campaignViewSection() { return S.section; }
 
-const ENG = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok" };
+const ENG = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok", aimode: "AI Mode" };
 const pct = (x) => (x == null ? "—" : `${x >= 10 || x === 0 ? Math.round(x) : x.toFixed(1)}%`);
 const num = (x) => (x == null ? "—" : String(x));
 const ord = (n) => `${n}${n % 10 === 1 && n % 100 !== 11 ? "st" : n % 10 === 2 && n % 100 !== 12 ? "nd" : n % 10 === 3 && n % 100 !== 13 ? "rd" : "th"}`;
@@ -648,7 +648,9 @@ function signalsSec(runHistory) {
   const br = card("", h("h4", { className: "cv-h4" }, "Search breadth", h("span", { className: "cv-sub" }, "per answer")));
   const bt = h("div", { className: "cv-table cv-breadth", role: "table", "aria-label": "Search breadth" });
   bt.append(h("div", { className: "cv-tr cv-th", role: "row" }, ...["Engine", "Searches", "Pages read", "Pages cited"].map((x) => h("span", { role: "columnheader" }, x))));
-  g.breadth.forEach((x) => bt.append(h("div", { className: "cv-tr", role: "row" }, h("span", { role: "cell", className: "cv-who" }, engineMark(x.engine), ENG[x.engine]), ...[["searches"], ["read"], ["cited"]].map(([k]) => h("span", { role: "cell", className: "cv-num" }, `${x[k]} (${x.totals[k]})`)))));
+  // Gemini doesn't publish its searches: "not published", as the overview
+  // says, not "0 (0)", which read as "never searched" (1.0.2).
+  g.breadth.forEach((x) => bt.append(h("div", { className: "cv-tr", role: "row" }, h("span", { role: "cell", className: "cv-who" }, engineMark(x.engine), ENG[x.engine]), ...[["searches"], ["read"], ["cited"]].map(([k]) => h("span", { role: "cell", className: "cv-num" }, k === "searches" && x.engine === "gemini" && !x.totals[k] ? "not published" : `${x[k]} (${x.totals[k]})`)))));
   br.append(bt);
   const KL = { shopping: "Shopping", info: "Informational", local: "Local", images: "Image-led", memory: "From memory" };
   const [kb, kl] = mixBar(g.kinds.map((k) => ({ label: KL[k.id] || k.id, n: k.n, c: `var(--ak-${k.id}, var(--kind-other))` })));
@@ -790,6 +792,16 @@ function tabBar() {
     goSection(CV_SECTIONS[n][0]);
     document.getElementById(`${CV_SECTIONS[n][0]}-tab`)?.focus();
   };
+  // The open section's tab in sight (1.0.4). The bar is rebuilt on every
+  // pick and starts scrolled to the left, so in the popup picking a tab past
+  // the edge hid it again, and a board reopened on "Signals" showed no tab
+  // as open. Only the bar scrolls, never the page.
+  requestAnimationFrame(() => {
+    const on = bar.querySelector(".cv-tab.on");
+    if (!on || bar.scrollWidth <= bar.clientWidth) return;
+    const left = on.getBoundingClientRect().left - bar.getBoundingClientRect().left + bar.scrollLeft;
+    bar.scrollLeft = Math.max(0, left - (bar.clientWidth - on.offsetWidth) / 2);
+  });
   return bar;
 }
 

@@ -43,9 +43,12 @@ const fixture = (name) => {
   const lines = readFileSync(path.join(HERE, "fixtures", name), "utf8").split(/\r?\n/);
   return { raw: lines.filter((l) => !l.startsWith("# ")).join("\n"), reqBody: (lines.find((l) => l.startsWith("# reqBody:")) || "").replace("# reqBody: ", "") };
 };
+// 1.0.5: the model only writes the reply, from results worked out in code,
+// in one turn. 87% is made up: no result holds it, so it is flagged.
+// First the plan for what the rules left open ("Where was Zento named?" has
+// no question word a rule knows), then the reply.
 const SCRIPT = [
-  "<tool_call>\n<function=query_answers>\n<parameter=brand>\nZento\n</parameter>\n</function>\n</tool_call>",
-  // 87% is made up: no lookup returned it, so the reply is flagged (0.75.0).
+  '{"intent":"metric","collections":[]}',
   "Zento was named in the answers below, first in each, with 87% visibility.",
 ];
 
@@ -78,6 +81,24 @@ try {
     const t = await page.evaluate(() => document.getElementById("ask").innerText);
     check("without a model, Ask offers the switches right there (0.84.0)", /Models on this computer/.test(t) && !!(await page.$("#swAskModel")) && !!(await page.$("#swLaya")), t.slice(0, 300));
     check("each says its size, and that uninstalling removes it", /download, once/.test(t) && /Uninstalling CitoSkeleton removes them/.test(t));
+  }
+
+  console.log("\nasking with no model (1.0.5): answered from the data, its scope shown");
+  {
+    check("the chat is there without a model", !!(await page.$("#askInput")) && !!(await page.$("#askOffNote")));
+    await page.fill("#askInput", "Which brands are named most?");
+    await page.click("#askSend");
+    await page.waitForFunction(() => document.querySelectorAll(".ask-msg.ai").length > 0, null, { timeout: 20000 }).catch(() => {});
+    const r = await page.evaluate(() => ({ text: document.querySelector(".ask-msg.ai .ask-text")?.textContent || "", scope: [...document.querySelectorAll(".ask-msg.ai .ask-scope .ask-scope-chip")].map((x) => x.tagName === "SELECT" ? x.selectedOptions[0]?.textContent : x.textContent), n: document.querySelector(".ask-msg.ai .ask-scope-n")?.textContent || "" }));
+    check("a reply from the numbers, naming brands", /named in/.test(r.text) && /%/.test(r.text), r.text.slice(0, 200));
+    check("the scope above it: My questions, the run, the engines", r.scope.includes("My questions") && r.scope.some((x) => /engines/.test(x)) && /answers/.test(r.n), JSON.stringify(r));
+    // A chip changes the scope and runs the same question again.
+    await page.evaluate(() => { const s = [...document.querySelectorAll(".ask-msg.ai .ask-scope select")].find((x) => [...x.options].some((o) => o.textContent === "ChatGPT")); s.value = JSON.stringify(["chatgpt"]); s.dispatchEvent(new Event("change", { bubbles: true })); });
+    await page.waitForFunction(() => document.querySelectorAll(".ask-msg.ai").length > 1, null, { timeout: 20000 }).catch(() => {});
+    const two = await page.evaluate(() => [...document.querySelectorAll(".ask-msg.ai")].pop().querySelector(".ask-scope")?.innerText || "");
+    check("changing the engine chip answers again for ChatGPT only", /ChatGPT/.test(two), two);
+    await page.click("#askClear");
+    await page.waitForTimeout(300);
   }
 
   console.log("\nasking, with the built-in AI");
@@ -118,6 +139,7 @@ try {
     const flag = await page.evaluate(() => document.querySelector(".ask-msg.ai .ask-unverified")?.textContent || "");
     check("a number no lookup returned is flagged under the answer", /87/.test(flag) && /check these numbers/i.test(flag), flag);
     check("links to the answers the tool found", r.refs.length >= 1 && r.refs.every((x) => /^ChatGPT · /.test(x)), JSON.stringify(r.refs));
+    check("and says what it is about", await page.evaluate(() => /My questions/.test(document.querySelector(".ask-msg.ai .ask-scope")?.innerText || "")));
     await page.click(".ask-ref");
     await page.waitForSelector("#at-glance", { timeout: 10000 }).catch(() => {});
     check("a link opens that answer in Analyze", await page.evaluate(() => document.querySelector('[data-tab="analyze"]').classList.contains("active") && !!document.getElementById("at-glance")));

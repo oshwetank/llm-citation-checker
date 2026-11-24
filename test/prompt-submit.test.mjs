@@ -53,11 +53,11 @@ const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] }
 
 // Runs the REAL content-iso.js against a mock page shaped like one engine.
 // The page records every submission it receives so the count can be asserted.
-async function run(html, { gemini = false, grok = false, waitMs = 9000, throttle = false, throttleMs = 60000, workerClock = true, clockMs = 0 } = {}) {
+async function run(html, { gemini = false, grok = false, aimode = false, qKey = "q", waitMs = 9000, throttle = false, throttleMs = 60000, workerClock = true, clockMs = 0 } = {}) {
   const page = await browser.newPage();
-  const host = gemini ? "https://gemini.google.com" : grok ? "https://grok.com" : "https://chatgpt.com";
+  const host = gemini ? "https://gemini.google.com" : grok ? "https://grok.com" : aimode ? "https://www.google.com" : "https://chatgpt.com";
   await page.route("**/*", (r) => r.fulfill({ status: 200, contentType: "text/html", body: `<body>${html}</body>` }));
-  await page.goto(`${host}/mock?q=${encodeURIComponent(PROMPT)}&lcfc=1&lcfctok=T1`);
+  await page.goto(`${host}/mock?${qKey}=${encodeURIComponent(PROMPT)}&lcfc=1&lcfctok=T1`);
   const res = await page.evaluate(async ({ iso, waitMs, throttle, throttleMs, workerClock, clockMs }) => {
     const t0 = Date.now();
     window.__t0 = t0;
@@ -356,7 +356,7 @@ console.log("\nGemini: no native prefill exists, so the typing path is the only 
       const fire=()=>{ if(!box.innerText.trim()) return; const t=box.innerText; box.innerHTML=''; window.__record(t); };
       box.addEventListener('keydown',e=>{ if(e.key==='Enter') fire(); });
       document.querySelector('button[aria-label="Send message"]').addEventListener('click',fire);
-    </script>`, { gemini: true });
+    </script>`, { gemini: true, waitMs: 16000 });
   check("submitted exactly once", r.submits === 1, `submits=${r.submits}`);
   check("the prompt text is correct", r.text === PROMPT, JSON.stringify(r.text));
 
@@ -378,10 +378,12 @@ console.log("\nGemini: no native prefill exists, so the typing path is the only 
    */
   // 1.0.2: Gemini DOES send ?q= itself now (a live campaign of 22 Nov 2026
   // asked every Gemini question twice), so it waits out the same native-submit
-  // grace as ChatGPT (~3.2 s from the composer) before typing. Still bounded:
-  // a long unconditional wait would fail here.
-  check("Gemini submits within the native-submit wait",
-    r.submitAt != null && r.submitAt < 5000, `submitted at ${r.submitAt}ms`);
+  // grace as ChatGPT (~3.2 s from the composer) before typing. 1.0.4: ~10 s,
+  // because a slow Gemini page fills the box from ?q= well before it sends,
+  // and sending on top of that asked it 2 to 4 times. Still bounded: a long
+  // unconditional wait would fail here.
+  check("Gemini submits within its own-send wait",
+    r.submitAt != null && r.submitAt < 13000, `submitted at ${r.submitAt}ms`);
   check("no failure reported", r.gaveUp.length === 0, r.gaveUp.join(","));
 }
 
@@ -401,6 +403,82 @@ console.log("\nGemini: the page sends ?q= itself (1.0.2) — never sent a second
       setTimeout(()=>{ if(q0){ history.pushState(null,'','/app/abc123def456'); window.__record(q0); } }, 2000);
     </script>`, { gemini: true });
   check("submitted exactly once — Gemini's own send, not ours as well", r.submits === 1, `submits=${r.submits}`);
+  check("no failure reported", r.gaveUp.length === 0, r.gaveUp.join(","));
+}
+
+console.log("\nGemini gets the question in lcfcq, not ?q= (1.0.5): sent once, by us, at once");
+{
+  // Stress run, 23 Nov 2026: from ?q= Gemini sent the question itself and
+  // kept the q in its address, and 187 of 549 questions went out 2 or 3
+  // times as separate conversations ~1 s apart. This page sends any ?q= it
+  // finds on load AND again every second while a q is in its address, worse
+  // than the live page; with lcfcq there is no q for it to act on.
+  const r = await run(`
+    <rich-textarea><div contenteditable="true" id="g"></div></rich-textarea>
+    <button aria-label="Send message">send</button><div id="convo"></div>
+    <script>${RECORD_GEMINI}
+      const box=document.getElementById('g');
+      const fire=()=>{ if(!box.innerText.trim()) return; const t=box.innerText; box.innerHTML=''; window.__record(t); history.pushState(null,'','/app/abc123def456'); };
+      box.addEventListener('keydown',e=>{ if(e.key==='Enter') fire(); });
+      document.querySelector('button[aria-label="Send message"]').addEventListener('click',fire);
+      const own=()=>{ const q=new URLSearchParams(location.search).get('q'); if(q) window.__record(q); };
+      setTimeout(own, 500); setInterval(own, 1000);
+    </script>`, { gemini: true, qKey: "lcfcq", waitMs: 9000 });
+  check("submitted exactly once", r.submits === 1, `submits=${r.submits}`);
+  check("the prompt text is correct", r.text === PROMPT, JSON.stringify(r.text));
+  check("sent without the 10 s wait for Gemini's own send", r.submitAt != null && r.submitAt < 6000, `submitted at ${r.submitAt}ms`);
+  check("the question is not left in the address", !/[?&](q|lcfcq)=/.test(r.url), r.url);
+  check("no failure reported", r.gaveUp.length === 0, r.gaveUp.join(","));
+}
+
+console.log("\nGoogle AI Mode (1.0.5): Google sends ?q= itself; the script never types, and waits for Google's request for this question");
+{
+  const page = (q, afterMs) => `
+    <textarea aria-label="Ask anything"></textarea><button data-xid="input-plate-send-button">send</button><div id="convo"></div>
+    <script>
+      window.__submits=0;
+      document.querySelector('textarea').addEventListener('input',()=>{ window.__typed=true; });
+      document.documentElement.setAttribute('data-lcfc-ch', 'CH-AIM');
+      ${q === null ? "" : `setTimeout(()=>window.postMessage({ __LCFC__: 'CH-AIM', type: 'engine-submit', via: 'fetch', q: ${JSON.stringify(q)} }, location.origin), ${afterMs});`}
+    </script>`;
+  const sent = await run(page(PROMPT, 1500), { aimode: true, waitMs: 5000 });
+  check("Google's request for this question: sent, by Google", sent.events.some((e) => e.type === "loader-sent") && sent.gaveUp.length === 0, JSON.stringify(sent.events.map((e) => e.type)));
+  check("nothing typed into the box", !sent.text && !(await Promise.resolve(false)), String(sent.text));
+  const none = await run(page(null, 0), { aimode: true, waitMs: 23000 });
+  check("Google never sends: gives up after ~20 s, saying so", none.gaveUp.some((g) => /AI Mode did not start an answer/.test(g)) && !none.events.some((e) => e.type === "loader-sent"), JSON.stringify(none.gaveUp));
+  const other = await run(page("some other question", 1000), { aimode: true, waitMs: 23000 });
+  check("a request for another question isn't taken as this one", !other.events.some((e) => e.type === "loader-sent") && other.gaveUp.length === 1, JSON.stringify(other.gaveUp));
+}
+
+console.log("\nGemini flips between /app and /app/<id> after a send, the question back in the box: sent once (1.0.5)");
+{
+  // Live, 24 Nov 2026: once the conversation existed Gemini's address went
+  // /app ↔ /app/<id> several times a second, and /app showed the new-chat
+  // page with the question back in the box. The script's checks landed on
+  // /app, saw no conversation, and pressed send again ("click … enter …
+  // reclick"): 21 of 23 questions asked 2 to 4 times. This page does the
+  // same, and its send button works only on /app, as a new chat would.
+  const r = await run(`
+    <rich-textarea><div contenteditable="true" id="g"></div></rich-textarea>
+    <button aria-label="Send message">send</button><div id="convo"></div>
+    <script>${RECORD_GEMINI}
+      const box=document.getElementById('g');
+      let n=0, flip=null;
+      const fire=()=>{ const t=box.innerText.trim(); if(!t) return; box.innerHTML=''; window.__record(t); n++;
+        const id='/app/conv'+n+'abcdef';
+        history.pushState(null,'',id);
+        if(flip) clearInterval(flip);
+        // Mostly on /app: the question back in the box, no transcript; the conversation
+        // address shows for 30 ms a second.
+        const convo=document.getElementById('convo'); let kept=[];
+        const away=()=>{ history.replaceState(null,'','/app'); box.textContent=t; kept=[...convo.childNodes]; convo.replaceChildren(); };
+        setTimeout(away,30);
+        flip=setInterval(()=>{ history.replaceState(null,'',id); box.innerHTML=''; convo.replaceChildren(...kept); setTimeout(away,30); },1000);
+      };
+      box.addEventListener('keydown',e=>{ if(e.key==='Enter') fire(); });
+      document.querySelector('button[aria-label="Send message"]').addEventListener('click',fire);
+    </script>`, { gemini: true, qKey: "lcfcq", waitMs: 12000 });
+  check("submitted exactly once", r.submits === 1, `submits=${r.submits}`);
   check("no failure reported", r.gaveUp.length === 0, r.gaveUp.join(","));
 }
 
@@ -492,6 +570,117 @@ console.log("\nNO false positive: the ANSWER is about rate limits (the run must 
     r.limits.length === 0, JSON.stringify(r.limits));
   check("the prompt ran normally, exactly once", r.submits === 1, `submits=${r.submits}`);
   check("no submit failure either", r.gaveUp.length === 0, r.gaveUp.join(","));
+}
+
+console.log("\nA slow Gemini fills the box from ?q= and sends it itself 5 s later: asked once (1.0.4)");
+{
+  const r = await run(`
+    <rich-textarea><div contenteditable="true" id="g"></div></rich-textarea>
+    <button aria-label="Send message">send</button><div id="convo"></div>
+    <script>${RECORD_GEMINI}
+      const box=document.getElementById('g');
+      const fire=()=>{ if(!box.innerText.trim()) return; const t=box.innerText; box.innerHTML=''; window.__record(t);
+        history.pushState({}, '', '/app/0b38d0c40341c1d0'); };
+      box.addEventListener('keydown',e=>{ if(e.key==='Enter') fire(); });
+      document.querySelector('button[aria-label="Send message"]').addEventListener('click',fire);
+      const q=new URLSearchParams(location.search).get('q');
+      setTimeout(()=>{ box.textContent=q; }, 300);
+      setTimeout(fire, 5000);
+    </script>`, { gemini: true, waitMs: 14000 });
+  check("Gemini got the question once", r.submits === 1, `submits=${r.submits}`);
+}
+
+console.log("\nChatGPT's /c/local-… address is not proof the question was sent (1.0.4)");
+{
+  // The owner's Birla Opus campaign, 23 Nov 2026: the click moved ChatGPT to
+  // /c/local-chatgpt-…, the question showed in the transcript, and nothing
+  // was ever sent. The turn was taken as sent and timed out 90 s later.
+  const r = await run(`
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <button id="composer-submit-button">send</button>
+    <div id="convo"></div>
+    <script>
+      document.getElementById('composer-submit-button').addEventListener('click', () => {
+        const box = document.getElementById('prompt-textarea'); const t = box.textContent; if (!t) return;
+        box.textContent = '';
+        const d = document.createElement('div'); d.setAttribute('data-message-author-role', 'user'); d.textContent = t;
+        document.getElementById('convo').appendChild(d);
+        history.pushState({}, '', '/c/local-chatgpt-1234abcd');
+      });
+    </script>`, { waitMs: 22000 });
+  check("the turn fails fast, saying the question never left", r.gaveUp.some((g) => /stayed local/.test(g)), JSON.stringify(r.gaveUp));
+}
+{
+  const r = await run(`
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <button id="composer-submit-button">send</button>
+    <div id="convo"></div>
+    <script>
+      document.getElementById('composer-submit-button').addEventListener('click', () => {
+        const box = document.getElementById('prompt-textarea'); const t = box.textContent; if (!t) return;
+        box.textContent = '';
+        const d = document.createElement('div'); d.setAttribute('data-message-author-role', 'user'); d.textContent = t;
+        document.getElementById('convo').appendChild(d);
+        history.pushState({}, '', '/c/local-chatgpt-1234abcd');
+        setTimeout(() => history.replaceState({}, '', '/c/6b03b81f-12c4-83ee-9967-03e7510b85ae'), 2000);
+      });
+    </script>`, { waitMs: 14000 });
+  check("once ChatGPT gives the real address, the question counts as sent", r.gaveUp.length === 0, JSON.stringify(r.gaveUp));
+}
+
+console.log("\nGemini sends ?q= itself and moves to its conversation: the address is left alone");
+{
+  // Live run, 23 Nov 2026: once Gemini had moved to /app/<id>, the script put
+  // back the address the page started on; Gemini sent the question again
+  // into 3 to 5 new conversations, and its address flipped ~100 times a
+  // minute. The page below sends from ?q= by itself, as Gemini now does.
+  const r = await run(`
+    <rich-textarea><div contenteditable="true" id="g"></div></rich-textarea>
+    <button aria-label="Send message">send</button>
+    <div id="convo"></div>
+    <script>${RECORD_GEMINI}
+      window.__paths = [];
+      const rs = history.replaceState.bind(history);
+      history.replaceState = (s, t, u) => { window.__paths.push(String(u)); return rs(s, t, u); };
+      setTimeout(() => { const q = new URLSearchParams(location.search).get('q'); if (!q) return;
+        window.__record(q); history.pushState({ app: 1 }, '', '/app/abc123?q=' + encodeURIComponent(q)); }, 1200);
+    </script>`, { gemini: true, waitMs: 12000 });
+  check("the question went out once", r.submits === 1, `submits=${r.submits}`);
+  check("the address stays on Gemini's conversation", r.url.startsWith("/app/abc123"), r.url);
+}
+
+console.log("\nRate limit: ChatGPT's \"quick check\" notice pauses the engine (1.0.4)");
+{
+  // Stress run, 23 Nov 2026: after ~85 prompts in 40 minutes ChatGPT showed
+  // this under an inert send button; unmatched, every prompt for 19 minutes
+  // was typed, never sent, and counted failed.
+  const r = await run(`
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <button id="composer-submit-button" aria-disabled="true">send</button>
+    <div id="convo"></div>
+    <div class="composer-notice">We're doing a quick check to keep ChatGPT reliable. Try again in 19 minutes.</div>`, { waitMs: 8000 });
+  check("the limit was reported", r.limits.length === 1, JSON.stringify(r.limits));
+  check("with the wait it gave", /19 minutes/.test(r.limits[0] || ""), JSON.stringify(r.limits[0]));
+  check("nothing was submitted", r.submits === 0, `submits=${r.submits}`);
+}
+
+console.log("\nNO false positive: a source card outside the answer mentions rate limits");
+{
+  // Perplexity draws its source cards outside the answer block: a link to
+  // the cited site with a snippet. One for a CRM comparison ("…API, rate
+  // limits, bulk writes…") paused a live campaign for 30 minutes.
+  const r = await run(`
+    <div id="prompt-textarea" contenteditable="true"></div>
+    <button id="composer-submit-button">send</button>
+    <div id="convo"><div data-message-author-role="assistant">Copper and HubSpot both suit small teams.</div></div>
+    <div class="sources"><a href="https://prospeo.io/s/copper-vs-hubspot"><div>prospeo</div>
+      <span>Copper vs HubSpot for GTM teams: per-seat prices, which plan unlocks the API, rate limits, bulk writes, webhooks</span></a></div>
+    <script>${RECORD_CHATGPT}
+      setTimeout(()=>{ const q=new URLSearchParams(location.search).get('q');
+        if(q) window.__record(q); }, 1000);
+    </script>`, { waitMs: 8000 });
+  check("no limit was reported from a source card's snippet", r.limits.length === 0, JSON.stringify(r.limits));
+  check("the prompt ran normally, exactly once", r.submits === 1, `submits=${r.submits}`);
 }
 
 console.log("\nNO false positive: the user's own PROMPT is about rate limits");

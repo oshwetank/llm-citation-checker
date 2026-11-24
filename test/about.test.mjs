@@ -118,7 +118,7 @@ try {
     });
     check("the version comes from the build, so it can't go stale", o.badge === `v${VERSION}`, o.badge);
     check("what stays private, in three plain facts", o.facts.join("|") === "Captures stay here|No account needed|Nothing sent unless you share", o.facts.join(" | "));
-    check("the four engines it works with", o.engines.join("|") === "ChatGPT|Gemini|Perplexity|Grok", o.engines.join(" | "));
+    check("the five engines it works with", o.engines.join("|") === "ChatGPT|Gemini|Perplexity|Grok|AI Mode", o.engines.join(" | "));
     check("how it works: four steps, three of them a tab", o.steps.length === 4 && o.steps.slice(1).map((s) => s.where).join("|") === "Analyze →|Dashboard →|Campaigns →", JSON.stringify(o.steps));
     check("and none of them is the Compare tab, which left the menu in 0.47.0", !/Compare/.test(o.steps.map((s) => s.where).join()));
     check("what's new is listed", o.news >= 3, String(o.news));

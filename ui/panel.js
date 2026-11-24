@@ -441,6 +441,29 @@ let GEO_PROFILES = [];
 let TRASHED_PROFILES = []; // soft-deleted campaigns, still within the recovery window
 let GEO_PROMPTS = [];
 let geoActiveId = null;
+/* Campaigns are created and edited in the full view only (1.0.5, asked:
+ * "people can't create a campaign in the popup"). The popup closes the
+ * moment focus moves (another tab, another window), and a half-typed setup
+ * went with it; the full view stays. The popup can still open, view and run
+ * campaigns. */
+const inPopup = () => document.documentElement.classList.contains("popup");
+function openCampaignInFullView({ campaign = null, newCampaign = false, importing = false } = {}) {
+  const q = new URLSearchParams({ mode: "tab" });
+  if (campaign) q.set("campaign", campaign);
+  if (newCampaign) q.set("newCampaign", "1");
+  if (importing) q.set("importCampaign", "1");
+  try { chrome.tabs.create({ url: chrome.runtime.getURL(`ui/panel.html?${q}`) }); } catch (_) { /* not in the extension */ }
+  try { window.close(); } catch (_) { /* a tab */ }
+}
+function renderSetupInFullViewCard(profile) {
+  const card = el("div", { className: "card cs-popup-only", id: "csPopupNote" },
+    el("h3", {}, profile && profile.lastRunAt ? "Edit this campaign in the full view" : "Set up this campaign in the full view"),
+    el("p", { className: "muted" }, "Campaigns are set up and edited in the full view, where nothing is lost if you switch tabs or windows."));
+  const b = el("button", { className: "btn primary", type: "button", id: "csOpenFull" }, "Open the full view");
+  b.onclick = () => openCampaignInFullView({ campaign: profile ? profile.id : null });
+  card.append(b);
+  return card;
+}
 // The engine the campaign's results are narrowed to ([] = every engine).
 // The rest of the results' state lives with renderCampaignResults (cb*).
 let geoEngineFilter = [];
@@ -791,6 +814,7 @@ function dashboardParts(rows, picked) {
   return [{ title: picked ? `Prompts I picked (${rows.length})` : `Prompts I've asked AI engines (${rows.length}${rows.length > 200 ? ", first 200" : ""})`, text: list.join("\n") }];
 }
 
+let askFrom = null; // the collection Ask was opened from (see showTab)
 function showTab(name) {
   const scroller = activeScroller();
   const current = document.querySelector(".panel.active")?.id;
@@ -802,6 +826,8 @@ function showTab(name) {
 
   document.querySelectorAll("[data-tab]").forEach((b) => b.classList.remove("active"));
   document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
+  // Answers a run captured while another tab was open (runCaptureArrived).
+  if (runStale && (name === "analyze" || name === "dashboard")) setTimeout(refreshStaleRunData, 0);
   const btn = document.querySelector(`[data-tab="${name}"]`);
   if (btn) btn.classList.add("active");
   const panel = document.getElementById(name);
@@ -824,7 +850,10 @@ function showTab(name) {
   // may have its answer panel hidden, 0.60.0).
   if (name === "analyze" && atHeaderNodes && document.querySelector("#analyze .at-grid")) setHeaderPage("analyze", ...atHeaderNodes);
   if (name === "about") aboutEnter();
-  if (name === "ask") renderAsk(document.getElementById("ask"), { openCapture, openSettings: () => { showTab("about"); abGo("settings"); setTimeout(() => document.getElementById("setAi")?.scrollIntoView({ block: "start" }), 50); } });
+  // Where the user is (1.0.5): coming to Ask from a campaign's page, Ask
+  // starts on that campaign; from the Dashboard, on My questions.
+  if (name === "ask" && current && current !== "ask") askFrom = current === "loader" && geoActiveId ? geoActiveId : current === "dashboard" ? "history" : null;
+  if (name === "ask") renderAsk(document.getElementById("ask"), { openCapture, context: () => ({ collectionId: askFrom }), openSettings: () => { showTab("about"); abGo("settings"); setTimeout(() => document.getElementById("setAi")?.scrollIntoView({ block: "start" }), 50); } });
   if (name === "analyze") abNoteAnalyzed(ANALYZE_SHOWN);
   syncShareIcon();
 
@@ -1354,6 +1383,33 @@ function showToast(text, variant = "success", ms = variant === "error" ? 7000 : 
  * meant to hold steady has even been built; and a burst of broadcasts has to
  * collapse into one rebuild rather than several back-to-back.
  */
+/* A campaign run's captures (1.0.4). Each one used to reload everything:
+ * every stored answer re-read, and Analyze, the Dashboard and Compare
+ * redrawn, in every open panel, for each answer, while the Campaigns page
+ * itself shows none of them until the run ends. On a big store that kept
+ * the worker busy for seconds per answer (status replies took 5–8 s, a
+ * popup took over 30 s to open) and the page visibly blinked on every
+ * capture (stress run, 23 Nov 2026; first fixed in 0.62.2, back since).
+ * Now a run's capture only marks the data stale: it is reloaded at most
+ * every 30 s while a tab that shows answers is open, and otherwise once,
+ * when such a tab is opened. Captures asked by hand still refresh at once. */
+const RUN_REFRESH_MS = 30000;
+let runStale = false;
+let runRefreshAt = 0;
+let runRefreshTimer = null;
+function runCaptureArrived() {
+  runStale = true;
+  const active = document.querySelector(".panel.active")?.id;
+  if (active === "loader" || active === "about" || active === "ask") return; // shows none of them
+  if (runRefreshTimer) return;
+  runRefreshTimer = setTimeout(() => { runRefreshTimer = null; refreshStaleRunData(); }, Math.max(400, RUN_REFRESH_MS - (Date.now() - runRefreshAt)));
+}
+function refreshStaleRunData() {
+  if (!runStale) return;
+  runStale = false;
+  runRefreshAt = Date.now();
+  refreshFromBroadcast();
+}
 let refreshPending = null;
 function refreshFromBroadcast() {
   if (refreshPending) return; // a refresh is already queued — it will pick this up too
@@ -1381,7 +1437,7 @@ function patchFromBroadcast(captureId) {
       FULL.delete(id);
       const r = await send({ type: "get-record-light", captureId: id });
       const i = ALL_RECORDS.findIndex((x) => x.captureId === id);
-      if (!r.ok || !r.record || i < 0) { refreshFromBroadcast(); return; } // new or gone: the whole list
+      if (!r.ok || !r.record || i < 0) { if (cpLive.live) runCaptureArrived(); else refreshFromBroadcast(); return; } // new or gone: the whole list (during a run: when it's next due)
       ALL_RECORDS[i] = r.record;
     }
     RECORDS = includeTrackedInAdhoc ? ALL_RECORDS : partitionRecords(ALL_RECORDS).adhoc;
@@ -1402,7 +1458,8 @@ const announced = new Set();
 let lastAnnounced = 0;
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type === "new-capture") {
-    refreshFromBroadcast();
+    if (msg.duringRun) runCaptureArrived();
+    else refreshFromBroadcast();
     // Once per answer, and at most one notice every 15 s however many come.
     if (!msg.duringRun && msg.captureId && !announced.has(msg.captureId) && Date.now() - lastAnnounced > 15000) {
       lastAnnounced = Date.now();
@@ -4471,7 +4528,8 @@ function renderAnalyzeLegacy(rec, root) {
     "chatgpt": "ChatGPT Web Search Engine (SonicBrowserTool)",
     "gemini": "Google Search Tool (Gemini)",
     "perplexity": "Perplexity Search Engine",
-    "grok": "Grok X Search Engine"
+    "grok": "Grok X Search Engine",
+    "aimode": "Google AI Mode"
   };
   addTechKv("Tool Name", rec.searched ? (tools[rec.platform] || "Web Search Tool") : "—");
   
@@ -5671,7 +5729,7 @@ const AK_GLYPH = { shopping: "cart", info: "book", local: "pin", images: "image"
 let dbQuery = "";
 let dbScope = { prompts: true, answers: true, fan: true };
 let dbFiltersOpen = false; // the full tab's Filters panel (0.78.0), closed by default
-let dbEngines = { chatgpt: true, gemini: true, perplexity: true, grok: true };
+let dbEngines = { chatgpt: true, gemini: true, perplexity: true, grok: true, aimode: true };
 let dbPeriod = null;         // null until picked: the view's default, widened if that would show nothing
 let dbRange = null;          // { from, to } as "YYYY-MM-DD" when the period is "custom"
 let dbRepeat = false;
@@ -6886,8 +6944,14 @@ async function loadGeo() {
   // rebuilt: rebuilding it on every capture bounced the reader back to the
   // top (0.62.2, reported). Progress keeps updating on its own poll.
   if (cpFromBroadcast && cpHolding(active) && document.getElementById("cpHead")) return;
+  // A new capture never changes a setup form either. While a run went on,
+  // setting up or editing another campaign was rebuilt every 2–3 s by the
+  // run's captures: a half-typed competitor, prompts pasted but not yet
+  // added, and the cursor were all lost (live run, 23 Nov 2026).
+  if (cpFromBroadcast && cpSetupOnScreen()) return;
   renderCampaigns();
 }
+function cpSetupOnScreen() { return !!document.querySelector("#loader .cs-card-details"); }
 // A run for this campaign is in progress (renderLoaderStatus keeps cpLive).
 let cpFromBroadcast = false; // set while refreshFromBroadcast's load() runs
 function cpHolding(profile) { return !!(profile && cpLive.live && cpLive.profileId === profile.id); }
@@ -6916,7 +6980,7 @@ function renderCampaignsImpl() {
     const detail = cbDetail && cbProfileId === profile.id;
     if (!detail && TRASHED_PROFILES.length) root.append(renderTrashedCampaigns());
     if (!detail) root.append(renderCampaignHead(profile));
-    if (!detail && campaignManageOpen) root.append(renderCampaignSetup(profile, false));
+    if (!detail && campaignManageOpen) root.append(inPopup() ? renderSetupInFullViewCard(profile) : renderCampaignSetup(profile, false));
     if (profile.lastRunAt || ALL_RECORDS.some((r) => r.geo && r.geo.profileId === profile.id)) root.append(renderCampaignResults(profile));
     return;
   }
@@ -6936,6 +7000,13 @@ function renderCampaignsImpl() {
   if (!campaignOnboardDismissed) root.append(renderOnboardingBanner());
   // As on the canvas: a breadcrumb in the setup's own bar, with the other
   // campaigns beside it, instead of a chooser card above.
+  if (inPopup()) {
+    const bar = el("div", { className: "card" });
+    bar.append(el("div", { className: "card-header" }, el("h3", {}, "Campaigns")), renderCampaignSwitcher());
+    root.append(bar, renderSetupInFullViewCard(profile));
+    if (profile.lastRunAt || ALL_RECORDS.some((r) => r.geo && r.geo.profileId === profile.id)) root.append(renderCampaignResults(profile));
+    return;
+  }
   const setup = renderCampaignSetup(profile, false);
   setup.querySelector(".cs-bar-title")?.prepend(el("div", { className: "cs-crumb" },
     el("nav", { className: "cs-crumb-path", "aria-label": "Breadcrumb" }, el("span", {}, "Campaigns"), el("span", { "aria-hidden": "true" }, "/"), el("span", { "aria-current": "page" }, profile.createdAt && profile.lastRunAt ? "Edit campaign" : "New campaign")),
@@ -6955,12 +7026,13 @@ function renderCampaignSwitcher() {
   if (GEO_PROFILES.length < MAX_PROFILES) {
     const add = el("button", { className: "geo-chip add" }, "+ New campaign");
     add.onclick = async () => {
+      if (inPopup()) { openCampaignInFullView({ newCampaign: true }); return; }
       const r = await send({ type: "geo-profile-save", profile: makeProfile({ name: `Campaign ${GEO_PROFILES.length + 1}` }) });
       if (r.ok) { geoActiveId = r.profile.id; campaignManageOpen = false; loadGeo(); } else showToast(r.error, "error");
     };
     switcher.append(add);
     const imp = el("button", { className: "geo-chip add", type: "button", id: "cpImport", title: "Open a campaign someone shared with you" }, "Import…");
-    imp.onclick = () => openImportDialog();
+    imp.onclick = () => (inPopup() ? openCampaignInFullView({ importing: true }) : openImportDialog());
     switcher.append(imp);
   }
   return switcher;
@@ -7816,12 +7888,13 @@ function renderCampaignEmptyState() {
   box.append(steps);
   const cta = el("button", { className: "btn primary" }, "+ Create your first campaign");
   cta.onclick = async () => {
+    if (inPopup()) { openCampaignInFullView({ newCampaign: true }); return; }
     const r = await send({ type: "geo-profile-save", profile: makeProfile({ name: "My first campaign" }) });
     if (r.ok) { geoActiveId = r.profile.id; loadGeo(); } else showToast(r.error, "error");
   };
   // Someone sent you a campaign (0.82.0): open it without making one first.
   const imp = el("button", { className: "btn ghost", type: "button", id: "cpImportFirst" }, "Import a shared campaign…");
-  imp.onclick = () => openImportDialog();
+  imp.onclick = () => (inPopup() ? openCampaignInFullView({ importing: true }) : openImportDialog());
   box.append(el("div", { className: "ft-actions" }, cta, imp));
   return box;
 }
@@ -8079,8 +8152,11 @@ function renderCampaignSetup(profile, dis) {
         el("span", { className: "cs-engine-host" }, e.available ? e.host : (e.note || "coming soon"))),
       el("span", { className: "cs-engine-check" }, setupIcon("check", 12, 3.2)));
     if (!off) {
-      tile.onclick = () => {
-        tile.setAttribute("aria-pressed", String(tile.getAttribute("aria-pressed") !== "true"));
+      tile.onclick = async () => {
+        const on = tile.getAttribute("aria-pressed") !== "true";
+        // AI Mode (1.0.5): picking it asks Chrome for google.com, from this click.
+        if (on && e.id === "aimode" && !(await aiModeOn())) { showToast(tr("AI Mode needs access to google.com to read its answers. It wasn't given, so AI Mode stays off.")); return; }
+        tile.setAttribute("aria-pressed", String(on));
         changed();
       };
     }
@@ -8361,6 +8437,9 @@ const ENGINE_ICON_SVG = {
   // Perplexity has), so it should track theme/text color rather than
   // carry a fixed hex that could go invisible in dark mode.
   grok: `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" fill-rule="evenodd" aria-hidden="true"><path d="M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.542 5.215-1.41 7.169-1.951 1.954-4.667 2.382-7.149 1.406l-2.711 1.257c3.889 2.661 8.611 2.003 11.562-.953 2.341-2.344 3.066-5.539 2.388-8.42l.006.007c-.983-4.232.242-5.924 2.75-9.383.06-.082.12-.164.179-.248l-3.301 3.305v-.01L9.267 15.292M7.623 16.723c-2.792-2.67-2.31-6.801.071-9.184 1.761-1.763 4.647-2.483 7.166-1.425l2.705-1.25a7.808 7.808 0 00-1.829-1A8.975 8.975 0 005.984 5.83c-2.533 2.536-3.33 6.436-1.962 9.764 1.022 2.487-.653 4.246-2.34 6.022-.599.63-1.199 1.259-1.682 1.925l7.62-6.815"/></svg>`,
+  // Google AI Mode (1.0.5): a plain mark (a search glass with a spark), not
+  // Google's logo; currentColor, like Grok's.
+  aimode: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="M14.5 14.5L20 20"/><path d="M10 7.5v5M7.5 10h5" stroke-width="1.6"/></svg>`,
 };
 
 // Builds a fresh element each call — the same node can't be appended in two
@@ -8892,7 +8971,13 @@ async function openImportDialog() {
 }
 
 function renderCampaignHead(profile) {
-  const head = el("section", { className: `card cp-head${cpLive.live ? " live" : ""}${cpLive.paused ? " paused" : ""}`, id: "cpHead", "aria-labelledby": "cpName" });
+  // Live (Pause / Stop in place of Run) only on the page of the campaign that
+  // is running. On every other campaign's page Run stays, and queues the run
+  // behind it: with "any run going" here, Run was hidden on every page, the
+  // queue could not be reached at all, and another campaign's page offered
+  // Pause and Stop for a run it wasn't running (live run, 23 Nov 2026).
+  const holding = cpHolding(profile);
+  const head = el("section", { className: `card cp-head${holding ? " live" : ""}${holding && cpLive.paused ? " paused" : ""}`, id: "cpHead", "data-profile-id": profile.id, "aria-labelledby": "cpName" });
   head.append(el("div", { className: "cp-switch" }, el("span", { className: "muted small" }, `Campaigns · ${GEO_PROFILES.length} of ${MAX_PROFILES}`), renderCampaignSwitcher()));
 
   const vol = runVolume(GEO_PROMPTS, profile.engines || []);
@@ -9578,7 +9663,8 @@ $("#exportExcel")?.addEventListener("click", () => {
     chatgpt: "#e0f2fe",
     gemini: "#fce7f3",
     perplexity: "#fef3c7",
-    grok: "#d1fae5"
+    grok: "#d1fae5",
+    aimode: "#fef3c7"
   };
 
   currentFilteredRecs.forEach(r => {
@@ -10053,10 +10139,16 @@ function renderLoaderStatus(s) {
   box.textContent = "";
   const wasLive = cpLive.live;
   const wasProfile = cpLive.profileId;
-  cpLive = { live: !!(s && s.total && s.running), paused: !!(s && s.running && s.paused), profileId: (s && s.running && s.profileId) || null };
+  // Paused means the user pressed Pause; one engine cooling down while the
+  // others run is shown on that engine (userPaused is absent from a worker
+  // older than this page, so fall back to paused).
+  const userPaused = s && (s.userPaused !== undefined ? s.userPaused : s.paused);
+  cpLive = { live: !!(s && s.total && s.running), paused: !!(s && s.running && userPaused), profileId: (s && s.running && s.profileId) || null };
   // The run just ended: its campaign's page, held still while it ran, is
   // drawn once with the finished run on the board.
   if (wasLive && !cpLive.live && wasProfile && geoActive() && geoActive().id === wasProfile) setTimeout(() => loadGeo(), 0);
+  // The run's answers, held back while it ran (runCaptureArrived), now.
+  if (wasLive && !cpLive.live && runStale) setTimeout(refreshStaleRunData, 0);
   // The run history is drawn once per render; when a run ends, redraw it so
   // it doesn't keep saying "Running".
   if (wasLive && !cpLive.live) {
@@ -10066,8 +10158,9 @@ function renderLoaderStatus(s) {
   }
   const cpHead = document.getElementById("cpHead");
   if (cpHead) {
-    cpHead.classList.toggle("live", cpLive.live);
-    cpHead.classList.toggle("paused", cpLive.paused);
+    const ours = cpLive.live && cpHead.dataset.profileId === cpLive.profileId;
+    cpHead.classList.toggle("live", ours);
+    cpHead.classList.toggle("paused", ours && cpLive.paused);
   }
   if (!s || !s.total) { loaderWasRunning = false; return; }
 
@@ -10096,7 +10189,7 @@ function renderLoaderStatus(s) {
   }
   loaderWasRunning = true;
 
-  const state = s.paused ? "Paused" : "Running";
+  const state = cpLive.paused ? "Paused" : "Running";
   const summary = el("div", { className: "loader-summary" },
     el("b", {}, state), ` — ${s.done}/${s.total} done`,
     s.activeMs ? el("span", { className: "muted loader-active" }, ` · running ${fmtDuration(s.activeMs)}`) : "",
@@ -10517,7 +10610,7 @@ const AB_POPUP_SUB = {
   data: "Housekeeping on what’s stored. None of it touches your campaigns.",
 };
 // Where each engine is asked — the first "Get started" step links to them.
-const AB_ENGINE_HOME = { chatgpt: "https://chatgpt.com/", gemini: "https://gemini.google.com/app", perplexity: "https://www.perplexity.ai/", grok: "https://grok.com/" };
+const AB_ENGINE_HOME = { aimode: "https://www.google.com/search?udm=50", chatgpt: "https://chatgpt.com/", gemini: "https://gemini.google.com/app", perplexity: "https://www.perplexity.ai/", grok: "https://grok.com/" };
 const AB_ANALYZED_KEY = "cito-analyzed-real";
 
 let abSection = null;   // null until picked: the layout's own first page
@@ -10592,7 +10685,7 @@ function renderAbout() {
 
 // The capture check (0.73.1): one row per engine with what to do, and a
 // "Refresh" button for a tab cut off from the extension.
-const CAP_ENGINE = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok" };
+const CAP_ENGINE = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok", aimode: "AI Mode" };
 let capReport = "";
 async function renderCaptureCheck() {
   const rows = $("#capCheckRows");
@@ -10862,6 +10955,7 @@ function abDraft() {
     retentionMax: settingValue("retentionMax", $("#setRetention").value),
     maxCaptureMB: settingValue("maxCaptureMB", $("#setMaxMB").value),
     debugCapture: !!$("#setDebug").checked,
+    carefulPace: !!$("#setCareful")?.checked,
     readCitedPages: !!$("#setPages")?.checked,
     keepHandoffCaptures: !!$("#setHandoffKeep")?.checked,
   };
@@ -10870,6 +10964,7 @@ function abFillSettings(s) {
   $("#setRetention").value = s.retentionMax;
   $("#setMaxMB").value = s.maxCaptureMB;
   $("#setDebug").checked = !!s.debugCapture;
+  if ($("#setCareful")) { $("#setCareful").checked = !!s.carefulPace; $("#setCarefulText") && ($("#setCarefulText").textContent = tr(s.carefulPace ? "On" : "Off")); }
   if ($("#setPages")) $("#setPages").checked = !!s.readCitedPages;
   if ($("#setHandoffKeep")) $("#setHandoffKeep").checked = !!s.keepHandoffCaptures;
 }
@@ -10882,6 +10977,7 @@ function updateSettingsStatus() {
   $("#setUndo").disabled = !st.dirty;
   $("#setSave").disabled = !st.dirty;
   $("#setDebugText").textContent = tr($("#setDebug").checked ? "On" : "Off");
+  if ($("#setCarefulText")) $("#setCarefulText").textContent = tr($("#setCareful").checked ? "On" : "Off");
   if ($("#setPagesText")) $("#setPagesText").textContent = tr($("#setPages").checked ? "On" : "Off");
   if ($("#setHandoffKeepText")) $("#setHandoffKeepText").textContent = tr($("#setHandoffKeep").checked ? "On" : "Off");
 }
@@ -10898,7 +10994,43 @@ async function loadSettings() {
   updateSettingsStatus();
   renderStorageMeter();
 }
-["#setRetention", "#setMaxMB", "#setDebug", "#setHandoffKeep"].forEach((id) => $(id)?.addEventListener(id === "#setDebug" || id === "#setHandoffKeep" ? "change" : "input", () => { abJustSaved = false; updateSettingsStatus(); }));
+["#setRetention", "#setMaxMB", "#setDebug", "#setHandoffKeep", "#setCareful"].forEach((id) => $(id)?.addEventListener(id === "#setDebug" || id === "#setHandoffKeep" || id === "#setCareful" ? "change" : "input", () => { abJustSaved = false; updateSettingsStatus(); }));
+// Turning on Debug capture also asks Chrome to let the extension see
+// ChatGPT's own requests (1.0.4: chrome.webRequest, optional, read only), so
+// the report can show whether a question that stayed at /c/local-… ever left
+// the tab. From this click, as Chrome requires. Refusing changes nothing
+// else: Debug capture still records what the page itself sees.
+/* Google AI Mode (1.0.5): turning it on asks Chrome for google.com (from
+ * the click: Chrome only asks in answer to one), then registers AI Mode's
+ * page scripts. Refused: it stays off and says why. */
+async function aiModeOn() {
+  let ok = false;
+  try { ok = await chrome.permissions.contains({ origins: ["https://www.google.com/*"] }) || await chrome.permissions.request({ origins: ["https://www.google.com/*"] }); } catch (_) { ok = false; }
+  if (!ok) return false;
+  const r = await new Promise((res) => chrome.runtime.sendMessage({ type: "aimode-set", on: true }, (x) => { void chrome.runtime.lastError; res(x); }));
+  return !!(r && r.on);
+}
+$("#setAiMode")?.addEventListener("change", async (e) => {
+  const box = e.target, note = $("#setAiModeNote");
+  if (note) { note.hidden = true; note.textContent = ""; }
+  if (box.checked) {
+    if (!(await aiModeOn())) { box.checked = false; if (note) { note.hidden = false; note.textContent = tr("Not turned on: AI Mode needs access to google.com to read its answers."); } }
+  } else {
+    chrome.runtime.sendMessage({ type: "aimode-set", on: false }, () => { void chrome.runtime.lastError; });
+  }
+  $("#setAiModeText") && ($("#setAiModeText").textContent = tr(box.checked ? "On" : "Off"));
+});
+chrome.runtime.sendMessage({ type: "aimode-status" }, (r) => {
+  void chrome.runtime.lastError;
+  const box = $("#setAiMode");
+  if (box) { box.checked = !!(r && r.on); $("#setAiModeText") && ($("#setAiModeText").textContent = tr(box.checked ? "On" : "Off")); }
+});
+$("#setDebug")?.addEventListener("change", (e) => {
+  if (!e.target.checked || !chrome.permissions) return;
+  chrome.permissions.contains({ permissions: ["webRequest"] })
+    .then((has) => has || chrome.permissions.request({ permissions: ["webRequest"] }))
+    .catch(() => false);
+});
 // Turning on "Read the cited pages" asks Chrome for access to any site,
 // from this click (Chrome only shows its prompt in answer to a click). If
 // it's refused the switch goes back off and says why (0.62.0).
@@ -11671,7 +11803,29 @@ function syncOverflowEdges(root = document) {
   document.addEventListener("scroll", (e) => { if (e.target && e.target.matches && e.target.matches(OVERFLOW_ROWS)) syncOverflowEdges(e.target.parentNode || document); }, true);
   window.addEventListener("resize", later);
   later();
+  // A mouse wheel scrolls these rows sideways (1.0.4): their scrollbar is
+  // hidden, so at 820 px a campaign's Searches and Signals tabs could only be
+  // reached with a trackpad or the keyboard. A sideways swipe is left alone.
+  document.addEventListener("wheel", (e) => {
+    const row = e.target && e.target.closest && e.target.closest(OVERFLOW_ROWS);
+    if (!row || Math.abs(e.deltaX) > Math.abs(e.deltaY) || row.scrollWidth - row.clientWidth <= 2) return;
+    const before = row.scrollLeft;
+    row.scrollLeft += e.deltaY;
+    if (row.scrollLeft !== before) e.preventDefault();
+  }, { passive: false });
 }
+
+/* Text cut off with "…" shows in full on hover (1.0.4): citation and page
+ * titles, product names and prompts were cut with no way to read them. Any
+ * element whose text overflows and has no tooltip gets its own text as one,
+ * the moment the pointer reaches it. */
+document.addEventListener("mouseover", (e) => {
+  const n = e.target;
+  if (!n || n.nodeType !== 1 || n.title || n.children.length > 3) return;
+  if (n.scrollWidth <= n.clientWidth + 1) return;
+  const text = (n.textContent || "").trim();
+  if (text && text.length > 3) n.title = text.length > 400 ? `${text.slice(0, 397)}…` : text;
+}, true);
 
 /* A model download in progress, shown in the app bar on every page
  * (0.84.0): it used to show only in Settings, so leaving the page made it
@@ -11708,7 +11862,7 @@ function syncOverflowEdges(root = document) {
  * person should know at once, with the two things that help: refreshing
  * that tab, and the capture report to send us. */
 {
-  const ENGINE_NAME = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok" };
+  const ENGINE_NAME = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok", aimode: "AI Mode" };
   const box = document.getElementById("missedBanner");
   const ago = (t) => { const m = Math.max(1, Math.round((Date.now() - t) / 60000)); return m === 1 ? "a minute ago" : `${m} minutes ago`; };
   const draw = (list) => {
@@ -11732,15 +11886,46 @@ function syncOverflowEdges(root = document) {
         el("div", { className: "missed-btns" }, refresh, report, close)));
     }
   };
+  // One check at a time, one timer. Every capture calls check(), and two
+  // checks in flight together each set a 20 s timer, so the loops multiplied
+  // with every burst of captures and never stopped: after an hour of a
+  // campaign run, the open panels sent hundreds of capture-missed requests
+  // every few seconds and slowed the worker (live run, 23 Nov 2026).
   let t = 0;
+  let inFlight = false;
+  let again = false;
   const check = async () => {
     clearTimeout(t);
-    let afterMs;
-    try { afterMs = Number(localStorage.getItem("cito-test-missed-after")) || undefined; } catch (_) { /* none */ }
-    const r = await send({ type: "capture-missed", afterMs }).catch(() => null);
-    draw((r && r.ok && r.missed) || []);
+    if (inFlight) { again = true; return; }
+    inFlight = true;
+    try {
+      let afterMs;
+      try { afterMs = Number(localStorage.getItem("cito-test-missed-after")) || undefined; } catch (_) { /* none */ }
+      const r = await send({ type: "capture-missed", afterMs }).catch(() => null);
+      draw((r && r.ok && r.missed) || []);
+    } finally { inFlight = false; }
+    if (again) { again = false; check(); return; }
+    clearTimeout(t);
     t = setTimeout(check, 20000);
   };
   try { chrome.runtime.onMessage.addListener((m) => { if (m && (m.type === "new-capture" || m.type === "capture-updated")) check(); }); } catch (_) { /* not in the extension */ }
   check();
 }
+
+// Opened from the popup (1.0.5): ?campaign=<id> | ?newCampaign=1 | ?importCampaign=1.
+(() => {
+  let p;
+  try { p = new URLSearchParams(location.search); } catch (_) { return; }
+  const id = p.get("campaign"), fresh = p.get("newCampaign") === "1", imp = p.get("importCampaign") === "1";
+  if (!id && !fresh && !imp) return;
+  const go = async () => {
+    if (fresh) {
+      const r = await send({ type: "geo-profile-save", profile: makeProfile({ name: "New campaign" }) });
+      if (r && r.ok) geoActiveId = r.profile.id;
+    } else if (id) geoActiveId = id;
+    campaignManageOpen = !!id;
+    document.querySelector('[data-tab="loader"]')?.click();
+    if (imp) setTimeout(() => { try { openImportDialog(); } catch (_) { /* not ready */ } }, 600);
+  };
+  setTimeout(go, 300);
+})();

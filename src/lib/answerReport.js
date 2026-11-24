@@ -19,7 +19,7 @@ import { siteKindOf, normDomain } from "./siteKind.js";
 import { extractBrandAspects } from "./aspects.js";
 import { dayLabel } from "./campaignReport.js";
 
-const ENGINE_LABEL = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok" };
+const ENGINE_LABEL = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok", aimode: "AI Mode" };
 const ORD = (n) => { const s = ["th", "st", "nd", "rd"], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); };
 const plural = (n, w, ws = `${w}s`) => `${n} ${n === 1 ? w : ws}`;
 const host = (u) => normDomain(String(u || "").replace(/^https?:\/\//, "").split("/")[0]);

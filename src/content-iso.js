@@ -206,12 +206,16 @@
     if (data.type === "engine-submit") {
       engineSubmit.at = Date.now();
       engineSubmit.via = String(data.via || "").slice(0, 10);
+      engineSubmit.q = typeof data.q === "string" ? data.q : null;
       // For the capture report (1.0.0): the engine's own send was seen.
       pageHealth.sends++;
       pageHealth.sendVia = engineSubmit.via;
       // Straight away, not on the next tick: if the engine redirects right
       // after its send, the run must already know not to hand the turn on.
-      if (pageFacts.turnToken) reportSent(pageFacts.turnToken);
+      // AI Mode (1.0.5): only Google's request for THIS question; one for
+      // another (the user's own search in this tab) is not the turn's.
+      const otherQ = !!(engineSubmit.q && pageFacts.wantQ && String(engineSubmit.q).replace(/\s+/g, " ").trim() !== pageFacts.wantQ);
+      if (pageFacts.turnToken && !otherQ) reportSent(pageFacts.turnToken);
       // The page copy also starts here (1.0.0): ChatGPT's own send request,
       // not the key or button we guessed at, so a renamed Send button
       // doesn't leave the answer uncaptured.
@@ -333,6 +337,16 @@
       userTurn: "user-query, .user-query-bubble-with-background, [data-test-id='user-query']",
       turns: "user-query, model-response, message-content",
     },
+    /* Google AI Mode (1.0.5). Campaigns never type here: Google sends
+     * ?udm=50&q= itself. The answer and the sources panel are left out of
+     * the limit scan, so an answer about "rate limits" can't pause a run. */
+    aimode: {
+      composer: ['textarea[aria-label="Ask anything"]', "textarea[maxlength='8192']", "textarea"],
+      send: ['button[data-xid="input-plate-send-button"]', 'button[aria-label="Send"]'],
+      streaming: [],
+      userTurn: 'button[aria-label^="Copy "]',
+      turns: '[data-subtree="aimc"], [data-container-id="rhs-col"]',
+    },
     perplexity: {
       composer: ['textarea[placeholder*="Ask" i]', 'textarea[placeholder*="anything" i]', "textarea", 'div[contenteditable="true"]'],
       send: ['button[aria-label*="Submit" i]', 'button[aria-label*="Send" i]', 'button[type="submit"]', "button.bg-super"],
@@ -392,6 +406,8 @@
     if (h.includes("gemini")) return "gemini";
     if (h.includes("perplexity")) return "perplexity";
     if (h.includes("grok") || h.includes("x.com")) return "grok";
+    // Google AI Mode (1.0.5): the scripts only run on its /search?udm=50 pages.
+    if (/(^|\.)google\.[a-z.]+$/.test(h)) return "aimode";
     return "chatgpt";
   };
 
@@ -465,7 +481,9 @@
     // claimed page never had our ?q=, so its own address is left alone.
     let bareUrl = location.pathname + location.search;
     if (params.get("lcfc") !== "1") { claimTurn(); return; }
-    q = params.get("q") || "";
+    // Gemini's arrives in lcfcq, which Gemini doesn't act on (background.js).
+    const viaLcfcq = params.has("lcfcq");
+    q = params.get("lcfcq") || params.get("q") || "";
     token = params.get("lcfctok") || "";
     wantSearch = params.get("lcfcsearch") === "1";
     if (!q || !token) return;
@@ -493,7 +511,7 @@
      * path below remains fully supported and is the only path on Gemini.
      */
     const keepQ = new URLSearchParams(location.search);
-    ["lcfc", "lcfctok", "lcfcsearch"].forEach((k) => keepQ.delete(k));
+    ["lcfc", "lcfctok", "lcfcsearch", "lcfcq"].forEach((k) => keepQ.delete(k));
     const qOnlyUrl = location.pathname + (keepQ.toString() ? `?${keepQ}` : "");
     bareUrl = location.pathname;
     try { history.replaceState(null, "", qOnlyUrl); } catch (_) {}
@@ -575,6 +593,7 @@
 
       const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
       const want = norm(q);
+      pageFacts.wantQ = want; // AI Mode: a send counts only for this question (engine-submit, above)
 
       // Did the turn actually go out? Either the page is streaming a reply,
       // or the user's prompt is now rendered in the conversation. Checking
@@ -643,6 +662,7 @@
         perplexity: /^\/search\/[\w-]/i,
       }[plat];
       const submittedWhy = () => {
+        if (plat === "aimode") return engineSubmit.at && (!engineSubmit.q || norm(engineSubmit.q) === want) ? "net" : null;
         // Each turn loads a fresh document, so any submit request seen in
         // it — ours, or the engine's own from ?q= — is this turn's prompt.
         // ChatGPT's "prepare … sent" is not proof on its own (1.0.2): in a
@@ -653,12 +673,24 @@
         // button, the question in the transcript), checked below.
         if (engineSubmit.at && engineSubmit.via !== "prepare") return "net";
         const path = location.pathname;
-        if (engineSubmit.at && plat === "chatgpt" && path !== startPath && CONVERSATION_PATH && CONVERSATION_PATH.test(path)) return "net";
+        // ChatGPT's /c/local-… address and the question in its transcript
+        // appear on the page BEFORE its servers have the conversation (1.0.4).
+        // In the owner's Birla Opus campaign of 23 Nov 2026, 32 of 42 ChatGPT
+        // turns reached /c/local-chatgpt-…, were taken as sent, and timed out
+        // 90 s later with no request, no answer on the page and nothing
+        // stored. Only ChatGPT's own request, a real conversation address or
+        // the answer starting count while the address is still local.
+        const local = localConversation();
+        if (engineSubmit.at && plat === "chatgpt" && !local && path !== startPath && CONVERSATION_PATH && CONVERSATION_PATH.test(path)) return "net";
         // Gemini doesn't route a fresh page anywhere on its own (unlike
         // Grok's /tos-gate hop), so /app/<id> before we type is its own
         // ?q= submit (1.0.2).
-        if ((injected || plat === "gemini") && path !== startPath && CONVERSATION_PATH && CONVERSATION_PATH.test(path)) return "url";
+        if ((injected || plat === "gemini") && !local && path !== startPath && CONVERSATION_PATH && CONVERSATION_PATH.test(path)) return "url";
+        // A conversation address seen at any moment since, even if the page
+        // has moved off it again (Gemini, below at sawConversation).
+        if (sawConversation && (injected || plat === "gemini")) return "url";
         if (pick(sel.streaming)) return "stream";
+        if (local) return null;
         try {
           const turns = document.querySelectorAll(sel.userTurn || "[data-message-author-role='user']");
           for (const t of turns) if (norm(t.innerText).includes(want.slice(0, 40))) return "turn";
@@ -666,13 +698,32 @@
         return null;
       };
       const submitted = () => submittedWhy() !== null;
+      function localConversation() { return plat === "chatgpt" && /\/c\/local-/i.test(location.pathname); }
 
       /* Signed out is a distinct, common, and completely silent failure: the
        * tab lands on a login page, no composer ever appears, and the turn
        * dies as a generic timeout 90 seconds later. Worth naming outright. */
-      const signedOut = () => /\/auth\/|\/login|accounts\.google\.com/i.test(location.pathname + location.host);
+      const signedOut = () => plat !== "aimode" && /\/auth\/|\/login|accounts\.google\.com/i.test(location.pathname + location.host);
 
-      const dropQ = () => { try { history.replaceState(null, "", bareUrl); } catch (_) {} };
+      /* Take ?q= out of the address once it has served its purpose, so a
+       * reload can't send the question again. Only the q is removed: the
+       * path the engine has moved to and its history state stay. This used
+       * to put back the address the page started on, with no state. On
+       * Gemini, already at /app/<id>, that dropped it back on the new-chat
+       * page while its question was going out, and Gemini sent the question
+       * again, 3 to 5 times, each a new conversation; its address then
+       * flipped between the two ~100 times a minute (live run, 23 Nov 2026).
+       * Gemini reads ?q= itself and keeps its own address, so it is left
+       * alone there. */
+      const dropQ = () => {
+        if (plat === "gemini" || plat === "aimode") return;
+        try {
+          const u = new URL(location.href);
+          if (!u.searchParams.has("q")) return;
+          u.searchParams.delete("q");
+          history.replaceState(history.state, "", u.pathname + u.search + u.hash);
+        } catch (_) { /* best effort */ }
+      };
 
       // ChatGPT also pre-fills the composer from ?q= without submitting.
       // Typing on top of that produced the prompt twice in one turn, so the
@@ -779,13 +830,28 @@
        * transcript (banners, toasts, the composer area) is eligible.
        */
       const LIMIT_PATTERNS = [
-        /you'?ve (?:reached|hit) (?:your|the) .{0,40}limit/i,
+        /detected unusual traffic from your computer network/i,
+        /(?:confirm|prove) (?:that )?you'?re not a robot/i,
+        /you'?ve (?:reached|hit) (?:your|the|our) .{0,40}limit/i,
         /you'?ve (?:reached|hit) the .{0,30}(?:usage )?cap/i,
         /(?:usage|message|request) (?:cap|limit|quota) (?:reached|exceeded)/i,
         /exceeded your .{0,30}quota/i,
         /rate.?limit(?:ed|s)?\b/i,
         /too many requests/i,
         /please (?:wait|try again) (?:a|in) .{0,20}(?:moment|minute|hour)/i,
+        // ChatGPT's two throttling notices (1.0.4): "You're making requests
+        // too quickly. We've temporarily limited access to your conversations"
+        // and "Our systems have detected unusual activity". Both mean stop
+        // asking for a while, not retry.
+        /making requests too quickly/i,
+        /temporarily limited access/i,
+        /detected unusual activity/i,
+        // "We're doing a quick check to keep ChatGPT reliable. Try again in
+        // 19 minutes." (stress run, 23 Nov 2026, after ~85 prompts in 40
+        // minutes). Unmatched, every prompt in those 19 minutes was typed,
+        // never sent, and counted failed.
+        /quick check to keep \w+ reliable/i,
+        /try again in \d+ ?(?:seconds?|minutes?|mins?|hours?)\b/i,
       ];
 
       /* Visible text OUTSIDE the transcript, capped for cost.
@@ -796,6 +862,9 @@
        * subtree), as are <script>/<style>, whose textContent is never visible
        * but would otherwise match happily.
        */
+      const offSite = (a) => {
+        try { const u = new URL(a.getAttribute("href") || "", location.href); return /^https?:$/.test(u.protocol) && u.hostname !== location.hostname; } catch (_) { return false; }
+      };
       const chromeText = (cap = 4000) => {
         if (!document.body) return "";
         let out = "";
@@ -806,6 +875,12 @@
                 const tag = node.tagName;
                 if (tag === "SCRIPT" || tag === "STYLE" || tag === "NOSCRIPT") return NodeFilter.FILTER_REJECT;
                 if (sel.turns && node.matches && node.matches(sel.turns)) return NodeFilter.FILTER_REJECT;
+                // A link to another site is a source card, never the engine's
+                // own notice. Perplexity's cards sit outside .prose; one
+                // reading "per-seat prices, API rate limits, bulk writes…"
+                // paused a CRM campaign's Perplexity leg for 30 minutes
+                // (live run, 23 Nov 2026).
+                if (tag === "A" && offSite(node)) return NodeFilter.FILTER_REJECT;
                 return NodeFilter.FILTER_SKIP;
               }
               return NodeFilter.FILTER_ACCEPT;
@@ -869,7 +944,9 @@
       // It gets ChatGPT's wait, and its conversation address counts as sent
       // even before anything is typed (see submittedWhy).
       const GRACE_AFTER_COMPOSER = 8;  // ~3.2s
+      const GEMINI_OWN_SEND_TICKS = 25; // ~10s: Gemini sends ?q= itself
       const MAX_WAIT_TICKS = 75;       // ~30s for the composer to appear
+      const AIMODE_WAIT_TICKS = 50;    // ~20s for Google to send ?q= itself (AI Mode)
       // Was 20 (~8s). Real failures traced to "send control never accepted
       // the prompt" showed the button simply never found within that window
       // on Gemini, Grok and ChatGPT alike, then giving up while the rest of
@@ -890,7 +967,11 @@
        * conversations for one prompt (identical request bodies), filling the
        * user's history with duplicates and the campaign with 30 records for
        * 7 prompts. One attempt at a time, at least RETRY_GAP_MS apart. */
-      const RETRY_GAP_MS = 3000;
+      /* Gemini uploads the question ~4 s after the click (live, 24 Nov 2026:
+       * click at 4 s, upload at 8 s), so a retry 3–4 s later went out as a
+       * second conversation. It gets 12 s before a second press; a click
+       * that really failed costs 8 s, a doubled question never happens. */
+      const RETRY_GAP_MS = plat === "gemini" ? 12000 : 3000;
       const MAX_SEND_ATTEMPTS = 5;
       let lastAttemptAt = 0;
       let attempts = 0;
@@ -912,6 +993,29 @@
       let sendTicks = 0;
       let searchDone = false;
       let injected = false;
+      /* Gemini, once a conversation exists, flips its address between /app
+       * and /app/<id> several times a second, and on /app it shows the
+       * new-chat page with the question back in the box as a draft (live,
+       * 24 Nov 2026). A check that landed on /app saw no conversation and
+       * the question still in the box, so it pressed send again: its trace
+       * read "click … enter … reclick … sent", three presses, three new
+       * conversations, and 21 of 23 questions in that run were asked 2 to 4
+       * times. Every address the page moves to is watched (the Navigation
+       * API sees the page's own pushState), and a conversation address seen
+       * once counts from then on. */
+      let sawConversation = false;
+      const noteConversation = (path) => {
+        if (!sawConversation && CONVERSATION_PATH && path !== startPath && CONVERSATION_PATH.test(path) && !(plat === "chatgpt" && /\/c\/local-/i.test(path))) {
+          sawConversation = true;
+          T("conversation-seen");
+        }
+      };
+      try {
+        if (window.navigation && window.navigation.addEventListener) {
+          window.navigation.addEventListener("navigate", (e) => { try { noteConversation(new URL(e.destination.url).pathname); } catch (_) { /* not a URL */ } });
+          window.navigation.addEventListener("currententrychange", () => noteConversation(location.pathname));
+        }
+      } catch (_) { /* no Navigation API: the per-tick check below still runs */ }
       let retypes = 0; // times a doubled prompt was cleared and typed again
       let tosTicks = 0;           // ticks spent on grok.com's /tos-gate
       let submitTried = 0;
@@ -981,6 +1085,22 @@
         const limit = limitHit();
         if (limit) { T("limit"); reportLimit(limit); return; }
 
+        /* AI Mode (1.0.5): one sender only, Google, from ?udm=50&q=. Typing
+         * could only ask twice. The turn is sent when Google's answer
+         * request for this question leaves the page; after ~20 s without it,
+         * it fails with that reason and the run decides about a retry. */
+        if (plat === "aimode") {
+          const why = submittedWhy();
+          if (why) {
+            T("sent", why); sentOk = true; sentWhy = why;
+            if (pageFacts.onAsked) pageFacts.onAsked();
+            reportSent(token);
+            return;
+          }
+          if (ticks > AIMODE_WAIT_TICKS) { stopLoop(); giveUp("AI Mode did not start an answer"); }
+          return;
+        }
+
         // A tab bounced to a login page never grows a composer, so it would
         // otherwise sit out the full timeout and report "composer never
         // appeared" — true, but it hides the actual cause.
@@ -1031,6 +1151,13 @@
         // text, it clearly consumed ?q= and chose not to submit — no reason
         // to keep waiting, so fall straight through to sending.
         const prefilled = norm(composerText(box)) === want;
+        // Not on Gemini (1.0.4): it fills the box from ?q= and THEN sends it
+        // itself. On a slow page the gap between the two grew, the script
+        // read the filled box as "chose not to send" and sent too, so Gemini
+        // got the question 2 to 4 times (stress run, 23 Nov 2026, while the
+        // machine was short of memory). Gemini gets ~10 s to send its own.
+        // Only when the question came in ?q=; from lcfcq Gemini never sends.
+        if (plat === "gemini" && !viaLcfcq && ticks - composerSeenTick < GEMINI_OWN_SEND_TICKS) return;
         if (ticks - composerSeenTick < GRACE_AFTER_COMPOSER && !prefilled) return;
         // The page said it sent ("prepare") a moment ago: give that 8 s to
         // show before doing anything, so a real send is never doubled. After
@@ -1084,7 +1211,9 @@
           if (!clearedTick) { clearedTick = ticks; T("cleared"); }
           if (ticks - clearedTick > CONFIRM_TICKS) {
             stopLoop();
-            giveUp("send emptied the composer but the prompt never reached the conversation");
+            giveUp(localConversation()
+              ? "ChatGPT showed the question but never sent it (its address stayed local)"
+              : "send emptied the composer but the prompt never reached the conversation");
           }
           return;
         }

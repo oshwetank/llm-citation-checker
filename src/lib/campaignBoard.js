@@ -21,8 +21,8 @@ import { siteKindOf, normDomain, KIND_GROUPS } from "./siteKind.js";
 import { answerKind } from "./analyzeView.js";
 import { extractBrandAspects } from "./aspects.js";
 
-export const ENGINE_ORDER = ["chatgpt", "gemini", "perplexity", "grok"];
-const ENGINE_LABEL = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok" };
+export const ENGINE_ORDER = ["chatgpt", "gemini", "perplexity", "grok", "aimode"];
+const ENGINE_LABEL = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok", aimode: "AI Mode" };
 
 const pct = (n, d) => (d ? (n / d) * 100 : 0);
 const avg = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);

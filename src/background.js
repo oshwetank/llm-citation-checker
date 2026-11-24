@@ -16,9 +16,9 @@ import { probeIsRead } from "./lib/geminiChannel.js";
 import { createAiService } from "./aiService.js";
 import { db } from "./lib/db.js";
 import {
-  turnBudgetMs, legEta, runTookMs, INTER_PROMPT_MIN_MS, INTER_PROMPT_MAX_MS,
+  turnBudgetMs, legEta, runTookMs, INTER_PROMPT_MIN_MS, INTER_PROMPT_MAX_MS, nextGapMs,
   CONCURRENT_TABS_PER_ENGINE, tabsForEngine, LEG_START_STAGGER_MS, shardPrompts,
-  parseCooldownFromNotice, formatCooldown,
+  parseCooldownFromNotice, formatCooldown, needsFreshTab, tabRecycleEvery,
 } from "./lib/pacing.js";
 import { createErrorLog } from "./lib/errorlog.js";
 import { compareRuns } from "./lib/runCompare.js";
@@ -38,9 +38,10 @@ import { checkEmail } from "./lib/emailCheck.js";
 import { citedUrls, pageVerdict, pageSummary, wordCount, PAGE_TTL_MS } from "./lib/pageText.js";
 import { isPublicHttpUrl } from "./lib/safeUrl.js";
 import { mayHandle, onEngineSite } from "./lib/senderGate.js";
-import { appendRing } from "./lib/netlog.js";
+import { appendRing, cleanEntry } from "./lib/netlog.js";
 import { offersFrom, attachOffers, productUpdateFrom, productPanelFrom, formChoicesFrom, cardIndexFor } from "./lib/offers.js";
 import { searchAnswers } from "./lib/answerSearch.js";
+import { indexFor } from "./lib/passages.js";
 import { answerKey, sameAnswer, mergeAnswers, SAME_ANSWER_WINDOW_MS, SAME_REPLY_WINDOW_MS } from "./lib/sameAnswer.js";
 import { campaignBoard, brandDetail } from "./lib/campaignBoard.js";
 import { campaignView } from "./lib/campaignView.js";
@@ -51,6 +52,7 @@ import { enrichBrandsWithAI, enrichBrandStance } from "./lib/ai-brands.js";
 import { adapt as adaptGemini } from "./adapters/gemini.js";
 import { adapt as adaptPerplexity } from "./adapters/perplexity.js";
 import { adapt as adaptGrok } from "./adapters/grok.js";
+import { adapt as adaptAiMode } from "./adapters/aimode.js";
 import { adaptPageCopy, isPageCopy } from "./adapters/pageCopy.js";
 import { cleanPrompt } from "./lib/promptText.js";
 import {
@@ -75,6 +77,7 @@ const ADAPTERS = {
   gemini: adaptGemini,
   perplexity: adaptPerplexity,
   grok: adaptGrok,
+  aimode: adaptAiMode,
 };
 
 const AI_TAB_MATCHES = [
@@ -86,6 +89,7 @@ const AI_TAB_MATCHES = [
   "https://grok.com/*",
   "https://x.com/i/grok/*",
   "https://x.com/i/grok",
+  "https://www.google.com/search*",
 ];
 
 /* ---------- Settings ---------- */
@@ -97,6 +101,8 @@ const DEFAULT_SETTINGS = {
   myBrand: { name: "", url: "" },
   competitors: [], // [{ name, url }]
   debugCapture: false,
+  // The slower, safer pace (lib/pacing.js, 1.0.5): off = every engine fast.
+  carefulPace: false,
   // Pause capture (0.66.0): the switch at the top of the popup and the tab.
   // While on, nothing from an engine page is stored: no answers, no
   // after-answer requests, no probes, no network log. A campaign run's own
@@ -203,6 +209,61 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
   chrome.scripting.executeScript({ target: { tabId }, files: ["src/handoff.js"] }).catch((e) => logErr("handoff:inject", e));
 });
 chrome.tabs.onRemoved.addListener((tabId) => { handoffJobs.delete(tabId); setHandoffTab(tabId, false); });
+// A run's tab closed while its question was out (1.0.5): a new tab takes over
+// at once, instead of the question timing out 90 s later.
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (!loader.running || loader.paused) return;
+  const found = legForTab(tabId);
+  if (!found) return;
+  const { plat, leg } = found;
+  if (leg.paused || leg.idx >= leg.prompts.length || leg.inFlightIdx !== leg.idx) return;
+  replaceLegTab(plat, leg).then((ok) => { if (ok) retryTurn(plat, leg, "its tab was closed; a new one took over"); }).catch((e) => logErr("run:tab-removed", e));
+});
+
+/* Google AI Mode (1.0.5, engine 5).
+ *
+ * Its page scripts are registered here, not in manifest.json: google.com is
+ * not a site the extension may read until the user turns AI Mode on and
+ * Chrome grants it (optional permission, inside the existing optional
+ * <all_urls>), so turning AI Mode on can't switch the extension off for
+ * anyone. Both scripts leave every Google page alone but AI Mode's
+ * (/search?udm=50, checked first thing in each).
+ */
+const AIMODE_MATCHES = ["https://www.google.com/search*"];
+const AIMODE_SCRIPTS = [
+  { id: "aimode-main", matches: AIMODE_MATCHES, js: ["src/content-main.js"], runAt: "document_start", world: "MAIN", persistAcrossSessions: true },
+  { id: "aimode-iso", matches: AIMODE_MATCHES, js: ["src/content-iso.js"], runAt: "document_start", persistAcrossSessions: true },
+];
+/** Register or remove AI Mode's page scripts to match the setting and the permission. */
+async function syncAiModeScripts() {
+  try {
+    const { aimodeOn } = await chrome.storage.local.get("aimodeOn");
+    const granted = await chrome.permissions.contains({ origins: AIMODE_MATCHES });
+    const have = (await chrome.scripting.getRegisteredContentScripts({ ids: AIMODE_SCRIPTS.map((x) => x.id) })).map((x) => x.id);
+    if (aimodeOn && granted) {
+      const missing = AIMODE_SCRIPTS.filter((x) => !have.includes(x.id));
+      if (missing.length) await chrome.scripting.registerContentScripts(missing);
+    } else if (have.length) {
+      await chrome.scripting.unregisterContentScripts({ ids: have });
+    }
+    return { ok: true, on: !!(aimodeOn && granted), granted };
+  } catch (e) { logErr("aimode:scripts", e); return { ok: false, error: String(e && e.message || e) }; }
+}
+chrome.permissions?.onAdded?.addListener(() => { syncAiModeScripts(); });
+chrome.permissions?.onRemoved?.addListener(() => { syncAiModeScripts(); });
+chrome.runtime.onStartup?.addListener(() => { syncAiModeScripts(); });
+
+// Google's robot check: an AI Mode run tab that lands on /sorry/ pauses AI
+// Mode only, until a person answers it and presses Resume. Never solved or
+// worked around.
+chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+  const url = info.url || (tab && tab.url) || "";
+  if (!loader.running || !/^https:\/\/www\.google\.[a-z.]+\/sorry\//i.test(url)) return;
+  const found = legForTab(tabId);
+  if (!found || found.plat !== "aimode") return;
+  logEvent("run:captcha:aimode", "turn", "Google asked to confirm you're not a robot", { platform: "aimode", runId: loader.runId });
+  pauseForLimit("aimode", "Google asked to confirm you're not a robot", { manual: true }).catch((e) => logErr("aimode:captcha", e));
+});
 
 // Whether a message from an engine page is dropped because capture is
 // paused. A campaign run's tab is exempt. A "Continue in…" tab is never
@@ -364,20 +425,36 @@ async function importCampaignBundle(bundle, { from = "" } = {}) {
 
 chrome.runtime.onInstalled.addListener((details) => {
   if (details && details.reason === "update") repairOnce().catch((e) => logErr("repair", e));
+  // An update or reload of the extension is the same browser session: its
+  // tabs keep their ids. Chrome clears session storage all the same, so the
+  // run's session nonce no longer matched and a run in flight was restored
+  // as if the browser had restarted: its tabs forgotten, new ones opened on
+  // Resume and the old ones left open (stress run, 23 Nov 2026, 1.0.4). The
+  // new worker takes over the run's nonce. Not on "chrome_update": that is a
+  // browser restart.
+  if (details && details.reason === "update") adoptRunSessionNonce().catch((e) => logErr("adoptRunSessionNonce", e));
   syncSignup();
   // The version updated from (1.0.0): the guide starts with what changed for
   // people coming from before the redesign (ui/welcome.js).
   if (details && details.reason === "update" && details.previousVersion) chrome.storage.local.set({ citoUpdatedFrom: details.previousVersion }).catch(() => {});
   if (details && (details.reason === "install" || details.reason === "update")) openWelcomeOnce();
-  chrome.tabs.query({ url: AI_TAB_MATCHES }, (tabs) => {
+  // A run's own tabs are left alone (1.0.4): reloading them dropped the
+  // question each was on ("page reloaded and lost the prompt"), and the run
+  // loads its next question in them anyway, with the new scripts.
+  const runTabs = new Set();
+  chrome.storage.local.get(LOADER_STATE_KEY).then((got) => {
+    const snap = got[LOADER_STATE_KEY];
+    if (snap && snap.running) for (const pd of Object.values(snap.platforms || {})) for (const leg of legsOf(pd)) if (leg.tabId != null) runTabs.add(leg.tabId);
+  }).catch(() => {}).finally(() => chrome.tabs.query({ url: AI_TAB_MATCHES }, (tabs) => {
     for (const t of tabs || []) {
+      if (runTabs.has(t.id)) continue;
       try {
         chrome.tabs.reload(t.id);
       } catch (_) {
         /* tab may be discarded/closed */
       }
     }
-  });
+  }));
   ensureHeartbeatAlarm();
 });
 
@@ -424,6 +501,8 @@ function platformFromUrl(url) {
   if (/perplexity\.ai|\/api\/sse\/query|\/api\/thread|\/rest\/queries/i.test(u)) return "perplexity";
   if (/grok\.com|x\.com\/i\/grok|app-chat\/conversations/i.test(u)) return "grok";
   if (/chatgpt\.com|chat\.openai\.com|backend-api/i.test(u)) return "chatgpt";
+  // Google AI Mode (1.0.5): its page and its answer requests.
+  if (/^https?:\/\/(?:www\.)?google\.[a-z.]+\/(?:search|async\/fol)/i.test(u)) return "aimode";
   return "chatgpt";
 }
 
@@ -528,7 +607,7 @@ async function storeCapture(payload, meta) {
     gz,
     rawSchema: 1,
   };
-  await db.put("raw", rawRow);
+  try { await db.put("raw", rawRow); } catch (e) { if (isQuota(e)) { pauseForStorage(e); return { ok: false, error: "storage full" }; } throw e; }
 
   // Not yet merged with other copies of this answer: a campaign capture is
   // judged and attributed on its own first (rejectCapture, attributeGeo),
@@ -808,6 +887,30 @@ function netlogAppend(entries) {
   }).catch((e) => logErr("netlog", e));
   return netlogChain;
 }
+
+/* ChatGPT's own requests, seen by the browser (1.0.4, Debug capture only).
+ * The page hook only sees requests made through the page's fetch. On some
+ * accounts ChatGPT shows a question at /c/local-… and no send is ever seen
+ * there, so whether the send left the tab at all (and what came back) was
+ * unknowable. chrome.webRequest sees every request the tab makes. It is an
+ * optional permission, asked for when Debug capture is turned on, so an
+ * update asks nobody for anything; and it only reads, method, path (ids
+ * masked), status and error, into the same ring as the page's entries. */
+const WEBREQUEST_FILTER = { urls: ["https://chatgpt.com/backend-api/*"] };
+let webRequestArmed = false;
+async function armWebRequestLog() {
+  if (webRequestArmed || !chrome.webRequest || !chrome.webRequest.onCompleted) return;
+  webRequestArmed = true;
+  const note = async (d, error) => {
+    if (!(await getSettings()).debugCapture) return;
+    let u; try { u = new URL(d.url); } catch (_) { return; }
+    netlogAppend([cleanEntry({ t: d.timeStamp, page: "chatgpt.com", kind: "webRequest", method: d.method, host: u.host, path: u.pathname, status: error ? 0 : d.statusCode, type: error ? `error: ${error}`.slice(0, 60) : d.type })]);
+  };
+  chrome.webRequest.onCompleted.addListener((d) => { note(d).catch(() => {}); }, WEBREQUEST_FILTER);
+  chrome.webRequest.onErrorOccurred.addListener((d) => { note(d, d.error || "failed").catch(() => {}); }, WEBREQUEST_FILTER);
+}
+armWebRequestLog().catch(() => {});
+chrome.permissions?.onAdded?.addListener(() => { armWebRequestLog().catch(() => {}); });
 
 // Gemini replies kept as probes (0.62.1, Debug capture only; content-main.js
 // GEMINI_PROBE_RE): the newest 20, in session storage, never derived into an
@@ -1274,6 +1377,17 @@ const DURATION_WINDOW = 10; // per-platform rolling window of turn durations, fo
 // resolving without throwing is not proof the tab is still ours).
 const SESSION_NONCE_KEY = "lcfcSessionNonce";
 let sessionNonceCache = null;
+// After an extension update/reload (see onInstalled): the run's own nonce,
+// when this session hasn't been given one yet by anything else.
+async function adoptRunSessionNonce() {
+  const snap = (await chrome.storage.local.get(LOADER_STATE_KEY))[LOADER_STATE_KEY];
+  if (!snap || !snap.running || !snap.sessionNonce) return;
+  const got = await chrome.storage.session.get(SESSION_NONCE_KEY);
+  if (got[SESSION_NONCE_KEY] && got[SESSION_NONCE_KEY] !== sessionNonceCache) return;
+  if (sessionNonceCache && sessionNonceCache !== snap.sessionNonce && loader.running) return; // already restored
+  await chrome.storage.session.set({ [SESSION_NONCE_KEY]: snap.sessionNonce });
+  sessionNonceCache = snap.sessionNonce;
+}
 async function ensureSessionNonce() {
   if (sessionNonceCache) return sessionNonceCache;
   try {
@@ -1520,6 +1634,8 @@ async function heartbeatTick() {
     await restoreRunIfAny();
     return;
   }
+  if (isOffline()) { await pauseForOffline(); return; }
+  if (loader.offline) resumeAfterOffline();
   if (loader.paused) return;
   for (const [plat, pd] of Object.entries(loader.platforms)) {
     if (pd.rateLimitedUntil && Date.now() >= pd.rateLimitedUntil) resumeAfterCooldown(plat);
@@ -1533,7 +1649,10 @@ async function heartbeatTick() {
   for (const [plat, pd] of Object.entries(loader.platforms)) {
     for (const leg of pd.legs || []) {
       if (leg.idx >= leg.prompts.length || !leg.startedAt || leg.watchdog || leg.paused) continue;
-      if (Date.now() - leg.startedAt >= turnBudgetMs(leg) + 5000) failTurnAndAdvance(plat, leg, "watchdog lost");
+      const over = Date.now() - leg.startedAt - turnBudgetMs(leg);
+      // Far over: the computer slept, or the browser was gone; ask again.
+      if (over >= SLEEP_GAP_MS) retryTurn(plat, leg, "the computer slept during this turn");
+      else if (over >= 5000) failTurnAndAdvance(plat, leg, "watchdog lost");
     }
   }
 }
@@ -1554,6 +1673,9 @@ function armWatchdog(plat, leg, ms) {
   leg.watchdog = setTimeout(async () => {
     if (!loader.running || loader.paused || leg.paused) return;
     if (leg.idx >= leg.prompts.length) return;
+    // Fired far later than set: the computer slept through the turn.
+    if (leg.startedAt && Date.now() - leg.startedAt > ms + SLEEP_GAP_MS) { leg.watchdog = null; retryTurn(plat, leg, "the computer slept during this turn"); return; }
+    if (isOffline()) { leg.watchdog = null; pauseForOffline(); return; }
     // Ask the tab where the turn got to before calling it — see
     // probeLoaderTab. The turn may complete while the probe is in flight
     // (an answer landing in the last second), so it's re-checked after.
@@ -1591,6 +1713,7 @@ function armWatchdog(plat, leg, ms) {
     const unreadable = leg.unreadable && leg.unreadable.token === leg.token ? leg.unreadable : null;
     const tab = probe && probe.ok ? null : await tabFacts(leg.tabId);
     const nav = leg.navLogToken === leg.token ? leg.navLog || [] : [];
+    if (tab && tab.status === "gone" && !unreadable && await replaceLegTab(plat, leg)) { leg.watchdog = null; retryTurn(plat, leg, "its tab was closed; a new one took over"); return; }
     const { reason, trace, ctx } = describeTimeout(probe, unreadable, tab, nav);
     if (leg.streamExtensions) {
       ctx.streamExtensions = leg.streamExtensions;
@@ -1760,9 +1883,107 @@ function resumeAfterCooldown(plat) {
   syncGeoRun();
 }
 
-async function pauseForLimit(matched, detail) {
+/* Run guard (1.0.5): what the computer and its connection do to a run.
+ *
+ * - The internet drops: every engine waits (nothing is sent into an error
+ *   page, no turn is failed), and goes on by itself once it is back; the
+ *   question that was in flight is asked again.
+ * - The computer sleeps: a turn whose time ran out while it slept is asked
+ *   again (twice at most), not failed; the run carries on.
+ * - Power lost or browser closed: the run is saved after every turn and
+ *   comes back paused at the same question (restoreRunIfAny).
+ * - Storage full: the run pauses and says so, instead of losing answers.
+ */
+const SLEEP_GAP_MS = 3 * 60 * 1000;
+const MAX_TURN_RETRIES = 2;
+const isOffline = () => typeof navigator !== "undefined" && navigator.onLine === false;
+async function notifyGuard(title, message) {
+  try {
+    if (chrome.notifications) await chrome.notifications.create(`lcfc-guard-${Date.now()}`, { type: "basic", iconUrl: chrome.runtime.getURL("icons/icon128.png"), title, message, priority: 1 });
+  } catch (err) { logErr("guard:notify", err); }
+}
+async function pauseForOffline() {
+  if (!loader.running || loader.offline) return;
+  loader.offline = { at: Date.now() };
+  for (const pd of Object.values(loader.platforms)) {
+    for (const leg of pd.legs || []) {
+      clearWatchdog(leg);
+      if (!leg.paused) { leg.paused = true; leg.offlinePaused = true; }
+    }
+  }
+  loader.interrupted = { at: Date.now(), reason: "offline", detail: "The internet connection dropped. The run waits and goes on by itself when it's back." };
+  logEvent("run:offline", "turn", "connection lost; the run waits", { runId: loader.runId });
+  await persistLoaderState();
+  syncGeoRun(undefined, "waiting for the internet");
+  notifyGuard("Run waiting for the internet", "The connection dropped. Nothing was lost: the run goes on by itself when it's back.");
+}
+function resumeAfterOffline() {
+  if (!loader.running || !loader.offline || isOffline()) return;
+  loader.offline = null;
+  for (const [plat, pd] of Object.entries(loader.platforms)) {
+    for (const leg of pd.legs || []) {
+      if (!leg.offlinePaused) continue;
+      leg.offlinePaused = false;
+      leg.paused = false;
+      // The question in flight when it dropped is asked again, not failed.
+      if (leg.idx < leg.prompts.length && !loader.paused && !pd.rateLimitedUntil) loaderRunLeg(plat, leg);
+    }
+  }
+  if (loader.interrupted && loader.interrupted.reason === "offline") loader.interrupted = null;
+  logEvent("run:online", "turn", "connection back; the run goes on", { runId: loader.runId });
+  persistLoaderState();
+  syncGeoRun();
+}
+self.addEventListener?.("offline", () => { pauseForOffline().catch((e) => logErr("guard:offline", e)); });
+self.addEventListener?.("online", () => { resumeAfterOffline(); });
+/** Ask the same question again (a sleep or a dropped connection ate it), at most twice. */
+function retryTurn(plat, leg, why) {
+  clearWatchdog(leg);
+  leg.turnRetries = leg.turnRetryIdx === leg.idx ? (leg.turnRetries || 0) + 1 : 1;
+  leg.turnRetryIdx = leg.idx;
+  if (leg.turnRetries > MAX_TURN_RETRIES) return failTurnAndAdvance(plat, leg, why, 0, "", { guard: true });
+  logEvent(`run:retry:${plat}`, "turn", `asked again: ${why}`, { platform: plat, promptIndex: geoIdxOf(leg, leg.idx), runId: loader.runId });
+  if (isOffline()) { pauseForOffline(); return; }
+  setTimeout(() => { if (loader.running && !loader.paused && !leg.paused) loaderRunLeg(plat, leg); }, 2000);
+}
+/* A run tab closed mid-run (by hand, or its page crashed): a new tab takes
+ * over and the question is asked again, at most 3 times per tab in a run;
+ * after that the old behaviour (fail the question, move on). */
+const MAX_TAB_REPLACEMENTS = 3;
+async function replaceLegTab(plat, leg) {
+  if ((leg.tabReplacements || 0) >= MAX_TAB_REPLACEMENTS) return false;
+  try {
+    let windowId = loader.windowId || null;
+    if (windowId != null) { try { await chrome.windows.get(windowId); } catch (_) { windowId = null; } }
+    const t = await chrome.tabs.create({ url: "about:blank", active: false, ...(windowId != null ? { windowId } : {}) });
+    chrome.tabs.update(t.id, { autoDiscardable: false }).catch(() => {});
+    leg.tabId = t.id;
+    leg.turnsInTab = 0;
+    leg.tabReplacements = (leg.tabReplacements || 0) + 1;
+    logEvent(`run:tab-replaced:${plat}`, "turn", "the run's tab was closed; a new one took over", { platform: plat, runId: loader.runId });
+    await persistLoaderState();
+    return true;
+  } catch (e) { logErr("run:tab-replace", e); return false; }
+}
+
+/** Storage full: pause, keep what's there, say what to do. */
+async function pauseForStorage(err) {
+  if (!loader.running || loader.paused) return;
+  setLoaderPaused(true);
+  for (const pd of Object.values(loader.platforms)) for (const leg of pd.legs || []) clearWatchdog(leg);
+  loader.interrupted = { at: Date.now(), reason: "storage", detail: "This computer's browser storage is full, so answers couldn't be saved." };
+  logErr("run:storage-full", err);
+  await persistLoaderState().catch(() => {});
+  syncGeoRun(undefined, "paused: storage full");
+  notifyGuard("Run paused: storage is full", "Answers couldn't be saved. Free some disk space or lower the answers kept in Settings, then press Resume.");
+}
+const isQuota = (e) => /quota|QuotaExceeded|disk/i.test(String((e && (e.name || e.message)) || e));
+
+async function pauseForLimit(matched, detail, { manual = false } = {}) {
   const p = loader.platforms[matched];
-  const cooldownMs = parseCooldownFromNotice(detail);
+  if (!p) return;
+  // Manual: a day, so neither the timer nor the heartbeat resumes it; Resume does.
+  const cooldownMs = manual ? 24 * 60 * 60 * 1000 : parseCooldownFromNotice(detail);
   const resumeAt = Date.now() + cooldownMs;
   p.rateLimitedUntil = resumeAt;
   p.cooldownReason = typeof detail === "string" ? detail.slice(0, 160) : "rate limit";
@@ -1788,11 +2009,12 @@ async function pauseForLimit(matched, detail) {
 
   await persistLoaderState();
   syncGeoRun(undefined, `cooldown: ${matched} (${formatCooldown(cooldownMs)})`);
-  notifyRateLimited(`${matched}: ${p.cooldownReason} (Auto-resuming in ${formatCooldown(cooldownMs)})`);
+  notifyRateLimited(manual ? `${matched}: ${p.cooldownReason}. Paused: press Resume once you've answered it in that tab.` : `${matched}: ${p.cooldownReason} (Auto-resuming in ${formatCooldown(cooldownMs)})`);
 }
 
 function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "", extraCtx = null) {
   if (!leg) return;
+  if (isOffline() && loader.running && !(extraCtx && extraCtx.guard)) { pauseForOffline(); return; }
   loader.errors++;
   leg.failed = (leg.failed || 0) + 1;
   leg.outcomes = leg.outcomes || [];
@@ -1887,6 +2109,7 @@ function engineBaseUrl(plat) {
   if (plat === "gemini") return "https://gemini.google.com/app";
   if (plat === "perplexity") return "https://www.perplexity.ai/";
   if (plat === "grok") return "https://grok.com/";
+  if (plat === "aimode") return "https://www.google.com/search?udm=50";
   return "https://chatgpt.com/";
 }
 
@@ -1898,6 +2121,7 @@ const ENGINE_HOSTS = {
   gemini: ["gemini.google.com"],
   perplexity: ["perplexity.ai", "www.perplexity.ai"],
   grok: ["grok.com", "x.com"],
+  aimode: ["www.google.com", "google.com"],
 };
 
 /**
@@ -2396,6 +2620,10 @@ function loaderStatus() {
     profileId: (loader.options && loader.options.geo && loader.options.geo.profileId) || null,
     running: loader.running,
     paused: loader.paused || anyPlatformPaused,
+    // Paused by the user, not one engine sitting out a limit: the header's
+    // Pause/Resume reads this, so a cooldown on one engine no longer says
+    // "Paused" (and hides Pause) while the others keep running.
+    userPaused: !!loader.paused,
     total: totalTasks,
     done: loader.done,
     idx: totalIdx,
@@ -2443,7 +2671,6 @@ async function loaderRunLeg(plat, leg) {
       loader.running = false;
       syncGeoRun("done");
       startNextQueued();
-    startNextQueued();
       notifyRunComplete();
       closeRunTabs();
     }
@@ -2458,6 +2685,7 @@ async function loaderRunLeg(plat, leg) {
   const ownership = await checkTabOwnership(plat, leg);
   if (!ownership.ok) {
     if (ownership.reason === "tab_closed") {
+      if (await replaceLegTab(plat, leg)) { retryTurn(plat, leg, "its tab was closed; a new one took over"); return; }
       failTurnAndAdvance(plat, leg, "tab closed", 500);
     } else {
       leg.tabId = null;
@@ -2468,6 +2696,25 @@ async function loaderRunLeg(plat, leg) {
     return;
   }
 
+  // A fresh tab every N prompts (1.0.4, see pacing.js needsFreshTab). The new
+  // tab becomes this leg's before the old one closes, so the close is never
+  // read as "tab closed" for the turn. If Chrome refuses, the old tab carries on.
+  if (needsFreshTab(plat, leg.turnsInTab)) {
+    const old = leg.tabId;
+    try {
+      const prev = await chrome.tabs.get(old);
+      const fresh = await chrome.tabs.create({ windowId: prev.windowId, url: "about:blank", active: false, index: prev.index + 1 });
+      chrome.tabs.update(fresh.id, { autoDiscardable: false }).catch(() => {});
+      leg.tabId = fresh.id;
+      leg.turnsInTab = 0;
+      leg.tabsOpened = (leg.tabsOpened || 0) + 1;
+      chrome.tabs.remove(old).catch(() => {});
+      logEvent(`run:fresh-tab:${plat}`, "turn", `a fresh ${plat} tab after ${tabRecycleEvery(plat)} prompts`, { platform: plat, runId: loader.runId });
+    } catch (_) { leg.turnsInTab = 0; }
+  }
+  leg.turnsInTab = (leg.turnsInTab || 0) + 1;
+
+  if (isOffline()) { pauseForOffline(); return; }
   const prompt = leg.prompts[leg.idx];
   const q = encodeURIComponent(prompt);
   // A one-time token proves to the content script that THIS navigation came from
@@ -2482,7 +2729,15 @@ async function loaderRunLeg(plat, leg) {
   await persistLoaderState();
 
   const search = plat === "chatgpt" && loader.options.forceSearch ? "&lcfcsearch=1" : "";
-  const url = `${engineBaseUrl(plat)}?q=${q}&lcfc=1&lcfctok=${leg.token}${search}`;
+  // Gemini gets the question in lcfcq, which it doesn't read (1.0.5). From
+  // ?q= Gemini sends the question itself, and the q stays in its address as
+  // it moves to /app/<id>?q=…, so one turn went out 2 or 3 times, each a
+  // new conversation within ~1 s (stress run, 23 Nov 2026: 187 of 549
+  // questions). Now only the content script sends it, once.
+  const qKey = plat === "gemini" ? "lcfcq" : "q";
+  const base = engineBaseUrl(plat);
+  const url = `${base}${base.includes("?") ? "&" : "?"}${qKey}=${q}&lcfc=1&lcfctok=${leg.token}${search}`;
+  if (plat === "aimode") leg.sentTimes = [...(leg.sentTimes || []).filter((t) => Date.now() - t < 3600000), Date.now()];
 
   // Marks how long to IGNORE this tab's own navigation events for — see the
   // chrome.tabs.onUpdated listener below for why this has to be time-based
@@ -2492,7 +2747,9 @@ async function loaderRunLeg(plat, leg) {
   try {
     await chrome.tabs.update(leg.tabId, { url });
   } catch (_) {
-    // Tab was closed — fail this prompt and move on rather than hanging.
+    // Tab was closed: a new one takes over (replaceLegTab), else fail this
+    // prompt and move on rather than hanging.
+    if (await replaceLegTab(plat, leg)) { retryTurn(plat, leg, "its tab was closed; a new one took over"); return; }
     failTurnAndAdvance(plat, leg, "tab closed", 500);
     return;
   }
@@ -2754,6 +3011,8 @@ async function loaderStart(prompts, options) {
   loader = newLoaderState();
   loader.running = true;
   loader.options = options || {};
+  // Careful pace (Settings) for the whole run (lib/pacing.js).
+  if (loader.options.careful === undefined) { try { loader.options.careful = !!(await getSettings()).carefulPace; } catch (_) { loader.options.careful = false; } }
   loader.total = clean.length * supported.length;
   // A campaign run passes its geo run id through so the run is known by ONE
   // id everywhere. It used to mint a second, unrelated one here — every log
@@ -2812,7 +3071,7 @@ async function loaderStart(prompts, options) {
     const pick = only ? (only[plat] || []).filter((i) => Number.isInteger(i) && i >= 0 && i < clean.length) : null;
     if (pick && !pick.length) continue;
     const list = pick ? pick.map((i) => clean[i]) : clean;
-    const shards = shardPrompts(list, tabsForEngine(plat)).filter((s) => s.prompts.length > 0);
+    const shards = shardPrompts(list, tabsForEngine(plat, { careful: !!loader.options.careful })).filter((s) => s.prompts.length > 0);
     const legs = [];
     for (const shard of shards) {
       const created = windowId
@@ -3300,7 +3559,9 @@ function completeTurn(plat, leg, record) {
   // leg paces itself independently — concurrency divides wall-clock time by
   // running more of these gaps in parallel, not by making any one of them
   // shorter (see pacing.js's header comment).
-  const delay = INTER_PROMPT_MIN_MS + Math.random() * (INTER_PROMPT_MAX_MS - INTER_PROMPT_MIN_MS);
+  // No gap after a leg's last question: AI Mode's minute or two of waiting
+  // kept a finished run "running" for nothing.
+  const delay = leg.idx >= leg.prompts.length ? 0 : nextGapMs(plat, leg.sentTimes || [], Date.now(), Math.random(), { careful: !!loader.options.careful });
   if (!loader.paused && !leg.paused) setTimeout(() => loaderRunLeg(plat, leg), delay);
 }
 
@@ -3963,6 +4224,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           let runs = (await db.getAll("geoRuns")).filter((r) => r.profileId === msg.profileId)
             .filter((r) => records.some((x) => x.geo && x.geo.runId === r.id))
             .sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
+          // Each run's number in the whole campaign, before any narrowing, so
+          // an export of the latest run says "Run 2" as the board does (1.0.2).
+          const runNumbers = Object.fromEntries(runs.map((r, i) => [r.id, i + 1]));
           if (msg.scope === "latest" && runs.length) {
             const last = runs[runs.length - 1];
             runs = [last];
@@ -3970,7 +4234,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }
           const prompts = (await db.getAll("trackedPrompts")).filter((t) => t.profileId === msg.profileId);
           const bundle = {
-            profile, prompts, runs, records, brands: effectiveTrackedBrands(profile, records),
+            profile, prompts, runs, records, runNumbers, brands: effectiveTrackedBrands(profile, records),
             include: msg.include, answerText: msg.text === "full" ? "full" : "excerpt", generatedAt: Date.now(),
           };
           const slug = String(profile.name || "campaign").replace(/[^\w]+/g, "-").replace(/^-|-$/g, "").toLowerCase() || "campaign";
@@ -4597,6 +4861,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, ...loaderStatus() });
           break;
         case "loader-resume": {
+          // A run saved before the worker restarted is picked up first, so
+          // Resume works at once instead of after the next heartbeat (1.0.4).
+          if (!loader.running) await restoreRunIfAny().catch((err) => logErr("restoreRunIfAny", err));
           // Resume clears BOTH kinds of pause with one click: a manual pause
           // (loader.paused) and any platform sitting out a rate-limit
           // cooldown (leg.paused) — there's only one Resume button, and the
@@ -4659,6 +4926,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           startNextQueued();
           break;
         case "loader-status":
+          // Same for the status the panel polls: a run in flight before an
+          // update shows (paused, "interrupted") instead of nothing (1.0.4).
+          if (!loader.running) await restoreRunIfAny().catch((err) => logErr("restoreRunIfAny", err));
           sendResponse({ ok: true, ...loaderStatus() });
           break;
 
@@ -4783,7 +5053,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // the matching ids come back, each with a snippet around the match.
         case "search-answers": {
           const records = await db.getAll("derived");
-          sendResponse({ ok: true, hits: searchAnswers(records, String(msg.query || "").slice(0, 200)) });
+          const query = String(msg.query || "").slice(0, 200);
+          const hits = searchAnswers(records, query);
+          // 1.0.5: with search by meaning on, answers that say it in other
+          // words come after the ones holding every word.
+          try {
+            const docs = indexFor(records).docs.filter((d) => !d.isPrompt).sort((a, b) => b.at - a.at).map((d) => ({ id: d.id, text: d.text }));
+            const ids = query.trim() ? await aiSvc.meaningRank(query, docs) : null;
+            if (ids && ids.length) {
+              const have = new Set(hits.map((h) => h.captureId));
+              const byId = new Map(indexFor(records).docs.map((d) => [d.id, d]));
+              for (const id of ids) {
+                const d = byId.get(id);
+                if (!d || have.has(d.captureId)) continue;
+                have.add(d.captureId);
+                hits.push({ captureId: d.captureId, snippet: d.text.length > 180 ? `${d.text.slice(0, 179)}…` : d.text, byMeaning: true });
+                if (hits.length >= 300) break;
+              }
+            }
+          } catch (e) { logErr("search-meaning", e); }
+          sendResponse({ ok: true, hits });
           break;
         }
 
@@ -4858,12 +5147,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "ai-remove":
           sendResponse(await aiSvc.remove());
           break;
+        // Google AI Mode on or off (1.0.5). The page asks Chrome for the
+        // google.com permission first (a user's click); this stores the
+        // choice and registers or removes AI Mode's page scripts.
+        case "aimode-set": {
+          await chrome.storage.local.set({ aimodeOn: !!msg.on });
+          sendResponse(await syncAiModeScripts());
+          break;
+        }
+        case "aimode-status":
+          sendResponse(await syncAiModeScripts());
+          break;
         // Laya, for the labels (0.83.0).
         case "laya-download":
           sendResponse(await aiSvc.downloadLaya({ device: msg.device }));
           break;
         case "laya-remove":
           sendResponse(await aiSvc.removeLaya());
+          break;
+        // Search by meaning (1.0.5): an optional download for Ask and search.
+        case "meaning-download":
+          sendResponse(await aiSvc.downloadMeaning({ device: msg.device }));
+          break;
+        case "meaning-remove":
+          sendResponse(await aiSvc.removeMeaning());
           break;
         case "ai-cancel-download":
           sendResponse(await aiSvc.cancelDownload(msg.kind === "laya" ? "laya" : "llm"));
@@ -4903,7 +5210,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             const [records, profiles, runs] = await Promise.all([db.getAll("derived"), db.getAll("profiles"), db.getAll("geoRuns")]);
             // Each lookup is broadcast as it starts (0.78.0): Ask shows it.
             const onStep = (st) => broadcast({ type: "ask-step", askId: msg.askId || null, tool: st.tool });
-            sendResponse({ ok: true, ...(await aiSvc.askQuestion({ question: String(msg.question || ""), history: Array.isArray(msg.history) ? msg.history : [], data: { records, profiles, runs }, onStep })) });
+            // 1.0.5: where the user is (the campaign open on the page), the
+            // last answer's plan (a follow-up keeps its scope) and an edited
+            // plan (a scope chip changed, an ask-back choice) go with it.
+            const obj = (x) => (x && typeof x === "object" ? x : null);
+            const context = { collectionId: typeof (obj(msg.context) || {}).collectionId === "string" ? msg.context.collectionId : null };
+            sendResponse({ ok: true, ...(await aiSvc.askQuestion({ question: String(msg.question || ""), data: { records, profiles, runs }, onStep, context, previous: obj(msg.previous), plan: obj(msg.plan) })) });
           } catch (e) { sendResponse({ ok: false, error: String(e && e.message || e) }); }
           break;
         }

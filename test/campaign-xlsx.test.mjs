@@ -275,5 +275,17 @@ console.log("\n0.64.0: the board's citation detail, site: searches and ads are i
   check("an answer with an ad names the advertiser", A0.length === 1 && A0[0][col("A", "Advertisers")] === "Kovo", JSON.stringify(A0.map((x) => x.slice(-2))));
 }
 
+console.log("\na run exported on its own keeps its number in the campaign (1.0.2)");
+{
+  // Live campaign, 22 Nov 2026: "latest run" exports called the second run
+  // "Run 1" while the board called it "Run 2".
+  const run2 = { id: "r2", startedAt: 2000 };
+  const rec = { captureId: "c1", platform: "chatgpt", geo: { runId: "r2", promptId: "p1" }, userPrompt: "q", answerText: "Zento.", answerChars: 6, brandMentions: [], sources: [], products: [], places: [], images: [], capturedAt: 2100 };
+  const F = campaignFacts({ profile: { name: "T", brand: { name: "Zento" } }, prompts: [{ id: "p1", text: "q" }], runs: [run2], records: [rec], brands: [{ name: "Zento", isOwn: true }], runNumbers: { r1: 1, r2: 2 } });
+  check("it is Run 2", F.runs[0] && F.runs[0].label === "Run 2", JSON.stringify(F.runs));
+  const G = campaignFacts({ profile: { name: "T", brand: { name: "Zento" } }, prompts: [{ id: "p1", text: "q" }], runs: [run2], records: [rec], brands: [{ name: "Zento", isOwn: true }] });
+  check("without the campaign's numbering, counted within the export as before", G.runs[0] && G.runs[0].label === "Run 1", JSON.stringify(G.runs));
+}
+
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);
