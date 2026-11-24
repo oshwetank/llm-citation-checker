@@ -81,15 +81,15 @@ export async function askPlanned({ question, data, generate = null, context = {}
     } catch (_) { meaningIds = null; }
   }
   const exec = execute(plan, data || {}, { meaning: meaningIds });
-  const scope = scopeOf(plan, exec, catalog);
+  const scope = ["not_recorded", "define"].includes(exec.intent) ? null : scopeOf(plan, exec, catalog);
   const draft = templateReply(plan, exec);
-  const allNotes = [...notes, ...coverageNotes(exec), ...(plan.promptsByWording ? [`Used the ${plan.scope.prompts.length} prompts whose wording matches.`] : []), ...(plan.scope.stance && plan.scope.stance.length ? ["Filtered by the AI labels: only answers the labels have read can count. Turn on Fast labels or Ask's AI model to label more."] : [])];
+  const allNotes = [...notes, ...(scope ? coverageNotes(exec) : []), ...(plan.promptsByWording ? [`Used the ${plan.scope.prompts.length} prompts whose wording matches.`] : []), ...(plan.scope.stance && plan.scope.stance.length ? ["Filtered by the AI labels: only answers the labels have read can count. Turn on Fast labels or Ask's AI model to label more."] : [])];
   let answer = draft, by = "template";
   if (generate && exec.intent !== "not_recorded") {
     try {
       const r = await generate({ messages: [
         { role: "system", content: WRITER },
-        { role: "user", content: `Question: ${plan.question}\nScope: ${scope.text}\nResults: ${JSON.stringify(exec.result).slice(0, 6000)}${draft ? `\nA plain draft from the same results: ${draft.slice(0, 1500)}` : ""}` },
+        { role: "user", content: `Question: ${plan.question}\nScope: ${scope ? scope.text : "not about any campaign"}\nResults: ${JSON.stringify(exec.result).slice(0, 6000)}${draft ? `\nA plain draft from the same results: ${draft.slice(0, 1500)}` : ""}` },
       ], maxTokens: 500 });
       const text = finalText(r && r.text);
       if (text) { answer = text; by = "model"; }

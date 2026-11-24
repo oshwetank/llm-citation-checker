@@ -127,49 +127,78 @@ const STOP = new Set("the a an and or of in on for to my our we us is are was we
  * @returns {{kind: "collection"|"brand"|"engine"|"tag"|"site", id: string, name: string, score: number, how: "exact"|"fuzzy"}[]}
  */
 export function lookup(question, catalog) {
-  const q = fold(question);
-  const words = q.split(" ").filter(Boolean);
-  const grams = ngrams(words).filter((g) => !STOP.has(g) && g.length >= 3);
+  const full = fold(question);
+  const original = String(question || "");
   const out = [];
   const push = (m) => { const prev = out.find((x) => x.kind === m.kind && x.id === m.id); if (!prev) out.push(m); else if (m.score > prev.score) Object.assign(prev, m); };
-  const match = (kind, id, name, phrases) => {
-    for (const ph of phrases) {
-      const f = fold(ph);
-      if (!f) continue;
-      if (hasPhrase(q, f)) { push({ kind, id, name, score: 1, how: "exact" }); return; }
-    }
-    // Fuzzy: a typo or a plural ("zentos", "zneto"). Only for names of 4+
-    // letters, against word groups of about the same length.
-    let best = 0;
-    for (const ph of phrases) {
-      const f = fold(ph);
-      if (f.length < 4) continue;
-      for (const g of grams) { if (Math.abs(g.length - f.length) > 3) continue; const s = similarity(g, f); if (s > best) best = s; }
-    }
-    if (best >= 0.5) push({ kind, id, name, score: Math.round(best * 100) / 100 * 0.8, how: "fuzzy" });
+  const matcher = (q) => {
+    const words = q.split(" ").filter(Boolean);
+    const grams = ngrams(words).filter((g) => !STOP.has(g) && g.length >= 3);
+    return (kind, id, name, phrases) => {
+      for (const ph of phrases) {
+        const f = fold(ph);
+        if (!f) continue;
+        if (hasPhrase(q, f)) { push({ kind, id, name, score: 1, how: "exact" }); return; }
+      }
+      // Fuzzy: a typo or a plural ("zentos", "zneto"). Only for names of 4+
+      // letters, against word groups of about the same length.
+      let best = 0;
+      for (const ph of phrases) {
+        const f = fold(ph);
+        if (f.length < 4) continue;
+        for (const g of grams) { if (Math.abs(g.length - f.length) > 3) continue; const s = similarity(g, f); if (s > best) best = s; }
+      }
+      if (best >= 0.5) push({ kind, id, name, score: Math.round(best * 100) / 100 * 0.8, how: "fuzzy" });
+    };
   };
+  const m1 = matcher(full);
   for (const c of catalog.collections) {
-    if (c.kind === "history") { match("collection", c.id, c.name, [c.name, "my questions", "dashboard", "asked by hand", "manual questions"]); continue; }
-    match("collection", c.id, c.name, [c.name]);
+    if (c.kind === "history") { m1("collection", c.id, c.name, [c.name, "my questions", "dashboard", "asked by hand", "manual questions"]); continue; }
+    m1("collection", c.id, c.name, [c.name]);
   }
-  for (const b of catalog.brands.values()) match("brand", b.key, b.name, [...b.spellings]);
+  // The rest is read from the question with the campaign names taken out
+  // (1.0.5, real data): "R2 — Small-business CRM" names a campaign, not a
+  // tag "crm"; "R3 — Paints stress" holds no brand "Paints".
+  let q = ` ${full} `;
+  for (const m of out) if (m.how === "exact") { const f = fold(m.name); if (f) q = q.split(` ${f} `).join(" | "); }
+  q = q.replace(/\s+/g, " ").trim();
+  const words = q.split(" ").filter(Boolean);
+  const m2 = matcher(q);
+  // A brand nobody tracks counts only when the question writes it as a
+  // name (a capital, or several words): the stored brands include ordinary
+  // words that answers wrote in bold ("Sites", "Sources"), and "which sites
+  // are cited" must not narrow to one of them (1.0.5, real data).
+  const escRe = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Written with a capital where it appears in the question (case kept).
+  const capitalised = (sp) => { const m = new RegExp(`(?:^|[^\\p{L}])(${escRe(sp)})(?![\\p{L}])`, "iu").exec(original); return !!m && /^\p{Lu}/u.test(m[1]); };
+  const asName = (b) => b.tracked || [...b.spellings].some((sp) => /\s/.test(sp.trim()) || capitalised(sp.trim()));
+  for (const b of catalog.brands.values()) if (asName(b)) m2("brand", b.key, b.name, [...b.spellings]);
+  // A brand inside a longer brand named here ("Paints" inside "Asian Paints") is that longer one.
+  const brands = out.filter((m) => m.kind === "brand");
+  for (const m of brands) {
+    const f = fold(m.name);
+    if (brands.some((o) => o !== m && fold(o.name) !== f && hasPhrase(fold(o.name), f) && hasPhrase(q, fold(o.name)))) out.splice(out.indexOf(m), 1);
+  }
   for (const [e, al] of Object.entries(ENGINE_ALIASES)) {
     // Engines are short words: exact only, so "grok" never fuzzes into "group".
     if (al.some((a) => hasPhrase(q, fold(a)))) push({ kind: "engine", id: e, name: ENGINE_LABEL[e], score: 1, how: "exact" });
   }
+  // A tag counts when the question uses it as a topic ("battery prompts",
+  // "about battery", "the battery tag"), not whenever its word appears
+  // ("Top brands" is not the tag "brand").
   const tags = new Map();
   for (const c of catalog.collections) for (const t of c.tags) { const k = fold(t); if (k && !tags.has(k)) tags.set(k, t); }
+  const asTopic = (k) => new RegExp(`(^| )${k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\w{0,3} (prompts?|questions?|topics?|tag)( |$)|(^| )(about|on|for|tag|topic|tagged) (the )?${k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\w{0,3}( |$)`).test(q);
   for (const [k, t] of tags) {
-    if (hasPhrase(q, k)) { push({ kind: "tag", id: k, name: t, score: 1, how: "exact" }); continue; }
+    if (k.split(" ").length > 1 && hasPhrase(q, k)) { push({ kind: "tag", id: k, name: t, score: 1, how: "exact" }); continue; }
+    if (asTopic(k)) { push({ kind: "tag", id: k, name: t, score: 1, how: "exact" }); continue; }
     // "battery prompts" for a tag "batteries".
-    if (k.length >= 4 && words.some((w) => w.length >= 4 && (w.startsWith(k) || k.startsWith(w)) && Math.abs(w.length - k.length) <= 2)) push({ kind: "tag", id: k, name: t, score: 0.8, how: "fuzzy" });
+    if (k.length >= 4 && words.some((w, i) => w.length >= 4 && (w.startsWith(k) || k.startsWith(w)) && Math.abs(w.length - k.length) <= 2 && /^(prompts?|questions?|topics?)$/.test(words[i + 1] || ""))) push({ kind: "tag", id: k, name: t, score: 0.8, how: "fuzzy" });
   }
   for (const d of catalog.sites.keys()) {
     const base = d.replace(/^www\./, "");
     if (q.includes(base) || (base.split(".")[0].length >= 4 && hasPhrase(q, base.split(".")[0]))) push({ kind: "site", id: d, name: d, score: q.includes(base) ? 1 : 0.7, how: q.includes(base) ? "exact" : "fuzzy" });
   }
-  // A brand that is only part of a longer campaign name ("Zento" inside
-  // "Zento India") stays a brand match; the scope rules weigh both.
   return out.sort((a, b) => b.score - a.score);
 }
 

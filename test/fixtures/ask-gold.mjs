@@ -76,6 +76,13 @@ export const GOLD = [
   { q: "Zento US की तुलना Kovo से करें", intent: "compare", collections: ["pUS"] },
   { q: "ما هي المصادر في Zento India؟", intent: "sources", collections: ["pIN"] },
   { q: "كم عدد النقرات من ChatGPT؟", intent: "not_recorded" },
+  // ---- lessons from the owner's real data (1.0.5) ----
+  // A tag's word used as a plain word is not the tag ("budget" is a tag of Zento US).
+  { q: "Which budget phones are named most in Zento US?", collections: ["pUS"], tags: [] },
+  // A wording search searches the words, not the prompts tagged with them.
+  { q: "Show me answers that mention camera", intent: "find_answers", tags: [] },
+  // As a topic, it is the tag.
+  { q: "How do we do on the camera prompts in Zento India?", collections: ["pIN"], tags: ["camera"] },
   // ---- harder wording (the model pass's job) ----
   { q: "Are we winning in the Indian campaign?", rules: false, collections: ["pIN"] },
   { q: "Where do the bots send people when they ask about air purifiers?", rules: false, intent: "sources", collections: ["pHM"] },

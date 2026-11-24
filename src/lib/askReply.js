@@ -72,8 +72,8 @@ export function templateReply(plan, exec) {
   return blocks.filter(Boolean).join("\n\n") || null;
 }
 
-function brandLine(b) {
-  return `**${b.brand}**${b.yours ? " (you)" : ""}: named in ${pct(b.visibility)} of answers (${b.answersNaming} of the answers), share of voice ${pct(b.shareOfVoice)}, average position ${pos(b.avgPosition)}`;
+function brandLine(b, total) {
+  return `**${b.brand}**${b.yours ? " (you)" : ""}: named in ${pct(b.visibility)} of answers (${b.answersNaming}${total ? ` of ${total}` : ""}), share of voice ${pct(b.shareOfVoice)}, average position ${pos(b.avgPosition)}`;
 }
 
 function partReply(plan, intent, p, many) {
@@ -87,7 +87,7 @@ function partReply(plan, intent, p, many) {
     case "compare": {
       if (!d.brands.length) return `${head}None of those brands is in these answers.`;
       const eng = d.byEngine.filter((e) => e.brands.length).map((e) => `- ${ENGINE_LABEL[e.engine] || e.engine}: ${e.brands.map((b) => `${b.brand} ${pct(b.visibility)}`).join(", ")}`);
-      return `${head}${d.brands.map((b) => `- ${brandLine(b)}`).join("\n")}${eng.length ? `\n\nBy engine (visibility):\n${eng.join("\n")}` : ""}`;
+      return `${head}${d.brands.map((b) => `- ${brandLine(b, p.coverage.answers)}`).join("\n")}${eng.length ? `\n\nBy engine (visibility):\n${eng.join("\n")}` : ""}`;
     }
     case "gaps": {
       const a = d.promptsWhereAbsent.map((x) => `- ${x.prompt} (rivals named: ${x.rivalsNamed.slice(0, 3).join(", ")})`);
@@ -114,11 +114,11 @@ function partReply(plan, intent, p, many) {
     case "cards":
       return `${head}${d.answersWithCards} answers showed product cards.${(d.byBrand || []).slice(0, 5).map((b) => `\n- ${b.brand}: ${b.cards} cards, first in ${b.firstCards}`).join("")}`;
     default: {
-      if (d.byEngine) return head + d.byEngine.map((e) => `**${ENGINE_LABEL[e.engine] || e.engine}** (${e.answers} answers)\n${e.brands.slice(0, 5).map((b) => `- ${brandLine(b)}`).join("\n")}`).join("\n\n");
+      if (d.byEngine) return head + d.byEngine.map((e) => `**${ENGINE_LABEL[e.engine] || e.engine}** (${e.answers} answers)\n${e.brands.slice(0, 5).map((b) => `- ${brandLine(b, e.answers)}`).join("\n")}`).join("\n\n");
       if (d.topics) return head + d.topics.map((t) => `- ${t.topic}: your visibility ${pct(t.yourVisibility)} in ${t.answers} answers; most often first: ${t.mostOftenFirst || "–"}`).join("\n");
       if (d.prompts) return head + d.prompts.map((x) => `- ${x.prompt}: you're named on ${x.yourBrandNamedIn} engines`).join("\n");
       if (!d.brands || !d.brands.length) return `${head}No tracked brand is named in these answers.`;
-      const lines = d.brands.map((b) => `- ${brandLine(b)}`);
+      const lines = d.brands.map((b) => `- ${brandLine(b, p.coverage.answers)}`);
       const ch = (d.changeSincePrevious || []).filter((c) => c.visibility != null && c.visibility !== 0).slice(0, 3).map((c) => `${c.brand} ${sign(c.visibility)}`);
       return `${head}${lines.join("\n")}${ch.length ? `\n\nSince the previous run (${fmtDate(d.previousRun)}): ${ch.join("; ")}.` : ""}`;
     }

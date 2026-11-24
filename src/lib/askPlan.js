@@ -27,7 +27,7 @@ const DAY = 24 * 60 * 60 * 1000;
 // The shapes of questions, in the six interface languages where the words
 // differ (English, Spanish, Portuguese, French, Hindi, Arabic). First match wins.
 const INTENT_RULES = [
-  ["not_recorded", /\b(clicks?|traffic|visits?|visitors|impressions|ctr|spend|budget|revenue|sales figures|conversions?|backlinks?|serp|google rank(?:ing)?s?|organic rank)\b|clics|tr[aá]fico|tr[aá]fego|visitas|ingresos|receita|revenus|क्लिक|ट्रैफ़िक|نقرات|زيارات/i],
+  ["not_recorded", /\b(clicks?|traffic|visits?|visitors|impressions|ctr|spend|ad budget|marketing budget|revenue|sales figures|conversions?|backlinks?|serp|google rank(?:ing)?s?|organic rank)\b|clics|tr[aá]fico|tr[aá]fego|visitas|ingresos|receita|revenus|क्लिक|ट्रैफ़िक|نقرات|زيارات/i],
   ["define", /\b(what (?:does|do|is meant by) .{2,40} mean|what is (?:a |an |the )?(?:visibility|share of voice|sov|average position|position|mentions?|citations?|fan-?out)\b|define|definition of|meaning of|how is .{2,30} (?:counted|calculated|measured))|qu[eé] (?:es|significa)|o que (?:é|significa)|que veut dire|qu'est-ce que|का मतलब|ماذا يعني|ما معنى/i],
   ["data_status", /\b(data quality|missing data|failed|usage limits?|rate limit|how many answers (?:were )?captured|gaps in the data|signed out|not captured|errors?)\b/i],
   ["compare", /\b(vs\.?|versus|compare[ds]?|comparison|compared (?:with|to)|against|beating|beat us|better than|ahead of|head to head)\b|comparar|contra|comparer|तुलना|مقارنة/i],
@@ -126,7 +126,10 @@ export function rulePlan(question, catalog, { now = Date.now() } = {}) {
   if (plan.intent === "compare" && plan.subject.brands.length === 1) plan.subject.own = true;
   if (plan.intent === "trend" || plan.scope.dates) plan.scope.runs = "all";
   if (plan.intent === "find_answers") {
-    const named = new Set(matches.map((m) => fold(m.name)).join(" ").split(" "));
+    // Words, not a tag: "answers that mention waterproofing" searches every
+    // answer, not only the prompts tagged waterproofing (1.0.5, real data).
+    plan.scope.tags = [];
+    const named = new Set(matches.filter((m) => m.kind !== "tag").map((m) => fold(m.name)).join(" ").split(" "));
     plan.text = fold(q).split(" ").filter((w) => w.length > 2 && !FILLER.has(w) && !named.has(w)).join(" ");
     if (stanceSet) plan.text = ""; // the stance is the filter, not words to find
   }
@@ -212,6 +215,7 @@ export function resolveScope(plan, matches, catalog, { context = {}, previous = 
   const tracksAll = cols.filter((c) => c.kind === "campaign" && p.subject.brands.length > 1 && p.subject.brands.every((b) => c.tracked.some((t) => fold(t) === fold(b))));
   if (tracksAll.length === 1 && !(context && context.collectionId)) { p.scope.collections = [tracksAll[0].id]; return { plan: finish(p, catalog, notes), askBack: null, notes }; }
   const brandCols = cols.filter((c) => c.kind === "campaign" && p.subject.brands.some((b) => c.tracked.some((t) => fold(t) === fold(b))));
+  if (brandCols.length === 1 && p.subject.brands.length && !(context && context.collectionId)) { p.scope.collections = [brandCols[0].id]; return { plan: finish(p, catalog, notes), askBack: null, notes }; }
   if (p.subject.brands.length && !p.subject.own && brandCols.length > 1 && !(context && context.collectionId)) {
     p.scope.collections = brandCols.map((c) => c.id);
     if (p.by === "none") p.by = "collection";
@@ -224,6 +228,7 @@ export function resolveScope(plan, matches, catalog, { context = {}, previous = 
   const scored = candidates.map((c) => {
     let s = 0;
     if (context && context.collectionId === c.id) s += 4;                                                   // open on the page: strong
+    if (c.kind === "campaign" && fold(c.name).split(" ").some((w) => w.length >= 4 && !["campaign", "audit", "live"].includes(w) && qWords.has(w))) s += 2; // a word of its name: medium
     if (p.scope.tags.some((t) => c.tags.some((x) => fold(x) === fold(t)))) s += 2;                           // its tags match: medium
     else if (c.prompts.some((x) => fold(x.text).split(" ").filter((w) => qWords.has(w)).length >= 2)) s += 1.5; // its prompts match
     if (p.subject.brands.some((b) => c.tracked.some((t) => fold(t) === fold(b)))) s += 2;                    // tracks the brands named: medium
