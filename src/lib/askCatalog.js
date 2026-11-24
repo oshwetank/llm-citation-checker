@@ -15,15 +15,16 @@ import { normDomain } from "./siteKind.js";
 
 export const HISTORY_ID = "history";
 export const HISTORY_NAME = "My questions";
-export const ENGINES = ["chatgpt", "gemini", "perplexity", "grok"];
-export const ENGINE_LABEL = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok" };
+export const ENGINES = ["chatgpt", "gemini", "perplexity", "grok", "aimode"];
+export const ENGINE_LABEL = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok", aimode: "AI Mode" };
 // What people call each engine. Product names are the same in all six
 // interface languages; the common nicknames are added.
 export const ENGINE_ALIASES = {
   chatgpt: ["chatgpt", "chat gpt", "gpt", "openai", "open ai"],
-  gemini: ["gemini", "bard", "google ai"],
+  gemini: ["gemini", "bard"],
   perplexity: ["perplexity", "pplx"],
   grok: ["grok", "xai", "x ai"],
+  aimode: ["ai mode", "google ai mode", "aimode"],
 };
 
 const answered = (r) => String(r.answerText || "").trim().length > 0;

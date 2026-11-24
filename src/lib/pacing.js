@@ -176,7 +176,32 @@ export const CONCURRENT_TABS_PER_ENGINE = 2;
  * second tab doesn't add capacity: it halves the time to ChatGPT's limit and
  * puts two answer streams on one session at once. In runs next to Gemini,
  * ChatGPT failed far more often than Gemini did. */
-export const TABS_PER_ENGINE = { chatgpt: 1 };
+export const TABS_PER_ENGINE = { chatgpt: 1, aimode: 1 };
+
+/* Google AI Mode (1.0.5) is paced far more slowly than the chat engines:
+ * Google's "unusual traffic" check came after 5 AI Mode loads in 7 minutes
+ * in the research run (live-harness audit/aimode). A minute or two between
+ * questions, and at most 30 an hour, from one tab. */
+export const INTER_PROMPT_BY_ENGINE = { aimode: { min: 60000, max: 120000 } };
+export const HOURLY_CAP = { aimode: 30 };
+const HOUR = 60 * 60 * 1000;
+/**
+ * How long a leg waits before its next question: the engine's gap, and
+ * longer if its hourly cap is reached (until the oldest send in the hour
+ * is an hour old).
+ * @param {string} plat
+ * @param {number[]} sentTimes when this leg's questions went out
+ */
+export function nextGapMs(plat, sentTimes = [], now = Date.now(), rnd = Math.random()) {
+  const g = INTER_PROMPT_BY_ENGINE[plat] || { min: INTER_PROMPT_MIN_MS, max: INTER_PROMPT_MAX_MS };
+  let wait = g.min + rnd * (g.max - g.min);
+  const cap = HOURLY_CAP[plat];
+  if (cap) {
+    const recent = (sentTimes || []).filter((t) => now - t < HOUR).sort((a, b) => a - b);
+    if (recent.length >= cap) wait = Math.max(wait, recent[recent.length - cap] + HOUR - now);
+  }
+  return Math.round(wait);
+}
 export function tabsForEngine(plat) {
   return TABS_PER_ENGINE[plat] || CONCURRENT_TABS_PER_ENGINE;
 }

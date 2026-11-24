@@ -22,7 +22,7 @@ const S = FRESH();
 export function resetCampaignViewState() { Object.assign(S, FRESH()); }
 export function campaignViewSection() { return S.section; }
 
-const ENG = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok" };
+const ENG = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok", aimode: "AI Mode" };
 const pct = (x) => (x == null ? "—" : `${x >= 10 || x === 0 ? Math.round(x) : x.toFixed(1)}%`);
 const num = (x) => (x == null ? "—" : String(x));
 const ord = (n) => `${n}${n % 10 === 1 && n % 100 !== 11 ? "st" : n % 10 === 2 && n % 100 !== 12 ? "nd" : n % 10 === 3 && n % 100 !== 13 ? "rd" : "th"}`;

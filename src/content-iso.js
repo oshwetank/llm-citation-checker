@@ -206,12 +206,16 @@
     if (data.type === "engine-submit") {
       engineSubmit.at = Date.now();
       engineSubmit.via = String(data.via || "").slice(0, 10);
+      engineSubmit.q = typeof data.q === "string" ? data.q : null;
       // For the capture report (1.0.0): the engine's own send was seen.
       pageHealth.sends++;
       pageHealth.sendVia = engineSubmit.via;
       // Straight away, not on the next tick: if the engine redirects right
       // after its send, the run must already know not to hand the turn on.
-      if (pageFacts.turnToken) reportSent(pageFacts.turnToken);
+      // AI Mode (1.0.5): only Google's request for THIS question; one for
+      // another (the user's own search in this tab) is not the turn's.
+      const otherQ = !!(engineSubmit.q && pageFacts.wantQ && String(engineSubmit.q).replace(/\s+/g, " ").trim() !== pageFacts.wantQ);
+      if (pageFacts.turnToken && !otherQ) reportSent(pageFacts.turnToken);
       // The page copy also starts here (1.0.0): ChatGPT's own send request,
       // not the key or button we guessed at, so a renamed Send button
       // doesn't leave the answer uncaptured.
@@ -333,6 +337,16 @@
       userTurn: "user-query, .user-query-bubble-with-background, [data-test-id='user-query']",
       turns: "user-query, model-response, message-content",
     },
+    /* Google AI Mode (1.0.5). Campaigns never type here: Google sends
+     * ?udm=50&q= itself. The answer and the sources panel are left out of
+     * the limit scan, so an answer about "rate limits" can't pause a run. */
+    aimode: {
+      composer: ['textarea[aria-label="Ask anything"]', "textarea[maxlength='8192']", "textarea"],
+      send: ['button[data-xid="input-plate-send-button"]', 'button[aria-label="Send"]'],
+      streaming: [],
+      userTurn: 'button[aria-label^="Copy "]',
+      turns: '[data-subtree="aimc"], [data-container-id="rhs-col"]',
+    },
     perplexity: {
       composer: ['textarea[placeholder*="Ask" i]', 'textarea[placeholder*="anything" i]', "textarea", 'div[contenteditable="true"]'],
       send: ['button[aria-label*="Submit" i]', 'button[aria-label*="Send" i]', 'button[type="submit"]', "button.bg-super"],
@@ -392,6 +406,8 @@
     if (h.includes("gemini")) return "gemini";
     if (h.includes("perplexity")) return "perplexity";
     if (h.includes("grok") || h.includes("x.com")) return "grok";
+    // Google AI Mode (1.0.5): the scripts only run on its /search?udm=50 pages.
+    if (/(^|\.)google\.[a-z.]+$/.test(h)) return "aimode";
     return "chatgpt";
   };
 
@@ -577,6 +593,7 @@
 
       const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
       const want = norm(q);
+      pageFacts.wantQ = want; // AI Mode: a send counts only for this question (engine-submit, above)
 
       // Did the turn actually go out? Either the page is streaming a reply,
       // or the user's prompt is now rendered in the conversation. Checking
@@ -645,6 +662,7 @@
         perplexity: /^\/search\/[\w-]/i,
       }[plat];
       const submittedWhy = () => {
+        if (plat === "aimode") return engineSubmit.at && (!engineSubmit.q || norm(engineSubmit.q) === want) ? "net" : null;
         // Each turn loads a fresh document, so any submit request seen in
         // it — ours, or the engine's own from ?q= — is this turn's prompt.
         // ChatGPT's "prepare … sent" is not proof on its own (1.0.2): in a
@@ -685,7 +703,7 @@
       /* Signed out is a distinct, common, and completely silent failure: the
        * tab lands on a login page, no composer ever appears, and the turn
        * dies as a generic timeout 90 seconds later. Worth naming outright. */
-      const signedOut = () => /\/auth\/|\/login|accounts\.google\.com/i.test(location.pathname + location.host);
+      const signedOut = () => plat !== "aimode" && /\/auth\/|\/login|accounts\.google\.com/i.test(location.pathname + location.host);
 
       /* Take ?q= out of the address once it has served its purpose, so a
        * reload can't send the question again. Only the q is removed: the
@@ -698,7 +716,7 @@
        * Gemini reads ?q= itself and keeps its own address, so it is left
        * alone there. */
       const dropQ = () => {
-        if (plat === "gemini") return;
+        if (plat === "gemini" || plat === "aimode") return;
         try {
           const u = new URL(location.href);
           if (!u.searchParams.has("q")) return;
@@ -812,6 +830,8 @@
        * transcript (banners, toasts, the composer area) is eligible.
        */
       const LIMIT_PATTERNS = [
+        /detected unusual traffic from your computer network/i,
+        /(?:confirm|prove) (?:that )?you'?re not a robot/i,
         /you'?ve (?:reached|hit) (?:your|the|our) .{0,40}limit/i,
         /you'?ve (?:reached|hit) the .{0,30}(?:usage )?cap/i,
         /(?:usage|message|request) (?:cap|limit|quota) (?:reached|exceeded)/i,
@@ -926,6 +946,7 @@
       const GRACE_AFTER_COMPOSER = 8;  // ~3.2s
       const GEMINI_OWN_SEND_TICKS = 25; // ~10s: Gemini sends ?q= itself
       const MAX_WAIT_TICKS = 75;       // ~30s for the composer to appear
+      const AIMODE_WAIT_TICKS = 50;    // ~20s for Google to send ?q= itself (AI Mode)
       // Was 20 (~8s). Real failures traced to "send control never accepted
       // the prompt" showed the button simply never found within that window
       // on Gemini, Grok and ChatGPT alike, then giving up while the rest of
@@ -1059,6 +1080,22 @@
         // to pause rather than letting this turn time out as a failure.
         const limit = limitHit();
         if (limit) { T("limit"); reportLimit(limit); return; }
+
+        /* AI Mode (1.0.5): one sender only, Google, from ?udm=50&q=. Typing
+         * could only ask twice. The turn is sent when Google's answer
+         * request for this question leaves the page; after ~20 s without it,
+         * it fails with that reason and the run decides about a retry. */
+        if (plat === "aimode") {
+          const why = submittedWhy();
+          if (why) {
+            T("sent", why); sentOk = true; sentWhy = why;
+            if (pageFacts.onAsked) pageFacts.onAsked();
+            reportSent(token);
+            return;
+          }
+          if (ticks > AIMODE_WAIT_TICKS) { stopLoop(); giveUp("AI Mode did not start an answer"); }
+          return;
+        }
 
         // A tab bounced to a login page never grows a composer, so it would
         // otherwise sit out the full timeout and report "composer never

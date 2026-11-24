@@ -11,6 +11,12 @@
  * ISOLATED world over postMessage — see the privacy note on emit().
  */
 (() => {
+  // Google AI Mode (1.0.5, engine 5): this script is registered for Google's
+  // /search pages once AI Mode is turned on, and stays out of every other
+  // search (no udm=50 in the address: an ordinary results page).
+  const ON_GOOGLE = /(^|\.)google\.[a-z.]+$/i.test(location.hostname) && !/(^|\.)gemini\.google\.com$/i.test(location.hostname);
+  const IS_AIMODE = ON_GOOGLE && location.pathname === "/search" && /[?&]udm=50(?:&|$)/.test(location.search);
+  if (ON_GOOGLE && !IS_AIMODE) return;
   if (window.__LCFC_INSTALLED__) return;
   window.__LCFC_INSTALLED__ = true;
 
@@ -125,6 +131,9 @@
   // change background.js's copy to match, or that test fails on purpose.
   const NOISE_RE = /suggest\.perplexity\.ai|\/navigate\b|\/autocomplete\b|\/api\/auth|\/rest\/sse\/notifications\b/i;
 
+  // AI Mode's answer: GET /async/folwr (first question), /async/folif (a follow-up).
+  const AIMODE_RE = /\/async\/fol(?:wr|if)(?:\?|$)/i;
+
   const CONV_RE = {
     test: (url) => {
       const u = url || "";
@@ -134,11 +143,12 @@
       if (IS_CHATGPT) return CHATGPT_RE.test(u);
       if (IS_PERPLEXITY) return PERPLEXITY_RE.test(u);
       if (IS_GROK) return GROK_RE.test(u);
+      if (IS_AIMODE) return AIMODE_RE.test(u);
       return false;
     },
   };
 
-  const IS_TARGET = IS_GEMINI || IS_CHATGPT || IS_PERPLEXITY || IS_GROK;
+  const IS_TARGET = IS_GEMINI || IS_CHATGPT || IS_PERPLEXITY || IS_GROK || IS_AIMODE;
 
   const CHANNEL = (crypto.randomUUID && crypto.randomUUID()) || String(Math.random()).slice(2);
   // The marker content-iso.js reads to know these messages are ours. A page
@@ -181,9 +191,10 @@
     : IS_GEMINI ? GEMINI_RE
     : IS_PERPLEXITY ? /\/rest\/sse\/perplexity_ask(?:\?|$)/i
     : IS_GROK ? /\/rest\/app-chat\/conversations\/(?:new|[^/?]+\/responses)(?:\?|$)/i
+    : IS_AIMODE ? AIMODE_RE
     : null;
-  const signalSubmit = (via) => {
-    try { window.postMessage({ __LCFC__: CHANNEL, type: "engine-submit", via }, location.origin); } catch (_) { /* ignore */ }
+  const signalSubmit = (via, q) => {
+    try { window.postMessage({ __LCFC__: CHANNEL, type: "engine-submit", via, ...(q ? { q } : {}) }, location.origin); } catch (_) { /* ignore */ }
   };
 
   // What ChatGPT loads after an answer (0.62.0). A product card's stores are
@@ -451,9 +462,15 @@
     }
 
     if (method === "POST" && SUBMIT_RE && SUBMIT_RE.test(url || "")) signalSubmit("fetch");
+    // AI Mode asks with a GET, and its q is the question: content-iso checks it is ours.
+    else if (IS_AIMODE && method === "GET" && AIMODE_RE.test(url || "")) {
+      let q = "";
+      try { q = new URL(url, location.href).searchParams.get("q") || ""; } catch (_) { q = ""; }
+      signalSubmit("fetch", q.slice(0, 2000));
+    }
     else if (method === "POST" && preparedSend(url, init && init.body)) signalSubmit("prepare");
     else if (method === "POST") preparedSendLater(url, input, init && init.body);
-    const isConv = (method === "POST" || (IS_PERPLEXITY && /socket\.io|sse/i.test(url)) || (IS_CHATGPT && CHATGPT_FOLLOW_RE.test(url || ""))) && CONV_RE.test(url || "");
+    const isConv = (method === "POST" || (IS_AIMODE && method === "GET") || (IS_PERPLEXITY && /socket\.io|sse/i.test(url)) || (IS_CHATGPT && CHATGPT_FOLLOW_RE.test(url || ""))) && CONV_RE.test(url || "");
     let reqBody = null;
     if (isConv) {
       try {
@@ -509,7 +526,10 @@
           // at the stream's own end line, and otherwise once the answer data
           // has been quiet for a few seconds; the copies fold into one
           // answer, and the campaign runner waits on a quiet copy (0.79.0).
-          drain(cloned.body, { url, reqBody, transport: unknownStream ? "fetch-stream" : "fetch" }, IS_CHATGPT ? { quietMs: /\/unauth-mweb\//.test(url || "") ? 3000 : 4000, endRe: CHATGPT_END_RE } : {});
+          // AI Mode's request address keeps only what the record needs (the
+          // question, language, country): Google's ei, ved, … stay behind.
+          const keptUrl = IS_AIMODE ? (() => { try { const u = new URL(url, location.href); const k = new URL(u.origin + u.pathname); for (const p of ["q", "udm", "hl", "gl"]) if (u.searchParams.has(p)) k.searchParams.set(p, u.searchParams.get(p)); return k.href; } catch (_) { return url; } })() : url;
+          drain(cloned.body, { url: keptUrl, reqBody, transport: unknownStream ? "fetch-stream" : "fetch" }, IS_CHATGPT ? { quietMs: /\/unauth-mweb\//.test(url || "") ? 3000 : 4000, endRe: CHATGPT_END_RE } : {});
         } else if (typeof cloned.text === "function") {
           cloned.text().then((raw) => {
             if (raw && !isBackgroundSubscription(raw)) {

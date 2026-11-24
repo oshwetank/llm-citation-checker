@@ -53,9 +53,9 @@ const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] }
 
 // Runs the REAL content-iso.js against a mock page shaped like one engine.
 // The page records every submission it receives so the count can be asserted.
-async function run(html, { gemini = false, grok = false, qKey = "q", waitMs = 9000, throttle = false, throttleMs = 60000, workerClock = true, clockMs = 0 } = {}) {
+async function run(html, { gemini = false, grok = false, aimode = false, qKey = "q", waitMs = 9000, throttle = false, throttleMs = 60000, workerClock = true, clockMs = 0 } = {}) {
   const page = await browser.newPage();
-  const host = gemini ? "https://gemini.google.com" : grok ? "https://grok.com" : "https://chatgpt.com";
+  const host = gemini ? "https://gemini.google.com" : grok ? "https://grok.com" : aimode ? "https://www.google.com" : "https://chatgpt.com";
   await page.route("**/*", (r) => r.fulfill({ status: 200, contentType: "text/html", body: `<body>${html}</body>` }));
   await page.goto(`${host}/mock?${qKey}=${encodeURIComponent(PROMPT)}&lcfc=1&lcfctok=T1`);
   const res = await page.evaluate(async ({ iso, waitMs, throttle, throttleMs, workerClock, clockMs }) => {
@@ -429,6 +429,25 @@ console.log("\nGemini gets the question in lcfcq, not ?q= (1.0.5): sent once, by
   check("sent without the 10 s wait for Gemini's own send", r.submitAt != null && r.submitAt < 6000, `submitted at ${r.submitAt}ms`);
   check("the question is not left in the address", !/[?&](q|lcfcq)=/.test(r.url), r.url);
   check("no failure reported", r.gaveUp.length === 0, r.gaveUp.join(","));
+}
+
+console.log("\nGoogle AI Mode (1.0.5): Google sends ?q= itself; the script never types, and waits for Google's request for this question");
+{
+  const page = (q, afterMs) => `
+    <textarea aria-label="Ask anything"></textarea><button data-xid="input-plate-send-button">send</button><div id="convo"></div>
+    <script>
+      window.__submits=0;
+      document.querySelector('textarea').addEventListener('input',()=>{ window.__typed=true; });
+      document.documentElement.setAttribute('data-lcfc-ch', 'CH-AIM');
+      ${q === null ? "" : `setTimeout(()=>window.postMessage({ __LCFC__: 'CH-AIM', type: 'engine-submit', via: 'fetch', q: ${JSON.stringify(q)} }, location.origin), ${afterMs});`}
+    </script>`;
+  const sent = await run(page(PROMPT, 1500), { aimode: true, waitMs: 5000 });
+  check("Google's request for this question: sent, by Google", sent.events.some((e) => e.type === "loader-sent") && sent.gaveUp.length === 0, JSON.stringify(sent.events.map((e) => e.type)));
+  check("nothing typed into the box", !sent.text && !(await Promise.resolve(false)), String(sent.text));
+  const none = await run(page(null, 0), { aimode: true, waitMs: 23000 });
+  check("Google never sends: gives up after ~20 s, saying so", none.gaveUp.some((g) => /AI Mode did not start an answer/.test(g)) && !none.events.some((e) => e.type === "loader-sent"), JSON.stringify(none.gaveUp));
+  const other = await run(page("some other question", 1000), { aimode: true, waitMs: 23000 });
+  check("a request for another question isn't taken as this one", !other.events.some((e) => e.type === "loader-sent") && other.gaveUp.length === 1, JSON.stringify(other.gaveUp));
 }
 
 console.log("\nGemini flips between /app and /app/<id> after a send, the question back in the box: sent once (1.0.5)");

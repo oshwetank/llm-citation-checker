@@ -346,6 +346,18 @@
                       </label>
                     </div>
                     <div class="ab-row">
+                      <label class="ab-row-text" for="setAiMode">
+                        <b>Google AI Mode <span class="beta">beta</span></b>
+                        <span>Capture AI Mode's answers (google.com/search?udm=50) and use it in campaigns, slowly: Google may ask you to confirm you're not a robot, and a run then waits for you. Asks Chrome for google.com; nothing else on Google is read.</span>
+                        <span class="ab-note" id="setAiModeNote" role="status" hidden></span>
+                      </label>
+                      <label class="ab-switch">
+                        <input type="checkbox" id="setAiMode" role="switch" />
+                        <span class="ab-switch-track" aria-hidden="true"><span class="ab-switch-knob"></span></span>
+                        <span class="ab-switch-text" id="setAiModeText">Off</span>
+                      </label>
+                    </div>
+                    <div class="ab-row">
                       <label class="ab-row-text" for="setDebug">
                         <b>Capture debugger</b>
                         <span>Logs every network event the extension sees. Leave it off unless you're asked to turn it on.</span>

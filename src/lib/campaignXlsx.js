@@ -31,8 +31,8 @@ import { extractBrandAspects } from "./aspects.js";
 import { cardIsBrand } from "./campaignBoard.js";
 import { glossaryEntries } from "./glossary.js";
 
-const ENGINE_ORDER = ["chatgpt", "gemini", "perplexity", "grok"];
-const ENGINE_LABEL = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok" };
+const ENGINE_ORDER = ["chatgpt", "gemini", "perplexity", "grok", "aimode"];
+const ENGINE_LABEL = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok", aimode: "AI Mode" };
 const KINDS = ["Shopping", "Informational", "Images", "From memory", "Local"];
 const SITE_KINDS = ["Your site", "Rival brand sites", "Review sites", "Retailers", "Forums & social", "Public & reference", "Other"];
 // Engines' image proxies: the picture came through the engine, not a site.

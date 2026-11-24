@@ -25,6 +25,7 @@ export const ENGINES = {
   gemini: { label: "Gemini", url: "https://gemini.google.com/app", budget: 60000 },
   perplexity: { label: "Perplexity", url: "https://www.perplexity.ai/", budget: 14000 },
   grok: { label: "Grok", url: "https://grok.com/", budget: 30000 },
+  aimode: { label: "AI Mode", url: "https://www.google.com/search?udm=50", budget: 30000 },
 };
 
 export const TASKS = {
@@ -44,7 +45,7 @@ const ABOUT = "This data comes from CitoSkeleton, a browser extension that recor
 const table = (head, rows) => (rows.length ? [`| ${head.join(" | ")} |`, `| ${head.map(() => "---").join(" | ")} |`, ...rows.map((r) => `| ${r.map((c) => String(c ?? "—").replace(/\|/g, "/").replace(/\n/g, " ")).join(" | ")} |`)].join("\n") : "");
 const pct = (x) => (x == null ? "—" : `${x}%`);
 const sign = (x) => (x == null ? "—" : `${x > 0 ? "+" : ""}${x}`);
-const ENGINE_LABEL = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok" };
+const ENGINE_LABEL = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok", aimode: "AI Mode" };
 
 function defs(keys) {
   return keys.map((k) => GLOSSARY[k]).filter(Boolean).map((g) => `- **${g.term}**: ${g.what}${g.formula ? ` (${g.formula})` : ""}`).join("\n");

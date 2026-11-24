@@ -16,7 +16,7 @@ import { probeIsRead } from "./lib/geminiChannel.js";
 import { createAiService } from "./aiService.js";
 import { db } from "./lib/db.js";
 import {
-  turnBudgetMs, legEta, runTookMs, INTER_PROMPT_MIN_MS, INTER_PROMPT_MAX_MS,
+  turnBudgetMs, legEta, runTookMs, INTER_PROMPT_MIN_MS, INTER_PROMPT_MAX_MS, nextGapMs,
   CONCURRENT_TABS_PER_ENGINE, tabsForEngine, LEG_START_STAGGER_MS, shardPrompts,
   parseCooldownFromNotice, formatCooldown, needsFreshTab, tabRecycleEvery,
 } from "./lib/pacing.js";
@@ -52,6 +52,7 @@ import { enrichBrandsWithAI, enrichBrandStance } from "./lib/ai-brands.js";
 import { adapt as adaptGemini } from "./adapters/gemini.js";
 import { adapt as adaptPerplexity } from "./adapters/perplexity.js";
 import { adapt as adaptGrok } from "./adapters/grok.js";
+import { adapt as adaptAiMode } from "./adapters/aimode.js";
 import { adaptPageCopy, isPageCopy } from "./adapters/pageCopy.js";
 import { cleanPrompt } from "./lib/promptText.js";
 import {
@@ -76,6 +77,7 @@ const ADAPTERS = {
   gemini: adaptGemini,
   perplexity: adaptPerplexity,
   grok: adaptGrok,
+  aimode: adaptAiMode,
 };
 
 const AI_TAB_MATCHES = [
@@ -87,6 +89,7 @@ const AI_TAB_MATCHES = [
   "https://grok.com/*",
   "https://x.com/i/grok/*",
   "https://x.com/i/grok",
+  "https://www.google.com/search*",
 ];
 
 /* ---------- Settings ---------- */
@@ -204,6 +207,51 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
   chrome.scripting.executeScript({ target: { tabId }, files: ["src/handoff.js"] }).catch((e) => logErr("handoff:inject", e));
 });
 chrome.tabs.onRemoved.addListener((tabId) => { handoffJobs.delete(tabId); setHandoffTab(tabId, false); });
+
+/* Google AI Mode (1.0.5, engine 5).
+ *
+ * Its page scripts are registered here, not in manifest.json: google.com is
+ * not a site the extension may read until the user turns AI Mode on and
+ * Chrome grants it (optional permission, inside the existing optional
+ * <all_urls>), so turning AI Mode on can't switch the extension off for
+ * anyone. Both scripts leave every Google page alone but AI Mode's
+ * (/search?udm=50, checked first thing in each).
+ */
+const AIMODE_MATCHES = ["https://www.google.com/search*"];
+const AIMODE_SCRIPTS = [
+  { id: "aimode-main", matches: AIMODE_MATCHES, js: ["src/content-main.js"], runAt: "document_start", world: "MAIN", persistAcrossSessions: true },
+  { id: "aimode-iso", matches: AIMODE_MATCHES, js: ["src/content-iso.js"], runAt: "document_start", persistAcrossSessions: true },
+];
+/** Register or remove AI Mode's page scripts to match the setting and the permission. */
+async function syncAiModeScripts() {
+  try {
+    const { aimodeOn } = await chrome.storage.local.get("aimodeOn");
+    const granted = await chrome.permissions.contains({ origins: AIMODE_MATCHES });
+    const have = (await chrome.scripting.getRegisteredContentScripts({ ids: AIMODE_SCRIPTS.map((x) => x.id) })).map((x) => x.id);
+    if (aimodeOn && granted) {
+      const missing = AIMODE_SCRIPTS.filter((x) => !have.includes(x.id));
+      if (missing.length) await chrome.scripting.registerContentScripts(missing);
+    } else if (have.length) {
+      await chrome.scripting.unregisterContentScripts({ ids: have });
+    }
+    return { ok: true, on: !!(aimodeOn && granted), granted };
+  } catch (e) { logErr("aimode:scripts", e); return { ok: false, error: String(e && e.message || e) }; }
+}
+chrome.permissions?.onAdded?.addListener(() => { syncAiModeScripts(); });
+chrome.permissions?.onRemoved?.addListener(() => { syncAiModeScripts(); });
+chrome.runtime.onStartup?.addListener(() => { syncAiModeScripts(); });
+
+// Google's robot check: an AI Mode run tab that lands on /sorry/ pauses AI
+// Mode only, until a person answers it and presses Resume. Never solved or
+// worked around.
+chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+  const url = info.url || (tab && tab.url) || "";
+  if (!loader.running || !/^https:\/\/www\.google\.[a-z.]+\/sorry\//i.test(url)) return;
+  const found = legForTab(tabId);
+  if (!found || found.plat !== "aimode") return;
+  logEvent("run:captcha:aimode", "turn", "Google asked to confirm you're not a robot", { platform: "aimode", runId: loader.runId });
+  pauseForLimit("aimode", "Google asked to confirm you're not a robot", { manual: true }).catch((e) => logErr("aimode:captcha", e));
+});
 
 // Whether a message from an engine page is dropped because capture is
 // paused. A campaign run's tab is exempt. A "Continue in…" tab is never
@@ -441,6 +489,8 @@ function platformFromUrl(url) {
   if (/perplexity\.ai|\/api\/sse\/query|\/api\/thread|\/rest\/queries/i.test(u)) return "perplexity";
   if (/grok\.com|x\.com\/i\/grok|app-chat\/conversations/i.test(u)) return "grok";
   if (/chatgpt\.com|chat\.openai\.com|backend-api/i.test(u)) return "chatgpt";
+  // Google AI Mode (1.0.5): its page and its answer requests.
+  if (/^https?:\/\/(?:www\.)?google\.[a-z.]+\/(?:search|async\/fol)/i.test(u)) return "aimode";
   return "chatgpt";
 }
 
@@ -1812,9 +1862,11 @@ function resumeAfterCooldown(plat) {
   syncGeoRun();
 }
 
-async function pauseForLimit(matched, detail) {
+async function pauseForLimit(matched, detail, { manual = false } = {}) {
   const p = loader.platforms[matched];
-  const cooldownMs = parseCooldownFromNotice(detail);
+  if (!p) return;
+  // Manual: a day, so neither the timer nor the heartbeat resumes it; Resume does.
+  const cooldownMs = manual ? 24 * 60 * 60 * 1000 : parseCooldownFromNotice(detail);
   const resumeAt = Date.now() + cooldownMs;
   p.rateLimitedUntil = resumeAt;
   p.cooldownReason = typeof detail === "string" ? detail.slice(0, 160) : "rate limit";
@@ -1840,7 +1892,7 @@ async function pauseForLimit(matched, detail) {
 
   await persistLoaderState();
   syncGeoRun(undefined, `cooldown: ${matched} (${formatCooldown(cooldownMs)})`);
-  notifyRateLimited(`${matched}: ${p.cooldownReason} (Auto-resuming in ${formatCooldown(cooldownMs)})`);
+  notifyRateLimited(manual ? `${matched}: ${p.cooldownReason}. Paused: press Resume once you've answered it in that tab.` : `${matched}: ${p.cooldownReason} (Auto-resuming in ${formatCooldown(cooldownMs)})`);
 }
 
 function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "", extraCtx = null) {
@@ -1939,6 +1991,7 @@ function engineBaseUrl(plat) {
   if (plat === "gemini") return "https://gemini.google.com/app";
   if (plat === "perplexity") return "https://www.perplexity.ai/";
   if (plat === "grok") return "https://grok.com/";
+  if (plat === "aimode") return "https://www.google.com/search?udm=50";
   return "https://chatgpt.com/";
 }
 
@@ -1950,6 +2003,7 @@ const ENGINE_HOSTS = {
   gemini: ["gemini.google.com"],
   perplexity: ["perplexity.ai", "www.perplexity.ai"],
   grok: ["grok.com", "x.com"],
+  aimode: ["www.google.com", "google.com"],
 };
 
 /**
@@ -2561,7 +2615,9 @@ async function loaderRunLeg(plat, leg) {
   // new conversation within ~1 s (stress run, 23 Nov 2026: 187 of 549
   // questions). Now only the content script sends it, once.
   const qKey = plat === "gemini" ? "lcfcq" : "q";
-  const url = `${engineBaseUrl(plat)}?${qKey}=${q}&lcfc=1&lcfctok=${leg.token}${search}`;
+  const base = engineBaseUrl(plat);
+  const url = `${base}${base.includes("?") ? "&" : "?"}${qKey}=${q}&lcfc=1&lcfctok=${leg.token}${search}`;
+  if (plat === "aimode") leg.sentTimes = [...(leg.sentTimes || []).filter((t) => Date.now() - t < 3600000), Date.now()];
 
   // Marks how long to IGNORE this tab's own navigation events for — see the
   // chrome.tabs.onUpdated listener below for why this has to be time-based
@@ -3379,7 +3435,7 @@ function completeTurn(plat, leg, record) {
   // leg paces itself independently — concurrency divides wall-clock time by
   // running more of these gaps in parallel, not by making any one of them
   // shorter (see pacing.js's header comment).
-  const delay = INTER_PROMPT_MIN_MS + Math.random() * (INTER_PROMPT_MAX_MS - INTER_PROMPT_MIN_MS);
+  const delay = nextGapMs(plat, leg.sentTimes || []);
   if (!loader.paused && !leg.paused) setTimeout(() => loaderRunLeg(plat, leg), delay);
 }
 
@@ -4964,6 +5020,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         case "ai-remove":
           sendResponse(await aiSvc.remove());
+          break;
+        // Google AI Mode on or off (1.0.5). The page asks Chrome for the
+        // google.com permission first (a user's click); this stores the
+        // choice and registers or removes AI Mode's page scripts.
+        case "aimode-set": {
+          await chrome.storage.local.set({ aimodeOn: !!msg.on });
+          sendResponse(await syncAiModeScripts());
+          break;
+        }
+        case "aimode-status":
+          sendResponse(await syncAiModeScripts());
           break;
         // Laya, for the labels (0.83.0).
         case "laya-download":

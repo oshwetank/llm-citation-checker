@@ -19,8 +19,8 @@ import { pageTypeOf } from "./campaignView.js";
 import { parseQueryOperators } from "./fanout.js";
 import { normPrompt, knownVendors, answerKind } from "./analyzeView.js";
 
-export const ENGINE_ORDER = ["chatgpt", "gemini", "perplexity", "grok"];
-const LABEL = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok" };
+export const ENGINE_ORDER = ["chatgpt", "gemini", "perplexity", "grok", "aimode"];
+const LABEL = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok", aimode: "AI Mode" };
 const ORD = (n) => {
   const s = ["th", "st", "nd", "rd"], v = n % 100;
   return n + (s[(v - 20) % 10] || s[v] || s[0]);

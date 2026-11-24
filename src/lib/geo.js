@@ -56,6 +56,8 @@ export const ENGINES = [
   { id: "gemini", label: "Gemini", host: "gemini.google.com", available: true },
   { id: "perplexity", label: "Perplexity", host: "perplexity.ai", available: true },
   { id: "grok", label: "Grok", host: "grok.com", available: true },
+  // Google AI Mode (1.0.5): turned on in Settings, which asks Chrome for google.com.
+  { id: "aimode", label: "AI Mode", host: "google.com", available: true, beta: true },
 ];
 
 export const availableEngines = () => ENGINES.filter((e) => e.available);

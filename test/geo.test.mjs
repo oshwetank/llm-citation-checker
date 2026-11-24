@@ -103,8 +103,8 @@ console.log("\nengine registry reflects what can actually run");
     avail.join(",")
   );
   check("claude is not registered at all", !ENGINES.some((e) => e.id === "claude"));
-  check("all 4 registered engines are available",
-    ENGINES.filter((e) => e.available).length === 4 && ENGINES.length === 4);
+  check("all 5 registered engines are available (AI Mode, 1.0.5)",
+    ENGINES.filter((e) => e.available).length === 5 && ENGINES.length === 5);
   // A profile requesting an engine that isn't registered must have it
   // silently dropped, not silently kept — this is the save-time backstop
   // for a value that reached makeProfile some other way (a hand-built

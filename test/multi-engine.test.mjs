@@ -26,7 +26,7 @@ console.log("\n--- Engine Registry & URL Attribution ---");
   // Claude tracking was removed entirely (no manifest host permission, no
   // content-script injection, no adapter) rather than gated — it's not
   // present in ENGINES at all, not even as a disabled/"coming soon" entry.
-  check("all 4 engines are available in ENGINES registry", available.length === 4, `count=${available.length}`);
+  check("all 5 engines are available in ENGINES registry (AI Mode, 1.0.5)", available.length === 5, `count=${available.length}`);
   check("perplexity is registered and available", available.some((e) => e.id === "perplexity"));
   check("grok is registered and available", available.some((e) => e.id === "grok"));
   check("claude is not present in ENGINES at all", !ENGINES.some((e) => e.id === "claude"));

@@ -21,7 +21,7 @@ import { normPrompt, knownVendors, answerKind } from "./analyzeView.js";
 import { searchTokens, matchesTokens } from "./answerSearch.js";
 import { normDomain, siteKindOf } from "./siteKind.js";
 
-export const ENGINE_ORDER = ["chatgpt", "gemini", "perplexity", "grok"];
+export const ENGINE_ORDER = ["chatgpt", "gemini", "perplexity", "grok", "aimode"];
 
 export const PERIODS = [
   { id: "today", label: "Today", phrase: "today" },

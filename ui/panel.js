@@ -4505,7 +4505,8 @@ function renderAnalyzeLegacy(rec, root) {
     "chatgpt": "ChatGPT Web Search Engine (SonicBrowserTool)",
     "gemini": "Google Search Tool (Gemini)",
     "perplexity": "Perplexity Search Engine",
-    "grok": "Grok X Search Engine"
+    "grok": "Grok X Search Engine",
+    "aimode": "Google AI Mode"
   };
   addTechKv("Tool Name", rec.searched ? (tools[rec.platform] || "Web Search Tool") : "—");
   
@@ -5705,7 +5706,7 @@ const AK_GLYPH = { shopping: "cart", info: "book", local: "pin", images: "image"
 let dbQuery = "";
 let dbScope = { prompts: true, answers: true, fan: true };
 let dbFiltersOpen = false; // the full tab's Filters panel (0.78.0), closed by default
-let dbEngines = { chatgpt: true, gemini: true, perplexity: true, grok: true };
+let dbEngines = { chatgpt: true, gemini: true, perplexity: true, grok: true, aimode: true };
 let dbPeriod = null;         // null until picked: the view's default, widened if that would show nothing
 let dbRange = null;          // { from, to } as "YYYY-MM-DD" when the period is "custom"
 let dbRepeat = false;
@@ -8119,8 +8120,11 @@ function renderCampaignSetup(profile, dis) {
         el("span", { className: "cs-engine-host" }, e.available ? e.host : (e.note || "coming soon"))),
       el("span", { className: "cs-engine-check" }, setupIcon("check", 12, 3.2)));
     if (!off) {
-      tile.onclick = () => {
-        tile.setAttribute("aria-pressed", String(tile.getAttribute("aria-pressed") !== "true"));
+      tile.onclick = async () => {
+        const on = tile.getAttribute("aria-pressed") !== "true";
+        // AI Mode (1.0.5): picking it asks Chrome for google.com, from this click.
+        if (on && e.id === "aimode" && !(await aiModeOn())) { showToast(tr("AI Mode needs access to google.com to read its answers. It wasn't given, so AI Mode stays off.")); return; }
+        tile.setAttribute("aria-pressed", String(on));
         changed();
       };
     }
@@ -9624,7 +9628,8 @@ $("#exportExcel")?.addEventListener("click", () => {
     chatgpt: "#e0f2fe",
     gemini: "#fce7f3",
     perplexity: "#fef3c7",
-    grok: "#d1fae5"
+    grok: "#d1fae5",
+    aimode: "#fef3c7"
   };
 
   currentFilteredRecs.forEach(r => {
@@ -10570,7 +10575,7 @@ const AB_POPUP_SUB = {
   data: "Housekeeping on what’s stored. None of it touches your campaigns.",
 };
 // Where each engine is asked — the first "Get started" step links to them.
-const AB_ENGINE_HOME = { chatgpt: "https://chatgpt.com/", gemini: "https://gemini.google.com/app", perplexity: "https://www.perplexity.ai/", grok: "https://grok.com/" };
+const AB_ENGINE_HOME = { aimode: "https://www.google.com/search?udm=50", chatgpt: "https://chatgpt.com/", gemini: "https://gemini.google.com/app", perplexity: "https://www.perplexity.ai/", grok: "https://grok.com/" };
 const AB_ANALYZED_KEY = "cito-analyzed-real";
 
 let abSection = null;   // null until picked: the layout's own first page
@@ -10645,7 +10650,7 @@ function renderAbout() {
 
 // The capture check (0.73.1): one row per engine with what to do, and a
 // "Refresh" button for a tab cut off from the extension.
-const CAP_ENGINE = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok" };
+const CAP_ENGINE = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok", aimode: "AI Mode" };
 let capReport = "";
 async function renderCaptureCheck() {
   const rows = $("#capCheckRows");
@@ -10957,6 +10962,31 @@ async function loadSettings() {
 // the report can show whether a question that stayed at /c/local-… ever left
 // the tab. From this click, as Chrome requires. Refusing changes nothing
 // else: Debug capture still records what the page itself sees.
+/* Google AI Mode (1.0.5): turning it on asks Chrome for google.com (from
+ * the click: Chrome only asks in answer to one), then registers AI Mode's
+ * page scripts. Refused: it stays off and says why. */
+async function aiModeOn() {
+  let ok = false;
+  try { ok = await chrome.permissions.contains({ origins: ["https://www.google.com/*"] }) || await chrome.permissions.request({ origins: ["https://www.google.com/*"] }); } catch (_) { ok = false; }
+  if (!ok) return false;
+  const r = await new Promise((res) => chrome.runtime.sendMessage({ type: "aimode-set", on: true }, (x) => { void chrome.runtime.lastError; res(x); }));
+  return !!(r && r.on);
+}
+$("#setAiMode")?.addEventListener("change", async (e) => {
+  const box = e.target, note = $("#setAiModeNote");
+  if (note) { note.hidden = true; note.textContent = ""; }
+  if (box.checked) {
+    if (!(await aiModeOn())) { box.checked = false; if (note) { note.hidden = false; note.textContent = tr("Not turned on: AI Mode needs access to google.com to read its answers."); } }
+  } else {
+    chrome.runtime.sendMessage({ type: "aimode-set", on: false }, () => { void chrome.runtime.lastError; });
+  }
+  $("#setAiModeText") && ($("#setAiModeText").textContent = tr(box.checked ? "On" : "Off"));
+});
+chrome.runtime.sendMessage({ type: "aimode-status" }, (r) => {
+  void chrome.runtime.lastError;
+  const box = $("#setAiMode");
+  if (box) { box.checked = !!(r && r.on); $("#setAiModeText") && ($("#setAiModeText").textContent = tr(box.checked ? "On" : "Off")); }
+});
 $("#setDebug")?.addEventListener("change", (e) => {
   if (!e.target.checked || !chrome.permissions) return;
   chrome.permissions.contains({ permissions: ["webRequest"] })
@@ -11794,7 +11824,7 @@ document.addEventListener("mouseover", (e) => {
  * person should know at once, with the two things that help: refreshing
  * that tab, and the capture report to send us. */
 {
-  const ENGINE_NAME = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok" };
+  const ENGINE_NAME = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok", aimode: "AI Mode" };
   const box = document.getElementById("missedBanner");
   const ago = (t) => { const m = Math.max(1, Math.round((Date.now() - t) / 60000)); return m === 1 ? "a minute ago" : `${m} minutes ago`; };
   const draw = (list) => {

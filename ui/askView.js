@@ -34,7 +34,7 @@ function h(tag, props = {}, ...kids) {
 const send = (m) => new Promise((r) => { try { chrome.runtime.sendMessage(m, (x) => { void chrome.runtime.lastError; r(x || null); }); } catch (_) { r(null); } });
 const load = async () => { try { return (await chrome.storage.local.get(KEY))[KEY] || []; } catch (_) { return []; } };
 const save = async (msgs) => { try { await chrome.storage.local.set({ [KEY]: msgs.slice(-MAX) }); } catch (_) { /* this session only */ } };
-const ENGINE = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok" };
+const ENGINE = { chatgpt: "ChatGPT", gemini: "Gemini", perplexity: "Perplexity", grok: "Grok", aimode: "AI Mode" };
 
 /**
  * @param {HTMLElement} root  the #ask section
@@ -198,7 +198,7 @@ export async function renderAsk(root, hooks = {}) {
   }
   function scopeChips(m) {
     const row = h("div", { className: "ask-scope", role: "group", "aria-label": tr("What this answer is about") });
-    const ENG = ["chatgpt", "gemini", "perplexity", "grok"];
+    const ENG = ["chatgpt", "gemini", "perplexity", "grok", "aimode"];
     for (const c of m.scope.chips || []) {
       let opts = null;
       if (c.kind === "collection") opts = [...collections.map((x) => ({ label: x.name, value: JSON.stringify([x.id]) })), ...(collections.length > 2 ? [{ label: tr("All campaigns"), value: JSON.stringify(collections.filter((x) => x.id !== "history").map((x) => x.id)) }] : [])];
