@@ -102,6 +102,16 @@
   // address. Card panels (PANEL_PATHS) are read as interactions instead.
   const CHATGPT_STREAM_PATH = /^\/(?:backend-api|backend-anon|unauth-mweb)\//;
   const GEMINI_RE = /assistant\.lamda\.BardFrontendService\/StreamGenerate|\/StreamGenerate\b/i;
+  /* Gemini's send today (1.0.5): an upload to its WebChannel,
+   * POST /v1/processSession with the question in the req0___data__ field
+   * (2–3 KB). The channel's own housekeeping posts there too, at 0–130
+   * bytes. StreamGenerate (GEMINI_RE) is gone, so Gemini's send went unseen:
+   * the submit loop read its click as "not sent yet" and pressed Enter, then
+   * clicked again: 2 or 3 conversations per question (live, 24 Nov 2026,
+   * 21 of 25 questions, one tab). */
+  const geminiUpload = (url, body) => IS_GEMINI && /\/v1\/processSession\b/.test(url || "")
+    && typeof body === "string" && body.length > 600 && body.includes("req0___data__");
+  const bodyString = (b) => (typeof b === "string" ? b : (typeof URLSearchParams !== "undefined" && b instanceof URLSearchParams) ? b.toString() : null);
   // NOTE: `sse` is in the /rest/ alternation deliberately. The previous
   // pattern had `\/api\/sse\/` and `\/rest\/(threads|queries|answers|
   // conversations)` but NOT `/rest/sse/` — so a request to
@@ -462,6 +472,7 @@
     }
 
     if (method === "POST" && SUBMIT_RE && SUBMIT_RE.test(url || "")) signalSubmit("fetch");
+    else if (method === "POST" && geminiUpload(url, bodyString(init && init.body))) signalSubmit("fetch");
     // AI Mode asks with a GET, and its q is the question: content-iso checks it is ours.
     else if (IS_AIMODE && method === "GET" && AIMODE_RE.test(url || "")) {
       let q = "";
@@ -658,6 +669,7 @@
       }
       if (this.__lcfc_post) dbg("xhr", { url: this.__lcfc_url.slice(0, 140), matched: !!this.__lcfc_conv });
       if (this.__lcfc_post && SUBMIT_RE && SUBMIT_RE.test(this.__lcfc_url)) signalSubmit("xhr");
+      else if (this.__lcfc_post && geminiUpload(this.__lcfc_url, bodyString(body))) signalSubmit("xhr");
       else if (this.__lcfc_post && preparedSend(this.__lcfc_url, body)) signalSubmit("prepare");
       if (this.__lcfc_conv) {
         this.__lcfc_body = typeof body === "string" ? body : null;

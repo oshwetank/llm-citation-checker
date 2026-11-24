@@ -967,7 +967,11 @@
        * conversations for one prompt (identical request bodies), filling the
        * user's history with duplicates and the campaign with 30 records for
        * 7 prompts. One attempt at a time, at least RETRY_GAP_MS apart. */
-      const RETRY_GAP_MS = 3000;
+      /* Gemini uploads the question ~4 s after the click (live, 24 Nov 2026:
+       * click at 4 s, upload at 8 s), so a retry 3–4 s later went out as a
+       * second conversation. It gets 12 s before a second press; a click
+       * that really failed costs 8 s, a doubled question never happens. */
+      const RETRY_GAP_MS = plat === "gemini" ? 12000 : 3000;
       const MAX_SEND_ATTEMPTS = 5;
       let lastAttemptAt = 0;
       let attempts = 0;

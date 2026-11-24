@@ -54,15 +54,13 @@ The store's version was 0.36. 1.0.0 is the first release since; the store pack i
 - **Stage 4**: Ask, its Continue in… (it carries the executor's result) and the Dashboard search now stand on the same code as the boards. The AI labels' stance per brand is a scope filter ("answers that recommend Kovo": `scope.stance`, shown as a chip, with a note that only labelled answers count).
 - **Left:** running the gold set with the real models (extend `scripts/eval-llm.mjs`; it needs the model downloads), a persisted Facts table in IndexedDB (rows are built per question for now), and replies in other languages without a model (templates are English).
 
-**Gemini sent questions 2 to 4 times, as separate conversations.** Traced live on 24 Nov 2026:
-- Once a conversation exists, Gemini flips its address between `/app` and `/app/<id>` several times a second. On `/app` it shows the new-chat page with the question back in the box.
-- The submit loop's checks landed on `/app`, saw no conversation, and pressed send again. The trace read `click … enter … reclick`, three presses and three conversations.
-- `content-iso.js` now watches every address change through the Navigation API (`sawConversation`), and a conversation address seen once counts as sent.
-- Gemini also gets the question in `lcfcq` instead of `?q=` (background `loaderRunLeg`), so it never sends the question itself and the question never stays in its address.
-- Both fixes have `prompt-submit.test` cases. The flip case fails on the old script with 5 sends.
-- **Not fully fixed live.** After both fixes a 25-question Gemini run still had copies, mostly 2 rather than up to 4. They came from the run's two Gemini tabs, which flip at the same moments, so Gemini's open tabs are coupled.
-- The next test is a one-tab Gemini run (`TABS_PER_ENGINE` in `pacing.js`). The test account hit Gemini's usage limit, so that waits.
-- The board counts one copy per prompt × engine (`latestAnswers`), so the numbers aren't doubled. The cost is the account's usage and the user's Gemini history.
+**Gemini sent questions 2 to 4 times, as separate conversations: fixed.** Traced live on 24 Nov 2026, request by request, and confirmed in Gemini's own history (each copy a real conversation).
+- **The cause:** Gemini no longer sends through StreamGenerate. A question now goes up as a POST to its WebChannel, `/v1/processSession`, in the `req0___data__` field (2–3 KB). `content-main.js` only knew StreamGenerate, so Gemini's own send was never seen. The submit loop took its click as "not sent yet" and pressed Enter about 4 s later, sometimes clicking again too. Each press was an upload, so each became a conversation (trace: `click … enter … reclick`).
+- **The fix:** an upload to `processSession` carrying a question (`req0___data__`, over 600 bytes; the channel's own housekeeping posts there are 0–130 bytes) is Gemini's send (`geminiUpload` in content-main, for fetch and XHR). Gemini uploads about 4 s after the click, so on Gemini a second press waits 12 s (`RETRY_GAP_MS`).
+- **Live result:** 5 questions in one run, one upload each, 5 conversations, no copies. Before: 21 of 25 questions had copies, with one tab or two.
+- **Tests:** `engine-submit-signal.test` (the upload is a send; housekeeping is not; fails on the old code) and `prompt-submit.test`.
+- Two changes made along the way stay. Gemini gets its question in `lcfcq`, so it never acts on `?q=` itself. A conversation address seen at any moment counts as sent (`sawConversation`, through the Navigation API), because Gemini flips its address between `/app` and `/app/<id>`. Neither was the cause.
+- The board always counted one copy per prompt and engine (`latestAnswers`), so earlier numbers weren't doubled; the cost was the account's usage and the user's Gemini history.
 
 ## ChatGPT's local conversation address (1.0.4)
 
