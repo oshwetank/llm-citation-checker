@@ -276,45 +276,12 @@ try {
   })));
   check("without the unlock, the service worker refuses a new brand", refused && !refused.ok && refused.needsUnlock, JSON.stringify(refused));
 
-  /* ---------------- popup ---------------- */
-  console.log("\nThe popup gets one aligned column, required things first");
-  const pop = await context.newPage();
-  pop.on("pageerror", (e) => pageErrors.push(String(e)));
-  pop.on("dialog", (d) => d.accept());
-  await pop.setViewportSize({ width: 540, height: 600 });
-  await pop.goto(`chrome-extension://${extId}/ui/panel.html`);
-  await pop.waitForTimeout(1000);
-  check("it is in popup mode", await pop.evaluate(() => document.body.classList.contains("popup")));
-  await newCampaign(pop);
-  for (const n of ["Contoso", "Fabrikam", "Litware"]) await addCompetitor(pop, n, `${n.toLowerCase()}.com`);
-  const pd = await rect(pop, ".cs-card-details");
-  const pp = await rect(pop, ".cs-card-prompts");
-  const pc = await rect(pop, ".cs-card-comps");
-  check("details (with competitors), then prompts", pd && pp && pc && pd.bottom <= pp.top && pc.top >= pd.top && pc.bottom <= pd.bottom, JSON.stringify({ pd, pp, pc }));
-  check("on one left edge and one width", pd && pp && Math.abs(pd.left - pp.left) < 1 && Math.abs(pd.width - pp.width) < 1);
-  const lefts = await pop.evaluate(() => ["#cs-name", "#cs-brand", "#cs-site", "#cs-comp-name"].map((s) => document.querySelector(s)?.getBoundingClientRect().left));
-  check("fields line up on the card's left edge", lefts.every((l) => l != null && Math.abs(l - lefts[0]) < 1), JSON.stringify(lefts));
-  const brandR = await rect(pop, "#cs-brand");
-  const siteR = await rect(pop, "#cs-site");
-  check("brand name and website are stacked, not squeezed side by side", brandR && siteR && siteR.top >= brandR.bottom);
-  const tiles = await pop.evaluate(() => [...document.querySelectorAll(".cs-engine")].map((n) => { const r = n.getBoundingClientRect(); return { l: r.left, r: r.right, h: r.height }; }));
-  const card = await rect(pop, ".cs-card-details");
-  check("the AI engines are compact chips that wrap inside the card", tiles.length === 5 && tiles.every((t) => t.h <= 40 && t.r <= card.right + 1), JSON.stringify(tiles));
-  check("nothing overflows sideways", await pop.evaluate(() => {
-    const c = document.querySelector(".app-content");
-    const cr = c.getBoundingClientRect();
-    return c.scrollWidth <= c.clientWidth && [...document.querySelectorAll(".cs *")].every((n) => {
-      const r = n.getBoundingClientRect();
-      return r.width === 0 || r.right <= cr.right + 0.5;
-    });
-  }));
-  await pop.evaluate(() => { const c = document.querySelector(".app-content"); c.scrollTop = c.scrollHeight; });
-  await pop.waitForTimeout(150);
-  const save = await rect(pop, ".cs-save");
-  check("scrolled to the bottom, Save & start tracking is still on screen", save && save.top >= 0 && save.bottom <= 600, JSON.stringify(save));
-  const pu = await rect(pop, '.cs-mode[data-mode="upload"]');
-  const pm = await rect(pop, '.cs-mode[data-mode="manual"]');
-  check("the two prompt buttons still sit side by side", pu && pm && Math.abs(pu.top - pm.top) < 1);
+  /* ---------------- popup ----------------
+   * Since 1.0.5 a campaign is set up in the full view only (asked: "people
+   * can't create a campaign in the popup section"): the popup's New opens the
+   * full view and the popup closes. campaign-popup.test checks that; the
+   * popup's one-column setup layout checked here is gone with it. */
+
 
   check("no uncaught page errors", pageErrors.length === 0, pageErrors.join(" | "));
 } finally {
