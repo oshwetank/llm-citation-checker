@@ -60,7 +60,9 @@ export function answerSnippet(answerText, query, { before = 60, after = 110 } = 
 export function searchAnswers(records, query, { limit = 300 } = {}) {
   if (!searchTokens(query).length) return [];
   const index = indexFor(records || []);
-  const { hits, fixed } = keywordHits(index, query, { pool: index.docs.filter((d) => !d.isPrompt) });
+  // Exact words and plurals only: a typo read as a nearby word could claim
+  // an answer holds a word it doesn't (Ask keeps typo tolerance, and says so).
+  const { hits, fixed } = keywordHits(index, query, { pool: index.docs.filter((d) => !d.isPrompt), fuzzy: false });
   const text = new Map((records || []).map((x) => [x.captureId, x.answerText]));
   const out = [];
   for (const h of byAnswer(hits)) {

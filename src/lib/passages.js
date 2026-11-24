@@ -134,11 +134,11 @@ function closest(word, vocab) {
 }
 
 /** The query as index terms, typos mapped to the nearest real word. */
-export function queryTerms(index, query) {
+export function queryTerms(index, query, { fuzzy = true } = {}) {
   const out = [];
   for (const t of new Set(terms(query))) {
     if (index.df.has(t)) { out.push({ term: t, from: t }); continue; }
-    const c = closest(t, index.vocab);
+    const c = fuzzy ? closest(t, index.vocab) : null;
     out.push({ term: c, from: t, fixed: !!c });
   }
   return out;
@@ -168,8 +168,8 @@ export async function search(index, query, { filter = null, limit = 20, vector =
 }
 
 /** Keyword (BM25) hits, best first; synchronous. */
-export function keywordHits(index, query, { pool = index.docs, all = true } = {}) {
-  const qs = queryTerms(index, query);
+export function keywordHits(index, query, { pool = index.docs, all = true, fuzzy = true } = {}) {
+  const qs = queryTerms(index, query, { fuzzy });
   const fixed = qs.filter((x) => x.fixed).map((x) => ({ from: x.from, to: x.term }));
   const want = qs.filter((x) => x.term).map((x) => x.term);
   const missing = qs.some((x) => !x.term);

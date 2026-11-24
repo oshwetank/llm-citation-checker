@@ -44,8 +44,9 @@ console.log("\nKeyword search: every word, ranked, typos tolerated");
   check("a word that's nowhere and like nothing: no hits", keywordHits(idx, "zzqx").hits.length === 0);
   check("in Hindi too", keywordHits(idx, "बैटरी").hits.some((h) => h.doc.captureId === "c"));
   check("query words are the same terms", queryTerms(idx, "Batteries").some((q) => q.term === "battery"));
-  const hits = searchAnswers(recs, "batery life");
-  check("the Dashboard search finds it despite the typo, with the passage as snippet", hits.length === 1 && hits[0].captureId === "a" && /battery life/.test(hits[0].snippet), JSON.stringify(hits));
+  const hits = searchAnswers(recs, "batteries life");
+  check("the Dashboard search finds plurals, with the passage as snippet", hits.length === 1 && hits[0].captureId === "a" && /battery life/.test(hits[0].snippet), JSON.stringify(hits));
+  check("but never reads a typo as another word (it could claim a word that isn't there)", searchAnswers(recs, "batery").length === 0);
 }
 
 console.log("\nMeaning: a stand-in embedder (words that mean the same share a vector)");

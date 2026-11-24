@@ -169,7 +169,7 @@ try {
   const compCard = await rect(page, ".cs-card-comps");
   check("six competitors fit in a compact block", compCard && compCard.height < 260, compCard && compCard.height);
   const engRow = await page.evaluate(() => [...document.querySelectorAll(".cs-engine")].map((n) => Math.round(n.getBoundingClientRect().top)));
-  check("the AI engines are one row of chips", engRow.length === 4 && engRow.every((t) => t === engRow[0]), JSON.stringify(engRow));
+  check("the AI engines are chips in neat rows (five since AI Mode, 1.0.5)", engRow.length === 5 && new Set(engRow).size <= 2, JSON.stringify(engRow));
   await page.click('.cs-comp-chip:has-text("Litware") .cs-comp-remove');
   await page.waitForTimeout(80);
   check("a competitor can be removed", (await page.$$(".cs-comp-chip")).length === 5);
@@ -299,7 +299,7 @@ try {
   check("brand name and website are stacked, not squeezed side by side", brandR && siteR && siteR.top >= brandR.bottom);
   const tiles = await pop.evaluate(() => [...document.querySelectorAll(".cs-engine")].map((n) => { const r = n.getBoundingClientRect(); return { l: r.left, r: r.right, h: r.height }; }));
   const card = await rect(pop, ".cs-card-details");
-  check("the AI engines are compact chips that wrap inside the card", tiles.length === 4 && tiles.every((t) => t.h <= 40 && t.r <= card.right + 1), JSON.stringify(tiles));
+  check("the AI engines are compact chips that wrap inside the card", tiles.length === 5 && tiles.every((t) => t.h <= 40 && t.r <= card.right + 1), JSON.stringify(tiles));
   check("nothing overflows sideways", await pop.evaluate(() => {
     const c = document.querySelector(".app-content");
     const cr = c.getBoundingClientRect();
