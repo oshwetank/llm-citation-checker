@@ -179,6 +179,13 @@ export function lookup(question, catalog) {
     const f = fold(m.name);
     if (brands.some((o) => o !== m && fold(o.name) !== f && hasPhrase(fold(o.name), f) && hasPhrase(q, fold(o.name)))) out.splice(out.indexOf(m), 1);
   }
+  // A near-spelling is only for a name the question didn't write exactly:
+  // "Asian Paints" named outright doesn't also bring "Asian Paints Royale",
+  // "JK Paints" or any other name sharing its words (1.0.5, real data).
+  const exactWords = new Set(out.filter((m) => m.kind === "brand" && m.how === "exact").flatMap((m) => fold(m.name).split(" ")));
+  for (const m of out.filter((x) => x.kind === "brand" && x.how === "fuzzy")) {
+    if (fold(m.name).split(" ").some((w) => exactWords.has(w))) out.splice(out.indexOf(m), 1);
+  }
   for (const [e, al] of Object.entries(ENGINE_ALIASES)) {
     // Engines are short words: exact only, so "grok" never fuzzes into "group".
     if (al.some((a) => hasPhrase(q, fold(a)))) push({ kind: "engine", id: e, name: ENGINE_LABEL[e], score: 1, how: "exact" });
