@@ -15,7 +15,8 @@
 import { TOOLS, TOOL_NAMES, runTool } from "./assistantTools.js";
 import { systemFor, toolsFor, checkNumbers } from "./askKnowledge.js";
 import { buildCatalog } from "./askCatalog.js";
-import { rulePlan, resolveScope, validPlan } from "./askPlan.js";
+import { rulePlan, resolveScope, validPlan, isFollowUp } from "./askPlan.js";
+import { modelFill } from "./askModelPlan.js";
 import { execute } from "./askExecute.js";
 import { scopeOf, templateReply, coverageNotes } from "./askReply.js";
 
@@ -41,7 +42,24 @@ export async function askPlanned({ question, data, generate = null, context = {}
   if (given && validPlan(given, catalog)) plan = JSON.parse(JSON.stringify(given));
   else {
     const r = rulePlan(question, catalog);
-    ({ plan, askBack, notes } = resolveScope(r.plan, r.matches, catalog, { context, previous, question }));
+    // Stage 2: the model fills only what the rules left open (the intent no
+    // rule recognised; the campaign when none was named and the page doesn't
+    // say), choosing from what exists. A follow-up keeps its plan instead.
+    let named = [];
+    const noCampaign = !r.matches.some((m) => m.kind === "collection" && m.score >= 0.8) && !(context && context.collectionId) && catalog.collections.filter((c) => c.kind === "campaign").length > 1;
+    if (generate && !isFollowUp(question, previous) && (r.plan.intentFrom === "default" || noCampaign)) {
+      if (onStep) { try { onStep({ tool: "plan:understand" }); } catch (_) { /* a listener's problem */ } }
+      const m = await modelFill({ question, catalog, generate });
+      if (m) {
+        if (r.plan.intentFrom === "default" && !(r.plan.subject.brands.length >= 2 && m.intent !== "compare")) { r.plan.intent = m.intent; r.plan.intentFrom = "model"; }
+        if (!r.plan.measure.length && m.measure.length) r.plan.measure = m.measure;
+        if (r.plan.by === "none" && m.by !== "none") r.plan.by = m.by;
+        named = noCampaign ? m.collections : [];
+        if ((r.plan.intent === "trend") && !r.plan.scope.dates) r.plan.scope.runs = "all";
+      }
+    }
+    ({ plan, askBack, notes } = resolveScope(r.plan, r.matches, catalog, { context, previous, question, named }));
+    if (named.length && !askBack) notes = [...notes, `Took ${plan.scope.collections.map((id) => (catalog.byId.get(id) || {}).name).filter(Boolean).join(" and ")} from how you put it; change it above if that's not right.`];
   }
   plan.question = String(question || "").slice(0, 500);
   const base = { plan, notes, refs: [], steps: [], lookups: [], unverified: [], checked: 0 };

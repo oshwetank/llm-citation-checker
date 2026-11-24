@@ -45,7 +45,10 @@ const fixture = (name) => {
 };
 // 1.0.5: the model only writes the reply, from results worked out in code,
 // in one turn. 87% is made up: no result holds it, so it is flagged.
+// First the plan for what the rules left open ("Where was Zento named?" has
+// no question word a rule knows), then the reply.
 const SCRIPT = [
+  '{"intent":"metric","collections":[]}',
   "Zento was named in the answers below, first in each, with 87% visibility.",
 ];
 

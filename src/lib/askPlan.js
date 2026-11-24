@@ -33,7 +33,7 @@ const INTENT_RULES = [
   ["compare", /\b(vs\.?|versus|compare[ds]?|comparison|compared (?:with|to)|against|beating|beat us|better than|ahead of|head to head)\b|comparar|contra|comparer|तुलना|مقارنة/i],
   ["trend", /\b(trend|over time|since|across runs|run (?:by|to|over) run|week (?:by|over|on) week|month (?:by|over|on) month|changed?|history of|progress|improv(?:e|ed|ing)|declin(?:e|ed|ing))\b|tendencia|evoluci[oó]n|desde|tend[eê]ncia|evolu[cç][aã]o|tendance|[ée]volution|depuis|रुझान|اتجاه|منذ/i],
   ["why", /\b(why|reason|how come|what caused|dropp?ed|fell|went down|lost)\b|por qu[eé]|porque|pourquoi|क्यों|لماذا/i],
-  ["gaps", /\b(gaps?|missing from|absent|not (?:named|mentioned|cited)|never (?:named|mentioned|cited)|where (?:am i|are we|is my brand) not|get onto|should (?:we|i) (?:be|get) on|opportunit(?:y|ies))\b|ausente|lacunas?|absent|manquant|غائب/i],
+  ["gaps", /\b(gaps?|missing from|(?:are we|am i|is my brand|we'?re) missing|but not (?:us|me|ours?)|without us|absent|not (?:named|mentioned|cited)|never (?:named|mentioned|cited)|where (?:am i|are we|is my brand) not|get onto|should (?:we|i) (?:be|get) on|opportunit(?:y|ies))\b|ausente|lacunas?|absent|manquant|غائب/i],
   ["searches", /\b(fan-?out|searches|search queries|queries (?:the engines? )?(?:ran|run|used)|what did (?:they|the engines?) search)\b|b[uú]squedas|pesquisas|recherches/i],
   ["cards", /\b(product cards?|shopping cards?|cards|products? (?:shown|named|listed)|which products)\b|productos|produtos|produits/i],
   ["sources", /\b(sources?|sites? (?:cited|they cite|that cite)|which sites|domains?|websites? cited|cited (?:sites|pages|most)|links)\b|fuentes|sitios|fontes|sites|sources|स्रोत|مصادر/i],
@@ -101,6 +101,7 @@ export function rulePlan(question, catalog, { now = Date.now() } = {}) {
   const q = String(question || "");
   const matches = lookup(q, catalog);
   plan.intent = (INTENT_RULES.find(([, re]) => re.test(q)) || [null])[0];
+  plan.intentFrom = plan.intent ? "rule" : "default"; // the model may fill a default (askModelPlan)
   plan.measure = MEASURE_RULES.filter(([, re]) => re.test(q)).map(([m]) => m);
   plan.by = (BY_RULES.find(([, re]) => re.test(q)) || ["none"])[0];
   plan.subject.own = OWN.test(q);
@@ -145,7 +146,7 @@ const HISTORY_INTENTS = new Set(["find_answers", "sources", "searches", "cards",
  * @param {{context?: {collectionId?: string|null}, previous?: object|null, question?: string}} o
  * @returns {{plan: object, askBack: null|{question: string, choices: {label: string, collections: string[]}[]}, notes: string[]}}
  */
-export function resolveScope(plan, matches, catalog, { context = {}, previous = null, question = "" } = {}) {
+export function resolveScope(plan, matches, catalog, { context = {}, previous = null, question = "", named: extraNamed = [] } = {}) {
   const p = clone(plan);
   const notes = [];
   const cols = catalog.collections;
@@ -174,7 +175,7 @@ export function resolveScope(plan, matches, catalog, { context = {}, previous = 
   // is only the brand's name counts as naming the campaign when no other
   // campaign tracks that brand.
   const brandKeys = new Set(matches.filter((m) => m.kind === "brand").map((m) => m.id));
-  let named = matches.filter((m) => m.kind === "collection" && m.score >= 0.8).map((m) => m.id);
+  let named = [...new Set([...matches.filter((m) => m.kind === "collection" && m.score >= 0.8).map((m) => m.id), ...extraNamed.filter((id) => byId.has(id))])];
   named = named.filter((id) => {
     const c = byId.get(id);
     if (!c || !brandKeys.has(fold(c.name))) return true;
@@ -195,6 +196,10 @@ export function resolveScope(plan, matches, catalog, { context = {}, previous = 
 
   // A rival named with no campaign: every campaign that tracks it, one row
   // each ("How is Kovo doing?").
+  // Several brands named: the one campaign that tracks all of them, if
+  // there is exactly one ("Compare Lumora and Pexa").
+  const tracksAll = cols.filter((c) => c.kind === "campaign" && p.subject.brands.length > 1 && p.subject.brands.every((b) => c.tracked.some((t) => fold(t) === fold(b))));
+  if (tracksAll.length === 1 && !(context && context.collectionId)) { p.scope.collections = [tracksAll[0].id]; return { plan: finish(p, catalog, notes), askBack: null, notes }; }
   const brandCols = cols.filter((c) => c.kind === "campaign" && p.subject.brands.some((b) => c.tracked.some((t) => fold(t) === fold(b))));
   if (p.subject.brands.length && !p.subject.own && brandCols.length > 1 && !(context && context.collectionId)) {
     p.scope.collections = brandCols.map((c) => c.id);
