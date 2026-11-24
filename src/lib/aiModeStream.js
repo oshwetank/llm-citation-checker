@@ -53,6 +53,28 @@ export function readIslands(list) {
   return { sources: [...sources.values()], pills: [...pills], products: [...products.values()] };
 }
 
+/**
+ * Product cards read from the HTML (live, 24 Nov 2026: the cards' islands
+ * changed shape, and the name now sits right inside the link,
+ * <a data-pid=… href="/search?ibp=oshop…"><!--…-->Name<!--…--></a>): the
+ * name, then the first price and rating after it.
+ */
+export function productsFromHtml(html) {
+  const h = String(html || "");
+  const out = new Map();
+  // The name is the first text in the link, after any comments (a hidden
+  // block with its own text follows it before </a>).
+  for (const m of h.matchAll(/<a\b[^>]*\bdata-pid="(\d+)"[^>]*>(?:\s*<!--[\s\S]*?-->)*\s*(?:<span[^>]*>)?\s*([^<]{2,120})/g)) {
+    const name = decodeEntities(m[2]).replace(/\s+/g, " ").trim();
+    if (!name || name.length > 120 || out.has(name)) continue;
+    const after = decodeEntities(h.slice(m.index + m[0].length, m.index + m[0].length + 4000).replace(/<style[\s\S]*?<\/style>/g, "").replace(/<!--[\s\S]*?-->/g, "").replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ");
+    const price = (after.match(/[₹$€£¥]\s?[\d,]+(?:\.\d+)?/) || [null])[0];
+    const rating = after.match(/(?:^|\s)([0-5]\.\d)(?:\s|$)/);
+    out.set(name, { name, price, rating: rating ? Number(rating[1]) : null, image: null, merchants: [] });
+  }
+  return [...out.values()];
+}
+
 /** Shops named next to the product cards: ["https://shop.example","Shop"] pairs. */
 export function merchantsIn(html) {
   const out = new Set();
@@ -60,9 +82,37 @@ export function merchantsIn(html) {
   return [...out];
 }
 
+/** The HTML without the <div>s its own styles hide (.x{display:none}). */
+export function stripHidden(html) {
+  const hidden = new Set();
+  for (const m of html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)) {
+    for (const r of m[1].matchAll(/\.([\w-]+)\s*\{[^}]*display\s*:\s*none/g)) hidden.add(r[1]);
+  }
+  if (!hidden.size) return html;
+  let out = "", i = 0;
+  const open = /<div\b[^>]*\bclass="([^"]*)"[^>]*>/g;
+  for (;;) {
+    open.lastIndex = i;
+    let m;
+    while ((m = open.exec(html)) && !m[1].split(/\s+/).some((c) => hidden.has(c))) { /* next */ }
+    if (!m) { out += html.slice(i); break; }
+    out += html.slice(i, m.index);
+    // Its end: count nested <div>s.
+    let depth = 1, j = m.index + m[0].length;
+    const tag = /<(\/?)div\b[^>]*>/g;
+    tag.lastIndex = j;
+    let t;
+    while (depth && (t = tag.exec(html))) depth += t[1] ? -1 : 1;
+    i = depth ? html.length : tag.lastIndex;
+  }
+  return out;
+}
+
 /** The answer as light markdown, and the refine questions. */
 export function answerOf(html, prompt = "") {
-  let h = String(html || "").replace(/<style[\s\S]*?<\/style>/g, "").replace(/<script[\s\S]*?<\/script>/g, "").replace(/<!--[\s\S]*?-->/g, "");
+  // Blocks the page hides (a product card's details inside its link, in the
+  // newer layout) are not text.
+  let h = stripHidden(String(html || "")).replace(/<style[\s\S]*?<\/style>/g, "").replace(/<script[\s\S]*?<\/script>/g, "").replace(/<!--[\s\S]*?-->/g, "");
   const refine = [...h.matchAll(/<h4[^>]*data-question-header[^>]*>([^<]+)</g)].map((m) => decodeEntities(m[1]).trim());
   // The prompt heading (h3 data-ignore-copy) and the feedback block (data-snt) by structure first.
   h = h.replace(/<h3[^>]*data-ignore-copy[^>]*>[\s\S]*?<\/h3>/g, "\n\u0001\n");
@@ -70,6 +120,8 @@ export function answerOf(html, prompt = "") {
   if (fb > 0) h = h.slice(0, fb);
   h = h.replace(/<strong[^>]*>([^<]{1,80})<\/strong>/g, "**$1**").replace(/<b>([^<]{1,80})<\/b>/g, "**$1**");
   h = h.replace(/(<a[^>]*data-pid="[^"]*"[^>]*>\s*<span[^>]*>)([^<]{2,80})/g, "$1**$2**");
+  // The newer card link holds the name itself.
+  h = h.replace(/(<a[^>]*data-pid="[^"]*"[^>]*>)\s*([^<*\s][^<*]{1,79}?)\s*(?=<)/g, "$1**$2**");
   h = h.replace(/<h1[^>]*>Shared<\/h1>/, "");
   h = h.replace(/<(?:br|\/p|\/div|\/li|\/h[1-6]|\/tr)[^>]*>/gi, "\n").replace(/<li[^>]*>/gi, "\n- ").replace(/<h[1-6][^>]*>/gi, "\n### ");
   let text = decodeEntities(h.replace(/<[^>]+>/g, ""));
@@ -111,6 +163,10 @@ export function tidy(text, products = []) {
   while (lines.length && /^\s*(?:later\.?|(?:Copied|Failed to copy|Copy|Share|Show all|Show less|Good response|Bad response)+\s*)$/i.test(lines[lines.length - 1].replace(/Copied|Failed to copy|Copy/g, (m) => m))) lines.pop();
   t = lines.join("\n");
   t = t.replace(/\n(?=[ \t]*[a-z.,;:)!?])/g, " ").replace(/:\*\*\n/g, ":** ").replace(/[ \t]+/g, " ").replace(/ ([.,;:!?])/g, "$1");
+  // Citation chips' labels ("RunRepeat +3") on their own line: links, not text.
+  t = t.replace(/(^|\n)[\s ]*[\p{L}\d][\p{L}\d .&'’ -]{1,40}?[\s ]*\+\d+[\s ]*(?=\n|$)/gu, "$1");
+  // A bold name the markup put on its own line, mid-sentence.
+  t = t.replace(/([\p{Ll},])[ \t]*\n[ \t]*(\*\*[^*\n]{1,80}\*\*[ \t]+\p{Ll})/gu, "$1 $2");
   // "… prices. later." (a toast's tail joined on): gone.
   t = t.replace(/\s+later\.\s*$/, "");
   return t.trim();
@@ -129,6 +185,8 @@ export function readAiMode(raw, url = "") {
   const html = String(raw || "");
   const { islands: list, errors } = islands(html);
   const isl = readIslands(list);
+  // Cards the islands didn't give (the newer layout) come from the HTML.
+  for (const p of productsFromHtml(html)) if (!isl.products.some((x) => x.name === p.name)) isl.products.push(p);
   const prompt = promptOf(url, html);
   const { text, refine } = answerOf(html, prompt);
   const tags = {};

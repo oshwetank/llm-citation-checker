@@ -62,5 +62,17 @@ console.log("\nThe record");
   check("links but no AI answer: marked, not an answer", links.answerChars === 0 && links.platformSpecific.noAiAnswer === true, JSON.stringify([links.answerChars, links.platformSpecific.noAiAnswer]));
 }
 
+console.log("\nGoogle's newer card layout (live, 24 Nov 2026)");
+{
+  // The name sits right inside the card link, between comments, with a
+  // hidden block before </a>; the islands no longer carry the card.
+  const body = `<p>Try the <a data-pid="91" href="/search?ibp=oshop&amp;prds=x"><!--Ab12C ["1.9"]-->Kovo Ridge 2<!--Xy34Z 1--><style>.JuoeAb{display:none}</style><div class="JuoeAb">hidden card text</div></a> for rocky trails.</p>
+<div>Gear Blog +2</div><div>₹5,999.00</div><div>4.4</div>`;
+  const r = readAiMode(aiModePayload({ products: [], body }), FOLWR("trail shoes"));
+  check("the card from the HTML: name and price", r.products.some((p) => p.name === "Kovo Ridge 2" && p.price === "₹5,999.00"), JSON.stringify(r.products));
+  check("the name is bold in the text, in its sentence", /Try the \*\*Kovo Ridge 2\*\* for rocky trails/.test(r.answerText), r.answerText.slice(0, 160));
+  check("a citation chip's label (\"Gear Blog +2\") is not text", !/\+2/.test(r.answerText), r.answerText);
+}
+
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);

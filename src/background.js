@@ -3435,7 +3435,9 @@ function completeTurn(plat, leg, record) {
   // leg paces itself independently — concurrency divides wall-clock time by
   // running more of these gaps in parallel, not by making any one of them
   // shorter (see pacing.js's header comment).
-  const delay = nextGapMs(plat, leg.sentTimes || []);
+  // No gap after a leg's last question: AI Mode's minute or two of waiting
+  // kept a finished run "running" for nothing.
+  const delay = leg.idx >= leg.prompts.length ? 0 : nextGapMs(plat, leg.sentTimes || []);
   if (!loader.paused && !leg.paused) setTimeout(() => loaderRunLeg(plat, leg), delay);
 }
 
