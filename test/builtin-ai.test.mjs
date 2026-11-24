@@ -127,7 +127,7 @@ try {
     check("the hardware check and a suggested size, with why", /This computer:/.test(c.text) && /Suggested:/.test(c.text), c.text);
     check("three sizes, one picked", c.tiers.length === 3 && c.tiers.filter(([, v]) => v === "true").length === 1, JSON.stringify(c.tiers));
     check("a Download button; no switches yet", c.download === "Download AI model" && c.switches.length === 0, JSON.stringify(c));
-    check("and the two model switches on top, both off (0.84.0)", JSON.stringify(c.models) === JSON.stringify([["swAskModel", false], ["swLaya", false]]), JSON.stringify(c.models));
+    check("and the model switches on top, all off (0.84.0; Search by meaning, 1.0.5)", JSON.stringify(c.models) === JSON.stringify([["swAskModel", false], ["swLaya", false], ["swMeaning", false]]), JSON.stringify(c.models));
   }
 
   console.log("\nthe hardware check");
