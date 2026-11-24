@@ -156,8 +156,8 @@ try {
   // supposed to open MORE than one tab per engine now, and this is the only
   // way to prove that really happened rather than trusting a status report
   // that could be wrong in the same way the tabs are.
-  check("exactly 3 new real tabs were opened (Gemini in 2, ChatGPT in 1)",
-    opened === 3, `before=${before} after=${after} opened=${opened}`);
+  check("exactly 4 new real tabs were opened (Gemini in 2, ChatGPT in 2: 1.0.5)",
+    opened === 4, `before=${before} after=${after} opened=${opened}`);
 
   console.log("\nloader-status reports Gemini's 2 legs, correctly sharded, and ChatGPT's 1");
   const status = await ask({ type: "loader-status" });
@@ -165,7 +165,7 @@ try {
 
   {
     const ps = status.platStats && status.platStats.chatgpt;
-    check("chatgpt: one leg holding the whole list", ps && ps.total === 5 && Array.isArray(ps.legs) && ps.legs.length === 1 && ps.legs[0].current === PROMPTS[0], JSON.stringify(ps && ps.legs));
+    check("chatgpt: the whole list across its two tabs (1.0.5)", ps && ps.total === 5 && Array.isArray(ps.legs) && ps.legs.length === 2, JSON.stringify(ps && ps.legs));
   }
   for (const plat of ["gemini"]) {
     const ps = status.platStats && status.platStats[plat];

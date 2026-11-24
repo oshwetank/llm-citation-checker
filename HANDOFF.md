@@ -62,6 +62,18 @@ The store's version was 0.36. 1.0.0 is the first release since; the store pack i
 - Two changes made along the way stay. Gemini gets its question in `lcfcq`, so it never acts on `?q=` itself. A conversation address seen at any moment counts as sent (`sawConversation`, through the Navigation API), because Gemini flips its address between `/app` and `/app/<id>`. Neither was the cause.
 - The board always counted one copy per prompt and engine (`latestAnswers`), so earlier numbers weren't doubled; the cost was the account's usage and the user's Gemini history.
 
+**Speed, reliability and the popup (1.0.5, the owner's asks).**
+- **Pace:** every engine now runs fast by default: two tabs, 3–6 s between questions, AI Mode and ChatGPT included (`lib/pacing.js`). The old pace is the Settings switch **Careful pace** (`carefulPace`, read into `loader.options.careful` at the run's start): ChatGPT and AI Mode in one tab, AI Mode 60–120 s apart and at most 30 an hour. Known cost of fast: ChatGPT's hourly limit comes sooner (about 85 questions in 40 minutes in the stress run, one tab), and Google's robot check is likelier; both pause only that engine, as before.
+- **Run guard** (background.js, `pauseForOffline` / `retryTurn` / `replaceLegTab` / `pauseForStorage`):
+    - **The internet drops:** the run waits and nothing is failed or sent into an error page. It goes on by itself when the connection is back, and the question that was in flight is asked again.
+    - **The computer slept:** a turn that ran out its time is asked again, twice at most.
+    - **A run tab is closed or crashes:** a new tab takes over at once and the question is asked again, up to 3 replacements per tab.
+    - **Browser storage is full:** the run pauses and says so.
+    - **Power loss or the browser closing:** this was already handled. The run is saved after every turn and comes back paused at the same question.
+    - Tests: `run-guard.test` (offline and back; a tab closed mid-run).
+- **Popup:** campaigns are created and edited in the full view only. In the popup, New, Import and Edit open the full view on that campaign (`?campaign=`, `?newCampaign=1`, `?importCampaign=1`). The popup closes when focus moves, and a half-typed setup went with it. Tests: `campaign-popup.test`.
+- **Model download bar:** one file finishing no longer shows 100% for the whole model; seen at 0.9 of 1.5 GB.
+
 ## ChatGPT's local conversation address (1.0.4)
 
 The owner's Birla Opus campaign (23 Nov 2026, 35 prompts, ChatGPT + Gemini, on 1.0.3): Gemini 35/35, one copy each (the 1.0.3 duplicate fix, confirmed on a real account). ChatGPT 10/35: 32 turns "sent, no answer captured", each trace ending `sent:url` at `/c/local-chatgpt-…`, the address ChatGPT shows before its servers have the conversation; no request, no answer on the page. `submittedWhy()` no longer takes a local address, or the question in the transcript while the address is local, as sent; the composer-cleared check then gives up after ~10 s with "ChatGPT showed the question but never sent it (its address stayed local)" (`prompt-submit.test`). Not re-sent automatically: if the question did leave by a route the hook can't see, a second send would ask twice. Why ChatGPT doesn't send is not known yet: Debug capture was off, so the owner's next export with it on should show the requests.

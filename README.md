@@ -23,7 +23,10 @@ device unless you choose to share that campaign: the AI runs on your computer.
 > - **Next (1.0.5, in progress).**
 >   - **Ask knows which data you mean.** It works out the campaign, run, engines and tags from your question, shows them above the answer as chips you can change, asks back when two campaigns fit equally, and answers from the boards' own numbers, even with no AI model turned on.
 >   - **Gemini asked once.** Gemini's new way of sending a question wasn't recognised, so the extension pressed send again and Gemini got each question 2 or 3 times. It now sees Gemini's send and waits for it.
->   - **Google AI Mode, the fifth engine (beta).** Capture its answers and run campaigns on it, slowly: turn it on in Settings.
+>   - **Google AI Mode, the fifth engine (beta).** Capture its answers and run campaigns on it: turn it on in Settings.
+>   - **Faster runs.** Every engine runs two tabs at a few seconds' pace; "Careful pace" in Settings brings back the slower one.
+>   - **Runs that survive the real world.** A dropped connection, a sleeping computer, a closed tab or full storage no longer fail a campaign's questions: the run waits, opens a new tab or asks again.
+>   - **Campaigns are set up in the full view,** where switching tabs can't lose a half-typed setup.
 > - **1.0.4** (23 November 2026). ChatGPT turns that showed the question but never sent it.
 >   - **No more silent ChatGPT timeouts.** On some accounts ChatGPT shows a new conversation at a temporary address (/c/local-…) before its servers have it. That no longer counts as sent: the turn waits for ChatGPT's own request, a real conversation or the answer, and otherwise fails in ~10 s saying the question never left, so "Retry missing" can ask it again.
 > - **1.0.3** (23 November 2026). Fixes from a 530-question campaign run (CRM software and running shoes) on ChatGPT, Gemini and Perplexity.

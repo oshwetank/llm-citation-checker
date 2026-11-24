@@ -441,6 +441,29 @@ let GEO_PROFILES = [];
 let TRASHED_PROFILES = []; // soft-deleted campaigns, still within the recovery window
 let GEO_PROMPTS = [];
 let geoActiveId = null;
+/* Campaigns are created and edited in the full view only (1.0.5, asked:
+ * "people can't create a campaign in the popup"). The popup closes the
+ * moment focus moves (another tab, another window), and a half-typed setup
+ * went with it; the full view stays. The popup can still open, view and run
+ * campaigns. */
+const inPopup = () => document.documentElement.classList.contains("popup");
+function openCampaignInFullView({ campaign = null, newCampaign = false, importing = false } = {}) {
+  const q = new URLSearchParams({ mode: "tab" });
+  if (campaign) q.set("campaign", campaign);
+  if (newCampaign) q.set("newCampaign", "1");
+  if (importing) q.set("importCampaign", "1");
+  try { chrome.tabs.create({ url: chrome.runtime.getURL(`ui/panel.html?${q}`) }); } catch (_) { /* not in the extension */ }
+  try { window.close(); } catch (_) { /* a tab */ }
+}
+function renderSetupInFullViewCard(profile) {
+  const card = el("div", { className: "card cs-popup-only", id: "csPopupNote" },
+    el("h3", {}, profile && profile.lastRunAt ? "Edit this campaign in the full view" : "Set up this campaign in the full view"),
+    el("p", { className: "muted" }, "Campaigns are set up and edited in the full view, where nothing is lost if you switch tabs or windows."));
+  const b = el("button", { className: "btn primary", type: "button", id: "csOpenFull" }, "Open the full view");
+  b.onclick = () => openCampaignInFullView({ campaign: profile ? profile.id : null });
+  card.append(b);
+  return card;
+}
 // The engine the campaign's results are narrowed to ([] = every engine).
 // The rest of the results' state lives with renderCampaignResults (cb*).
 let geoEngineFilter = [];
@@ -6957,7 +6980,7 @@ function renderCampaignsImpl() {
     const detail = cbDetail && cbProfileId === profile.id;
     if (!detail && TRASHED_PROFILES.length) root.append(renderTrashedCampaigns());
     if (!detail) root.append(renderCampaignHead(profile));
-    if (!detail && campaignManageOpen) root.append(renderCampaignSetup(profile, false));
+    if (!detail && campaignManageOpen) root.append(inPopup() ? renderSetupInFullViewCard(profile) : renderCampaignSetup(profile, false));
     if (profile.lastRunAt || ALL_RECORDS.some((r) => r.geo && r.geo.profileId === profile.id)) root.append(renderCampaignResults(profile));
     return;
   }
@@ -6977,6 +7000,13 @@ function renderCampaignsImpl() {
   if (!campaignOnboardDismissed) root.append(renderOnboardingBanner());
   // As on the canvas: a breadcrumb in the setup's own bar, with the other
   // campaigns beside it, instead of a chooser card above.
+  if (inPopup()) {
+    const bar = el("div", { className: "card" });
+    bar.append(el("div", { className: "card-header" }, el("h3", {}, "Campaigns")), renderCampaignSwitcher());
+    root.append(bar, renderSetupInFullViewCard(profile));
+    if (profile.lastRunAt || ALL_RECORDS.some((r) => r.geo && r.geo.profileId === profile.id)) root.append(renderCampaignResults(profile));
+    return;
+  }
   const setup = renderCampaignSetup(profile, false);
   setup.querySelector(".cs-bar-title")?.prepend(el("div", { className: "cs-crumb" },
     el("nav", { className: "cs-crumb-path", "aria-label": "Breadcrumb" }, el("span", {}, "Campaigns"), el("span", { "aria-hidden": "true" }, "/"), el("span", { "aria-current": "page" }, profile.createdAt && profile.lastRunAt ? "Edit campaign" : "New campaign")),
@@ -6996,12 +7026,13 @@ function renderCampaignSwitcher() {
   if (GEO_PROFILES.length < MAX_PROFILES) {
     const add = el("button", { className: "geo-chip add" }, "+ New campaign");
     add.onclick = async () => {
+      if (inPopup()) { openCampaignInFullView({ newCampaign: true }); return; }
       const r = await send({ type: "geo-profile-save", profile: makeProfile({ name: `Campaign ${GEO_PROFILES.length + 1}` }) });
       if (r.ok) { geoActiveId = r.profile.id; campaignManageOpen = false; loadGeo(); } else showToast(r.error, "error");
     };
     switcher.append(add);
     const imp = el("button", { className: "geo-chip add", type: "button", id: "cpImport", title: "Open a campaign someone shared with you" }, "Import…");
-    imp.onclick = () => openImportDialog();
+    imp.onclick = () => (inPopup() ? openCampaignInFullView({ importing: true }) : openImportDialog());
     switcher.append(imp);
   }
   return switcher;
@@ -7857,12 +7888,13 @@ function renderCampaignEmptyState() {
   box.append(steps);
   const cta = el("button", { className: "btn primary" }, "+ Create your first campaign");
   cta.onclick = async () => {
+    if (inPopup()) { openCampaignInFullView({ newCampaign: true }); return; }
     const r = await send({ type: "geo-profile-save", profile: makeProfile({ name: "My first campaign" }) });
     if (r.ok) { geoActiveId = r.profile.id; loadGeo(); } else showToast(r.error, "error");
   };
   // Someone sent you a campaign (0.82.0): open it without making one first.
   const imp = el("button", { className: "btn ghost", type: "button", id: "cpImportFirst" }, "Import a shared campaign…");
-  imp.onclick = () => openImportDialog();
+  imp.onclick = () => (inPopup() ? openCampaignInFullView({ importing: true }) : openImportDialog());
   box.append(el("div", { className: "ft-actions" }, cta, imp));
   return box;
 }
@@ -10923,6 +10955,7 @@ function abDraft() {
     retentionMax: settingValue("retentionMax", $("#setRetention").value),
     maxCaptureMB: settingValue("maxCaptureMB", $("#setMaxMB").value),
     debugCapture: !!$("#setDebug").checked,
+    carefulPace: !!$("#setCareful")?.checked,
     readCitedPages: !!$("#setPages")?.checked,
     keepHandoffCaptures: !!$("#setHandoffKeep")?.checked,
   };
@@ -10931,6 +10964,7 @@ function abFillSettings(s) {
   $("#setRetention").value = s.retentionMax;
   $("#setMaxMB").value = s.maxCaptureMB;
   $("#setDebug").checked = !!s.debugCapture;
+  if ($("#setCareful")) { $("#setCareful").checked = !!s.carefulPace; $("#setCarefulText") && ($("#setCarefulText").textContent = tr(s.carefulPace ? "On" : "Off")); }
   if ($("#setPages")) $("#setPages").checked = !!s.readCitedPages;
   if ($("#setHandoffKeep")) $("#setHandoffKeep").checked = !!s.keepHandoffCaptures;
 }
@@ -10943,6 +10977,7 @@ function updateSettingsStatus() {
   $("#setUndo").disabled = !st.dirty;
   $("#setSave").disabled = !st.dirty;
   $("#setDebugText").textContent = tr($("#setDebug").checked ? "On" : "Off");
+  if ($("#setCarefulText")) $("#setCarefulText").textContent = tr($("#setCareful").checked ? "On" : "Off");
   if ($("#setPagesText")) $("#setPagesText").textContent = tr($("#setPages").checked ? "On" : "Off");
   if ($("#setHandoffKeepText")) $("#setHandoffKeepText").textContent = tr($("#setHandoffKeep").checked ? "On" : "Off");
 }
@@ -10959,7 +10994,7 @@ async function loadSettings() {
   updateSettingsStatus();
   renderStorageMeter();
 }
-["#setRetention", "#setMaxMB", "#setDebug", "#setHandoffKeep"].forEach((id) => $(id)?.addEventListener(id === "#setDebug" || id === "#setHandoffKeep" ? "change" : "input", () => { abJustSaved = false; updateSettingsStatus(); }));
+["#setRetention", "#setMaxMB", "#setDebug", "#setHandoffKeep", "#setCareful"].forEach((id) => $(id)?.addEventListener(id === "#setDebug" || id === "#setHandoffKeep" || id === "#setCareful" ? "change" : "input", () => { abJustSaved = false; updateSettingsStatus(); }));
 // Turning on Debug capture also asks Chrome to let the extension see
 // ChatGPT's own requests (1.0.4: chrome.webRequest, optional, read only), so
 // the report can show whether a question that stayed at /c/local-… ever left
@@ -11876,3 +11911,21 @@ document.addEventListener("mouseover", (e) => {
   try { chrome.runtime.onMessage.addListener((m) => { if (m && (m.type === "new-capture" || m.type === "capture-updated")) check(); }); } catch (_) { /* not in the extension */ }
   check();
 }
+
+// Opened from the popup (1.0.5): ?campaign=<id> | ?newCampaign=1 | ?importCampaign=1.
+(() => {
+  let p;
+  try { p = new URLSearchParams(location.search); } catch (_) { return; }
+  const id = p.get("campaign"), fresh = p.get("newCampaign") === "1", imp = p.get("importCampaign") === "1";
+  if (!id && !fresh && !imp) return;
+  const go = async () => {
+    if (fresh) {
+      const r = await send({ type: "geo-profile-save", profile: makeProfile({ name: "New campaign" }) });
+      if (r && r.ok) geoActiveId = r.profile.id;
+    } else if (id) geoActiveId = id;
+    campaignManageOpen = !!id;
+    document.querySelector('[data-tab="loader"]')?.click();
+    if (imp) setTimeout(() => { try { openImportDialog(); } catch (_) { /* not ready */ } }, 600);
+  };
+  setTimeout(go, 300);
+})();

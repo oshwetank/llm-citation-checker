@@ -101,6 +101,8 @@ const DEFAULT_SETTINGS = {
   myBrand: { name: "", url: "" },
   competitors: [], // [{ name, url }]
   debugCapture: false,
+  // The slower, safer pace (lib/pacing.js, 1.0.5): off = every engine fast.
+  carefulPace: false,
   // Pause capture (0.66.0): the switch at the top of the popup and the tab.
   // While on, nothing from an engine page is stored: no answers, no
   // after-answer requests, no probes, no network log. A campaign run's own
@@ -207,6 +209,16 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
   chrome.scripting.executeScript({ target: { tabId }, files: ["src/handoff.js"] }).catch((e) => logErr("handoff:inject", e));
 });
 chrome.tabs.onRemoved.addListener((tabId) => { handoffJobs.delete(tabId); setHandoffTab(tabId, false); });
+// A run's tab closed while its question was out (1.0.5): a new tab takes over
+// at once, instead of the question timing out 90 s later.
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (!loader.running || loader.paused) return;
+  const found = legForTab(tabId);
+  if (!found) return;
+  const { plat, leg } = found;
+  if (leg.paused || leg.idx >= leg.prompts.length || leg.inFlightIdx !== leg.idx) return;
+  replaceLegTab(plat, leg).then((ok) => { if (ok) retryTurn(plat, leg, "its tab was closed; a new one took over"); }).catch((e) => logErr("run:tab-removed", e));
+});
 
 /* Google AI Mode (1.0.5, engine 5).
  *
@@ -595,7 +607,7 @@ async function storeCapture(payload, meta) {
     gz,
     rawSchema: 1,
   };
-  await db.put("raw", rawRow);
+  try { await db.put("raw", rawRow); } catch (e) { if (isQuota(e)) { pauseForStorage(e); return { ok: false, error: "storage full" }; } throw e; }
 
   // Not yet merged with other copies of this answer: a campaign capture is
   // judged and attributed on its own first (rejectCapture, attributeGeo),
@@ -1622,6 +1634,8 @@ async function heartbeatTick() {
     await restoreRunIfAny();
     return;
   }
+  if (isOffline()) { await pauseForOffline(); return; }
+  if (loader.offline) resumeAfterOffline();
   if (loader.paused) return;
   for (const [plat, pd] of Object.entries(loader.platforms)) {
     if (pd.rateLimitedUntil && Date.now() >= pd.rateLimitedUntil) resumeAfterCooldown(plat);
@@ -1635,7 +1649,10 @@ async function heartbeatTick() {
   for (const [plat, pd] of Object.entries(loader.platforms)) {
     for (const leg of pd.legs || []) {
       if (leg.idx >= leg.prompts.length || !leg.startedAt || leg.watchdog || leg.paused) continue;
-      if (Date.now() - leg.startedAt >= turnBudgetMs(leg) + 5000) failTurnAndAdvance(plat, leg, "watchdog lost");
+      const over = Date.now() - leg.startedAt - turnBudgetMs(leg);
+      // Far over: the computer slept, or the browser was gone; ask again.
+      if (over >= SLEEP_GAP_MS) retryTurn(plat, leg, "the computer slept during this turn");
+      else if (over >= 5000) failTurnAndAdvance(plat, leg, "watchdog lost");
     }
   }
 }
@@ -1656,6 +1673,9 @@ function armWatchdog(plat, leg, ms) {
   leg.watchdog = setTimeout(async () => {
     if (!loader.running || loader.paused || leg.paused) return;
     if (leg.idx >= leg.prompts.length) return;
+    // Fired far later than set: the computer slept through the turn.
+    if (leg.startedAt && Date.now() - leg.startedAt > ms + SLEEP_GAP_MS) { leg.watchdog = null; retryTurn(plat, leg, "the computer slept during this turn"); return; }
+    if (isOffline()) { leg.watchdog = null; pauseForOffline(); return; }
     // Ask the tab where the turn got to before calling it — see
     // probeLoaderTab. The turn may complete while the probe is in flight
     // (an answer landing in the last second), so it's re-checked after.
@@ -1693,6 +1713,7 @@ function armWatchdog(plat, leg, ms) {
     const unreadable = leg.unreadable && leg.unreadable.token === leg.token ? leg.unreadable : null;
     const tab = probe && probe.ok ? null : await tabFacts(leg.tabId);
     const nav = leg.navLogToken === leg.token ? leg.navLog || [] : [];
+    if (tab && tab.status === "gone" && !unreadable && await replaceLegTab(plat, leg)) { leg.watchdog = null; retryTurn(plat, leg, "its tab was closed; a new one took over"); return; }
     const { reason, trace, ctx } = describeTimeout(probe, unreadable, tab, nav);
     if (leg.streamExtensions) {
       ctx.streamExtensions = leg.streamExtensions;
@@ -1862,6 +1883,102 @@ function resumeAfterCooldown(plat) {
   syncGeoRun();
 }
 
+/* Run guard (1.0.5): what the computer and its connection do to a run.
+ *
+ * - The internet drops: every engine waits (nothing is sent into an error
+ *   page, no turn is failed), and goes on by itself once it is back; the
+ *   question that was in flight is asked again.
+ * - The computer sleeps: a turn whose time ran out while it slept is asked
+ *   again (twice at most), not failed; the run carries on.
+ * - Power lost or browser closed: the run is saved after every turn and
+ *   comes back paused at the same question (restoreRunIfAny).
+ * - Storage full: the run pauses and says so, instead of losing answers.
+ */
+const SLEEP_GAP_MS = 3 * 60 * 1000;
+const MAX_TURN_RETRIES = 2;
+const isOffline = () => typeof navigator !== "undefined" && navigator.onLine === false;
+async function notifyGuard(title, message) {
+  try {
+    if (chrome.notifications) await chrome.notifications.create(`lcfc-guard-${Date.now()}`, { type: "basic", iconUrl: chrome.runtime.getURL("icons/icon128.png"), title, message, priority: 1 });
+  } catch (err) { logErr("guard:notify", err); }
+}
+async function pauseForOffline() {
+  if (!loader.running || loader.offline) return;
+  loader.offline = { at: Date.now() };
+  for (const pd of Object.values(loader.platforms)) {
+    for (const leg of pd.legs || []) {
+      clearWatchdog(leg);
+      if (!leg.paused) { leg.paused = true; leg.offlinePaused = true; }
+    }
+  }
+  loader.interrupted = { at: Date.now(), reason: "offline", detail: "The internet connection dropped. The run waits and goes on by itself when it's back." };
+  logEvent("run:offline", "turn", "connection lost; the run waits", { runId: loader.runId });
+  await persistLoaderState();
+  syncGeoRun(undefined, "waiting for the internet");
+  notifyGuard("Run waiting for the internet", "The connection dropped. Nothing was lost: the run goes on by itself when it's back.");
+}
+function resumeAfterOffline() {
+  if (!loader.running || !loader.offline || isOffline()) return;
+  loader.offline = null;
+  for (const [plat, pd] of Object.entries(loader.platforms)) {
+    for (const leg of pd.legs || []) {
+      if (!leg.offlinePaused) continue;
+      leg.offlinePaused = false;
+      leg.paused = false;
+      // The question in flight when it dropped is asked again, not failed.
+      if (leg.idx < leg.prompts.length && !loader.paused && !pd.rateLimitedUntil) loaderRunLeg(plat, leg);
+    }
+  }
+  if (loader.interrupted && loader.interrupted.reason === "offline") loader.interrupted = null;
+  logEvent("run:online", "turn", "connection back; the run goes on", { runId: loader.runId });
+  persistLoaderState();
+  syncGeoRun();
+}
+self.addEventListener?.("offline", () => { pauseForOffline().catch((e) => logErr("guard:offline", e)); });
+self.addEventListener?.("online", () => { resumeAfterOffline(); });
+/** Ask the same question again (a sleep or a dropped connection ate it), at most twice. */
+function retryTurn(plat, leg, why) {
+  clearWatchdog(leg);
+  leg.turnRetries = leg.turnRetryIdx === leg.idx ? (leg.turnRetries || 0) + 1 : 1;
+  leg.turnRetryIdx = leg.idx;
+  if (leg.turnRetries > MAX_TURN_RETRIES) return failTurnAndAdvance(plat, leg, why, 0, "", { guard: true });
+  logEvent(`run:retry:${plat}`, "turn", `asked again: ${why}`, { platform: plat, promptIndex: geoIdxOf(leg, leg.idx), runId: loader.runId });
+  if (isOffline()) { pauseForOffline(); return; }
+  setTimeout(() => { if (loader.running && !loader.paused && !leg.paused) loaderRunLeg(plat, leg); }, 2000);
+}
+/* A run tab closed mid-run (by hand, or its page crashed): a new tab takes
+ * over and the question is asked again, at most 3 times per tab in a run;
+ * after that the old behaviour (fail the question, move on). */
+const MAX_TAB_REPLACEMENTS = 3;
+async function replaceLegTab(plat, leg) {
+  if ((leg.tabReplacements || 0) >= MAX_TAB_REPLACEMENTS) return false;
+  try {
+    let windowId = loader.windowId || null;
+    if (windowId != null) { try { await chrome.windows.get(windowId); } catch (_) { windowId = null; } }
+    const t = await chrome.tabs.create({ url: "about:blank", active: false, ...(windowId != null ? { windowId } : {}) });
+    chrome.tabs.update(t.id, { autoDiscardable: false }).catch(() => {});
+    leg.tabId = t.id;
+    leg.turnsInTab = 0;
+    leg.tabReplacements = (leg.tabReplacements || 0) + 1;
+    logEvent(`run:tab-replaced:${plat}`, "turn", "the run's tab was closed; a new one took over", { platform: plat, runId: loader.runId });
+    await persistLoaderState();
+    return true;
+  } catch (e) { logErr("run:tab-replace", e); return false; }
+}
+
+/** Storage full: pause, keep what's there, say what to do. */
+async function pauseForStorage(err) {
+  if (!loader.running || loader.paused) return;
+  setLoaderPaused(true);
+  for (const pd of Object.values(loader.platforms)) for (const leg of pd.legs || []) clearWatchdog(leg);
+  loader.interrupted = { at: Date.now(), reason: "storage", detail: "This computer's browser storage is full, so answers couldn't be saved." };
+  logErr("run:storage-full", err);
+  await persistLoaderState().catch(() => {});
+  syncGeoRun(undefined, "paused: storage full");
+  notifyGuard("Run paused: storage is full", "Answers couldn't be saved. Free some disk space or lower the answers kept in Settings, then press Resume.");
+}
+const isQuota = (e) => /quota|QuotaExceeded|disk/i.test(String((e && (e.name || e.message)) || e));
+
 async function pauseForLimit(matched, detail, { manual = false } = {}) {
   const p = loader.platforms[matched];
   if (!p) return;
@@ -1897,6 +2014,7 @@ async function pauseForLimit(matched, detail, { manual = false } = {}) {
 
 function failTurnAndAdvance(plat, leg, reason, retryDelayMs = 0, trace = "", extraCtx = null) {
   if (!leg) return;
+  if (isOffline() && loader.running && !(extraCtx && extraCtx.guard)) { pauseForOffline(); return; }
   loader.errors++;
   leg.failed = (leg.failed || 0) + 1;
   leg.outcomes = leg.outcomes || [];
@@ -2567,6 +2685,7 @@ async function loaderRunLeg(plat, leg) {
   const ownership = await checkTabOwnership(plat, leg);
   if (!ownership.ok) {
     if (ownership.reason === "tab_closed") {
+      if (await replaceLegTab(plat, leg)) { retryTurn(plat, leg, "its tab was closed; a new one took over"); return; }
       failTurnAndAdvance(plat, leg, "tab closed", 500);
     } else {
       leg.tabId = null;
@@ -2595,6 +2714,7 @@ async function loaderRunLeg(plat, leg) {
   }
   leg.turnsInTab = (leg.turnsInTab || 0) + 1;
 
+  if (isOffline()) { pauseForOffline(); return; }
   const prompt = leg.prompts[leg.idx];
   const q = encodeURIComponent(prompt);
   // A one-time token proves to the content script that THIS navigation came from
@@ -2627,7 +2747,9 @@ async function loaderRunLeg(plat, leg) {
   try {
     await chrome.tabs.update(leg.tabId, { url });
   } catch (_) {
-    // Tab was closed — fail this prompt and move on rather than hanging.
+    // Tab was closed: a new one takes over (replaceLegTab), else fail this
+    // prompt and move on rather than hanging.
+    if (await replaceLegTab(plat, leg)) { retryTurn(plat, leg, "its tab was closed; a new one took over"); return; }
     failTurnAndAdvance(plat, leg, "tab closed", 500);
     return;
   }
@@ -2889,6 +3011,8 @@ async function loaderStart(prompts, options) {
   loader = newLoaderState();
   loader.running = true;
   loader.options = options || {};
+  // Careful pace (Settings) for the whole run (lib/pacing.js).
+  if (loader.options.careful === undefined) { try { loader.options.careful = !!(await getSettings()).carefulPace; } catch (_) { loader.options.careful = false; } }
   loader.total = clean.length * supported.length;
   // A campaign run passes its geo run id through so the run is known by ONE
   // id everywhere. It used to mint a second, unrelated one here — every log
@@ -2947,7 +3071,7 @@ async function loaderStart(prompts, options) {
     const pick = only ? (only[plat] || []).filter((i) => Number.isInteger(i) && i >= 0 && i < clean.length) : null;
     if (pick && !pick.length) continue;
     const list = pick ? pick.map((i) => clean[i]) : clean;
-    const shards = shardPrompts(list, tabsForEngine(plat)).filter((s) => s.prompts.length > 0);
+    const shards = shardPrompts(list, tabsForEngine(plat, { careful: !!loader.options.careful })).filter((s) => s.prompts.length > 0);
     const legs = [];
     for (const shard of shards) {
       const created = windowId
@@ -3437,7 +3561,7 @@ function completeTurn(plat, leg, record) {
   // shorter (see pacing.js's header comment).
   // No gap after a leg's last question: AI Mode's minute or two of waiting
   // kept a finished run "running" for nothing.
-  const delay = leg.idx >= leg.prompts.length ? 0 : nextGapMs(plat, leg.sentTimes || []);
+  const delay = leg.idx >= leg.prompts.length ? 0 : nextGapMs(plat, leg.sentTimes || [], Date.now(), Math.random(), { careful: !!loader.options.careful });
   if (!loader.paused && !leg.paused) setTimeout(() => loaderRunLeg(plat, leg), delay);
 }
 

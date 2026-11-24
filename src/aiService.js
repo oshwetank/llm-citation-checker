@@ -51,14 +51,17 @@ const QUEUE_PAUSE_MS = 3000;
 
 export function combineProgress(bar, p, expected) {
   const st = String((p && p.status) || "");
-  if (/ready|done/.test(st)) { bar.pct = 100; return { status: st, pct: 100, loaded: p.loaded || 0, total: p.total || 0 }; }
+  // Only the whole model being ready is 100% (1.0.5): one file's "done"
+  // showed 100% with 0.9 of 1.5 GB downloaded, for minutes.
+  if (/ready/.test(st)) { bar.pct = 100; return { status: st, pct: 100, loaded: p.loaded || 0, total: p.total || 0 }; }
   if (p.file && p.total) bar.files.set(p.file, { loaded: Math.min(p.loaded || 0, p.total), total: p.total });
+  else if (p.file && /done/.test(st) && p.loaded) bar.files.set(p.file, { loaded: p.loaded, total: p.loaded });
   let loaded = 0, total = 0;
   for (const f of bar.files.values()) { loaded += f.loaded; total += f.total; }
   // A file not started yet isn't in the sum: the model's size stands in.
   const whole = Math.max(total, Number(expected) || 0);
   let pct = whole ? (loaded * 100) / whole : null;
-  if (/progress_total/.test(st) && p.pct != null) pct = Math.max(pct || 0, Number(p.pct) || 0);
+  if (/progress_total/.test(st) && p.pct != null && !whole) pct = Math.max(pct || 0, Number(p.pct) || 0);
   if (pct != null) bar.pct = Math.max(bar.pct, Math.min(99, pct));
   return { status: st, pct: Math.round(bar.pct), loaded, total: whole || total };
 }

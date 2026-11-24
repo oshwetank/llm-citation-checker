@@ -197,7 +197,7 @@ console.log("\nTime left from the measured pace (0.79.0)");
   check("hours read as hours, not 2529m", formatDuration(151_740_000) === "1d 18h" && formatDuration(6_120_000) === "1h 42m" && formatDuration(185_000) === "3m 5s" && formatDuration(45_000) === "45s");
 
   console.log("\nOne ChatGPT tab");
-  check("ChatGPT runs in one tab, Gemini in two", tabsForEngine("chatgpt") === 1 && tabsForEngine("gemini") === 2);
+  check("every engine in two tabs (1.0.5); ChatGPT in one at Careful pace", tabsForEngine("chatgpt") === 2 && tabsForEngine("gemini") === 2 && tabsForEngine("chatgpt", { careful: true }) === 1);
 
   console.log("\nA fresh tab every N prompts (1.0.4)");
   const { tabRecycleEvery, needsFreshTab } = await import("../src/lib/pacing.js");
