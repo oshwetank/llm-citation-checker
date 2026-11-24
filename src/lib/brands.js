@@ -39,6 +39,8 @@ export function escapeRegExp(s) {
 // Generic stop-words: formatting/adjective noise that shows up as a "name" in
 // any vertical. Deliberately contains no industry nouns.
 const NOISE = new Set([
+  // AI Mode's bullet labels (1.0.5): "**User Sentiment:**", "**Rating:**".
+  "user", "sentiment", "rating", "ratings",
   "the", "a", "an", "and", "or", "for", "if", "our", "my", "your", "this", "that",
   "best", "top", "good", "great", "better", "ideal", "overall", "budget", "value",
   "premium", "cheap", "affordable", "recommended", "recommendation", "pick", "picks",
