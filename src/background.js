@@ -2554,7 +2554,13 @@ async function loaderRunLeg(plat, leg) {
   await persistLoaderState();
 
   const search = plat === "chatgpt" && loader.options.forceSearch ? "&lcfcsearch=1" : "";
-  const url = `${engineBaseUrl(plat)}?q=${q}&lcfc=1&lcfctok=${leg.token}${search}`;
+  // Gemini gets the question in lcfcq, which it doesn't read (1.0.5). From
+  // ?q= Gemini sends the question itself, and the q stays in its address as
+  // it moves to /app/<id>?q=…, so one turn went out 2 or 3 times, each a
+  // new conversation within ~1 s (stress run, 23 Nov 2026: 187 of 549
+  // questions). Now only the content script sends it, once.
+  const qKey = plat === "gemini" ? "lcfcq" : "q";
+  const url = `${engineBaseUrl(plat)}?${qKey}=${q}&lcfc=1&lcfctok=${leg.token}${search}`;
 
   // Marks how long to IGNORE this tab's own navigation events for — see the
   // chrome.tabs.onUpdated listener below for why this has to be time-based
@@ -4984,7 +4990,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             const [records, profiles, runs] = await Promise.all([db.getAll("derived"), db.getAll("profiles"), db.getAll("geoRuns")]);
             // Each lookup is broadcast as it starts (0.78.0): Ask shows it.
             const onStep = (st) => broadcast({ type: "ask-step", askId: msg.askId || null, tool: st.tool });
-            sendResponse({ ok: true, ...(await aiSvc.askQuestion({ question: String(msg.question || ""), history: Array.isArray(msg.history) ? msg.history : [], data: { records, profiles, runs }, onStep })) });
+            // 1.0.5: where the user is (the campaign open on the page), the
+            // last answer's plan (a follow-up keeps its scope) and an edited
+            // plan (a scope chip changed, an ask-back choice) go with it.
+            const obj = (x) => (x && typeof x === "object" ? x : null);
+            const context = { collectionId: typeof (obj(msg.context) || {}).collectionId === "string" ? msg.context.collectionId : null };
+            sendResponse({ ok: true, ...(await aiSvc.askQuestion({ question: String(msg.question || ""), data: { records, profiles, runs }, onStep, context, previous: obj(msg.previous), plan: obj(msg.plan) })) });
           } catch (e) { sendResponse({ ok: false, error: String(e && e.message || e) }); }
           break;
         }

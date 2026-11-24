@@ -53,11 +53,11 @@ const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] }
 
 // Runs the REAL content-iso.js against a mock page shaped like one engine.
 // The page records every submission it receives so the count can be asserted.
-async function run(html, { gemini = false, grok = false, waitMs = 9000, throttle = false, throttleMs = 60000, workerClock = true, clockMs = 0 } = {}) {
+async function run(html, { gemini = false, grok = false, qKey = "q", waitMs = 9000, throttle = false, throttleMs = 60000, workerClock = true, clockMs = 0 } = {}) {
   const page = await browser.newPage();
   const host = gemini ? "https://gemini.google.com" : grok ? "https://grok.com" : "https://chatgpt.com";
   await page.route("**/*", (r) => r.fulfill({ status: 200, contentType: "text/html", body: `<body>${html}</body>` }));
-  await page.goto(`${host}/mock?q=${encodeURIComponent(PROMPT)}&lcfc=1&lcfctok=T1`);
+  await page.goto(`${host}/mock?${qKey}=${encodeURIComponent(PROMPT)}&lcfc=1&lcfctok=T1`);
   const res = await page.evaluate(async ({ iso, waitMs, throttle, throttleMs, workerClock, clockMs }) => {
     const t0 = Date.now();
     window.__t0 = t0;
@@ -403,6 +403,63 @@ console.log("\nGemini: the page sends ?q= itself (1.0.2) — never sent a second
       setTimeout(()=>{ if(q0){ history.pushState(null,'','/app/abc123def456'); window.__record(q0); } }, 2000);
     </script>`, { gemini: true });
   check("submitted exactly once — Gemini's own send, not ours as well", r.submits === 1, `submits=${r.submits}`);
+  check("no failure reported", r.gaveUp.length === 0, r.gaveUp.join(","));
+}
+
+console.log("\nGemini gets the question in lcfcq, not ?q= (1.0.5): sent once, by us, at once");
+{
+  // Stress run, 23 Nov 2026: from ?q= Gemini sent the question itself and
+  // kept the q in its address, and 187 of 549 questions went out 2 or 3
+  // times as separate conversations ~1 s apart. This page sends any ?q= it
+  // finds on load AND again every second while a q is in its address, worse
+  // than the live page; with lcfcq there is no q for it to act on.
+  const r = await run(`
+    <rich-textarea><div contenteditable="true" id="g"></div></rich-textarea>
+    <button aria-label="Send message">send</button><div id="convo"></div>
+    <script>${RECORD_GEMINI}
+      const box=document.getElementById('g');
+      const fire=()=>{ if(!box.innerText.trim()) return; const t=box.innerText; box.innerHTML=''; window.__record(t); history.pushState(null,'','/app/abc123def456'); };
+      box.addEventListener('keydown',e=>{ if(e.key==='Enter') fire(); });
+      document.querySelector('button[aria-label="Send message"]').addEventListener('click',fire);
+      const own=()=>{ const q=new URLSearchParams(location.search).get('q'); if(q) window.__record(q); };
+      setTimeout(own, 500); setInterval(own, 1000);
+    </script>`, { gemini: true, qKey: "lcfcq", waitMs: 9000 });
+  check("submitted exactly once", r.submits === 1, `submits=${r.submits}`);
+  check("the prompt text is correct", r.text === PROMPT, JSON.stringify(r.text));
+  check("sent without the 10 s wait for Gemini's own send", r.submitAt != null && r.submitAt < 6000, `submitted at ${r.submitAt}ms`);
+  check("the question is not left in the address", !/[?&](q|lcfcq)=/.test(r.url), r.url);
+  check("no failure reported", r.gaveUp.length === 0, r.gaveUp.join(","));
+}
+
+console.log("\nGemini flips between /app and /app/<id> after a send, the question back in the box: sent once (1.0.5)");
+{
+  // Live, 24 Nov 2026: once the conversation existed Gemini's address went
+  // /app ↔ /app/<id> several times a second, and /app showed the new-chat
+  // page with the question back in the box. The script's checks landed on
+  // /app, saw no conversation, and pressed send again ("click … enter …
+  // reclick"): 21 of 23 questions asked 2 to 4 times. This page does the
+  // same, and its send button works only on /app, as a new chat would.
+  const r = await run(`
+    <rich-textarea><div contenteditable="true" id="g"></div></rich-textarea>
+    <button aria-label="Send message">send</button><div id="convo"></div>
+    <script>${RECORD_GEMINI}
+      const box=document.getElementById('g');
+      let n=0, flip=null;
+      const fire=()=>{ const t=box.innerText.trim(); if(!t) return; box.innerHTML=''; window.__record(t); n++;
+        const id='/app/conv'+n+'abcdef';
+        history.pushState(null,'',id);
+        if(flip) clearInterval(flip);
+        // Mostly on /app: the question back in the box, no transcript; the conversation
+        // address shows for 30 ms a second.
+        const convo=document.getElementById('convo'); let kept=[];
+        const away=()=>{ history.replaceState(null,'','/app'); box.textContent=t; kept=[...convo.childNodes]; convo.replaceChildren(); };
+        setTimeout(away,30);
+        flip=setInterval(()=>{ history.replaceState(null,'',id); box.innerHTML=''; convo.replaceChildren(...kept); setTimeout(away,30); },1000);
+      };
+      box.addEventListener('keydown',e=>{ if(e.key==='Enter') fire(); });
+      document.querySelector('button[aria-label="Send message"]').addEventListener('click',fire);
+    </script>`, { gemini: true, qKey: "lcfcq", waitMs: 12000 });
+  check("submitted exactly once", r.submits === 1, `submits=${r.submits}`);
   check("no failure reported", r.gaveUp.length === 0, r.gaveUp.join(","));
 }
 

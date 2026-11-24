@@ -465,7 +465,9 @@
     // claimed page never had our ?q=, so its own address is left alone.
     let bareUrl = location.pathname + location.search;
     if (params.get("lcfc") !== "1") { claimTurn(); return; }
-    q = params.get("q") || "";
+    // Gemini's arrives in lcfcq, which Gemini doesn't act on (background.js).
+    const viaLcfcq = params.has("lcfcq");
+    q = params.get("lcfcq") || params.get("q") || "";
     token = params.get("lcfctok") || "";
     wantSearch = params.get("lcfcsearch") === "1";
     if (!q || !token) return;
@@ -493,7 +495,7 @@
      * path below remains fully supported and is the only path on Gemini.
      */
     const keepQ = new URLSearchParams(location.search);
-    ["lcfc", "lcfctok", "lcfcsearch"].forEach((k) => keepQ.delete(k));
+    ["lcfc", "lcfctok", "lcfcsearch", "lcfcq"].forEach((k) => keepQ.delete(k));
     const qOnlyUrl = location.pathname + (keepQ.toString() ? `?${keepQ}` : "");
     bareUrl = location.pathname;
     try { history.replaceState(null, "", qOnlyUrl); } catch (_) {}
@@ -666,6 +668,9 @@
         // Grok's /tos-gate hop), so /app/<id> before we type is its own
         // ?q= submit (1.0.2).
         if ((injected || plat === "gemini") && !local && path !== startPath && CONVERSATION_PATH && CONVERSATION_PATH.test(path)) return "url";
+        // A conversation address seen at any moment since, even if the page
+        // has moved off it again (Gemini, below at sawConversation).
+        if (sawConversation && (injected || plat === "gemini")) return "url";
         if (pick(sel.streaming)) return "stream";
         if (local) return null;
         try {
@@ -963,6 +968,29 @@
       let sendTicks = 0;
       let searchDone = false;
       let injected = false;
+      /* Gemini, once a conversation exists, flips its address between /app
+       * and /app/<id> several times a second, and on /app it shows the
+       * new-chat page with the question back in the box as a draft (live,
+       * 24 Nov 2026). A check that landed on /app saw no conversation and
+       * the question still in the box, so it pressed send again: its trace
+       * read "click … enter … reclick … sent", three presses, three new
+       * conversations, and 21 of 23 questions in that run were asked 2 to 4
+       * times. Every address the page moves to is watched (the Navigation
+       * API sees the page's own pushState), and a conversation address seen
+       * once counts from then on. */
+      let sawConversation = false;
+      const noteConversation = (path) => {
+        if (!sawConversation && CONVERSATION_PATH && path !== startPath && CONVERSATION_PATH.test(path) && !(plat === "chatgpt" && /\/c\/local-/i.test(path))) {
+          sawConversation = true;
+          T("conversation-seen");
+        }
+      };
+      try {
+        if (window.navigation && window.navigation.addEventListener) {
+          window.navigation.addEventListener("navigate", (e) => { try { noteConversation(new URL(e.destination.url).pathname); } catch (_) { /* not a URL */ } });
+          window.navigation.addEventListener("currententrychange", () => noteConversation(location.pathname));
+        }
+      } catch (_) { /* no Navigation API: the per-tick check below still runs */ }
       let retypes = 0; // times a doubled prompt was cleared and typed again
       let tosTicks = 0;           // ticks spent on grok.com's /tos-gate
       let submitTried = 0;
@@ -1087,7 +1115,8 @@
         // read the filled box as "chose not to send" and sent too, so Gemini
         // got the question 2 to 4 times (stress run, 23 Nov 2026, while the
         // machine was short of memory). Gemini gets ~10 s to send its own.
-        if (plat === "gemini" && ticks - composerSeenTick < GEMINI_OWN_SEND_TICKS) return;
+        // Only when the question came in ?q=; from lcfcq Gemini never sends.
+        if (plat === "gemini" && !viaLcfcq && ticks - composerSeenTick < GEMINI_OWN_SEND_TICKS) return;
         if (ticks - composerSeenTick < GRACE_AFTER_COMPOSER && !prefilled) return;
         // The page said it sent ("prepare") a moment ago: give that 8 s to
         // show before doing anything, so a real send is never doubled. After
