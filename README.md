@@ -20,6 +20,9 @@ device unless you choose to share that campaign: the AI runs on your computer.
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
+> - **Next (1.0.5, in progress).**
+>   - **Ask knows which data you mean.** It works out the campaign, run, engines and tags from your question, shows them above the answer as chips you can change, asks back when two campaigns fit equally, and answers from the boards' own numbers, even with no AI model turned on.
+>   - **Gemini asked fewer times.** A question is no longer re-sent while Gemini's address flips between its new-chat page and the conversation; some questions are still asked twice, being worked on.
 > - **1.0.4** (23 November 2026). ChatGPT turns that showed the question but never sent it.
 >   - **No more silent ChatGPT timeouts.** On some accounts ChatGPT shows a new conversation at a temporary address (/c/local-…) before its servers have it. That no longer counts as sent: the turn waits for ChatGPT's own request, a real conversation or the answer, and otherwise fails in ~10 s saying the question never left, so "Retry missing" can ask it again.
 > - **1.0.3** (23 November 2026). Fixes from a 530-question campaign run (CRM software and running shoes) on ChatGPT, Gemini and Perplexity.

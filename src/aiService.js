@@ -30,7 +30,7 @@ import { TIERS, pickTier, MODEL_FAMILY, MODEL_LICENCE } from "./lib/llmTiers.js"
 import { aiCheckRecord, applyAi, aiKey } from "./lib/aiCheck.js";
 import { LAYA_VERSION } from "./lib/laya.js";
 import { textMatches } from "./lib/textMatch.js";
-import { ask as runAsk } from "./lib/assistant.js";
+import { askPlanned } from "./lib/assistant.js";
 import { isPlausibleProseName } from "./lib/brands.js";
 import { nanoAvailability, nanoGenerate, nanoDownload } from "./lib/nanoEngine.js";
 import { BENCH_RECORD, benchVerdict, chooseEngine } from "./lib/aiBench.js";
@@ -492,21 +492,22 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
    * built-in model with the read-only tools in lib/assistantTools.js.
    * A test stand-in may carry a script of replies instead of a model.
    */
-  async function askQuestion({ question, history = [], data, onStep = null }) {
+  async function askQuestion({ question, data, onStep = null, context = {}, previous = null, plan = null }) {
+    // 1.0.5: Ask plans the question in code and answers from the boards'
+    // numbers (lib/assistant.js askPlanned). A model, when one is on, only
+    // writes the reply; with none, a template does, so Ask works either way.
     const state = await getState();
-    const eng = await engine(state);
-    if (!eng) throw new Error("The built-in AI isn't set up.");
-    let generate;
-    if (state.custom && Array.isArray(state.custom.script)) {
+    const eng = await engine(state).catch(() => null);
+    let generate = null;
+    if (eng && state.custom && Array.isArray(state.custom.script)) {
       const script = [...state.custom.script];
       generate = async () => ({ text: script.length ? script.shift() : "" });
-    } else {
-      await eng.prepare();
-      generate = eng.generate;
+    } else if (eng) {
+      try { await eng.prepare(); generate = eng.generate; } catch (_) { generate = null; }
     }
     const t0 = Date.now();
-    const r = await runAsk({ question, history, generate, data, onStep });
-    return { ...r, ms: Date.now() - t0, model: eng.label, engine: eng.id };
+    const r = await askPlanned({ question, data, generate, context, previous, plan, onStep });
+    return { ...r, ms: Date.now() - t0, model: generate && eng ? eng.label : null, engine: generate && eng ? eng.id : null };
   }
 
   async function setEngine(choice) {

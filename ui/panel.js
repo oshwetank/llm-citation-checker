@@ -791,6 +791,7 @@ function dashboardParts(rows, picked) {
   return [{ title: picked ? `Prompts I picked (${rows.length})` : `Prompts I've asked AI engines (${rows.length}${rows.length > 200 ? ", first 200" : ""})`, text: list.join("\n") }];
 }
 
+let askFrom = null; // the collection Ask was opened from (see showTab)
 function showTab(name) {
   const scroller = activeScroller();
   const current = document.querySelector(".panel.active")?.id;
@@ -826,7 +827,10 @@ function showTab(name) {
   // may have its answer panel hidden, 0.60.0).
   if (name === "analyze" && atHeaderNodes && document.querySelector("#analyze .at-grid")) setHeaderPage("analyze", ...atHeaderNodes);
   if (name === "about") aboutEnter();
-  if (name === "ask") renderAsk(document.getElementById("ask"), { openCapture, openSettings: () => { showTab("about"); abGo("settings"); setTimeout(() => document.getElementById("setAi")?.scrollIntoView({ block: "start" }), 50); } });
+  // Where the user is (1.0.5): coming to Ask from a campaign's page, Ask
+  // starts on that campaign; from the Dashboard, on My questions.
+  if (name === "ask" && current && current !== "ask") askFrom = current === "loader" && geoActiveId ? geoActiveId : current === "dashboard" ? "history" : null;
+  if (name === "ask") renderAsk(document.getElementById("ask"), { openCapture, context: () => ({ collectionId: askFrom }), openSettings: () => { showTab("about"); abGo("settings"); setTimeout(() => document.getElementById("setAi")?.scrollIntoView({ block: "start" }), 50); } });
   if (name === "analyze") abNoteAnalyzed(ANALYZE_SHOWN);
   syncShareIcon();
 

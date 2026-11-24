@@ -75,16 +75,15 @@ export async function renderAsk(root, hooks = {}) {
   let redrawn = false;
   mountModelSwitches(slot, { compact: true, onChange: (s) => { if (!redrawn && s && !!s.ready !== ready && root.isConnected) { redrawn = true; renderAsk(root, hooks); } } });
 
-  if (!ready) {
-    const q = h("input", { type: "text", id: "askOffQ", className: "ask-input", placeholder: tr("Ask about your campaigns, brands, sites or answers…"), dir: "auto" });
-    wrap.append(h("div", { className: "card ask-empty", id: "askOff" },
-      h("p", {}, "Ask answers with an AI model on this computer: turn on \u201cAsk's AI model\u201d below (a one-time download), and it's ready."),
-      models,
-      h("p", { className: "ask-or" }, "Or, with no download, take your latest campaign's data and your question to another AI:"),
-      h("div", { className: "ask-row" }, q, handoffButton({ id: "askOffHandoff", getParts: campaignPack, question: () => q.value, file: "citoskeleton-campaign.md" }))));
-    return;
-  }
+  // 1.0.5: Ask answers from your data with or without a model (the numbers
+  // come from the boards' own code, the reply from a template); a model on
+  // this computer writes the reply in your words and your language.
+  if (!ready) slot.before(h("p", { className: "ask-off-note", id: "askOffNote" }, "Ask already answers from your data. Turn on “Ask's AI model” below (a one-time download) for replies in your own words and language."));
   wrap.append(models);
+  // The collections a scope chip can switch to.
+  const profs = await send({ type: "geo-profile-list" });
+  if (gen !== renderGen) return;
+  const collections = [...((profs && profs.profiles) || []).map((p) => ({ id: p.id, name: p.name })), { id: "history", name: "My questions" }];
 
   // A chat (0.78.0, asked: "the Ask UI is not quite like a chat
   // interface"): the conversation fills the page, the box to type in stays
@@ -96,7 +95,22 @@ export async function renderAsk(root, hooks = {}) {
   const meta = (who, t) => h("div", { className: "ask-meta" }, h("b", {}, who), t ? h("span", {}, when(t)) : "");
   const drawMsg = (m) => {
     if (m.role === "user") return h("div", { className: "ask-msg you" }, meta(tr("You"), m.at), h("div", { className: "ask-text", dir: "auto" }, m.content));
-    const box = h("div", { className: "ask-msg ai" }, meta("CitoSkeleton", m.at), h("div", { className: "ask-text", dir: "auto" }, ...mdNodes(m.content)));
+    const box = h("div", { className: "ask-msg ai" }, meta("CitoSkeleton", m.at));
+    // What the answer is about, as chips that can be changed (1.0.5): a
+    // change runs the same question on the new scope, with no model asked.
+    if (m.scope && m.plan) box.append(scopeChips(m));
+    box.append(h("div", { className: "ask-text", dir: "auto" }, ...mdNodes(m.content)));
+    // Asked back (1.0.5): the question could mean several campaigns.
+    if (m.askBack && m.plan) {
+      const row = h("div", { className: "ask-choices", role: "group", "aria-label": tr("Choose one") });
+      m.askBack.choices.forEach((c) => {
+        const b = h("button", { type: "button", className: "db-chip ask-choice" }, c.label);
+        b.onclick = () => rerun(m, { ...m.plan, scope: { ...m.plan.scope, collections: c.collections }, by: c.collections.length > 1 && m.plan.by === "none" ? "collection" : m.plan.by });
+        row.append(b);
+      });
+      box.append(row);
+    }
+    if (m.notes && m.notes.length) box.append(h("div", { className: "ask-notes", role: "note" }, ...m.notes.map((x) => h("div", {}, x))));
     // Numbers in the reply that no lookup returned (0.75.0): flagged, not trusted.
     if (m.unverified && m.unverified.length) box.append(h("div", { className: "ask-unverified", role: "note" }, `${tr("Not in your data — check these numbers")}: `, m.unverified.join(", ")));
     if (m.steps && m.steps.length) box.append(h("div", { className: "ask-steps x-only" }, `${tr("Looked up")}: `, m.steps.map((s) => `${s.tool}${s.ok ? "" : " ✗"}`).join(", ")));
@@ -145,6 +159,28 @@ export async function renderAsk(root, hooks = {}) {
     stepListener = onStep;
     chrome.runtime.onMessage.addListener(onStep);
   } catch (_) { /* no runtime in a test page */ }
+  // The last answer's plan: a follow-up ("and on Gemini?") keeps its scope.
+  const lastPlan = () => { for (let i = msgs.length - 1; i >= 0; i--) { const m = msgs[i]; if (m.role === "assistant" && m.plan && m.scope) return m.plan; } return null; };
+  const ask = async (q, extra = {}) => {
+    btn.disabled = true;
+    typing.hidden = false;
+    typing.querySelector(".ask-typing-t").textContent = tr("Thinking…");
+    log.scrollTop = log.scrollHeight;
+    status.textContent = "";
+    askId++;
+    let context = {};
+    try { context = (hooks.context && hooks.context()) || {}; } catch (_) { /* no page context */ }
+    const r = await send({ type: "ask", question: q, askId: `a${askId}`, context, previous: lastPlan(), ...extra });
+    btn.disabled = false;
+    typing.hidden = true;
+    status.textContent = r && r.ok ? (r.ms ? `${(r.ms / 1000).toFixed(1)} s` : "") : "";
+    msgs.push(r && r.ok
+      ? { role: "assistant", content: r.answer, steps: r.steps, refs: r.refs, unverified: r.unverified || [], lookups: r.lookups || [], plan: r.plan || null, scope: r.scope || null, askBack: r.askBack || null, notes: r.notes || [], question: q, at: Date.now() }
+      : { role: "assistant", content: `${tr("That didn't work")}: ${(r && r.error) || "no reply"}`, at: Date.now() });
+    await save(msgs);
+    redraw();
+    input.focus();
+  };
   const go = async () => {
     const q = input.value.trim();
     if (!q || btn.disabled) return;
@@ -152,22 +188,45 @@ export async function renderAsk(root, hooks = {}) {
     grow();
     msgs.push({ role: "user", content: q, at: Date.now() });
     redraw();
-    btn.disabled = true;
-    typing.hidden = false;
-    typing.querySelector(".ask-typing-t").textContent = tr("Thinking…");
-    log.scrollTop = log.scrollHeight;
-    status.textContent = "";
-    const history = msgs.slice(0, -1).slice(-8).map((m) => ({ role: m.role, content: m.content }));
-    askId++;
-    const r = await send({ type: "ask", question: q, history, askId: `a${askId}` });
-    btn.disabled = false;
-    typing.hidden = true;
-    status.textContent = r && r.ok ? (r.ms ? `${(r.ms / 1000).toFixed(1)} s` : "") : "";
-    msgs.push(r && r.ok ? { role: "assistant", content: r.answer, steps: r.steps, refs: r.refs, unverified: r.unverified || [], lookups: r.lookups || [], at: Date.now() } : { role: "assistant", content: `${tr("That didn't work")}: ${(r && r.error) || "no reply"}`, at: Date.now() });
-    await save(msgs);
-    redraw();
-    input.focus();
+    await ask(q);
   };
+  // The same question on a changed plan (a chip, an ask-back choice).
+  function rerun(m, plan) {
+    if (btn.disabled) return;
+    const q = m.question || (() => { const at = msgs.indexOf(m); return at > 0 && msgs[at - 1].role === "user" ? msgs[at - 1].content : ""; })();
+    ask(q, { plan });
+  }
+  function scopeChips(m) {
+    const row = h("div", { className: "ask-scope", role: "group", "aria-label": tr("What this answer is about") });
+    const ENG = ["chatgpt", "gemini", "perplexity", "grok"];
+    for (const c of m.scope.chips || []) {
+      let opts = null;
+      if (c.kind === "collection") opts = [...collections.map((x) => ({ label: x.name, value: JSON.stringify([x.id]) })), ...(collections.length > 2 ? [{ label: tr("All campaigns"), value: JSON.stringify(collections.filter((x) => x.id !== "history").map((x) => x.id)) }] : [])];
+      if (c.kind === "runs") opts = [{ label: tr("latest run"), value: "latest" }, { label: tr("all runs"), value: "all" }];
+      if (c.kind === "engines") opts = [{ label: tr("all engines"), value: "[]" }, ...ENG.map((e) => ({ label: ENGINE[e], value: JSON.stringify([e]) }))];
+      if (!opts) {
+        // Tags, prompts, signed in: a chip to take off.
+        const b = h("button", { type: "button", className: "ask-scope-chip", title: tr("Remove") }, c.label, h("span", { "aria-hidden": "true" }, " ×"));
+        b.onclick = () => rerun(m, { ...m.plan, scope: { ...m.plan.scope, [c.kind]: c.kind === "signedIn" ? null : [] } });
+        row.append(b);
+        continue;
+      }
+      const sel = h("select", { className: "ask-scope-chip", "aria-label": tr(c.kind === "collection" ? "Campaign" : c.kind === "runs" ? "Runs" : "Engines") });
+      const cur = c.kind === "runs" ? String(c.value) : JSON.stringify(c.value);
+      if (!opts.some((o) => o.value === cur)) opts.unshift({ label: c.label, value: cur });
+      for (const o of opts) { const op = h("option", { value: o.value }, o.label); if (o.value === cur) op.selected = true; sel.append(op); }
+      sel.onchange = () => {
+        const v = sel.value;
+        const scope = { ...m.plan.scope };
+        if (c.kind === "runs") { scope.runs = v; if (v === "latest") scope.dates = null; }
+        else scope[c.kind === "collection" ? "collections" : "engines"] = JSON.parse(v);
+        rerun(m, { ...m.plan, scope, by: c.kind === "collection" && scope.collections.length > 1 && m.plan.by === "none" ? "collection" : m.plan.by });
+      };
+      row.append(sel);
+    }
+    if (m.scope.answers != null) row.append(h("span", { className: "ask-scope-n" }, `${m.scope.answers} ${tr("answers")}`));
+    return row;
+  }
   btn.onclick = go;
   input.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); go(); } };
   clear.onclick = async () => { msgs = []; await save(msgs); redraw(); input.focus(); };
@@ -190,6 +249,7 @@ const STEP_WORDS = {
   top_sources: "Counting the sites cited…", brand_trend: "Looking at the trend across runs…", list_campaigns: "Listing your campaigns…",
 };
 export function stepText(tool) {
+  if (/^plan:/.test(String(tool || ""))) return tr("Working out the numbers from your data…");
   return tr(STEP_WORDS[tool] || `Looking up ${String(tool || "").replace(/_/g, " ")}…`);
 }
 
