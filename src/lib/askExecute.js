@@ -13,6 +13,7 @@ import { campaignInsights, brandTrend } from "./insights.js";
 import { usageLimitOf, normName } from "./geo.js";
 import { GLOSSARY } from "./glossary.js";
 import { fold, collectionOf, HISTORY_ID, HISTORY_NAME, ENGINE_LABEL } from "./askCatalog.js";
+import { indexFor, keywordHits, byAnswer } from "./passages.js";
 
 const answered = (r) => String(r.answerText || "").trim().length > 0;
 const runOf = (r) => (r.geo && r.geo.runId) || r.runId || null;
@@ -38,8 +39,16 @@ function scoped(records, plan, collectionId) {
     if (s.dates && s.dates.from && (r.capturedAt || 0) < s.dates.from) return false;
     if (s.dates && s.dates.to && (r.capturedAt || 0) >= s.dates.to) return false;
     if (s.signedIn && ((r.session && r.session.signedIn) || "unknown") !== s.signedIn) return false;
+    // Answers that treat the named brand this way, by the AI labels.
+    const stance = Array.isArray(s.stance) ? s.stance[0] : s.stance;
+    if (stance && !(r.brandMentions || []).some((m) => m && m.aiStance === stance && (!plan.subject.brands.length || plan.subject.brands.some((b) => fold(b) === fold(m.brand))))) return false;
     return true;
   });
+}
+
+/** Every stored record in the plan's scope, across its collections. */
+export function scopeRecords(plan, data) {
+  return (plan.scope.collections || []).flatMap((id) => scoped(data.records || [], plan, id));
 }
 
 // "My questions" as a campaign the board functions can read: no own brand,
@@ -53,7 +62,7 @@ const asHistory = (rs) => rs.map((r) => ({ ...r, geo: { ...(r.geo || {}), profil
  * @param {{records: object[], profiles: object[], runs: object[]}} data
  * @returns {{intent: string, parts: object[], refs: object[], result: object}}
  */
-export function execute(plan, data) {
+export function execute(plan, data, opts = {}) {
   const records = data.records || [], profiles = data.profiles || [], runs = data.runs || [];
   const intent = plan.intent || "metric";
   if (intent === "not_recorded") return { intent, parts: [], refs: [], result: { notRecorded: true, text: NOT_RECORDED } };
@@ -86,7 +95,7 @@ export function execute(plan, data) {
       run: I.run.date,
       runs: latest ? 1 : new Set(rs.map(runOf).filter(Boolean)).size,
     };
-    parts.push({ collection: { id, name: profile.name, brand: I.campaign.brand }, coverage, data: shape(intent, plan, I, rs, profile, runs) });
+    parts.push({ collection: { id, name: profile.name, brand: I.campaign.brand }, coverage, data: shape(intent, plan, I, rs, profile, runs, records, opts) });
   }
   const ids = parts.flatMap((p) => p.data.ids || []);
   const shown = [...new Set(ids)].slice(0, MAX_REFS).map((id) => refs.get(id)).filter(Boolean);
@@ -105,7 +114,7 @@ const pickBrands = (rows, plan, own) => {
   return want.length ? rows.filter((b) => want.includes(fold(b.brand))) : rows;
 };
 
-function shape(intent, plan, I, rs, profile, runs) {
+function shape(intent, plan, I, rs, profile, runs, allRecords, opts) {
   const own = I.campaign.brand;
   const by = plan.by;
   switch (intent) {
@@ -127,7 +136,7 @@ function shape(intent, plan, I, rs, profile, runs) {
     case "searches": return { ...I.searches, ids: [] };
     case "cards": return { ...I.products, ids: [] };
     case "data_status": return { engines: I.quality, ids: [] };
-    case "find_answers": return findAnswers(plan, rs);
+    case "find_answers": return findAnswers(plan, rs, allRecords, opts);
     default: {
       // metric / rank, sliced as asked.
       if (by === "engine") return { byEngine: I.byEngine.map((e) => ({ engine: e.engine, answers: e.answers, brands: pickBrands(e.brands, plan, own).slice(0, 8) })), ids: I.prompts.flatMap((x) => x.ids) };
@@ -139,21 +148,40 @@ function shape(intent, plan, I, rs, profile, runs) {
   }
 }
 
-// Stage 1 wording search: every word of the text in the prompt or answer,
-// newest first. Stage 3 replaces this with the passage index.
-function findAnswers(plan, rs) {
-  const words = String(plan.text || "").split(/\s+/).filter((w) => w.length > 2);
-  let hits = rs.filter(answered);
-  if (plan.subject.brands.length) hits = hits.filter((r) => named(r).some((b) => plan.subject.brands.some((x) => fold(x) === fold(b))));
-  if (words.length) hits = hits.filter((r) => { const hay = fold(`${r.userPrompt || ""} ${r.answerText || ""}`); return words.every((w) => hay.includes(w)); });
-  hits.sort((a, b) => (b.capturedAt || 0) - (a.capturedAt || 0));
-  const snippet = (r) => {
-    const t = String(r.answerText || "");
-    const w = words[0] || (plan.subject.brands[0] && fold(plan.subject.brands[0]));
-    const i = w ? fold(t).indexOf(w) : -1;
-    return clip(i > 60 ? `…${t.slice(i - 60)}` : t, 200);
+// Wording search (Stage 3): the passage index, inside the scope. Keyword
+// ranking (BM25, every word, typos and plurals tolerated), fused with the
+// meaning model's ranking when that is on (opts.meaning: passage ids, best
+// first). The excerpt is the matching passage itself.
+function findAnswers(plan, rs, allRecords, opts = {}) {
+  let pool = rs.filter(answered);
+  if (plan.subject.brands.length) pool = pool.filter((r) => named(r).some((b) => plan.subject.brands.some((x) => fold(x) === fold(b))));
+  const inScope = new Set(pool.map((r) => r.captureId));
+  const byId = new Map(pool.map((r) => [r.captureId, r]));
+  const text = String(plan.text || "").trim();
+  let hits, fixed = [];
+  if (!text) {
+    hits = [...pool].sort((a, b) => (b.capturedAt || 0) - (a.capturedAt || 0)).map((r) => ({ r, excerpt: clip(r.answerText, 200) }));
+  } else {
+    const index = indexFor(allRecords);
+    const docs = index.docs.filter((d) => inScope.has(d.captureId));
+    const k = keywordHits(index, text, { pool: docs });
+    fixed = k.fixed;
+    let ranked = k.hits;
+    if (opts.meaning && opts.meaning.length) {
+      const score = new Map();
+      k.hits.slice(0, 200).forEach((h, i) => score.set(h.doc.id, (score.get(h.doc.id) || 0) + 1 / (61 + i)));
+      opts.meaning.slice(0, 200).forEach((id, i) => score.set(id, (score.get(id) || 0) + 1 / (61 + i)));
+      const docById = new Map(docs.map((d) => [d.id, d]));
+      ranked = [...score.entries()].map(([id, s]) => ({ doc: docById.get(id), score: s })).filter((h) => h.doc).sort((a, b) => b.score - a.score);
+    }
+    hits = byAnswer(ranked).map((h) => ({ r: byId.get(h.doc.captureId), excerpt: clip(h.doc.text, 220) })).filter((h) => h.r);
+  }
+  return {
+    found: hits.length,
+    ...(fixed.length ? { readAs: fixed.map((f) => `${f.from} → ${f.to}`) } : {}),
+    answers: hits.slice(0, 8).map(({ r, excerpt }) => ({ engine: ENGINE_LABEL[r.platform] || r.platform, date: new Date(r.capturedAt || 0).toISOString().slice(0, 10), prompt: clip(r.userPrompt, 120), excerpt })),
+    ids: hits.slice(0, MAX_REFS).map((h) => h.r.captureId),
   };
-  return { found: hits.length, answers: hits.slice(0, 8).map((r) => ({ engine: ENGINE_LABEL[r.platform] || r.platform, date: new Date(r.capturedAt || 0).toISOString().slice(0, 10), prompt: clip(r.userPrompt, 120), excerpt: snippet(r) })), ids: hits.slice(0, MAX_REFS).map((r) => r.captureId) };
 }
 
 function define(plan) {

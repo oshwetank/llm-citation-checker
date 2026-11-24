@@ -41,6 +41,7 @@ import { mayHandle, onEngineSite } from "./lib/senderGate.js";
 import { appendRing, cleanEntry } from "./lib/netlog.js";
 import { offersFrom, attachOffers, productUpdateFrom, productPanelFrom, formChoicesFrom, cardIndexFor } from "./lib/offers.js";
 import { searchAnswers } from "./lib/answerSearch.js";
+import { indexFor } from "./lib/passages.js";
 import { answerKey, sameAnswer, mergeAnswers, SAME_ANSWER_WINDOW_MS, SAME_REPLY_WINDOW_MS } from "./lib/sameAnswer.js";
 import { campaignBoard, brandDetail } from "./lib/campaignBoard.js";
 import { campaignView } from "./lib/campaignView.js";
@@ -4870,7 +4871,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // the matching ids come back, each with a snippet around the match.
         case "search-answers": {
           const records = await db.getAll("derived");
-          sendResponse({ ok: true, hits: searchAnswers(records, String(msg.query || "").slice(0, 200)) });
+          const query = String(msg.query || "").slice(0, 200);
+          const hits = searchAnswers(records, query);
+          // 1.0.5: with search by meaning on, answers that say it in other
+          // words come after the ones holding every word.
+          try {
+            const docs = indexFor(records).docs.filter((d) => !d.isPrompt).sort((a, b) => b.at - a.at).map((d) => ({ id: d.id, text: d.text }));
+            const ids = query.trim() ? await aiSvc.meaningRank(query, docs) : null;
+            if (ids && ids.length) {
+              const have = new Set(hits.map((h) => h.captureId));
+              const byId = new Map(indexFor(records).docs.map((d) => [d.id, d]));
+              for (const id of ids) {
+                const d = byId.get(id);
+                if (!d || have.has(d.captureId)) continue;
+                have.add(d.captureId);
+                hits.push({ captureId: d.captureId, snippet: d.text.length > 180 ? `${d.text.slice(0, 179)}…` : d.text, byMeaning: true });
+                if (hits.length >= 300) break;
+              }
+            }
+          } catch (e) { logErr("search-meaning", e); }
+          sendResponse({ ok: true, hits });
           break;
         }
 
@@ -4951,6 +4971,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         case "laya-remove":
           sendResponse(await aiSvc.removeLaya());
+          break;
+        // Search by meaning (1.0.5): an optional download for Ask and search.
+        case "meaning-download":
+          sendResponse(await aiSvc.downloadMeaning({ device: msg.device }));
+          break;
+        case "meaning-remove":
+          sendResponse(await aiSvc.removeMeaning());
           break;
         case "ai-cancel-download":
           sendResponse(await aiSvc.cancelDownload(msg.kind === "laya" ? "laya" : "llm"));

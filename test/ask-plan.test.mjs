@@ -111,6 +111,17 @@ console.log("\nReplies: the scope shown, numbers from the results only");
   check("an edited plan is checked against the catalog", validPlan(p, catalog) && !validPlan({ ...p, scope: { ...p.scope, collections: ["nope"] } }, catalog));
 }
 
+console.log("\nHow an answer treats a brand (the AI labels), as a filter");
+{
+  const labelled = { ...data, records: data.records.map((x) => (x.captureId === "c5" ? { ...x, brandMentions: x.brandMentions.map((m) => (m.brand === "Kovo" ? { ...m, aiStance: "recommended" } : m)) } : x)) };
+  const p = plan("Which answers recommend Kovo in Zento India?").plan;
+  check("\"recommend\" with a brand is a stance filter", p.scope.stance === "recommended" && p.subject.brands.includes("Kovo"), JSON.stringify(p.scope));
+  const ex = execute(p, labelled);
+  check("only the answers labelled that way", ex.parts[0].data.found === 1, JSON.stringify(ex.parts[0].data));
+  const r = await askPlanned({ question: "Which answers recommend Kovo in Zento India?", data: labelled });
+  check("shown as a chip, with a note on the labels", r.scope.chips.some((c) => c.kind === "stance" && /Kovo recommended/.test(c.label)) && r.notes.some((n) => /AI labels/.test(n)), JSON.stringify(r.scope.chips));
+}
+
 console.log("\nAsk end to end");
 {
   const off = await askPlanned({ question: "How is Zento India doing?", data });

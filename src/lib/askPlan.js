@@ -57,6 +57,13 @@ const BY_RULES = [
   ["site", /\b(by|per|each) (?:site|domain)s?\b/i],
   ["brand", /\b(by|per|each) brands?\b/i],
 ];
+// How an answer treats a brand (Laya / the AI check labels, Stage 4).
+const STANCE_RULES = [
+  ["advised_against", /\b(advises? against|warns? against|says? to avoid|tells? (?:people|users) to avoid)\b/i],
+  ["negative", /\b(negative(?:ly)?|criticis(?:e|es|ed|ing)|criticiz(?:e|es|ed|ing)|bad things)\b/i],
+  ["recommended", /\b(recommend(?:s|ed|ing)?|suggest(?:s|ed)? buying|put(?:s)? first|top pick)\b|recomiend|recomend|recommand/i],
+  ["positive", /\b(positive(?:ly)?|praise[sd]?|speaks? well)\b/i],
+];
 const OWN = /\b(we|us|our|ours|my brand|my company|my business|am i)\b|nosotros|nuestra?|nossa?|n[oó]s|notre|nous|हम|हमारा|نحن/i;
 const FOLLOW_UP = /^\s*(and|what about|how about|also|same (?:for|on)|now|then|e|y|et|और|و)\b|^\s*(on|for|in) (chatgpt|gemini|perplexity|grok|the )\b/i;
 const LATEST_CAMPAIGN = /\b(latest|last|newest|most recent|recent) campaign\b/i;
@@ -86,7 +93,7 @@ export function datesIn(question, now = Date.now()) {
 
 /** An empty plan. */
 export function emptyPlan() {
-  return { intent: null, scope: { collections: [], runs: "latest", engines: [], tags: [], prompts: [], dates: null, signedIn: null }, subject: { own: false, brands: [], sites: [] }, measure: [], by: "none", sort: "desc", limit: 10, text: "", parts: [] };
+  return { intent: null, scope: { collections: [], runs: "latest", engines: [], tags: [], prompts: [], dates: null, signedIn: null, stance: null }, subject: { own: false, brands: [], sites: [] }, measure: [], by: "none", sort: "desc", limit: 10, text: "", parts: [] };
 }
 
 // Words of the question that are left for a passage search.
@@ -110,6 +117,9 @@ export function rulePlan(question, catalog, { now = Date.now() } = {}) {
   plan.scope.engines = matches.filter((m) => m.kind === "engine").map((m) => m.id);
   plan.scope.tags = matches.filter((m) => m.kind === "tag").map((m) => m.name);
   plan.scope.dates = datesIn(q, now);
+  const stance = (STANCE_RULES.find(([, re]) => re.test(q)) || [null])[0];
+  if (stance && plan.subject.brands.length) plan.scope.stance = stance;
+  const stanceSet = !!plan.scope.stance;
   // A comparison of brands is a compare even without "vs" ("Zento or Kovo?").
   if (!plan.intent && plan.subject.brands.length >= 2) plan.intent = "compare";
   if (!plan.intent && (plan.subject.brands.length || plan.subject.own)) plan.intent = "metric";
@@ -118,6 +128,7 @@ export function rulePlan(question, catalog, { now = Date.now() } = {}) {
   if (plan.intent === "find_answers") {
     const named = new Set(matches.map((m) => fold(m.name)).join(" ").split(" "));
     plan.text = fold(q).split(" ").filter((w) => w.length > 2 && !FILLER.has(w) && !named.has(w)).join(" ");
+    if (stanceSet) plan.text = ""; // the stance is the filter, not words to find
   }
   // "battery prompts", "prompts about battery": the topic, if no tag matched.
   const topic = /([\p{L}][\p{L}\s-]{2,30}?)\s+(?:prompts|questions)\b/iu.exec(q) || /(?:prompts|questions)\s+(?:about|on|for|with|mentioning)\s+([^?.,;]+)/i.exec(q);

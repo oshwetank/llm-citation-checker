@@ -202,6 +202,42 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
     })();
     return { ok: true, started: true };
   }
+  // Search by meaning (1.0.5, lib/meaningEngine.js): an optional download
+  // (~135 MB) that lets Ask and the Dashboard find answers by what they mean.
+  let meaningDownloading = null, meaningProgress = null;
+  async function downloadMeaning({ device } = {}) {
+    if (meaningDownloading) return { ok: true, already: true };
+    resetBar("meaning");
+    meaningProgress = { status: "meaning-initiate", pct: 0 };
+    meaningDownloading = (async () => {
+      try {
+        // One model download at a time (1.0.0).
+        if (downloading) { meaningProgress = { status: "meaning-waiting", pct: 0 }; await downloading.catch(() => {}); }
+        if (layaDownloading) { meaningProgress = { status: "meaning-waiting", pct: 0 }; await layaDownloading.catch(() => {}); }
+        const info = await llm("meaning-load", { device: device || "webgpu" }, 2 * 60 * 60 * 1000);
+        await setState({ meaning: { downloadedAt: Date.now(), device: info.device, error: null } });
+        meaningProgress = { status: "meaning-ready", pct: 100 };
+      } catch (e) {
+        meaningProgress = null;
+        await setState({ meaning: { ...((await getState()).meaning || {}), error: String(e && e.message || e) } });
+        logErr("meaning-download", e);
+      } finally { meaningDownloading = null; broadcast({ type: "ai-state" }); }
+    })();
+    broadcast({ type: "ai-state" });
+    return { ok: true, started: true };
+  }
+  async function removeMeaning() {
+    try { await llm("meaning-remove", {}, 120000); } catch (e) { logErr("meaning-remove", e); }
+    await setState({ meaning: { downloadedAt: null, error: null } });
+    broadcast({ type: "ai-state" });
+    return { ok: true };
+  }
+  /** Passage ids by meaning, best first; null when the model isn't on. */
+  async function meaningRank(query, docs) {
+    const state = await getState();
+    if (!(state.meaning && state.meaning.downloadedAt) || !docs || !docs.length) return null;
+    try { const r = await llm("meaning-rank", { query, docs }, 10 * 60 * 1000); return r && r.ids ? r.ids : null; } catch (e) { logErr("meaning-rank", e); return null; }
+  }
   async function removeLaya() {
     const state = await getState();
     const spec = layaSpecOf(state);
@@ -268,6 +304,7 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
       tier: state.tier || null, model: spec ? { id: spec.id, label: spec.label, params: spec.params, repo: spec.repo } : null,
       custom: state.custom && state.custom.repo ? { repo: state.custom.repo } : null,
       ready: !!eng, engine: eng ? { id: eng.id, label: eng.label } : null, engineChoice: state.engine || "auto",
+      meaning: (() => { const m = state.meaning || {}; return { ready: !!m.downloadedAt, downloadedAt: m.downloadedAt || null, device: m.device || null, error: m.error || null, downloading: !!meaningDownloading, progress: meaningProgress, bytes: 135500000 }; })(),
       laya: (() => { const sp = layaSpecOf(state); const l = state.laya || {}; return { ready: layaReady(state), label: sp.label, repo: sp.repo, bytes: sp.bytes || null, custom: !!l.custom, downloadedAt: l.downloadedAt || null, device: l.device || null, error: l.error || null, downloading: !!layaDownloading, progress: layaProgress, msPerAnswer: l.msPerAnswer || null }; })(),
       labeller: state.labeller || "auto", labelsBy: await (async () => { const lb = await labeller(state); return lb ? { id: lb.id, label: lb.label } : null; })(),
       nano: await nanoAvailability(), nanoFetching: !!nanoFetching, nanoError: state.nanoError || null, bench: state.bench || null, paused: !!isBusy(),
@@ -294,7 +331,10 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
   const combine = (kind, p, expected) => combineProgress(bars[kind], p, expected);
   function onProgress(p) {
     if (!p) return;
-    if (/^laya-/.test(p.status || "")) {
+    if (/^meaning-/.test(p.status || "")) {
+      if (!bars.meaning) resetBar("meaning");
+      meaningProgress = combine("meaning", p, 135500000);
+    } else if (/^laya-/.test(p.status || "")) {
       getState().then((st) => { layaProgress = combine("laya", p, (layaSpecOf(st) || {}).bytes); }).catch(() => {});
     } else {
       getState().then((st) => { progress = combine("llm", p, (specOf(st) || {}).bytes); }).catch(() => {});
@@ -506,7 +546,7 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
       try { await eng.prepare(); generate = eng.generate; } catch (_) { generate = null; }
     }
     const t0 = Date.now();
-    const r = await askPlanned({ question, data, generate, context, previous, plan, onStep });
+    const r = await askPlanned({ question, data, generate, context, previous, plan, onStep, meaning: meaningRank });
     return { ...r, ms: Date.now() - t0, model: generate && eng ? eng.label : null, engine: generate && eng ? eng.id : null };
   }
 
@@ -517,5 +557,5 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
     return { ok: true };
   }
 
-  return { askQuestion, checkNow, getState, setState, status, hardware, download, remove, enqueue, kick, attach, saveNano, onProgress, specOf, llm, engine, labeller, benchmark, useNano, setEngine, downloadLaya, removeLaya, setLabeller, cancelDownload };
+  return { downloadMeaning, removeMeaning, meaningRank, askQuestion, checkNow, getState, setState, status, hardware, download, remove, enqueue, kick, attach, saveNano, onProgress, specOf, llm, engine, labeller, benchmark, useNano, setEngine, downloadLaya, removeLaya, setLabeller, cancelDownload };
 }

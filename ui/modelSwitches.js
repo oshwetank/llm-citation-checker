@@ -39,6 +39,10 @@ const where = (d) => (d === "webgpu" ? "on the graphics chip" : d === "wasm" ? "
 /** The state of one switch, from ai-status. */
 export function switchState(s, kind) {
   if (!s) return { on: false, busy: false, ready: false };
+  if (kind === "meaning") {
+    const M = s.meaning || {};
+    return { on: !!(M.ready || M.downloading), busy: !!M.downloading, ready: !!M.ready, error: M.error || null, progress: M.progress || null, device: M.device || null, bytes: M.bytes || 135500000, label: "Search by meaning" };
+  }
   if (kind === "laya") {
     const L = s.laya || {};
     return { on: !!(L.ready || L.downloading), busy: !!L.downloading, ready: !!L.ready, error: L.error || null, progress: L.progress || null, device: L.device || null, bytes: L.bytes || null, label: L.label || "Laya" };
@@ -57,7 +61,7 @@ export function mountModelSwitches(slot, opts = {}) {
   let st = null, poll = null, alive = true;
   const row = (kind, title, what) => {
     const x = switchState(st, kind);
-    const id = kind === "laya" ? "swLaya" : "swAskModel";
+    const id = kind === "laya" ? "swLaya" : kind === "meaning" ? "swMeaning" : "swAskModel";
     const input = h("input", { type: "checkbox", id, role: "switch", checked: x.on, "aria-checked": String(x.on) });
     const pct = x.progress && x.progress.pct != null ? Math.max(0, Math.min(100, x.progress.pct)) : null;
     const line = x.busy ? `Downloading${pct != null ? ` ${Math.round(pct)}%` : "…"}${x.progress && x.progress.total ? ` · ${size(x.progress.loaded)} of ${size(x.progress.total)}` : ""}. Turn off to cancel.`
@@ -68,11 +72,14 @@ export function mountModelSwitches(slot, opts = {}) {
       input.disabled = true;
       if (input.checked) {
         if (kind === "laya") await send({ type: "laya-download" });
+        else if (kind === "meaning") await send({ type: "meaning-download" });
         else await send({ type: "ai-download", tier: x.tier, device: st && st.pick ? st.pick.device : undefined });
+      } else if (x.busy && kind === "meaning") {
+        input.checked = true; // it finishes; turn it off after to remove it
       } else if (x.busy) {
         await send({ type: "ai-cancel-download", kind: kind === "laya" ? "laya" : "llm" });
       } else if (confirm(tr(`Remove ${title} from this computer? You can turn it on again any time; what it already labelled is kept.`))) {
-        await send({ type: kind === "laya" ? "laya-remove" : "ai-remove" });
+        await send({ type: kind === "laya" ? "laya-remove" : kind === "meaning" ? "meaning-remove" : "ai-remove" });
       } else input.checked = true;
       refresh();
     };
@@ -89,6 +96,7 @@ export function mountModelSwitches(slot, opts = {}) {
     slot.append(h("div", { className: `ms${opts.compact ? " compact" : ""}`, id: "modelSwitches" },
       row("llm", "Ask's AI model", `Answers questions about your captures, on this computer${st && st.pick && st.pick.tier ? ` (${TIERS[st.pick.tier].label} size suits it)` : ""}.`),
       row("laya", "Fast labels", "Laya labels each answer — what it asks, who it's for, how each brand is treated — quickly, without writing text."),
+      row("meaning", "Search by meaning", "Ask and the Dashboard search also find answers that say it in other words, in any language (“long-lasting charge” for “battery”)."),
       nano ? h("p", { className: "ms-note" }, "Chrome's own built-in AI is ready here too, and Ask can use it with no download (Chrome manages it).") : null,
       h("p", { className: "ms-note" }, "Models stay on this computer. Uninstalling CitoSkeleton removes them with it.")));
     if (opts.onChange) opts.onChange(st);
@@ -102,7 +110,7 @@ export function mountModelSwitches(slot, opts = {}) {
     st = await send({ type: "ai-status" });
     drawn = true;
     draw();
-    const busy = st && (st.downloading || (st.laya && st.laya.downloading));
+    const busy = st && (st.downloading || (st.laya && st.laya.downloading) || (st.meaning && st.meaning.downloading));
     if (busy && !poll) poll = setInterval(refresh, 1000);
     else if (!busy && poll) { clearInterval(poll); poll = null; }
   };

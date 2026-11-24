@@ -9,6 +9,7 @@
  * the sanitiser) so the service worker can load it without the UI modules.
  */
 import { sanitizeText } from "./text-sanitize.js";
+import { indexFor, keywordHits, byAnswer } from "./passages.js";
 
 /** Words to look for; a trailing "s" is dropped so "headphones" finds "headphone". */
 export function searchTokens(q) {
@@ -51,14 +52,22 @@ export function answerSnippet(answerText, query, { before = 60, after = 110 } = 
   return (start > 0 ? "…" : "") + text.slice(start, end) + (end < text.length ? "…" : "");
 }
 
-/** The stored records whose answer holds every word, newest first, with snippets. */
+/**
+ * The stored records whose answer holds every word, best first, with
+ * snippets (1.0.5: ranked passage search, lib/passages.js — plurals, -ing
+ * and typos tolerated; before, newest first and only exact substrings).
+ */
 export function searchAnswers(records, query, { limit = 300 } = {}) {
+  if (!searchTokens(query).length) return [];
+  const index = indexFor(records || []);
+  const { hits, fixed } = keywordHits(index, query, { pool: index.docs.filter((d) => !d.isPrompt) });
+  const text = new Map((records || []).map((x) => [x.captureId, x.answerText]));
   const out = [];
-  const sorted = [...(records || [])].sort((a, b) => (b.capturedAt || 0) - (a.capturedAt || 0));
-  for (const r of sorted) {
-    if (!r || !r.answerText) continue;
-    const snippet = answerSnippet(r.answerText, query);
-    if (snippet) out.push({ captureId: r.captureId, snippet });
+  for (const h of byAnswer(hits)) {
+    const r = h.doc;
+    const exact = answerSnippet(text.get(r.captureId), query);
+    const t = h.doc.text;
+    out.push({ captureId: r.captureId, snippet: exact || (t.length > 180 ? `${t.slice(0, 179)}…` : t), ...(fixed.length ? { fixed } : {}) });
     if (out.length >= limit) break;
   }
   return out;

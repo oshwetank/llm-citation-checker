@@ -17,7 +17,8 @@ import { systemFor, toolsFor, checkNumbers } from "./askKnowledge.js";
 import { buildCatalog } from "./askCatalog.js";
 import { rulePlan, resolveScope, validPlan, isFollowUp } from "./askPlan.js";
 import { modelFill } from "./askModelPlan.js";
-import { execute } from "./askExecute.js";
+import { execute, scopeRecords } from "./askExecute.js";
+import { indexFor } from "./passages.js";
 import { scopeOf, templateReply, coverageNotes } from "./askReply.js";
 
 export const WRITER = [
@@ -36,7 +37,7 @@ export const WRITER = [
  * by the model when one is on, else by a template. With `plan` given (a
  * scope chip changed, an ask-back choice) the plan is used as it is.
  */
-export async function askPlanned({ question, data, generate = null, context = {}, previous = null, plan: given = null, onStep = null }) {
+export async function askPlanned({ question, data, generate = null, context = {}, previous = null, plan: given = null, onStep = null, meaning = null }) {
   const catalog = buildCatalog(data || {});
   let plan, askBack = null, notes = [];
   if (given && validPlan(given, catalog)) plan = JSON.parse(JSON.stringify(given));
@@ -68,10 +69,21 @@ export async function askPlanned({ question, data, generate = null, context = {}
     return { ...base, answer: "There are no captured answers or campaigns to look at yet. Run a campaign, or ask a question on an AI engine's page with CitoSkeleton on.", by: "empty" };
   }
   if (onStep) { try { onStep({ tool: `plan:${plan.intent}` }); } catch (_) { /* a listener's problem */ } }
-  const exec = execute(plan, data || {});
+  // Search by meaning (Stage 3), when that model is on: its ranking of the
+  // passages in scope, fused with the keyword one in the executor.
+  let meaningIds = null;
+  if (meaning && plan.intent === "find_answers" && String(plan.text || "").trim()) {
+    try {
+      const ids = new Set(scopeRecords(plan, data || {}).map((r) => r.captureId));
+      const docs = indexFor((data && data.records) || []).docs.filter((d) => ids.has(d.captureId)).sort((a, b) => b.at - a.at).map((d) => ({ id: d.id, text: d.text }));
+      if (onStep) { try { onStep({ tool: "plan:meaning" }); } catch (_) { /* a listener's problem */ } }
+      meaningIds = await meaning(plan.question || plan.text, docs);
+    } catch (_) { meaningIds = null; }
+  }
+  const exec = execute(plan, data || {}, { meaning: meaningIds });
   const scope = scopeOf(plan, exec, catalog);
   const draft = templateReply(plan, exec);
-  const allNotes = [...notes, ...coverageNotes(exec), ...(plan.promptsByWording ? [`Used the ${plan.scope.prompts.length} prompts whose wording matches.`] : [])];
+  const allNotes = [...notes, ...coverageNotes(exec), ...(plan.promptsByWording ? [`Used the ${plan.scope.prompts.length} prompts whose wording matches.`] : []), ...(plan.scope.stance && plan.scope.stance.length ? ["Filtered by the AI labels: only answers the labels have read can count. Turn on Fast labels or Ask's AI model to label more."] : [])];
   let answer = draft, by = "template";
   if (generate && exec.intent !== "not_recorded") {
     try {

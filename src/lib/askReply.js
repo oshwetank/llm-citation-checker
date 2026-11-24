@@ -30,6 +30,8 @@ export function scopeOf(plan, exec, catalog) {
   chips.push({ kind: "engines", label: engines ? engines.map((e) => ENGINE_LABEL[e] || e).join(", ") : "all engines", value: engines || [] });
   if (plan.scope.tags && plan.scope.tags.length) chips.push({ kind: "tags", label: `tag: ${plan.scope.tags.join(", ")}`, value: plan.scope.tags });
   if (plan.scope.prompts && plan.scope.prompts.length) chips.push({ kind: "prompts", label: `${plan.scope.prompts.length} prompts`, value: plan.scope.prompts });
+  const stance = Array.isArray(plan.scope.stance) ? plan.scope.stance[0] : plan.scope.stance;
+  if (stance) chips.push({ kind: "stance", label: `${plan.subject.brands.join(", ") || "brands"} ${stance.replace(/_/g, " ")}`, value: stance });
   if (plan.scope.signedIn) chips.push({ kind: "signedIn", label: plan.scope.signedIn === "in" ? "signed in" : "signed out", value: plan.scope.signedIn });
   const answers = exec && exec.parts ? exec.parts.reduce((s, p) => s + (p.coverage.answers || 0), 0) : null;
   const text = [...chips.map((c) => c.label), answers != null ? `${answers} answers` : null].filter(Boolean).join(" · ");
