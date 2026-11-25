@@ -1944,7 +1944,10 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     if (!candidates.has(headKey) || headKey === k) continue;
     // "Bank of Maharashtra", "Bank of India": a name joined by "of" is one
     // name, never its first word (1.0.2).
-    if (/\s(?:of|de|la|&)\s/i.test(v.name)) { if (!candidates.get(headKey).keepWhole) candidates.delete(headKey); continue; }
+    // "by" joins one too: "Wallet by BudgetBakers" is the app's whole name,
+    // and a closing "**For detailed budgeting: Wallet.**" must not shorten
+    // it (1.0.7, behaviour.test).
+    if (/\s(?:of|de|la|&|by)\s/i.test(v.name)) { if (!candidates.get(headKey).keepWhole) candidates.delete(headKey); continue; }
     // Unless the head is only ever the start of this name (1.0.2): "Red"
     // from one table cell must not swallow "Red Tape" when the answer never
     // writes "Red" without "Tape". Then the head goes, the name stays.
