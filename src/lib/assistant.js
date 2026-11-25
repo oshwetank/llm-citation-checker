@@ -54,7 +54,12 @@ function timed(generate, ms) {
   };
 }
 
-export async function askPlanned({ question, data, generate: rawGenerate = null, context = {}, previous = null, plan: given = null, onStep = null, meaning = null, limits = ASK_LIMITS }) {
+// `reword` (1.0.7): the model rewrites the worked-out reply only when asked.
+// Measured on the go-live laptop, Qwen3.5 2B wrote ~5 tokens a second (12 s
+// for two sentences) and turned "LeadSquared 50%" into "does not appear in
+// any of the 24 answers". The reply Ask gives is the one worked out from
+// the data: exact, and at once. The model still helps read a question.
+export async function askPlanned({ question, data, generate: rawGenerate = null, context = {}, previous = null, plan: given = null, onStep = null, meaning = null, limits = ASK_LIMITS, reword = false }) {
   const catalog = buildCatalog(data || {});
   const understandWith = timed(rawGenerate, limits.understandMs);
   const generate = timed(rawGenerate, limits.writeMs);
@@ -104,7 +109,7 @@ export async function askPlanned({ question, data, generate: rawGenerate = null,
   const draft = templateReply(plan, exec);
   const allNotes = [...notes, ...(scope ? coverageNotes(exec) : []), ...(plan.promptsByWording ? [`Used the ${plan.scope.prompts.length} prompts whose wording matches.`] : []), ...(plan.scope.stance && plan.scope.stance.length ? ["Filtered by the AI labels: only answers the labels have read can count. Turn on Fast labels or Ask's AI model to label more."] : [])];
   let answer = draft, by = "template";
-  if (generate && exec.intent !== "not_recorded") {
+  if (reword && generate && exec.intent !== "not_recorded") {
     try {
       const r = await generate({ messages: [
         { role: "system", content: WRITER },

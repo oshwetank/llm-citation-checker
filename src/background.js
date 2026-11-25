@@ -5246,7 +5246,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "ai-test-model": {
           const host = String((msg.model || {}).host || "");
           if (!/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/$/.test(host)) { sendResponse({ ok: false, error: "local addresses only" }); break; }
-          await aiSvc.setState({ custom: { repo: String(msg.model.repo), host, dtype: msg.model.dtype || "fp32", label: "Test model", ...(Array.isArray(msg.model.script) ? { script: msg.model.script.map(String) } : {}) }, tier: null, downloadedAt: null });
+          await aiSvc.setState({ custom: { repo: String(msg.model.repo), host, dtype: msg.model.dtype || "fp32", label: "Test model", ...(Array.isArray(msg.model.script) ? { script: msg.model.script.map(String) } : {}) }, tier: null, downloadedAt: null, askReword: !!msg.model.askReword });
           sendResponse({ ok: true });
           break;
         }

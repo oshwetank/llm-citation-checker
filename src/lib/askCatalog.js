@@ -154,7 +154,11 @@ export function lookup(question, catalog) {
   const m1 = matcher(full);
   for (const c of catalog.collections) {
     if (c.kind === "history") { m1("collection", c.id, c.name, [c.name, "my questions", "dashboard", "asked by hand", "manual questions"]); continue; }
-    m1("collection", c.id, c.name, [c.name]);
+    // Each part of a "Short — description" name too (1.0.7, live test):
+    // "the Go-live test campaign" and "R2" named no campaign, as only the
+    // whole "Go-live test — CRM for agencies" was matched.
+    const parts = String(c.name || "").split(/\s+[—–|:-]\s+/).map((x) => x.trim()).filter((x) => x && x !== c.name && !STOP.has(fold(x)) && fold(x).length >= 2);
+    m1("collection", c.id, c.name, [c.name, ...parts]);
   }
   // The rest is read from the question with the campaign names taken out
   // (1.0.5, real data): "R2 — Small-business CRM" names a campaign, not a

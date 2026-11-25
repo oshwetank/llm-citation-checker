@@ -553,19 +553,32 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
     const state = await getState();
     const eng = await engine(state).catch(() => null);
     askHoldUntil = Date.now() + ASK_HOLD_MS;
-    if (eng && eng.id === "qwen") await llm("interrupt", {}, 5000).catch(() => false);
-    let generate = null;
+    let generate = null, used = false;
     if (eng && state.custom && Array.isArray(state.custom.script)) {
       const script = [...state.custom.script];
-      generate = async () => ({ text: script.length ? script.shift() : "" });
+      generate = async () => { used = true; return { text: script.length ? script.shift() : "" }; };
     } else if (eng) {
-      try { await eng.prepare(); generate = eng.generate; } catch (_) { generate = null; }
+      // Loaded only if the question needs it (1.0.7): most questions are
+      // read by the rules, and loading the model cost ~7 s before each
+      // first one. The labelling's reply is stopped then too, not before.
+      let ready = null;
+      generate = async (o) => {
+        used = true;
+        if (!ready) {
+          if (eng.id === "qwen") await llm("interrupt", {}, 5000).catch(() => false);
+          ready = eng.prepare();
+        }
+        await ready;
+        return eng.generate(o);
+      };
     }
     const t0 = Date.now();
     let r;
-    try { r = await askPlanned({ question, data, generate, context, previous, plan, onStep, meaning: meaningRank }); }
+    // The model rewords the reply only when switched on (askReword, no switch
+    // on screen yet; see lib/assistant.js for why it is off).
+    try { r = await askPlanned({ question, data, generate, context, previous, plan, onStep, meaning: meaningRank, reword: !!state.askReword }); }
     finally { askHoldUntil = Date.now() + ASK_HOLD_MS; setTimeout(kick, ASK_HOLD_MS + 200); }
-    return { ...r, ms: Date.now() - t0, model: generate && eng ? eng.label : null, engine: generate && eng ? eng.id : null };
+    return { ...r, ms: Date.now() - t0, model: used && eng ? eng.label : null, engine: used && eng ? eng.id : null };
   }
 
   async function setEngine(choice) {

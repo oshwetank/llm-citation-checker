@@ -113,7 +113,7 @@ try {
 
   console.log("\nasking, with the built-in AI");
   {
-    await msg({ type: "ai-test-model", model: { repo: "tiny", host: HOST, dtype: "fp32", script: SCRIPT } });
+    await msg({ type: "ai-test-model", model: { repo: "tiny", host: HOST, dtype: "fp32", script: SCRIPT, askReword: true } });
     await openAsk();
     await page.waitForSelector("#swAskModel", { timeout: 10000 }).catch(() => {});
     // Turned on in Ask, the way a new user would.
