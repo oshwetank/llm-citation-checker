@@ -33,12 +33,16 @@ const INTENT_RULES = [
   ["compare", /\b(vs\.?|versus|compare[ds]?|comparison|compared (?:with|to)|against|beating|beat us|better than|ahead of|head to head)\b|comparar|contra|comparer|तुलना|مقارنة/i],
   ["trend", /\b(trend|over time|since|across runs|run (?:by|to|over) run|week (?:by|over|on) week|month (?:by|over|on) month|changed?|history of|progress|improv(?:e|ed|ing)|declin(?:e|ed|ing))\b|tendencia|evoluci[oó]n|desde|tend[eê]ncia|evolu[cç][aã]o|tendance|[ée]volution|depuis|रुझान|اتجاه|منذ/i],
   ["why", /\b(why|reason|how come|what caused|dropp?ed|fell|went down|lost)\b|por qu[eé]|porque|pourquoi|क्यों|لماذا/i],
-  ["gaps", /\b(gaps?|missing from|(?:are we|am i|is my brand|we'?re) missing|but not (?:us|me|ours?)|without us|absent|not (?:named|mentioned|cited)|never (?:named|mentioned|cited)|where (?:am i|are we|is my brand) not|get onto|should (?:we|i) (?:be|get) on|opportunit(?:y|ies))\b|ausente|lacunas?|absent|manquant|غائب/i],
+  // "Which sites cite LeadSquared but not Zoho CRM?" (1.0.7, live test): the
+  // brand after "but not" may be named, not "us".
+  ["gaps", /\b(gaps?|missing from|(?:are we|am i|is my brand|we'?re) missing|but not (?:us|me|ours?)|(?:cite|cites|cited|name|names|named|mention|mentions|mentioned) [\w.&' -]{2,40}? but not|without us|absent|not (?:named|mentioned|cited)|never (?:named|mentioned|cited)|where (?:am i|are we|is my brand) not|get onto|should (?:we|i) (?:be|get) on|opportunit(?:y|ies))\b|ausente|lacunas?|absent|manquant|غائب/i],
   ["searches", /\b(fan-?out|searches|search queries|queries (?:the engines? )?(?:ran|run|used)|what did (?:they|the engines?) search)\b|b[uú]squedas|pesquisas|recherches/i],
   ["cards", /\b(product cards?|shopping cards?|cards|products? (?:shown|named|listed)|which products)\b|productos|produtos|produits/i],
   ["sources", /\b(sources?|sites? (?:cited|they cite|that cite)|which sites|domains?|websites? cited|cited (?:sites|pages|most)|links)\b|fuentes|sitios|fontes|sites|sources|स्रोत|مصادر/i],
   ["find_answers", /\b(show (?:me )?(?:the )?answers|which answers|what do (?:the )?(?:engines?|ais?|chatgpt|gemini|perplexity|grok) say|what did (?:i|we) ask|find answers|answers (?:that|which) (?:mention|name|say)|quote|example answers?)\b|mu[eé]strame|mostre|montre-moi/i],
-  ["rank", /\b(rank(?:ing|ed)?|top brands?|who(?:'s| is) (?:first|leading|winning|on top)|leaders?|leading|most visible|best placed|named first)\b|clasificaci[oó]n|classement|ranking|रैंक|ترتيب/i],
+  // "Who is our biggest competitor?" (1.0.7, live test) read as "how are we
+  // doing" and named no rival: rivals are a ranking.
+  ["rank", /\b(rank(?:ing|ed)?|top brands?|who(?:'s| is) (?:first|leading|winning|on top)|leaders?|leading|most visible|best placed|named first|(?:biggest|main|top|strongest|closest|nearest|toughest|largest|leading) (?:competitors?|rivals?|competition)|who(?:'s| is| are) (?:our|my) (?:competitors?|rivals?|competition)|(?:our|my) (?:competitors|rivals|competition))\b|clasificaci[oó]n|classement|ranking|रैंक|ترتيب/i],
   ["metric", /\b(how (?:are|is|am) (?:we|i|my|our|it)|how visible|visibility|share of voice|sov|position|mentions?|doing|perform(?:ing|ance)?)\b|visibilidad|visibilidade|visibilit[eé]|दृश्यता|ظهور/i],
 ];
 const MEASURE_RULES = [

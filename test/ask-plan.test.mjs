@@ -43,6 +43,12 @@ console.log("\nThe rule plan");
   check("since October: all runs from 1 Oct", p.scope.runs === "all" && new Date(p.scope.dates.from).getMonth() === 9, JSON.stringify(p.scope.dates));
   check("clicks are not recorded", rulePlan("How many clicks did ChatGPT send us?", catalog).plan.intent === "not_recorded");
   check("a definition", rulePlan("What does share of voice mean?", catalog).plan.intent === "define");
+  // Live test of 25 Nov 2026 (1.0.7): both were answered with the own brand's numbers.
+  for (const q of ["Who is our biggest competitor in the Go-live test campaign?", "Who are my main rivals?", "Which brand is our closest competitor?"])
+    check(`a rival is a ranking: "${q}"`, rulePlan(q, catalog).plan.intent === "rank", rulePlan(q, catalog).plan.intent);
+  for (const q of ["Which sites cite Kovo but not Zento?", "Which answers mention Lumora but not us?"])
+    check(`"X but not Y" is a gap: "${q}"`, rulePlan(q, catalog).plan.intent === "gaps", rulePlan(q, catalog).plan.intent);
+  check("a plain comparison is still a comparison", rulePlan("Kovo vs Zento", catalog).plan.intent === "compare");
   check("last 7 days", Math.round((NOW - datesIn("answers from the last 7 days", NOW).from) / DAY) === 7);
   check("by engine", rulePlan("Zento visibility by engine", catalog).plan.by === "engine");
 }

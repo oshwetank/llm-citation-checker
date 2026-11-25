@@ -104,6 +104,7 @@ async function llmOp(op, args = {}) {
       sendProgress(p || {});
     } });
     case "generate": return e.generate(args);
+    case "interrupt": return e.interrupt ? e.interrupt() : false;
     case "unload": await e.unload(); return { ok: true };
     case "cached": return e.cachedBytes(args.repo, args.host);
     case "remove": return e.removeCached(args.repo, args.host);

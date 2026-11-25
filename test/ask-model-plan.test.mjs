@@ -72,5 +72,17 @@ console.log("\nIn Ask: the model fills only what the rules left open");
   check("with no model, the rules' plan: asks back rather than guess", !!off.askBack);
 }
 
+console.log("\na model that never answers (1.0.7: Ask sat over five minutes on 'Working out the numbers…')");
+{
+  let calls = 0; const seen = [];
+  const never = (o) => { calls++; seen.push(o.timeLimitMs); return new Promise(() => {}); };
+  const t0 = Date.now();
+  const r = await askPlanned({ question: "How is Zento India doing?", data, generate: never, limits: { understandMs: 200, writeMs: 300 } });
+  const ms = Date.now() - t0;
+  check("the plain reply stands", r.by === "template" && !!r.answer && !/couldn't work/.test(r.answer), `${r.by}: ${r.answer}`);
+  check("within the limits, not minutes", ms < 3000, `${ms} ms`);
+  check("the engine was told the limit, so it can stop", seen.length > 0 && seen.every((x) => x === 200 || x === 300), seen.join(","));
+}
+
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);

@@ -2,7 +2,7 @@
 
 _Formerly listed on the Chrome Web Store as "LLM Citation & Fan-Out Checker."_
 
-A Chrome (MV3) extension that **passively** captures what ChatGPT, Gemini, Perplexity and Grok actually do
+A Chrome (MV3) extension that **passively** captures what ChatGPT, Gemini, Perplexity, Grok and Google AI Mode actually do
 behind an answer — the hidden search queries they fire, every source they read, which of
 those they *cite* versus merely *fetch*, and which brands they name — then measures your
 brand's visibility against competitors over time.
@@ -14,17 +14,25 @@ Hugging Face; and, once accounts are switched on, when you sign in, share a camp
 code, open a code, or leave an email for updates. Nothing you capture ever leaves your
 device unless you choose to share that campaign: the AI runs on your computer.
 
-> **v1.0.4** — ChatGPT, Gemini, Perplexity and Grok. See
+> **v1.0.6** (1.0.7 in progress) — ChatGPT, Gemini, Perplexity, Grok and Google AI Mode. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
-> - **Next (1.0.5, in progress).**
+> - **Next (1.0.7, in progress): fixes from a full go-live test** (25 November 2026: all five engines asked live, a new campaign created, run, paused, resumed and retried, every board section, export and Ask question checked against the data).
+>   - **Big campaigns open faster.** An 800-answer campaign's numbers are worked out in about 6 s instead of 10; every number is the same as before, checked board by board.
+>   - **Ask always answers.** It works the answer out from your data first; the built-in AI only rewords it, now within a time limit, and questions in Ask go before the AI's background labelling. Before, one question could wait over five minutes.
+>   - **Ask understands more questions.** "Who is our biggest competitor?" ranks your rivals, and "Which sites cite LeadSquared but not us?" lists the gap.
+>   - **Better competitor suggestions.** A campaign suggests "India Post", "Ecom Express" and "Birla Opus", not "India", "Ecom" and "Birla".
+> - **1.0.6** (24 November 2026). Simpler to use, and AI Mode always on.
+>   - **Google AI Mode, the fifth engine.** Capture its answers and run campaigns on it, from install: nothing to turn on.
+>   - **A campaign's sections down the side** of its results (left or right), About in four pages (Get started, Settings, Glossary, Help), three settings up front with the rest folded away, the built-in AI set up in one button, and a short first look that shows what to do first.
+>   - **No layout jumps** on a campaign's page, and each number said once.
+> - **1.0.5** (24 November 2026).
 >   - **Ask knows which data you mean.** It works out the campaign, run, engines and tags from your question, shows them above the answer as chips you can change, asks back when two campaigns fit equally, and answers from the boards' own numbers, even with no AI model turned on.
 >   - **Gemini asked once.** Gemini's new way of sending a question wasn't recognised, so the extension pressed send again and Gemini got each question 2 or 3 times. It now sees Gemini's send and waits for it.
 >   - **Google AI Mode, the fifth engine (beta).** Capture its answers and run campaigns on it, from install: nothing to turn on.
->   - **Simpler to use (1.0.6).** A campaign's sections listed down the side of its results (left or right), About in four pages, three settings up front with the rest folded away, the built-in AI in one button, and a short welcome that shows what to do first.
 >   - **Faster runs.** Every engine runs two tabs at a few seconds' pace; "Careful pace" in Settings brings back the slower one.
 >   - **Runs that survive the real world.** A dropped connection, a sleeping computer, a closed tab or full storage no longer fail a campaign's questions: the run waits, opens a new tab or asks again.
 >   - **Campaigns are set up in the full view,** where switching tabs can't lose a half-typed setup.
@@ -676,6 +684,7 @@ visible gap — so the UI reports it as "not measured" and says why.
 | **Gemini** | Full except fan-out — citations, shopping, local/places, answer text |
 | **Perplexity** | Fan-out, query plan, sources, brands, answer text (network + DOM-harvest capture) |
 | **Grok** | Fan-out, sources, brands, answer text (network + DOM-harvest capture) |
+| **Google AI Mode** | Sources, brands, product cards, answer text (google.com/search with AI Mode; its searches aren't published) |
 
 ## Install (unpacked)
 

@@ -170,6 +170,25 @@ console.log("\nthe trend series uses ONE brand set across every bucket");
     series[1].brands.find((b) => b.name === "Globex")?.mentions === 0);
 }
 
+console.log("\na group is shown by the spelling the answers use most (1.0.7)");
+{
+  // Couriers campaign, live test of 25 Nov 2026: "India Post" (31 answers)
+  // folded onto a one-off "India" and was offered as "+ India".
+  const records = [
+    rec(1, ["India Post"]), rec(2, ["India Post"]), rec(3, ["India Post"]), rec(4, ["India"]),
+    rec(5, ["Ecom Express"]), rec(6, ["Ecom Express"]), rec(7, ["Ecom"]),
+    rec(8, ["Vivo"]), rec(9, ["Vivo"]), rec(10, ["vivo X200 FE"]),
+  ];
+  const names = autoCompetitorsFrom(records, profile).map((b) => b.name);
+  check("India Post, not India", names.includes("India Post") && !names.includes("India"), names.join("|"));
+  check("Ecom Express, not Ecom", names.includes("Ecom Express") && !names.includes("Ecom"), names.join("|"));
+  check("Vivo still absorbs its model", names.includes("Vivo") && !names.some((n) => /X200/.test(n)), names.join("|"));
+  check("the group still counts every answer", autoCompetitorsFrom(records, profile).find((b) => b.name === "India Post")?.responses === 4);
+  // R3 paints campaign: a page title, used more often, is not a better name.
+  const long = autoCompetitorsFrom([rec(1, ["Starshield- Smart Paints & Coatings"]), rec(2, ["Starshield- Smart Paints & Coatings"]), rec(3, ["Starshield"])], profile).map((b) => b.name);
+  check("a much longer spelling never takes over", long.includes("Starshield"), long.join("|"));
+}
+
 console.log("\ndegenerate input never throws");
 {
   check("null records", autoCompetitorsFrom(null, profile).length === 0);

@@ -142,6 +142,17 @@ export function stripThinking(s) {
   return String(s || "").replace(/<think>[\s\S]*?<\/think>/g, "").replace(/^[\s\S]*?<\/think>/, "").trim();
 }
 
+/** The error a reply stopped by interrupt() fails with. */
+export const INTERRUPTED = "interrupted for a question in Ask";
+let running = null; // the reply being written: { stop(), interrupted }
+
+/** Stop the reply being written now, if any (1.0.7). True if one was. */
+export function interrupt() {
+  if (!running || !running.stop) return false;
+  running.stop();
+  return true;
+}
+
 /**
  * One reply. Greedy decoding (no sampling), so the same answer always gives
  * the same result; non-thinking mode for speed.
@@ -157,7 +168,27 @@ export function generate(o) {
     // for the model and reads its <tool_call> replies.
     const inputs = tok.apply_chat_template(o.messages, { add_generation_prompt: true, return_dict: true, enable_thinking: false, ...(o.tools ? { tools: o.tools } : {}) });
     const n = inputs.input_ids.dims[1];
-    const out = await model.generate({ ...inputs, max_new_tokens: o.maxTokens || 384, do_sample: false, repetition_penalty: 1.05 });
+    // A time limit (1.0.7): Ask waited over five minutes for a reply the
+    // template already had, the graphics chip shared with the labelling
+    // (live test of 25 Nov 2026). Past `timeLimitMs` the model stops, which
+    // frees the chip, and the call fails so the caller's fallback stands.
+    // Every reply can also be stopped from outside (interrupt() below): Ask
+    // stops the labelling's reply so it needn't wait behind it.
+    let stop = null, timer = null, timedOut = false;
+    const mine = { interrupted: false };
+    if (tf.InterruptableStoppingCriteria && tf.StoppingCriteriaList) {
+      stop = new tf.InterruptableStoppingCriteria();
+      mine.stop = () => { mine.interrupted = true; stop.interrupt(); };
+      if (o.timeLimitMs > 0) timer = setTimeout(() => { timedOut = true; stop.interrupt(); }, o.timeLimitMs);
+    }
+    running = mine;
+    let out;
+    try {
+      out = await model.generate({ ...inputs, max_new_tokens: o.maxTokens || 384, do_sample: false, repetition_penalty: 1.05,
+        ...(stop ? { stopping_criteria: (() => { const l = new tf.StoppingCriteriaList(); l.push(stop); return l; })() } : {}) });
+    } finally { if (timer) clearTimeout(timer); if (running === mine) running = null; }
+    if (mine.interrupted) throw new Error(INTERRUPTED);
+    if (timedOut) throw new Error(`no reply within ${Math.round(o.timeLimitMs / 1000)} s`);
     const ids = out.slice(null, [n, null]);
     // Tool calls are written with special tokens; keep them when tools were offered.
     const text = tok.batch_decode(ids, { skip_special_tokens: !o.tools })[0] || "";

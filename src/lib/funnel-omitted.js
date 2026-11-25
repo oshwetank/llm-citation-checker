@@ -126,13 +126,32 @@ const QUERY_STOP = new Set([
 ]);
 
 /** Which vocabulary entries appear in one source's title/snippet. */
+// Speed (1.0.7): a campaign board ran this for every source × every name, a
+// new RegExp each time, and a 795-answer campaign took 10 s to open, half of
+// it here (live test of 25 Nov 2026). Both matches need the name's letters
+// and digits, in order, in the text's letters and digits, so a name whose
+// squeezed form isn't in the squeezed text is skipped without either; the
+// rest use one compiled pattern per name. Same answers as before.
+const squeeze = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, "");
+const vocabCache = new WeakMap(); // vocab -> [{ display, key, re }]
+function compiledVocab(vocab) {
+  let list = vocabCache.get(vocab);
+  if (!list || list.length !== vocab.size) {
+    list = [...vocab.values()].map((display) => ({ display, key: squeeze(display), re: wordRe(display, "i") }));
+    vocabCache.set(vocab, list);
+  }
+  return list;
+}
 export function extractBrandsFromText(text, vocab) {
   if (!text || !vocab || !vocab.size) return [];
   const found = [];
-  vocab.forEach((display) => {
-    const verbatim = wordRe(display, "i").test(text);
-    if (verbatim || matchCompressedLabel(text, display).length) found.push({ brand: display });
-  });
+  // "ſ" and the Kelvin sign match s and k under the "iu" flags but squeeze
+  // away: such a text takes the long way.
+  const flat = /[ſK]/.test(text) ? null : squeeze(text);
+  for (const { display, key, re } of compiledVocab(vocab)) {
+    if (flat != null && key && !flat.includes(key)) continue;
+    if (re.test(text) || matchCompressedLabel(text, display).length) found.push({ brand: display });
+  }
   return found;
 }
 
