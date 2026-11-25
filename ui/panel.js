@@ -9118,7 +9118,7 @@ function renderCampaignHead(profile) {
 
   const notes = [];
   // The last run's date is in the title line (1.0.6: it was said three times).
-  if (due && vol.submissions) notes.push(el("div", { className: "geo-due" }, "Today's run hasn't happened yet."));
+  if (due && vol.submissions && !holding) notes.push(el("div", { className: "geo-due" }, "Today's run hasn't happened yet."));
   if (vol.submissions > 60) notes.push(el("div", { className: "warn-box" }, el("span", {}, `${vol.submissions} automated submissions in one run is a lot of activity on one account. Consider splitting your prompts across campaigns or pausing some, and keep an eye on the run rather than leaving it unattended.`)));
   head.append(...notes);
   // Answers missing from the last finished run (0.78.1): asked again on
@@ -10346,6 +10346,10 @@ function renderLoaderStatus(s) {
           : l.elapsedMs > l.turnTimeoutMs ? `${fmtDuration(l.elapsedMs)}, past its ${fmtDuration(l.turnTimeoutMs)} limit`
           : `${fmtDuration(l.elapsedMs)} of ${fmtDuration(l.turnTimeoutMs)}`;
         const tag = activeLegs.length > 1 ? `tab ${l.tab}: ` : "";
+        // Paused by you (1.0.7, live test): the tab holds its next prompt,
+        // unsent, and the clock read as if it were being asked.
+        const held = s.userPaused !== undefined ? s.userPaused : s.paused;
+        if (held) { sub.push(`${tag}next: "${l.current.slice(0, 28)}${l.current.length > 28 ? "…" : ""}"`); continue; }
         sub.push(`${tag}"${l.current.slice(0, 28)}${l.current.length > 28 ? "…" : ""}"${elapsed ? ` (${elapsed})` : ""}`);
       }
     } else if (ps.done >= ps.total) {

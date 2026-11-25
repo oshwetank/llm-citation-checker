@@ -220,7 +220,7 @@ function overviewSec() {
     t.append(h("div", { className: "cv-tr", role: "row" },
       h("span", { role: "cell", className: "cv-who" }, engineMark(e.id), e.label),
       h("span", { role: "cell", className: "cv-num" }, `${e.answered}/${e.sent}`),
-      ...(ok ? [pct(e.own.sov), pct(e.own.vis), num(e.own.pos), num(e.own.mentions), e.id === "gemini" && !e.searches ? "not published" : `${e.searches} · ${(e.searches / e.answered).toFixed(1)}/answer`, `${e.read} · ${e.cited}`].map((x) => h("span", { role: "cell", className: "cv-num" }, x))
+      ...(ok ? [pct(e.own.sov), pct(e.own.vis), num(e.own.pos), num(e.own.mentions), (e.id === "gemini" || e.id === "aimode") && !e.searches ? "not published" : `${e.searches} · ${(e.searches / e.answered).toFixed(1)}/answer`, `${e.read} · ${e.cited}`].map((x) => h("span", { role: "cell", className: "cv-num" }, x))
         : [h("span", { role: "cell", className: "cv-span cv-muted" }, e.limited ? "No answers: usage limit reached" : "No answers")]),
       ok ? h("span", { role: "cell", className: "cv-who" }, e.firstMost ? brandMark(e.firstMost.name, "s") : "", e.firstMost ? `${e.firstMost.name} · ${e.firstMost.n}` : "—") : ""));
   });
@@ -473,7 +473,7 @@ function citationsSec() {
     ...[["Kind of page", C.pageTypes.map((x, i) => ({ label: x.label, n: x.n, c: RAMP[i % RAMP.length] }))],
       ["How recent", C.freshness.map((x, i) => ({ label: x.label, n: x.n, c: i === C.freshness.length - 1 ? "var(--cv-dim)" : RAMP[i] }))],
       ["Where the engine found it", C.lanes.map((x, i) => ({ label: x.label, n: x.n, c: RAMP[(i * 2) % RAMP.length] }))]].map(([t, parts]) => { const [b, l] = mixBar(parts); return card("", h("h4", { className: "cv-h4" }, t), b, l); }));
-  const tiles = h("div", { className: "cv-tiles" }, tile("Citations", String(C.total), `${C.pages} different pages`), tile("Cited by both engines", String(C.bothEngines), "same site, same prompt", h("span", { className: "cv-lgroup" }, ...V.engines.slice(0, 2).map((e) => engineMark(e, "s")))),
+  const tiles = h("div", { className: "cv-tiles" }, tile("Citations", String(C.total), `${C.pages} different pages`), tile(V.engines.length > 2 ? "Cited by more than one engine" : "Cited by both engines", String(C.bothEngines), "same site, same prompt", h("span", { className: "cv-lgroup" }, ...V.engines.slice(0, 2).map((e) => engineMark(e, "s")))),
     tile("Typical page age", C.medianAgeDays == null ? "—" : `${C.medianAgeDays} days`, "median of dated pages"), tile(ownSiteLabel(), String(C.ownSite), `of ${C.total}`, brandMark(V.own, "s")));
   const q = h("input", { type: "search", id: "cvCitQ", className: "cv-search", placeholder: "Site, page or prompt", value: S.cq, "aria-label": "Filter citations" });
   q.oninput = () => { S.cq = q.value; S.cpage = 0; const pos = q.selectionStart; redo(); const n = document.getElementById("cvCitQ"); if (n) { n.focus(); n.setSelectionRange(pos, pos); } };
@@ -616,7 +616,7 @@ function searchesSec() {
     h("div", { className: "cv-tiles" }, tile("site: searches", String(site.count), `of ${s.total}`), tile("Sites named", String(site.domains.length), site.domains.slice(0, 3).map((d) => d.domain).join(", ")),
       tile("Your site named", site.ownTargeted ? "Yes" : "0", site.ownTargeted ? "" : "never targeted")),
     site.rows.length ? sr : "", spg.pager,
-    h("div", { className: "cv-grid3" }, ...site.byEngine.filter((e) => !e.n).map((e) => empty(e.engine === "gemini" && !e.of ? "Gemini doesn't publish its searches." : `${ENG[e.engine]} ran no site: searches in ${e.of}.`, engineMark(e.engine)))));
+    h("div", { className: "cv-grid3" }, ...site.byEngine.filter((e) => !e.n).map((e) => empty((e.engine === "gemini" || e.engine === "aimode") && !e.of ? `${ENG[e.engine]} doesn't publish its searches.` : `${ENG[e.engine]} ran no site: searches in ${e.of}.`, engineMark(e.engine)))));
   const a = V.ads;
   const adsCard = card("cv-ads", h("div", { className: "cv-who" }, h("span", { className: "cv-op ad" }, "AD"), h("span", { className: "cv-stack" }, h("b", {}, "Ads shown with the answers"), h("span", { className: "cv-muted" }, "ChatGPT can show a sponsored card after an answer. The other engines have no ad format."))),
     h("div", { className: "cv-tiles" }, tile("Answers with an ad", `${a.withAd}/${a.answers}`), tile("Advertisers", String(a.advertisers.length)), tile("Your brand advertising", String(a.own)), tile("Rivals advertising", String(a.rival)),
@@ -653,7 +653,7 @@ function signalsSec(runHistory) {
   bt.append(h("div", { className: "cv-tr cv-th", role: "row" }, ...["Engine", "Searches", "Pages read", "Pages cited"].map((x) => h("span", { role: "columnheader" }, x))));
   // Gemini doesn't publish its searches: "not published", as the overview
   // says, not "0 (0)", which read as "never searched" (1.0.2).
-  g.breadth.forEach((x) => bt.append(h("div", { className: "cv-tr", role: "row" }, h("span", { role: "cell", className: "cv-who" }, engineMark(x.engine), ENG[x.engine]), ...[["searches"], ["read"], ["cited"]].map(([k]) => h("span", { role: "cell", className: "cv-num" }, k === "searches" && x.engine === "gemini" && !x.totals[k] ? "not published" : `${x[k]} (${x.totals[k]})`)))));
+  g.breadth.forEach((x) => bt.append(h("div", { className: "cv-tr", role: "row" }, h("span", { role: "cell", className: "cv-who" }, engineMark(x.engine), ENG[x.engine]), ...[["searches"], ["read"], ["cited"]].map(([k]) => h("span", { role: "cell", className: "cv-num" }, k === "searches" && (x.engine === "gemini" || x.engine === "aimode") && !x.totals[k] ? "not published" : `${x[k]} (${x.totals[k]})`)))));
   br.append(bt);
   const KL = { shopping: "Shopping", info: "Informational", local: "Local", images: "Image-led", memory: "From memory" };
   const [kb, kl] = mixBar(g.kinds.map((k) => ({ label: KL[k.id] || k.id, n: k.n, c: `var(--ak-${k.id}, var(--kind-other))` })));
