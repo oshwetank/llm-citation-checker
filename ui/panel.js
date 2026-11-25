@@ -6957,6 +6957,19 @@ function cpSetupOnScreen() { return !!document.querySelector("#loader .cs-card-d
 let cpFromBroadcast = false; // set while refreshFromBroadcast's load() runs
 function cpHolding(profile) { return !!(profile && cpLive.live && cpLive.profileId === profile.id); }
 
+// The campaign header's menus (⋯, Run's ▾), 1.0.7: one open at a time,
+// closed by Escape or a click outside. Each header used to add its own
+// document listener, never removed, one more every time it was redrawn.
+let cpMenuOpen = null; // { wrap, close, btn }
+function closeCpMenus() { if (cpMenuOpen) { cpMenuOpen.close(); cpMenuOpen = null; } }
+document.addEventListener("click", (ev) => { if (cpMenuOpen && !cpMenuOpen.wrap.contains(ev.target)) closeCpMenus(); });
+document.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Escape" || !cpMenuOpen) return;
+  const btn = cpMenuOpen.btn;
+  closeCpMenus();
+  if (btn && btn.isConnected) btn.focus();
+});
+
 /* ---------- Campaigns tab (setup + prompts + LLMs + run, formerly
    Tracking + Loader) ---------- */
 
@@ -9092,9 +9105,14 @@ function renderCampaignHead(profile) {
     const close = () => { menu.hidden = true; btn.setAttribute("aria-expanded", "false"); };
     btn.setAttribute("aria-haspopup", "menu");
     btn.setAttribute("aria-expanded", "false");
-    btn.onclick = (ev) => { ev.stopPropagation(); const open = menu.hidden; menu.hidden = !open; btn.setAttribute("aria-expanded", String(open)); };
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      const open = menu.hidden;
+      if (open) closeCpMenus(); // one menu at a time (1.0.7: ⋯ stayed open over Run's)
+      menu.hidden = !open; btn.setAttribute("aria-expanded", String(open));
+      if (open) cpMenuOpen = { wrap, close, btn };
+    };
     menu.addEventListener("click", () => close());
-    document.addEventListener("click", (ev) => { if (!wrap.contains(ev.target)) close(); });
     items.forEach((b) => b.setAttribute("role", "menuitem"));
     return wrap;
   };

@@ -209,6 +209,18 @@ try {
     const menu = await page.evaluate(() => [...document.querySelectorAll("#cpHead .cp-more-menu .cp-menu button")].map((b) => b.textContent));
     check("⋯ holds Edit setup, Export…, Share campaign… and Delete campaign", menu.join("|") === "Edit setup|Export…|Share campaign…|Delete campaign", menu.join("|"));
     check("the arrow holds Run signed out", await page.evaluate(() => /^Run signed out/.test(document.querySelector("#cpHead .cp-run-menu .cp-menu button")?.textContent || "")));
+    // 1.0.7 (live test): ⋯ ignored Escape and stayed open over the arrow's menu.
+    const menus = async () => page.evaluate(() => ({ more: !document.querySelector("#cpHead .cp-more-menu .cp-menu").hidden, run: !document.querySelector("#cpHead .cp-run-menu .cp-menu").hidden }));
+    await page.click("#cpHead .cp-more");
+    const opened = await menus();
+    await page.keyboard.press("Escape");
+    const escaped = await menus();
+    check("⋯ opens, and Escape closes it", opened.more && !escaped.more, JSON.stringify({ opened, escaped }));
+    await page.click("#cpHead .cp-more");
+    await page.click("#cpHead .cp-caret");
+    const swapped = await menus();
+    check("opening the arrow's menu closes ⋯: one menu at a time", swapped.run && !swapped.more, JSON.stringify(swapped));
+    await page.keyboard.press("Escape");
     check("Pause, Resume and Stop only while a run is going", !h.btns.some((x) => /Pause|Resume|Stop/.test(x)), h.btns.join("|"));
     check("the run, brand and engine filters are in it", h.filters);
     check("no separate summary, run or results card", !h.oldCards);
