@@ -14,15 +14,18 @@ Hugging Face; and, once accounts are switched on, when you sign in, share a camp
 code, open a code, or leave an email for updates. Nothing you capture ever leaves your
 device unless you choose to share that campaign: the AI runs on your computer.
 
-> **v1.0.6** (1.0.7 in progress) — ChatGPT, Gemini, Perplexity, Grok and Google AI Mode. See
+> **v1.0.7** — ChatGPT, Gemini, Perplexity, Grok and Google AI Mode. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [RESEARCH.md](RESEARCH.md)
 > for the original feasibility research. Taking over development? Start with
 > [HANDOFF.md](HANDOFF.md).
 >
 > **Recent changes:**
-> - **Next (1.0.7, in progress): fixes from a full go-live test** (25 November 2026: all five engines asked live, a new campaign created, run, paused, resumed and retried, every board section, export and Ask question checked against the data).
+> - **1.0.7** (25 November 2026): **fixes from a full go-live test** (25 November 2026: all five engines asked live, a new campaign created, run, paused, resumed and retried, every board section, export and Ask question checked against the data).
 >   - **Big campaigns open faster.** An 800-answer campaign's numbers are worked out in about 6 s instead of 10; every number is the same as before, checked board by board.
->   - **Ask always answers.** It works the answer out from your data first; the built-in AI only rewords it, now within a time limit, and questions in Ask go before the AI's background labelling. Before, one question could wait over five minutes.
+>   - **Ask answers in a second or two.** It gives the answer worked out from your data, exact and at once (it took 35 seconds or more, once over five minutes), and finds the campaign you name by its short name ("R2", "the Go-live test campaign").
+>   - **Brand lists without labels.** Section and feature labels ("Limitation", "Lead Scoring", "Trade-off", "Why it wins") are no longer brands, a pick named only in a bold opening sentence is found, and names keep working inside labels and plans ("Pipedrive (Growth)", "Bitrix24 (Free Plan)"). Checked on 3,070 stored answers: about 600 wrong entries gone, real brands found more often.
+>   - **Lighter on smaller computers.** On 4 GB of memory or less, a campaign opens one tab per engine. Your own tabs stay smooth while a campaign runs.
+>   - **Clearer campaign screens.** AI Mode's searches read "not published", menus close with Escape, a paused run says which prompt is next, and wording that didn't fit three engines is fixed.
 >   - **Ask understands more questions.** "Who is our biggest competitor?" ranks your rivals, and "Which sites cite LeadSquared but not us?" lists the gap.
 >   - **Better competitor suggestions.** A campaign suggests "India Post", "Ecom Express" and "Birla Opus", not "India", "Ecom" and "Birla".
 > - **1.0.6** (24 November 2026). Simpler to use, and AI Mode always on.
