@@ -28,7 +28,22 @@ export async function adapt({ captureId, raw, capturedAt, pageUrl, url }, option
   const products = r.products.map((p) => ({ name: p.name, price: p.price, rating: p.rating, brand: vendorFromProductName(p.name) || null, ...(p.image ? { images: [p.image] } : {}) }));
   // Links but no AI answer (Google chose not to write one): the few words
   // left are link text, not an answer.
-  const text = r.answerText.length < 20 && r.sources.length ? "" : r.answerText;
+  // A source's link chip, read as a line of its own (" SHK Global
+  // Ventures", " opsloop.in"), is not the answer's words: both were
+  // brands in a live test of 25 Nov 2026 (1.0.7). Only a line that opens
+  // with a no-break space and spells a source's own site goes.
+  const squeeze = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const siteKeys = new Set();
+  for (const s of sources) {
+    const d = String(s.domain || "").replace(/^www\./, "");
+    if (d) { siteKeys.add(squeeze(d)); siteKeys.add(squeeze(d.replace(/\.[a-z]{2,3}(?:\.[a-z]{2})?$/i, ""))); }
+    if (s.platformSpecific && s.platformSpecific.site) siteKeys.add(squeeze(s.platformSpecific.site));
+  }
+  siteKeys.delete("");
+  const answer = String(r.answerText || "").split("\n")
+    .filter((line) => !(/^ /.test(line) && line.trim().split(/\s+/).length <= 6 && siteKeys.has(squeeze(line))))
+    .join("\n");
+  const text = answer.length < 20 && r.sources.length ? "" : answer;
   // Card names feed brand detection too: "Hoka Clifton 9" names Hoka even
   // when the text only says "this cushioned trainer".
   const cardText = products.map((p) => p.name).join("\n");

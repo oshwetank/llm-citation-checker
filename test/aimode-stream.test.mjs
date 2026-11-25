@@ -74,5 +74,16 @@ console.log("\nGoogle's newer card layout (live, 24 Nov 2026)");
   check("a citation chip's label (\"Gear Blog +2\") is not text", !/\+2/.test(r.answerText), r.answerText);
 }
 
+console.log("\na source's chip and a label are not brands (1.0.7, live test of 25 Nov 2026)");
+{
+  const body = `<p>For wide feet, <strong>Zento Pathfinder 4</strong> is roomy.</p><ul><li><strong>Why it wins.</strong> Roomy toe box.</li><li><strong>Trade-off.</strong> Pricier.</li></ul><div> Gear Blog</div><p>Gear Blog rated the Lumora Trek 2 the budget choice.</p>`;
+  const rec = await adapt({ captureId: "chip", raw: aiModePayload({ body }), capturedAt: 1, pageUrl: "https://www.google.com/search?udm=50&q=x" });
+  const names = rec.brandMentions.map((b) => b.brand);
+  check("the chip's own line is gone", !/\n Gear Blog/.test(rec.answerText) && !/^ Gear Blog/m.test(rec.answerText), JSON.stringify(rec.answerText));
+  check("the sentence naming the site stays", /Gear Blog rated/.test(rec.answerText));
+  check("no label is a brand", !names.some((n) => /Why it wins|Trade-off/.test(n)), names.join("|"));
+  check("the brands are still found", names.includes("Zento") && names.includes("Lumora"), names.join("|"));
+}
+
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);

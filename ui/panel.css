@@ -2757,6 +2757,8 @@ body.popup .drill-table th:first-child { min-width: 180px; }
   box-shadow: 0 3px 10px rgba(0, 122, 255, 0.28);
 }
 .geo-chip.add { border-style: dashed; color: var(--fg-muted); }
+.geo-chip.add:disabled { opacity: 0.6; cursor: not-allowed; }
+.geo-limit-note { flex-basis: 100%; margin: 4px 0 0; padding: 8px 12px; border-radius: 10px; background: var(--surface-sunken, var(--bg-subtle)); color: var(--fg-secondary); font-size: 13px; line-height: 1.45; }
 
 /* An engine with no adapter is visible but unmistakably not selectable, so a
    metric can never quietly under-count because a checkbox did nothing. */
@@ -3872,7 +3874,7 @@ body.popup .pp-chip { font-size: 10px; }
 }
 .app-tooltip[data-placement="top"]::after { bottom: -4px; }
 .app-tooltip[data-placement="bottom"]::after { top: -4px; }
-[data-tip], [data-term] { cursor: help; }
+[data-tip], [data-term] { cursor: inherit; }
 
 /* A section being rebuilt after a filter change. beginSwap() holds the old
    height as a floor across the swap so the page doesn't jump to zero and back
@@ -5606,6 +5608,7 @@ i.dot.cited { background: var(--cited-fill); }
 .at-btn.danger { color: var(--red-fg); }
 .at-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .db-menu { inset-inline-start: 0; inset-inline-end: auto; min-width: 220px; }
+.db-menu.db-menu-end { inset-inline-start: auto; inset-inline-end: 0; }
 .menu-note { padding: 6px 10px; line-height: 1.4; }
 .db-intro { margin: 10px 0 4px; }
 .db-empty { margin: 14px 0 4px; }
@@ -6735,6 +6738,10 @@ a.at-review-src:hover { text-decoration: underline; }
 .cv-badge.gold { background: var(--first-fill, #FEF3C7); color: var(--first-on, #92400E); }
 .cv-pill { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px; border-radius: 6px; font-size: 11.5px; background: var(--surface-sunken, var(--bg-subtle)); color: var(--fg-secondary); white-space: nowrap; }
 .cv-pill.ex { text-decoration: line-through; text-decoration-color: var(--red-fg); }
+/* A long topic ends with "…" inside its column (1.0.7, approved mockup):
+   "Trust, safety & compliance" ran under the ChatGPT cell. Hover: the whole. */
+.cv-topic-cell { min-width: 0; overflow: hidden; }
+.cv-pill-fit { display: inline-block; max-width: 100%; line-height: 20px; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; box-sizing: border-box; }
 .cv-pill.good { background: var(--green-bg); color: var(--green-fg); }
 .cv-track { position: relative; display: block; height: 8px; border-radius: 4px; background: color-mix(in srgb, var(--fg-muted) 14%, transparent); overflow: hidden; min-width: 40px; }
 .cv-track > span { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: var(--accent); }
@@ -6756,6 +6763,12 @@ a.at-review-src:hover { text-decoration: underline; }
 
 /* tiles & KPIs */
 .cv-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); gap: 10px; }
+/* "Also named in the answers" (1.0.7, approved mockup): a gap after the
+   label and between the chips, "Add all" kept apart. */
+.cv-sugg { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-block: 2px 12px; }
+.cv-sugg > .cv-muted { margin-inline-end: 4px; }
+.cv-sugg .tag-add { font-size: 12px; padding: 5px 10px; }
+.cv-sugg .linkbtn { margin-inline-start: 8px; }
 .cv-tile { position: relative; padding: 12px 14px; border-radius: 12px; background: var(--tile-bg, var(--bg-subtle)); display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .cv-tile > .cv-lg, .cv-tile > .cv-lgroup { position: absolute; top: 12px; inset-inline-end: 12px; }
 .cv-tile-l { font-size: 12px; color: var(--fg-muted); padding-inline-end: 30px; }
@@ -7255,7 +7268,7 @@ body.popup .cv-tab { height: 30px; padding: 0 9px; font-size: 12px; }
 .cs-card-details { gap: 14px; }
 .cs-brand-change { align-self: flex-start; font-size: 12px; padding: 0; }
 .cs-saved { display: block; font-size: 12px; color: var(--fg-muted); margin-top: 2px; }
-[data-tip].cs-label, .cs-bar-sub[data-tip] { text-decoration: underline dotted var(--fg-muted); text-underline-offset: 3px; cursor: help; }
+[data-tip].cs-label, .cs-bar-sub[data-tip] { text-decoration: underline dotted var(--fg-muted); text-underline-offset: 3px; }
 .tag-primary { font-weight: 600; box-shadow: inset 0 0 0 1px var(--accent); }
 .tag-label { font: inherit; background: none; border: 0; padding: 0; color: inherit; cursor: pointer; }
 .tag-label:hover { text-decoration: underline; }
@@ -7569,3 +7582,79 @@ select.ask-scope-chip { appearance: auto; padding-inline-end: 6px; }
 .ask-choices { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .ask-notes { margin-top: 6px; font-size: 12px; color: var(--fg-secondary); }
 .ask-off-note { margin: 0 0 10px; font-size: 13px; color: var(--fg-secondary); }
+
+
+/* ==========================================================================
+   1.0.6 — a campaign's sections down the side of its results (asked: "within
+   the campaign … there are multiple segments … you need to navigate those
+   segments in the horizontal manner. I want that particular part in the
+   vertical section"). The app bar stays across the top. Left or right is
+   Settings → Campaign sections (localStorage cito-nav-side → data-nav on
+   <html>, display-boot.js). The popup keeps the row above the board.
+   ========================================================================== */
+body.tab .cv-layout { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 16px; align-items: start; }
+:root[data-nav="right"] body.tab .cv-layout { grid-template-columns: minmax(0, 1fr) 200px; }
+:root[data-nav="right"] body.tab .cv-layout > .cv-tabs { order: 2; }
+body.tab .cv-layout > .cv-tabs {
+  position: sticky; top: calc(var(--analyze-bar-top, 60px) + 8px);
+  display: flex; flex-direction: column; align-items: stretch; gap: 2px;
+  overflow: visible; flex-wrap: nowrap; padding: 8px; margin: 0;
+  -webkit-mask-image: none !important; mask-image: none !important;
+}
+body.tab .cv-layout > .cv-tabs .cv-tab { display: flex; align-items: center; justify-content: space-between; width: 100%; height: 34px; padding: 0 12px; text-align: start; border-radius: 8px; white-space: nowrap; }
+body.tab .cv-layout > .cv-tabs .cv-tab .cv-cnt { margin-inline-start: auto; }
+body.tab .cv-layout > .cv-panel { min-width: 0; }
+@media (max-width: 900px) {
+  body.tab .cv-layout, :root[data-nav="right"] body.tab .cv-layout { grid-template-columns: minmax(0, 1fr); }
+  body.tab .cv-layout > .cv-tabs { position: static; flex-direction: row; flex-wrap: wrap; order: 0; }
+  body.tab .cv-layout > .cv-tabs .cv-tab { width: auto; }
+}
+/* The footer stays below the fold, so a page that fills in after it opens
+   never pushes it about (layout shift). */
+body.tab .app-content { min-height: calc(100vh - 80px); }
+
+/* 1.0.6 — the built-in AI in one line (ui/modelSwitches.js mountAiSetup). */
+.ai-setup { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.ai-setup-text { flex: 1 1 280px; min-width: 0; font-size: 13px; line-height: 1.5; color: var(--fg-secondary); }
+.ai-setup-text b { color: var(--fg-primary); font-weight: 600; }
+.ai-setup-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good, #16a34a); flex: 0 0 auto; }
+.ai-setup .ms-progress { flex: 1 1 100%; }
+.ai-setup-more { flex: 1 1 100%; font-size: 12px; color: var(--fg-muted); }
+.ai-setup-more > summary { cursor: pointer; width: max-content; }
+.ai-setup-more[open] > summary { margin-bottom: 8px; }
+.ask-models { padding: 12px 16px; }
+/* About, 1.0.6: folded extras, subheads in More settings, saving by itself. */
+.ab-fold > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; font-size: 15px; }
+.ab-fold > summary::-webkit-details-marker { display: none; }
+.ab-fold > summary::before { content: "▸"; color: var(--fg-muted); font-size: 12px; }
+.ab-fold[open] > summary::before { content: "▾"; }
+.ab-fold[open] > summary { margin-bottom: 12px; }
+.ab-hero-simple .ab-hero-title { font-size: 22px; }
+.ab-step-ai .ab-step-mark { background: var(--accent-subtle); color: var(--accent); }
+.ab-subgroup { margin: 18px 0 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--fg-muted); }
+.ab-subgroup:first-of-type { margin-top: 8px; }
+.ab-autosave { justify-content: flex-start; border-top: none; padding-top: 4px; }
+.ab-autosave .ab-status:empty { display: none; }
+.ab-row-ai .ab-row-text { flex: 1 1 auto; }
+.ab-row-ai #setAiQuick { margin-top: 6px; }
+
+/* Ask: the reply's last button clears the box to type in. */
+.ask-log { padding-bottom: 16px; }
+/* The error count beside Help is information, not an alarm (1.0.6). */
+.ab-nav-badge { background: var(--bg-subtle) !important; color: var(--fg-secondary) !important; font-weight: 500; }
+/* The first look (1.0.6). */
+.fs-back { position: fixed; inset: 0; z-index: 1000; background: rgba(15, 23, 42, 0.35); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.fs-box { width: min(620px, 100%); max-height: calc(100vh - 32px); overflow-y: auto; background: var(--surface-solid); color: var(--fg-primary); border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 24px 60px rgba(15, 23, 42, 0.25); padding: 24px 26px 20px; }
+.fs-box h2 { margin: 0 0 6px; font-size: 21px; }
+.fs-lead { margin: 0 0 16px; color: var(--fg-secondary); font-size: 14px; line-height: 1.5; }
+.fs-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+.fs-step { display: flex; gap: 12px; align-items: flex-start; }
+.fs-step b { font-size: 14px; }
+.fs-step p { margin: 2px 0 8px; font-size: 13px; color: var(--fg-secondary); line-height: 1.5; }
+.fs-step p:empty { display: none; }
+.fs-num { flex: 0 0 26px; height: 26px; border-radius: 50%; background: var(--accent-subtle); color: var(--accent); display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 13px; }
+.fs-foot { display: flex; justify-content: flex-end; margin-top: 18px; }
+.ask-chat .ask-log > * { flex-shrink: 0; } /* 1.0.6: a reply was squeezed and its last row hidden */
+
+/* "beta" beside a setting's name (1.0.7: Language). */
+.ab-beta { display: inline-block; margin-inline-start: 6px; padding: 1px 6px; border-radius: 999px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; vertical-align: middle; background: var(--accent-subtle); color: var(--accent); }

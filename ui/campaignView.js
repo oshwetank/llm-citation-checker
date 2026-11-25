@@ -182,10 +182,13 @@ function overviewSec() {
       const txt = s.value == null ? "no answers" : k.id === "responses" ? `${s.value}/${s.of}` : k.unit === "%" ? pct(s.value) : num(s.value);
       rows.append(h("span", { className: "cv-split-row" }, engineMark(s.engine, "s"), bar(w, `var(--eng-${s.engine})`), h("span", { className: `cv-num${s.value == null ? " cv-muted" : ""}` }, txt)));
     });
+    // 1.0.6: each engine's figures are the By engine table below, so the
+    // cards show the headline only ("15 / 15" no longer has "of 15" too).
+    void rows;
     kpis.append(card("cv-kpi",
-      h("div", { className: "cv-kpi-top" }, h("span", { className: "cv-kpi-l", ...(TERM[k.id] ? { "data-term": TERM[k.id] } : {}) }, k.label), k.rank ? h("span", { className: "cv-badge", title: fmt("{place} of {n} brands", { place: tr(ord(k.rank)), n: k.of }) }, `${ord(k.rank)} of ${k.of}`) : k.of != null ? h("span", { className: "cv-badge" }, `of ${k.of}`) : ""),
+      h("div", { className: "cv-kpi-top" }, h("span", { className: "cv-kpi-l", ...(TERM[k.id] ? { "data-term": TERM[k.id] } : {}) }, k.label), k.rank ? h("span", { className: "cv-badge", title: fmt("{place} of {n} brands", { place: tr(ord(k.rank)), n: k.of }) }, `${ord(k.rank)} of ${k.of}`) : ""),
       h("div", { className: "cv-kpi-v" }, k.value == null ? "—" : String(k.value), h("span", { className: "cv-kpi-u" }, k.id === "responses" ? ` / ${k.of}` : k.unit)),
-      delta(k.id), rows));
+      delta(k.id)));
   }
   // How sure the headline numbers are (1.0.0, lib/onboarding.js): AI answers
   // vary from run to run, so a share is shown with the answers it rests on
@@ -217,7 +220,7 @@ function overviewSec() {
     t.append(h("div", { className: "cv-tr", role: "row" },
       h("span", { role: "cell", className: "cv-who" }, engineMark(e.id), e.label),
       h("span", { role: "cell", className: "cv-num" }, `${e.answered}/${e.sent}`),
-      ...(ok ? [pct(e.own.sov), pct(e.own.vis), num(e.own.pos), num(e.own.mentions), e.id === "gemini" && !e.searches ? "not published" : `${e.searches} · ${(e.searches / e.answered).toFixed(1)}/answer`, `${e.read} · ${e.cited}`].map((x) => h("span", { role: "cell", className: "cv-num" }, x))
+      ...(ok ? [pct(e.own.sov), pct(e.own.vis), num(e.own.pos), num(e.own.mentions), (e.id === "gemini" || e.id === "aimode") && !e.searches ? "not published" : `${e.searches} · ${(e.searches / e.answered).toFixed(1)}/answer`, `${e.read} · ${e.cited}`].map((x) => h("span", { role: "cell", className: "cv-num" }, x))
         : [h("span", { role: "cell", className: "cv-span cv-muted" }, e.limited ? "No answers: usage limit reached" : "No answers")]),
       ok ? h("span", { role: "cell", className: "cv-who" }, e.firstMost ? brandMark(e.firstMost.name, "s") : "", e.firstMost ? `${e.firstMost.name} · ${e.firstMost.n}` : "—") : ""));
   });
@@ -230,7 +233,7 @@ function overviewSec() {
     rows.forEach((r) => c.append(h("div", { className: `cv-bl${r.isOwn ? " you" : ""}` }, brandMark(r.name, "s"), h("span", { className: "cv-ell" }, r.name), bar(r.sov * 100 / max, r.isOwn ? "var(--you)" : "var(--cv-dim)"), h("span", { className: "cv-num" }, pct(r.sov)))));
     mult.append(c);
   });
-  return section("cv-overview", fmt("{brand} in this run", { brand: V.own }), `${o.answered} answers from ${o.sent} prompts sent`, notes, kpis, sureLine, adviceCard,
+  return section("cv-overview", fmt("{brand} in this run", { brand: V.own }), `${o.answered} answer${o.answered === 1 ? "" : "s"} from ${o.sent} prompt${o.sent === 1 ? "" : "s"} sent`, notes, kpis, sureLine, adviceCard,
     card("", h("h4", { className: "cv-h4" }, "By engine"), h("div", { className: "cv-scroll" }, t)),
     h("h4", { className: "cv-h4" }, "Share of voice, engine by engine"), mult);
 }
@@ -470,7 +473,7 @@ function citationsSec() {
     ...[["Kind of page", C.pageTypes.map((x, i) => ({ label: x.label, n: x.n, c: RAMP[i % RAMP.length] }))],
       ["How recent", C.freshness.map((x, i) => ({ label: x.label, n: x.n, c: i === C.freshness.length - 1 ? "var(--cv-dim)" : RAMP[i] }))],
       ["Where the engine found it", C.lanes.map((x, i) => ({ label: x.label, n: x.n, c: RAMP[(i * 2) % RAMP.length] }))]].map(([t, parts]) => { const [b, l] = mixBar(parts); return card("", h("h4", { className: "cv-h4" }, t), b, l); }));
-  const tiles = h("div", { className: "cv-tiles" }, tile("Citations", String(C.total), `${C.pages} different pages`), tile("Cited by both engines", String(C.bothEngines), "same site, same prompt", h("span", { className: "cv-lgroup" }, ...V.engines.slice(0, 2).map((e) => engineMark(e, "s")))),
+  const tiles = h("div", { className: "cv-tiles" }, tile("Citations", String(C.total), `${C.pages} different pages`), tile(V.engines.length > 2 ? "Cited by more than one engine" : "Cited by both engines", String(C.bothEngines), "same site, same prompt", h("span", { className: "cv-lgroup" }, ...V.engines.slice(0, 2).map((e) => engineMark(e, "s")))),
     tile("Typical page age", C.medianAgeDays == null ? "—" : `${C.medianAgeDays} days`, "median of dated pages"), tile(ownSiteLabel(), String(C.ownSite), `of ${C.total}`, brandMark(V.own, "s")));
   const q = h("input", { type: "search", id: "cvCitQ", className: "cv-search", placeholder: "Site, page or prompt", value: S.cq, "aria-label": "Filter citations" });
   q.oninput = () => { S.cq = q.value; S.cpage = 0; const pos = q.selectionStart; redo(); const n = document.getElementById("cvCitQ"); if (n) { n.focus(); n.setSelectionRange(pos, pos); } };
@@ -545,7 +548,7 @@ function promptsSec() {
     // The prompt opens its answer; the arrow beside it, its searches.
     const toggle = h("button", { type: "button", className: "cv-ptoggle", "aria-expanded": open ? "true" : "false", "aria-label": open ? "Hide its searches" : "Show its searches" }, h("span", { className: `cv-chev${open ? " open" : ""}`, "aria-hidden": "true" }, "›"));
     toggle.onclick = () => { S.propen = open ? -1 : p.i; redo(); };
-    t.append(h("div", { className: "cv-tr", role: "row" }, h("span", { role: "cell", className: "cv-ptext" }, toggle, promptLink(p.text)), h("span", { role: "cell" }, h("span", { className: "cv-pill" }, p.topic)), ...cells,
+    t.append(h("div", { className: "cv-tr", role: "row" }, h("span", { role: "cell", className: "cv-ptext" }, toggle, promptLink(p.text)), h("span", { role: "cell", className: "cv-topic-cell" }, h("span", { className: "cv-pill cv-pill-fit", title: p.topic }, p.topic)), ...cells,
       h("span", { role: "cell", className: "cv-num" }, p.visibility == null ? "—" : pct(p.visibility)), h("span", { role: "cell", className: "cv-num" }, num(p.avgPos)),
       h("span", { role: "cell", className: "cv-lgroup" }, ...p.firsts.map((n) => brandMark(n, "s"))), h("span", { role: "cell", className: "cv-ell cv-muted" }, p.topProduct || "—"),
       h("span", { role: "cell", className: "cv-num cv-muted" }, String(p.queries.length))));
@@ -613,7 +616,7 @@ function searchesSec() {
     h("div", { className: "cv-tiles" }, tile("site: searches", String(site.count), `of ${s.total}`), tile("Sites named", String(site.domains.length), site.domains.slice(0, 3).map((d) => d.domain).join(", ")),
       tile("Your site named", site.ownTargeted ? "Yes" : "0", site.ownTargeted ? "" : "never targeted")),
     site.rows.length ? sr : "", spg.pager,
-    h("div", { className: "cv-grid3" }, ...site.byEngine.filter((e) => !e.n).map((e) => empty(e.engine === "gemini" && !e.of ? "Gemini doesn't publish its searches." : `${ENG[e.engine]} ran no site: searches in ${e.of}.`, engineMark(e.engine)))));
+    h("div", { className: "cv-grid3" }, ...site.byEngine.filter((e) => !e.n).map((e) => empty((e.engine === "gemini" || e.engine === "aimode") && !e.of ? `${ENG[e.engine]} doesn't publish its searches.` : `${ENG[e.engine]} ran no site: searches in ${e.of}.`, engineMark(e.engine)))));
   const a = V.ads;
   const adsCard = card("cv-ads", h("div", { className: "cv-who" }, h("span", { className: "cv-op ad" }, "AD"), h("span", { className: "cv-stack" }, h("b", {}, "Ads shown with the answers"), h("span", { className: "cv-muted" }, "ChatGPT can show a sponsored card after an answer. The other engines have no ad format."))),
     h("div", { className: "cv-tiles" }, tile("Answers with an ad", `${a.withAd}/${a.answers}`), tile("Advertisers", String(a.advertisers.length)), tile("Your brand advertising", String(a.own)), tile("Rivals advertising", String(a.rival)),
@@ -650,12 +653,12 @@ function signalsSec(runHistory) {
   bt.append(h("div", { className: "cv-tr cv-th", role: "row" }, ...["Engine", "Searches", "Pages read", "Pages cited"].map((x) => h("span", { role: "columnheader" }, x))));
   // Gemini doesn't publish its searches: "not published", as the overview
   // says, not "0 (0)", which read as "never searched" (1.0.2).
-  g.breadth.forEach((x) => bt.append(h("div", { className: "cv-tr", role: "row" }, h("span", { role: "cell", className: "cv-who" }, engineMark(x.engine), ENG[x.engine]), ...[["searches"], ["read"], ["cited"]].map(([k]) => h("span", { role: "cell", className: "cv-num" }, k === "searches" && x.engine === "gemini" && !x.totals[k] ? "not published" : `${x[k]} (${x.totals[k]})`)))));
+  g.breadth.forEach((x) => bt.append(h("div", { className: "cv-tr", role: "row" }, h("span", { role: "cell", className: "cv-who" }, engineMark(x.engine), ENG[x.engine]), ...[["searches"], ["read"], ["cited"]].map(([k]) => h("span", { role: "cell", className: "cv-num" }, k === "searches" && (x.engine === "gemini" || x.engine === "aimode") && !x.totals[k] ? "not published" : `${x[k]} (${x.totals[k]})`)))));
   br.append(bt);
   const KL = { shopping: "Shopping", info: "Informational", local: "Local", images: "Image-led", memory: "From memory" };
   const [kb, kl] = mixBar(g.kinds.map((k) => ({ label: KL[k.id] || k.id, n: k.n, c: `var(--ak-${k.id}, var(--kind-other))` })));
   const tiles = h("div", { className: "cv-tiles" },
-    tile(ownSiteLabel(), `${g.ownSite.citations}`, `of ${g.ownSite.of} citations`, brandMark(V.own, "s")),
+    // Your own site is on Sources (1.0.6: it was on both).
     tile("Coverage gaps", String(g.gaps.length), "answers without you that name two or more rivals"),
     tile("First product card", `${g.firstCard.own}`, `of ${g.firstCard.of} answers with cards`));
   const gpp = paged("gaps", g.gaps, 8, () => replace("cv-signals", () => signalsSec(RUN_HISTORY)));
@@ -671,7 +674,7 @@ function signalsSec(runHistory) {
       h("span", { role: "cell" }, bar(x.sent ? x.answered * 100 / x.sent : 0, `var(--eng-${x.engine})`)),
       h("span", { role: "cell" }, h("span", { className: `cv-badge ${notes.length ? (x.answered ? "warn" : "bad") : "good"}` }, notes.length ? notes.join(" · ") : "All answered"))));
   });
-  return section("cv-signals", "Signals and data quality", "", h("div", { className: "cv-grid2" }, ag, h("div", { className: "cv-stack gap" }, br, card("", h("h4", { className: "cv-h4" }, "Kinds of answer"), kb, kl))), tiles, gaps,
+  return section("cv-signals", "Signals and data quality", "", h("div", { className: "cv-grid2" }, ag, h("div", { className: "cv-stack gap" }, /* search breadth: the By engine table on Overview (1.0.6) */ void br || "", card("", h("h4", { className: "cv-h4" }, "Kinds of answer"), kb, kl))), tiles, gaps,
     card("", h("h4", { className: "cv-h4" }, "Data quality"), h("div", { className: "cv-scroll" }, qt)), runHistory ? card("", runHistory) : "");
 }
 
@@ -775,7 +778,7 @@ let SRC_DRILL = null, RUN_HISTORY = null, PANEL = null, TABS = null, restoredTab
 
 function tabBar() {
   const counts = sectionCounts(V);
-  const bar = h("div", { className: "cv-tabs", role: "tablist", "aria-label": "Sections" });
+  const bar = h("div", { className: "cv-tabs", role: "tablist", "aria-label": "Sections", "aria-orientation": document.body.classList.contains("tab") ? "vertical" : "horizontal", });
   CV_SECTIONS.forEach(([id, label]) => {
     const on = id === S.section;
     const b = h("button", { type: "button", role: "tab", className: `cv-tab${on ? " on" : ""}`, id: `${id}-tab`, "aria-selected": on ? "true" : "false", "aria-controls": "cvPanel", tabIndex: on ? 0 : -1, "data-section": id }, label);
@@ -785,10 +788,10 @@ function tabBar() {
   });
   // Arrow keys move between tabs, as a tab list does.
   bar.onkeydown = (e) => {
-    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft" && e.key !== "Home" && e.key !== "End") return;
+    if (!["ArrowRight", "ArrowLeft", "ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
     e.preventDefault();
     const i = CV_SECTIONS.findIndex(([id]) => id === S.section);
-    const n = e.key === "Home" ? 0 : e.key === "End" ? CV_SECTIONS.length - 1 : (i + (e.key === "ArrowRight" ? 1 : -1) + CV_SECTIONS.length) % CV_SECTIONS.length;
+    const n = e.key === "Home" ? 0 : e.key === "End" ? CV_SECTIONS.length - 1 : (i + (e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : -1) + CV_SECTIONS.length) % CV_SECTIONS.length;
     goSection(CV_SECTIONS[n][0]);
     document.getElementById(`${CV_SECTIONS[n][0]}-tab`)?.focus();
   };
@@ -816,8 +819,10 @@ export function goSection(id) {
   TABS = tabs;
   PANEL.replaceChildren(SECTION_FN[id]());
   PANEL.setAttribute("aria-labelledby", `${id}-tab`);
-  // A new section starts at its top, with the tabs still in sight.
-  if (changed) {
+  // A new section starts at its top, with the tabs still in sight (in the
+  // side menu, the page goes back to the section's top).
+  if (changed && TABS.closest(".cv-layout")) { const top = PANEL.getBoundingClientRect().top; if (top < 0) PANEL.scrollIntoView({ block: "start" }); }
+  else if (changed) {
     const top = TABS.getBoundingClientRect().top;
     if (top < 0 || top > window.innerHeight * 0.6) TABS.scrollIntoView({ block: "start" });
   }
@@ -830,5 +835,8 @@ export function renderCampaignView(box, view, deps, { sourcesDrill, runHistory }
   if (!restoredTab) { restoredTab = true; try { const saved = localStorage.getItem("cito-cv-section"); if (saved && SECTION_FN[saved]) S.section = saved; } catch (_) { /* default */ } }
   TABS = tabBar();
   PANEL = h("div", { className: "cv-panel", id: "cvPanel", role: "tabpanel", "aria-labelledby": `${S.section}-tab` }, SECTION_FN[S.section]());
-  box.append(TABS, PANEL);
+  // The full tab lists the sections down the side of the results (1.0.6),
+  // left or right; the popup keeps them in a row above.
+  if (document.body.classList.contains("tab")) box.append(h("div", { className: "cv-layout" }, TABS, PANEL));
+  else box.append(TABS, PANEL);
 }

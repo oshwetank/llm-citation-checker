@@ -66,7 +66,7 @@ export function mountModelSwitches(slot, opts = {}) {
     const pct = x.progress && x.progress.pct != null ? Math.max(0, Math.min(100, x.progress.pct)) : null;
     const line = x.busy ? `Downloading${pct != null ? ` ${Math.round(pct)}%` : "…"}${x.progress && x.progress.total ? ` · ${size(x.progress.loaded)} of ${size(x.progress.total)}` : ""}. Turn off to cancel.`
       : x.ready ? `On · downloaded${x.device ? `, runs ${where(x.device)}` : ""}.`
-      : x.error ? `Off · the last download failed: ${x.error}`
+      : x.error ? `Off · ${plainError(x.error)}`
       : `Off · ${size(x.bytes)} download, once.`;
     input.onchange = async () => {
       input.disabled = true;
@@ -113,6 +113,86 @@ export function mountModelSwitches(slot, opts = {}) {
     const busy = st && (st.downloading || (st.laya && st.laya.downloading) || (st.meaning && st.meaning.downloading));
     if (busy && !poll) poll = setInterval(refresh, 1000);
     else if (!busy && poll) { clearInterval(poll); poll = null; }
+  };
+  try { chrome.runtime.onMessage.addListener((m) => { if (alive && m && m.type === "ai-state") refresh(); }); } catch (_) { /* not in the extension */ }
+  refresh();
+  return { refresh };
+}
+
+/* A download's failure, in words a person can act on (1.0.6): "Failed to
+ * fetch" said nothing (reported four times in a row from one computer). */
+export function plainError(e) {
+  const t = String(e || "");
+  if (/failed to fetch|networkerror|network error|load failed|ERR_|ECONN|timed? ?out/i.test(t)) return "Couldn't reach huggingface.co, where the AI is downloaded from. Check the internet connection, or whether this network blocks that site, then try again.";
+  if (/quota|storage|space/i.test(t)) return "Not enough room on this computer for the download. Free some disk space, then try again.";
+  if (/abort|cancel/i.test(t)) return "The download was stopped.";
+  return t;
+}
+
+/*
+ * The built-in AI in one button (1.0.6; asked: "it has become there are
+ * three things to download … it feels so restrictive"). Ask and every
+ * number work with no download; one button fetches the two models Ask uses
+ * (the writer, then search by meaning), one after the other, with one bar.
+ * The models one by one are still there, folded, for whoever wants them.
+ */
+export function mountAiSetup(slot, opts = {}) {
+  if (!slot) return null;
+  let st = null, poll = null, alive = true, drawn = false;
+  const parts = () => {
+    const w = switchState(st, "llm"), m = switchState(st, "meaning");
+    const total = (w.ready ? 0 : (w.bytes || 0)) + (m.ready ? 0 : (m.bytes || 0));
+    return { w, m, ready: w.ready && m.ready, busy: w.busy || m.busy, error: (!w.busy && !w.ready && w.error) || (!m.busy && !m.ready && m.error) || null, total };
+  };
+  const start = async () => {
+    const p = parts();
+    if (!p.w.ready && !p.w.busy) await send({ type: "ai-download", tier: p.w.tier, device: st && st.pick ? st.pick.device : undefined });
+    if (!p.m.ready && !p.m.busy) await send({ type: "meaning-download" });
+    refresh();
+  };
+  const draw = () => {
+    if (!alive) return;
+    const p = parts();
+    const box = h("div", { className: `ai-setup${opts.compact ? " compact" : ""}${p.ready ? " ready" : ""}${p.busy ? " busy" : ""}`, id: opts.id || null });
+    if (p.ready) {
+      box.append(h("span", { className: "ai-setup-dot", "aria-hidden": "true" }), h("span", { className: "ai-setup-text" }, h("b", {}, "Built-in AI is on."), h("span", {}, " Replies in plain words, and search that understands meaning.")));
+    } else if (p.busy) {
+      const cur = p.w.busy ? p.w : p.m;
+      const pct = cur.progress && cur.progress.pct != null ? Math.max(0, Math.min(100, cur.progress.pct)) : null;
+      const step = p.w.busy ? (p.m.ready ? "" : " (1 of 2)") : (p.w.ready ? " (2 of 2)" : "");
+      const cancel = h("button", { type: "button", className: "btn sm ghost" }, "Cancel");
+      cancel.onclick = async () => { cancel.disabled = true; if (p.w.busy) await send({ type: "ai-cancel-download", kind: "llm" }); refresh(); };
+      box.append(h("span", { className: "ai-setup-text", role: "status" }, h("b", {}, `Setting up the built-in AI${step}`), h("span", {}, ` ${pct != null ? `${Math.round(pct)}%` : "…"}${cur.progress && cur.progress.total ? ` · ${size(cur.progress.loaded)} of ${size(cur.progress.total)}` : ""}. You can keep using CitoSkeleton meanwhile.`)),
+        p.w.busy ? cancel : "",
+        h("div", { className: "ai-progress ms-progress", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": pct == null ? null : String(Math.round(pct)), "aria-label": "Download" }, h("i", { style: `width:${pct == null ? 4 : pct}%` })));
+    } else {
+      const go = h("button", { type: "button", className: "btn sm primary" }, p.error ? "Try again" : "Set up the built-in AI");
+      go.onclick = async () => { go.disabled = true; go.textContent = tr("Starting…"); await start(); };
+      box.append(h("span", { className: "ai-setup-text" },
+        h("b", {}, p.error ? "The download didn't finish." : opts.lead || "Optional: the built-in AI."),
+        h("span", {}, p.error ? ` ${plainError(p.error)}` : ` Everything works without it. With it, Ask replies in plain words and finds answers that say things differently. One download of about ${size(p.total)}, kept on this computer.`)), go);
+    }
+    if (opts.details !== false) {
+      const more = h("details", { className: "ai-setup-more" }, h("summary", {}, "Choose the models one by one"));
+      const inner = h("div", {});
+      more.append(inner);
+      more.addEventListener("toggle", () => { if (more.open && !inner.childNodes.length) mountModelSwitches(inner, { compact: true }); }, { once: false });
+      box.append(more);
+    }
+    slot.replaceChildren(box);
+    if (opts.onChange) opts.onChange(st, p);
+  };
+  const refresh = async () => {
+    if (!alive) return;
+    if (drawn && !slot.isConnected) { alive = false; if (poll) clearInterval(poll); return; }
+    st = await send({ type: "ai-status" });
+    drawn = true;
+    // A details panel the reader opened stays open across redraws.
+    const wasOpen = slot.querySelector(".ai-setup-more")?.open;
+    if (!wasOpen) draw();
+    const p = parts();
+    if (p.busy && !poll) poll = setInterval(refresh, 1000);
+    else if (!p.busy && poll) { clearInterval(poll); poll = null; }
   };
   try { chrome.runtime.onMessage.addListener((m) => { if (alive && m && m.type === "ai-state") refresh(); }); } catch (_) { /* not in the extension */ }
   refresh();

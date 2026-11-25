@@ -37,8 +37,32 @@ export const WRITER = [
  * by the model when one is on, else by a template. With `plan` given (a
  * scope chip changed, an ask-back choice) the plan is used as it is.
  */
-export async function askPlanned({ question, data, generate = null, context = {}, previous = null, plan: given = null, onStep = null, meaning = null }) {
+// How long Ask waits for the model (1.0.7). The answer is worked out in code
+// first, so the model only rewords it; past these limits the plain reply
+// stands. Without them Ask sat on "Working out the numbers…" for over five
+// minutes while the labelling shared the graphics chip (live test, 25 Nov
+// 2026). Both engines are told the limit too, so the model really stops.
+export const ASK_LIMITS = { understandMs: 12000, writeMs: 20000 };
+function timed(generate, ms) {
+  if (!generate) return null;
+  return (o) => {
+    let timer;
+    return Promise.race([
+      generate({ ...o, timeLimitMs: ms, timeoutMs: ms }),
+      new Promise((_, rej) => { timer = setTimeout(() => rej(new Error("the model took too long")), ms + 500); }),
+    ]).finally(() => clearTimeout(timer));
+  };
+}
+
+// `reword` (1.0.7): the model rewrites the worked-out reply only when asked.
+// Measured on the go-live laptop, Qwen3.5 2B wrote ~5 tokens a second (12 s
+// for two sentences) and turned "LeadSquared 50%" into "does not appear in
+// any of the 24 answers". The reply Ask gives is the one worked out from
+// the data: exact, and at once. The model still helps read a question.
+export async function askPlanned({ question, data, generate: rawGenerate = null, context = {}, previous = null, plan: given = null, onStep = null, meaning = null, limits = ASK_LIMITS, reword = false }) {
   const catalog = buildCatalog(data || {});
+  const understandWith = timed(rawGenerate, limits.understandMs);
+  const generate = timed(rawGenerate, limits.writeMs);
   let plan, askBack = null, notes = [];
   if (given && validPlan(given, catalog)) plan = JSON.parse(JSON.stringify(given));
   else {
@@ -50,7 +74,7 @@ export async function askPlanned({ question, data, generate = null, context = {}
     const noCampaign = !r.matches.some((m) => m.kind === "collection" && m.score >= 0.8) && !(context && context.collectionId) && catalog.collections.filter((c) => c.kind === "campaign").length > 1;
     if (generate && !isFollowUp(question, previous) && (r.plan.intentFrom === "default" || noCampaign)) {
       if (onStep) { try { onStep({ tool: "plan:understand" }); } catch (_) { /* a listener's problem */ } }
-      const m = await modelFill({ question, catalog, generate });
+      const m = await modelFill({ question, catalog, generate: understandWith });
       if (m) {
         if (r.plan.intentFrom === "default" && !(r.plan.subject.brands.length >= 2 && m.intent !== "compare")) { r.plan.intent = m.intent; r.plan.intentFrom = "model"; }
         if (!r.plan.measure.length && m.measure.length) r.plan.measure = m.measure;
@@ -85,7 +109,7 @@ export async function askPlanned({ question, data, generate = null, context = {}
   const draft = templateReply(plan, exec);
   const allNotes = [...notes, ...(scope ? coverageNotes(exec) : []), ...(plan.promptsByWording ? [`Used the ${plan.scope.prompts.length} prompts whose wording matches.`] : []), ...(plan.scope.stance && plan.scope.stance.length ? ["Filtered by the AI labels: only answers the labels have read can count. Turn on Fast labels or Ask's AI model to label more."] : [])];
   let answer = draft, by = "template";
-  if (generate && exec.intent !== "not_recorded") {
+  if (reword && generate && exec.intent !== "not_recorded") {
     try {
       const r = await generate({ messages: [
         { role: "system", content: WRITER },

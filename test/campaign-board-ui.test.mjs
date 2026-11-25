@@ -145,7 +145,12 @@ try {
   await page.evaluate(() => document.querySelector('[data-tab="loader"]')?.click());
   await page.waitForTimeout(2500);
   const settle = (ms = 1600) => page.waitForTimeout(ms);
+  // 1.0.6 (approved review): each fact said once. The board's header says
+  // only what the run is compared with; the run is the picker's own label;
+  // the answer count is the Overview's heading.
   const header = () => page.evaluate(() => document.querySelector("#cpHead .cp-scope")?.textContent || "");
+  const runPicked = () => page.evaluate(() => { const s = document.getElementById("cbRun"); return s?.selectedOptions[0]?.textContent || ""; });
+  const counted = () => page.evaluate(() => document.querySelector("#cv-overview .cv-sub")?.textContent || "");
   // 0.67.0: one section at a time, behind a row of tabs.
   const tab = async (id) => { await page.evaluate((id) => document.querySelector(`.cv-tab[data-section="${id}"]`)?.click(), id); await page.waitForTimeout(400); };
 
@@ -204,6 +209,18 @@ try {
     const menu = await page.evaluate(() => [...document.querySelectorAll("#cpHead .cp-more-menu .cp-menu button")].map((b) => b.textContent));
     check("⋯ holds Edit setup, Export…, Share campaign… and Delete campaign", menu.join("|") === "Edit setup|Export…|Share campaign…|Delete campaign", menu.join("|"));
     check("the arrow holds Run signed out", await page.evaluate(() => /^Run signed out/.test(document.querySelector("#cpHead .cp-run-menu .cp-menu button")?.textContent || "")));
+    // 1.0.7 (live test): ⋯ ignored Escape and stayed open over the arrow's menu.
+    const menus = async () => page.evaluate(() => ({ more: !document.querySelector("#cpHead .cp-more-menu .cp-menu").hidden, run: !document.querySelector("#cpHead .cp-run-menu .cp-menu").hidden }));
+    await page.click("#cpHead .cp-more");
+    const opened = await menus();
+    await page.keyboard.press("Escape");
+    const escaped = await menus();
+    check("⋯ opens, and Escape closes it", opened.more && !escaped.more, JSON.stringify({ opened, escaped }));
+    await page.click("#cpHead .cp-more");
+    await page.click("#cpHead .cp-caret");
+    const swapped = await menus();
+    check("opening the arrow's menu closes ⋯: one menu at a time", swapped.run && !swapped.more, JSON.stringify(swapped));
+    await page.keyboard.press("Escape");
     check("Pause, Resume and Stop only while a run is going", !h.btns.some((x) => /Pause|Resume|Stop/.test(x)), h.btns.join("|"));
     check("the run, brand and engine filters are in it", h.filters);
     check("no separate summary, run or results card", !h.oldCards);
@@ -220,7 +237,7 @@ try {
     const runs = await page.evaluate(() => [...document.querySelectorAll("#cbRun option")].map((o) => o.textContent));
     check("the run picker lists both runs and all runs combined",
       runs.length === 3 && /^Run 2 .*\(latest\)$/.test(runs[0]) && /^Run 1 /.test(runs[1]) && runs[2] === "All runs combined", runs.join(" | "));
-    check("it starts on the latest run, compared with the one before", /Run 2 · compared with run 1/.test(await header()), await header());
+    check("it starts on the latest run, compared with the one before", /^Run 2/.test(await runPicked()) && (await header()) === "Compared with run 1", `${await runPicked()} / ${await header()}`);
     const deltas = await page.evaluate(() => [...document.querySelectorAll("#cv-overview .k-delta")].map((d) => d.textContent));
     check("each headline number says how it moved since run 1", deltas.length > 0 && deltas.every((d) => /run 1/.test(d)), deltas.join(" | "));
     // Run 1 named the own brand nowhere; run 2 is the fixtures as captured.
@@ -228,12 +245,12 @@ try {
 
     await page.evaluate(() => { const s = document.getElementById("cbRun"); s.value = s.options[1].value; s.dispatchEvent(new Event("change", { bubbles: true })); });
     await settle();
-    check("picking run 1 shows run 1", /Run 1/.test(await header()) && !/compared with/.test(await header()), await header());
+    check("picking run 1 shows run 1", /^Run 1/.test(await runPicked()) && (await header()) === "", `${await runPicked()} / ${await header()}`);
     check("which has nothing before it to compare with", await page.evaluate(() => document.querySelectorAll("#cv-overview .k-delta").length === 0));
 
     await page.evaluate(() => { const s = document.getElementById("cbRun"); s.value = "all"; s.dispatchEvent(new Event("change", { bubbles: true })); });
     await settle();
-    check("all runs combined counts both runs' answers", (await header()).startsWith(`${seeded.answers * 2} answers`), await header());
+    check("all runs combined counts both runs' answers", (await counted()).startsWith(`${seeded.answers * 2} answers`), await counted());
 
     // The run history above the board (a set-up campaign's run card) points
     // it at a run; newest first, so the last row is run 1.
@@ -241,26 +258,28 @@ try {
     await page.evaluate(() => [...document.querySelectorAll("#loader .loader-history-row")].pop()?.click());
     await settle(2000);
     check("a run in the run history opens the board on that run",
-      /Run 1/.test(await header()) && await page.evaluate(() => document.getElementById("cbRun")?.selectedIndex === 1), await header());
+      /^Run 1/.test(await runPicked()) && await page.evaluate(() => document.getElementById("cbRun")?.selectedIndex === 1), await runPicked());
     await page.evaluate(() => { const s = document.getElementById("cbRun"); s.value = s.options[0].value; s.dispatchEvent(new Event("change", { bubbles: true })); });
     await settle();
   }
 
   console.log("\nscoped by tag");
   {
-    const before = await header();
+    await tab("cv-overview");
+    const before = await counted();
     const tags = await page.evaluate(() => [...document.querySelectorAll('#loader .cb-tags[aria-label="Tags"] .db-chip')].map((c) => c.textContent));
     check("the campaign's tags are filters", ["buying", "tv", "watches"].every((t) => tags.includes(t)), tags.join(", "));
     await page.evaluate(() => [...document.querySelectorAll('#loader .cb-tags[aria-label="Tags"] .db-chip')].find((c) => c.textContent === "watches")?.click());
     await settle();
-    const after = await header();
-    check("a tag narrows every number to its prompts", after.startsWith("1 answer ") && before !== after, `${before} -> ${after}`);
+    const after = await counted();
+    check("a tag narrows every number to its prompts", after.startsWith("1 answer from") && before !== after, `${before} -> ${after}`);
     await tab("cv-prompts");
     const rows = await page.evaluate(() => document.querySelectorAll("#cv-prompts .cv-prompts .cv-tr:not(.cv-th)").length);
     check("including the prompt grid", rows === 1, String(rows));
     await page.evaluate(() => [...document.querySelectorAll('#loader .cb-tags[aria-label="Tags"] .linkbtn')].find((c) => c.textContent === "Clear")?.click());
     await settle();
-    check("and clearing it puts them back", (await header()) === before, await header());
+    await tab("cv-overview");
+    check("and clearing it puts them back", (await counted()) === before, await counted());
   }
 
   console.log("\nwhat kind of answer each prompt got");

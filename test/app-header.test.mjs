@@ -140,7 +140,7 @@ try {
     await page.waitForTimeout(500);
     await page.evaluate(() => [...document.querySelectorAll(".ab-nav-btn, .ab-more-row")].find((b) => b.textContent.includes("Settings"))?.click());
     await page.waitForTimeout(500);
-    await page.evaluate(() => { const d = document.getElementById("setGroupDisplay"); if (d) d.open = true; });
+    await page.evaluate(() => { const d = document.getElementById("setGroupMore"); if (d) d.open = true; });
     const seg = await page.evaluate(() => [...document.querySelectorAll("#setTheme [role=radio]")].map((b) => `${b.textContent}:${b.getAttribute("aria-checked")}`));
     check("Settings has Appearance: Light or Dark, Light picked", seg.join("|") === "Light:true|Dark:false", seg.join("|"));
     await page.click('#setTheme [data-theme-pick="dark"]');

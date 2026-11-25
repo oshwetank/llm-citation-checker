@@ -383,14 +383,60 @@ export function mentionMatchesBrand(m, key) {
   );
 }
 
-export function brandPresence(rec, trackedBrands) {
+// Can `hay` hold `name` at all (1.0.7)? A whole-word match, any case, needs
+// the name's lowercase letters in the text's: checking that first spares the
+// pattern on most brand × answer pairs, which made a 795-answer campaign
+// slow to open. Apostrophes are written three ways and match each other.
+// A few letters fold to another under the "iu" flags without lowercasing to
+// it (ſ → s, Greek symbol forms): a text with one takes the long way.
+const FOLD_ODD = /[ſςϐϑϕϖϰϱϵͅẛι]/;
+const foldLow = (s) => String(s).toLowerCase().replace(/[’‘]/g, "'");
+const lowOf = (hay) => (FOLD_ODD.test(hay) ? null : foldLow(hay));
+const mayHold = (low, name) => low == null || FOLD_ODD.test(name) || low.includes(foldLow(name));
+
+// What brandPresence reads off one answer, worked out once (1.0.7): a board
+// asks about the same answer for every brand, engine, run and view. Kept
+// while the answer's text, mentions and sources are the same objects.
+const recPrep = new WeakMap();
+function prepOf(rec) {
   const text = rec.answerText || "";
   const mentions = rec.brandMentions || [];
   const sources = rec.sources || [];
+  let p = recPrep.get(rec);
+  if (p && p.text === text && p.mentions === mentions && p.sources === sources) return p;
+  const plain = text.replace(/\[\[cite:[^\]]*\]\]/g, " ");
+  // The first mention under each of its names: the same one
+  // mentions.find(mentionMatchesBrand) picks.
+  const firstByKey = new Map();
+  for (const m of mentions) {
+    if (!m) continue;
+    for (const n of [m.brand, m.originalName, ...(Array.isArray(m.aliases) ? m.aliases : [])]) {
+      if (n == null || n === "") continue;
+      const k = normName(n);
+      if (!firstByKey.has(k)) firstByKey.set(k, m);
+    }
+  }
+  const srcDoms = sources.map((s) => ({ d: s.domain ? String(s.domain).replace(/^www\./i, "").toLowerCase() : "", cited: s.outcome === "cited" }));
+  p = { text, mentions, sources, plain, textLow: lowOf(text), plainLow: lowOf(plain), firstByKey, srcDoms };
+  recPrep.set(rec, p);
+  return p;
+}
+const brandPrep = new WeakMap();
+function brandOf(b) {
+  let p = brandPrep.get(b);
+  if (p && p.name === b.name && p.url === b.url) return p;
+  p = { name: b.name, url: b.url, key: normName(b.name), dom: domainOfUrl(b.url) };
+  brandPrep.set(b, p);
+  return p;
+}
+
+export function brandPresence(rec, trackedBrands) {
+  const { text, plain, textLow, plainLow, firstByKey, srcDoms } = prepOf(rec);
 
   return trackedBrands.map((b) => {
-    const key = normName(b.name);
-    const hit = mentions.find((m) => mentionMatchesBrand(m, key));
+    const { key, dom } = brandOf(b);
+    // "" never matched in mentionMatchesBrand (its !key guard).
+    const hit = key ? firstByKey.get(key) : undefined;
     // Mentions as the answer writes the tracked name (1.0.2), the same
     // evidence Visibility already uses: whole words, a capitalised brand not
     // counted where it's written all lowercase, citation markers left out.
@@ -401,10 +447,9 @@ export function brandPresence(rec, trackedBrands) {
     // campaign, 22 Nov 2026). The larger of the two counts is kept.
     let textCount = 0;
     if (key) {
-      const plain = text.replace(/\[\[cite:[^\]]*\]\]/g, " ");
       const nm = String(b.name);
       const upper = /[A-Z]/.test(nm);
-      for (const m of plain.matchAll(wordRe(nm, "gi"))) if (!(upper && m[0] === m[0].toLowerCase())) textCount++;
+      if (mayHold(plainLow, nm)) for (const m of plain.matchAll(wordRe(nm, "gi"))) if (!(upper && m[0] === m[0].toLowerCase())) textCount++;
     }
     const count = Math.max(hit ? Number(hit.count) || 0 : 0, textCount);
     // Where the brand first appears in the prose, which sets its rank.
@@ -429,7 +474,7 @@ export function brandPresence(rec, trackedBrands) {
       const hasUpper = /[A-Z]/.test(name);
       const re = wordRe(name, "gi");
       let m;
-      while ((m = re.exec(text))) {
+      while (mayHold(textLow, name) && (m = re.exec(text))) {
         if (hasUpper && m[0] === m[0].toLowerCase()) continue;
         idx = m.index;
         break;
@@ -438,9 +483,10 @@ export function brandPresence(rec, trackedBrands) {
     // Present if the detector found it at all — including a count-0 carousel
     // appearance — or if the name occurs as a whole word in the answer text.
     const present = !!hit || idx >= 0;
-    const dom = domainOfUrl(b.url);
-    const citedSource = dom ? sources.some((s) => domainMatches(s.domain, dom) && s.outcome === "cited") : false;
-    const anySource = dom ? sources.some((s) => domainMatches(s.domain, dom)) : false;
+    // domainMatches, with each side cleaned once.
+    const ofBrand = (s) => s.d && (s.d === dom || s.d.endsWith("." + dom));
+    const citedSource = dom ? srcDoms.some((s) => s.cited && ofBrand(s)) : false;
+    const anySource = dom ? srcDoms.some(ofBrand) : false;
     return {
       key,
       name: b.name,
@@ -520,6 +566,30 @@ export function autoCompetitorsFrom(records, profile, limit = 8) {
     canon.set(key, root);
   }
 
+  // Which spelling of a group the answers use most (1.0.7). The shortest
+  // name is the group's key, but it is not always the brand: one answer's
+  // stub ("India", "Ecom") took over "India Post" (31 answers) and "Ecom
+  // Express" (11) and was offered as a competitor (couriers campaign, live
+  // test of 25 Nov 2026). "Vivo" still wins over "vivo X200 FE": it is
+  // written more often.
+  const used = new Map(); // key -> answers that name it as written
+  for (const rec of records || []) {
+    const once = new Set();
+    for (const b of rec.brandMentions || []) {
+      const k = normName(String(b.brand || "").trim());
+      if (k && !once.has(k)) { once.add(k); used.set(k, (used.get(k) || 0) + 1); }
+    }
+  }
+  // At most two words longer than the group's key: "Starshield- Smart Paints
+  // & Coatings" is a page's title, not a better spelling of "Starshield".
+  const shown = new Map(); // group key -> the member key to show
+  const words = (k) => k.split(" ").length;
+  for (const [key, root] of canon) {
+    if (words(key) - words(root) > 2) continue;
+    const best = shown.get(root);
+    if (best == null || (used.get(key) || 0) > (used.get(best) || 0)) shown.set(root, key);
+  }
+
   const seenIn = new Map(); // key -> { name, responses }
   for (const rec of records || []) {
     const perResponse = new Set();
@@ -532,7 +602,7 @@ export function autoCompetitorsFrom(records, profile, limit = 8) {
       if (!key || roots.has(key) || excluded.has(key)) continue;
       if (perResponse.has(key)) continue;
       perResponse.add(key);
-      const cur = seenIn.get(key) || { name: spelling.get(key), responses: 0 };
+      const cur = seenIn.get(key) || { name: spelling.get(shown.get(key) ?? key), responses: 0 };
       cur.responses++;
       seenIn.set(key, cur);
     }

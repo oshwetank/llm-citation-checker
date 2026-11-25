@@ -41,6 +41,12 @@ export function escapeRegExp(s) {
 const NOISE = new Set([
   // AI Mode's bullet labels (1.0.5): "**User Sentiment:**", "**Rating:**".
   "user", "sentiment", "rating", "ratings",
+  // A chooser's field labels and how a product is made, not who makes it
+  // (1.0.6, ChatGPT's gift-pen answer: "**Occasion**", "Personalised Parker
+  // Jotter" read as brands).
+  "occasion", "recipient", "gender", "age", "colour", "color", "size", "material",
+  "quantity", "purpose", "preference", "preferences", "personalised", "personalized",
+  "customised", "customized", "custom", "engraved", "monogrammed", "handmade",
   "the", "a", "an", "and", "or", "for", "if", "our", "my", "your", "this", "that",
   "best", "top", "good", "great", "better", "ideal", "overall", "budget", "value",
   "premium", "cheap", "affordable", "recommended", "recommendation", "pick", "picks",
@@ -85,11 +91,14 @@ const NOISE = new Set([
 // Spec terms that read like names in a table cell or after a bullet label:
 // ratings (IP55, IPX4), feature acronyms (AI, ANC, ENC), "Dual-driver"-style
 // counts. Shapes, not industry nouns, so they hold for any vertical.
-const SPEC_TOKEN = /^(?:ip[x\d]\d|ipx|ai|anc|enc|enx|tws|usb|bt|nfc|hdr|oled|amoled|lcd|led|[2-6]g|wi-?fi|(?:single|dual|triple|quad|multi|hybrid)-[a-z]+)$/i;
+// Units and a generation label too (1.0.7: AI Mode's scooter table, "Ola S1
+// Pro+ (Gen 3) (5.2 kWh)", gave the brand "kWh"). Not "hp": HP. "Gen": isNoise.
+const SPEC_TOKEN = /^(?:ip[x\d]\d|ipx|ai|anc|enc|enx|tws|usb|bt|nfc|hdr|oled|amoled|lcd|led|[2-6]g|wi-?fi|(?:single|dual|triple|quad|multi|hybrid)-[a-z]+|kwh|wh|mah|kw|kmph)$/i;
 
 // A contraction or possessive of a noise word is noise too (1.0.0): "What's"
 // (a follow-up question's label) and "Here's" reached a brand list.
-const isNoise = (w) => !w || NOISE.has(w.toLowerCase()) || NOISE.has(w.toLowerCase().replace(/['’](?:s|re|ll|d|ve)$/, "")) || SPEC_TOKEN.test(w);
+// "Gen" as in "(Gen 3)": not "GEN", which names a product ("GEN CompLaw").
+const isNoise = (w) => !w || w === "Gen" || NOISE.has(w.toLowerCase()) || NOISE.has(w.toLowerCase().replace(/['’](?:s|re|ll|d|ve)$/, "")) || SPEC_TOKEN.test(w);
 
 // entity[] markers come in (at least) two shapes:
 //   ["company","Zerodha","Indian stock broker"]        — category + name + description
@@ -332,6 +341,16 @@ function parseTableCells(text) {
   return out;
 }
 
+/* A describing word in front of the maker's name ("Personalised Parker
+ * Jotter", "Engraved Cross Bailey") is how the product is made, not who
+ * makes it: dropped, so the name starts at the maker (1.0.6). */
+const LEAD_DESCRIPTOR = /^(?:personali[sz]ed|customi[sz]ed|custom(?:-made)?|engraved|monogrammed|handmade|hand-made|luxury|genuine|authentic|original)\s+(?=[A-Z0-9])/i;
+export function dropLeadDescriptor(name) {
+  const s = String(name || "").trim();
+  const t = s.replace(LEAD_DESCRIPTOR, "");
+  return t && t !== s ? t : s;
+}
+
 /* ---------- 3b. bold/heading candidates ---------- */
 // Cleans one raw candidate string (from either a table cell or a heading)
 // into the name detectBrands() should actually consider. Shared so table and
@@ -354,6 +373,9 @@ function cleanCandidateText(raw) {
     const parts = s.split(/\s+[—–|]\s+/);
     s = (/^(?:best|top|most|ideal|great|good|our|my|budget|premium|cheapest|runner|honou?rable|pick|choice|editor|winner|overall|for)\b/i.test(parts[0]) && parts.length > 1
       ? parts[parts.length - 1] : parts[0]).replace(/:\s*$/, "").trim();
+    // A dash inside brackets: "Streak (Free Plan — Gmail)" left "Streak
+    // (Free Plan" (1.0.7). The unclosed bracket goes.
+    s = s.replace(/\s*\([^)]*$/, "").trim();
   }
   else if (/\s*→\s*/.test(s)) s = s.split(/\s*→\s*/).pop().trim();
   // "**TaxDome:** Widely used by…" — the colon ends the bold, so the name is
@@ -370,14 +392,34 @@ function cleanCandidateText(raw) {
   else if (s.includes(":")) s = s.split(":").pop().trim();
   // Strip leading list numbering left over from heading matches ("1. Vivo V70").
   s = s.replace(/^\d+[.)]\s*/, "").trim();
+  // A label's closing full stop is not part of the name (1.0.7: AI Mode's
+  // "**WhatsApp Business API.**" was a brand with its dot). An abbreviation's
+  // own dot stays ("Inc.", "Co.", "U.S.").
+  if (/\.$/.test(s) && !/(?:^|\s)(?:Inc|Co|Ltd|Corp|Bros|Pvt|Jr|Sr|St|No|Mfg|Intl)\.$/.test(s) && !/(?:^|[\s.])\p{L}\.$/u.test(s)) s = s.slice(0, -1).trim();
+  // Advice, not a name: "**Avoid HubSpot or Salesforce**" (Gemini, 1.0.7
+  // live test) gave the brand "Avoid HubSpot". The verb goes; the names stay.
+  s = s.replace(/^(?:Avoid|Skip|Choose|Pick|Consider|Try|Use|Prefer|Go with|Opt for|Start with|Stick with|Look at|Shortlist)\s+(?=\p{Lu})/u, "");
+  s = dropLeadDescriptor(s);
   // A qualifier in brackets after the name ("Britannia NutriChoice Digestive
   // (High Fibre or similar variants)") pushed the whole label over the length
   // cap and the brand was lost (1.0.0). A model's own brackets stay: they
   // are short and hold no spaces-separated sentence ("Phone (3a)").
   s = s.replace(/\s*\((?=[^)]*\s)[^)]{12,}\)\s*/g, " ").replace(/\s{2,}/g, " ").trim();
+  // A plan or edition in brackets after the name, from a table cell
+  // ("**Pipedrive** *(Growth)*", "**Zoho CRM** *(Professional)*", Gemini,
+  // 1.0.7 live test) kept the name from ever matching the text. A model's
+  // own brackets hold a digit and stay: "Phone (3a)".
+  // Only a plan's or an edition's words, or who makes it ("by Ikiru
+  // People"): a label's own brackets ("Plastic Emulsion (Standard Finish)",
+  // "Suction Power (Pa)") kept it from matching, and must go on doing so.
+  s = s.replace(/^(.*\S)\s*\(((?:free|pro|plus|premium|standard|professional|enterprise|growth|starter|basic|business|essentials|teams?|advanced|ultimate|lite|personal|core|scale|elite|unlimited|startup|nonprofit|paid|smart crm|sales hub|free crm)(?:\s+(?:plan|plans|tier|edition|version|trial))?|(?:by|from)\s+\p{Lu}[\p{L} &.-]{1,30})\)$/iu, "$1").trim();
   // A question is a label, never a name: ChatGPT's follow-up form ("**3.
   // Expected monthly visitors?**") made "Expected" a brand (22 Nov 2026).
   if (!s || s.endsWith(":") || /\?\s*$/.test(s) || s.length > 40) return "";
+  // A list, not a name (1.0.7 corpus check): "Wood, Metal & Trim",
+  // "Bathrooms, Basements & Water", and the cut-off ends of one ("WATI,
+  // AiSensy,", "GPU VRAM &").
+  if (/[,&]\s*$/.test(s) || /,[^,]*(?:\s&\s|\sand\s)/.test(s)) return "";
   return s;
 }
 
@@ -410,6 +452,25 @@ export function structuralCandidates(answerText) {
     return `${me.level}@${parent}`;
   };
 
+  // Bold labels that open a line and end in ":" or "." (1.0.7, live test of
+  // 25 Nov 2026): "**Limitation:**" (ChatGPT, under every pick), "**Lead
+  // Scoring:**", "**Indian Ecosystem Readiness:**" (Gemini's feature list),
+  // "**Trade-off.**", "**Why it wins.**" (AI Mode, under every pick) and
+  // "**Team features for 10 people**:" (Grok) were all brands. What the
+  // answer says outside such labels is what can vouch for a name.
+  const labelSpan = /(?:^|\n)[ \t]*#{0,6}[ \t]*(?:\d+[.)][ \t]*)?[-*•]?[ \t]*\*\*([^*\n]{2,90})\*\*[ \t]*:?/g;
+  const labelCount = new Map();
+  const outsideLabels = answerText.replace(labelSpan, (all, inner) => {
+    if (/[:.]\s*$/.test(inner) || /:$/.test(all)) { const k = cleanCandidateText(inner).toLowerCase(); if (k) labelCount.set(k, (labelCount.get(k) || 0) + 1); }
+    return all.startsWith("\n") ? "\n" : "";
+  });
+  // Written elsewhere as a name: whole words, the same capitals.
+  const namedOutside = (name) => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(name)}(?![\\p{L}\\p{N}])`, "u").test(outsideLabels);
+  // A phrase naming a quality or an activity, not a maker; used only with
+  // an ordinary first word (below), so "PayPal Invoicing" and "Tata
+  // Housing" are not caught (corpus check, 1.0.7).
+  const ABSTRACT_TAIL = /(?:ness|ity|ities|tion|tions|sion|sions|ment|ments|ing|ship|ism)$/i;
+
   for (const { re, source } of [
     { re: lineLeadBold, source: "heading" },
     { re: heading, source: "section" },
@@ -422,10 +483,27 @@ export function structuralCandidates(answerText) {
       // A bold label opening a list item ("- **Cremica High Bran Biscuits**:
       // fibre-rich…") is that item's subject; a bold heading line is not.
       const src = source === "heading" && !/#/.test(lead) && /^[ \t]*(?:\d+[.)]|[-*•])/.test(lead) ? "bullet" : source;
+      const next = answerText.slice(m.index + m[0].length, m.index + m[0].length + 3);
+      const colonLabel = source === "heading" && (/:\s*$/.test(m[1]) || /^[ \t]?:/.test(next));
+      const dotLabel = source === "heading" && /\.\s*$/.test(m[1]) && /^[ \t]+\S/.test(next);
+      if ((colonLabel || dotLabel) && !namedOutside(s)) {
+        // "**Trade-off.** It is priced higher…": a sentence-style label.
+        if (dotLabel) continue;
+        const words = s.split(/\s+/);
+        if ((labelCount.get(s.toLowerCase()) || 0) >= 2) continue;
+        // A feature, not a maker: its first word is one the answer also
+        // writes as an ordinary word ("lead", "data", "mobile"), and so is
+        // its last, or the last names a quality. "Voyager Infinity",
+        // "PayPal Invoicing" and "Tata Housing" open on a name. Not a list
+        // of names ("Google Workspace / Airtable / Notion").
+        const lowIn = (w) => new RegExp(`(?<![\\p{L}])${escapeRegExp(w.toLowerCase())}(?![\\p{L}])`, "u").test(answerText);
+        const last = words[words.length - 1];
+        if (words.length >= 2 && !/\//.test(s) && lowIn(words[0].replace(/,$/, "")) && (lowIn(last) || ABSTRACT_TAIL.test(last))) continue;
+      }
       // A "**Label:**" whose every word the answer also writes in lower case
       // is a section label ("**Sales & Marketing:**", "**Key Features:**"),
       // not a name: "TaxDome", "Karbon" and "HubSpot" never are.
-      if (/:\s*$/.test(m[1])) {
+      if (colonLabel || dotLabel) {
         const ws = s.split(/\s+/).filter((w) => !/^(?:&|and|of|for|the)$/i.test(w));
         const low = answerText.toLowerCase() !== answerText ? answerText : "";
         if (ws.length && ws.every((w) => new RegExp(`(^|[^\\p{L}])${escapeRegExp(w.toLowerCase())}(?![\\p{L}])`, "u").test(low))) continue;
@@ -437,7 +515,14 @@ export function structuralCandidates(answerText) {
       // each side is a name of two words or more: "Marks & Spencer" and
       // "Barnes & Noble" are one brand.
       const pair = s.split(/\s+(?:&|and)\s+/);
-      if (pair.length === 2 && pair.every((p) => p.split(/\s+/).length >= 2 && looksLikeProperName(p))) {
+      // "HubSpot or Salesforce" (what's left of "Avoid HubSpot or
+      // Salesforce", 1.0.7): "or" never joins one brand's name.
+      const either = s.split(/\s+or\s+/);
+      if (either.length === 2 && either.every((p) => /^[\p{L}\p{N}.'’ -]+$/u.test(p) && p.split(/\s+/).length <= 3 && looksLikeProperName(p))) {
+        for (const p of either) out.push({ text: p, source: src, group });
+        continue;
+      }
+      if (pair.length === 2 && pair.every((p) => !/,/.test(p) && p.split(/\s+/).length >= 2 && looksLikeProperName(p))) {
         for (const p of pair) out.push({ text: p, source: src, group });
         continue;
       }
@@ -565,7 +650,10 @@ export function structuralCandidates(answerText) {
   }
 
   // Paragraph leads (e.g. "POCO F7 delivers...", "Realme P4 Power 5G packs...")
-  const paraLead = /(?:^|\n\n)(?:The\s+)?([A-Z][A-Za-z0-9&.\-]+(?:\s+[A-Za-z0-9&.\-]+){1,3})\s+(?:is|delivers|packs|offers|features|combines|stands out|provides|brings|runs|comes)\b/g;
+  // A bold opening sentence too (1.0.7): Grok's "**Zoho CRM is the best
+  // overall choice…**" named its pick only there and in a heading, and the
+  // brand list missed it.
+  const paraLead = /(?:^|\n\n)(?:\*\*)?(?:The\s+)?([A-Z][A-Za-z0-9&.\-]+(?:\s+[A-Za-z0-9&.\-]+){1,3})\s+(?:is|delivers|packs|offers|features|combines|stands out|provides|brings|runs|comes)\b/g;
   let pm;
   while ((pm = paraLead.exec(answerText))) {
     const s = cleanCandidateText(pm[1]);
@@ -712,7 +800,9 @@ const ATTRIB_AFTER_RE = new RegExp(
 // Possessive attribution: "Gadgets 360's review put it third".
 const ATTRIB_POSSESSIVE_RE = /^['’]s\s+(review|report|test|testing|analysis|round-?up|verdict|listing)\b/i;
 // …and the second of two after "per": "per CNET and The Kitchn".
-const ATTRIB_BEFORE_RE = /\b(?:according to|per|via|source:?)\s+(?:(?:The\s+)?\p{Lu}[\p{L}’'.]*(?:\s+\p{Lu}[\p{L}’'.]*){0,3}\s+(?:and|&)\s+)?$/iu;
+// "Rated highly by RunRepeat" (AI Mode, 1.0.7 live test): a review site
+// quoted after the verb is the source too.
+const ATTRIB_BEFORE_RE = /\b(?:according to|per|via|source:?|(?:rated|reviewed|tested|ranked|scored)(?:\s+\w+){0,2}\s+by)\s+(?:(?:The\s+)?\p{Lu}[\p{L}’'.]*(?:\s+\p{Lu}[\p{L}’'.]*){0,3}\s+(?:and|&)\s+)?$/iu;
 
 // True when EVERY occurrence of this name reads as an attribution.
 function alwaysAttributed(text, hits) {
@@ -807,7 +897,7 @@ export function matchCompressedLabel(text, label) {
 // Multi-word brands ("Angel One") arrive via entity markers, which keep their
 // full name, so taking one token here doesn't lose them.
 export function vendorFromProductName(title) {
-  const all = String(title || "").trim().split(/\s+/);
+  const all = dropLeadDescriptor(title).split(/\s+/);
   // "Tots & Moms Millet Cookies", "Marks and Spencer Oat Bars": a maker's
   // name joined by "&" or "and" is one name (1.0.0).
   if (all.length >= 3 && /^(&|and)$/i.test(all[1]) && /^[A-Z]/.test(all[2]) && /^[A-Z]/.test(all[0])) {
@@ -847,6 +937,7 @@ const COMMON_NAME_WORDS = new Set([
 ]);
 const EDITION_WORDS = new Set(["pro", "plus", "max", "ultra", "mini", "lite", "premium", "standard", "basic", "starter", "essentials", "enterprise", "business", "team", "teams", "personal", "home", "edition", "series", "neo", "prime", "elite", "advanced"]);
 export function vendorInAnswer(text, title) {
+  title = dropLeadDescriptor(title);
   const words = String(title || "").trim().split(/\s+/);
   let vendor = vendorFromProductName(title);
   // A noise first word ("New") gives no vendor; it may still begin the name.
@@ -1806,6 +1897,11 @@ export function detectBrands(answerText, plainText, ctx = {}) {
       // "7Eleven") is a name written that way, not a model with no maker:
       // read for its maker, it came out empty (1.0.2, live run 22 Nov 2026).
       if (!multiWord && /^\d+\p{L}{3,}[\p{L}\p{N}]*$/u.test(part.trim())) { addCand(part.trim(), null, null, "structural", false, weak, needsProse, group); continue; }
+      // …and one that ends on it, as a list item's subject: "**Bitrix24 (Free
+      // Plan)**" (1.0.7: its plan in brackets now goes, and the bare word
+      // was dropped as a model with no maker). Four letters or more first:
+      // "K13", "X200" and "CS2" are still model fragments.
+      if (!multiWord && (source === "bullet" || source === "heading" || source === "section") && /^\p{Lu}\p{L}{3,}\d{1,3}$/u.test(part.trim())) { addCand(part.trim(), null, null, "structural", false, weak, needsProse, group); continue; }
       if (source === "table" || source === "table-guess" || (hasDigit && multiWord)) {
         // A maker followed by a model number ("Noise Buds VS104") is a name
         // even when the answer also uses the word ("noise cancellation").
@@ -1853,7 +1949,10 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     if (!candidates.has(headKey) || headKey === k) continue;
     // "Bank of Maharashtra", "Bank of India": a name joined by "of" is one
     // name, never its first word (1.0.2).
-    if (/\s(?:of|de|la|&)\s/i.test(v.name)) { if (!candidates.get(headKey).keepWhole) candidates.delete(headKey); continue; }
+    // "by" joins one too: "Wallet by BudgetBakers" is the app's whole name,
+    // and a closing "**For detailed budgeting: Wallet.**" must not shorten
+    // it (1.0.7, behaviour.test).
+    if (/\s(?:of|de|la|&|by)\s/i.test(v.name)) { if (!candidates.get(headKey).keepWhole) candidates.delete(headKey); continue; }
     // Unless the head is only ever the start of this name (1.0.2): "Red"
     // from one table cell must not swallow "Red Tape" when the answer never
     // writes "Red" without "Tape". Then the head goes, the name stays.
@@ -2121,7 +2220,11 @@ export function detectBrands(answerText, plainText, ctx = {}) {
     // the structure pass ("**Low Light**" in a "Best for" column is a use).
     const prose = String(answerText || "").split("\n").filter((l) => !/^\s*(?:\||#{1,6}\s)/.test(l)).join("\n");
     for (const sentence of prose.split(/(?<=[.!?])\s+|\n/)) {
-      const bolds = [...sentence.matchAll(/\*\*([^*\n]{2,60}?)\*\*(?!\s*[:：])/g)].map((m) => m[1].trim().replace(/[.,;]+$/, ""));
+      // A label is not one of the names: "- **Native Portal APIs.** Ensure
+      // lead sync from **99acres**, **MagicBricks**…" (AI Mode, 1.0.7).
+      const bolds = [...sentence.matchAll(/\*\*([^*\n]{2,60}?)\*\*(?!\s*[:：])/g)]
+        .filter((m) => !/[.:]\s*$/.test(m[1]))
+        .map((m) => m[1].trim().replace(/[.,;]+$/, ""));
       const names = [...new Set(bolds.filter(nameish))];
       // Two with one already found among them, or three or more.
       if (names.length < 2 || (names.length < 3 && !names.some(have))) continue;

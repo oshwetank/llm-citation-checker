@@ -11,6 +11,13 @@
 // Nothing here makes a network request, except when the person picks a
 // Google Font: then one stylesheet link to fonts.googleapis.com is added, and
 // the Settings page says so next to the picker.
+// The side a campaign's sections are listed on in the full tab (1.0.6): left
+// (default) or right, before the first paint, so they don't swap sides.
+(function () {
+  var side = "left";
+  try { side = localStorage.getItem("cito-nav-side") === "right" ? "right" : "left"; } catch (_) { /* left */ }
+  if (typeof document !== "undefined") document.documentElement.setAttribute("data-nav", side);
+})();
 (function (g) {
   var KEY = "cito-display";
   // Bundled faces (fonts.css, fonts/display/; SIL OFL). id -> [name, CSS stack].

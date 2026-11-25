@@ -9,7 +9,7 @@
 import { tr } from "./i18n.js";
 import { handoffButton } from "./handoff.js";
 import { askParts, campaignParts } from "../src/lib/contextPack.js";
-import { mountModelSwitches } from "./modelSwitches.js";
+import { mountAiSetup } from "./modelSwitches.js";
 
 const KEY = "lcfcAsk";
 let stepListener = null; // the one live "ask-step" listener (renderAsk replaces it)
@@ -54,7 +54,7 @@ export async function renderAsk(root, hooks = {}) {
   root.append(wrap);
   wrap.append(h("div", { className: "card ask-head" },
     h("h2", { className: "ask-title" }, "Ask about your captures"),
-    h("p", { className: "ask-sub" }, "Questions about your campaigns and the answers you captured, answered by the built-in AI on this computer. It looks the numbers up rather than guessing, and links the answers it used. Nothing is sent anywhere.")));
+    h("p", { className: "ask-sub" }, "Answered from your own data on this computer, with the answers it used linked. Nothing is sent anywhere.")));
 
   // Another AI, with this campaign's data and the question (0.76.0): works
   // with or without the built-in AI.
@@ -67,18 +67,13 @@ export async function renderAsk(root, hooks = {}) {
   // download needs to be in the Ask section only, otherwise the new users
   // will never know about it"). Open when Ask can't answer yet; folded
   // away under "Models" once it can. Ask redraws when one becomes ready.
+  // 1.0.6: one line, one button (asked: "there are three things to
+  // download … it feels so restrictive"). Ask answers from your data with
+  // or without it; the switches one by one are folded inside.
   const ready = !!(st && st.ready);
-  const models = h("details", { className: "card ask-models", id: "askModels", open: !ready },
-    h("summary", {}, h("b", {}, "Models on this computer"), h("span", { className: "ask-models-sum" }, ready ? (st.engine ? `Ask uses ${st.engine.label}` : "") : "Turn one on to ask questions here")));
-  const slot = h("div", {});
-  models.append(slot);
+  const models = h("div", { className: "card ask-models", id: "askModels" });
   let redrawn = false;
-  mountModelSwitches(slot, { compact: true, onChange: (s) => { if (!redrawn && s && !!s.ready !== ready && root.isConnected) { redrawn = true; renderAsk(root, hooks); } } });
-
-  // 1.0.5: Ask answers from your data with or without a model (the numbers
-  // come from the boards' own code, the reply from a template); a model on
-  // this computer writes the reply in your words and your language.
-  if (!ready) slot.before(h("p", { className: "ask-off-note", id: "askOffNote" }, "Ask already answers from your data. Turn on “Ask's AI model” below (a one-time download) for replies in your own words and language."));
+  mountAiSetup(models, { compact: true, lead: "Ask works now, with no download.", onChange: (s) => { if (!redrawn && s && !!s.ready !== ready && root.isConnected) { redrawn = true; renderAsk(root, hooks); } } });
   wrap.append(models);
   // The collections a scope chip can switch to.
   const profs = await send({ type: "geo-profile-list" });
@@ -110,21 +105,28 @@ export async function renderAsk(root, hooks = {}) {
       });
       box.append(row);
     }
-    if (m.notes && m.notes.length) box.append(h("div", { className: "ask-notes", role: "note" }, ...m.notes.map((x) => h("div", {}, x))));
+    // A note that only repeats the reply is left out (1.0.6: "No answers in this scope." twice).
+    const said = String(m.content || "").toLowerCase().replace(/[.\s]+/g, " ").trim();
+    const notes = (m.notes || []).filter((x) => { const n = String(x).toLowerCase().replace(/[.\s]+/g, " ").trim(); return n && !said.includes(n); });
+    if (notes.length) box.append(h("div", { className: "ask-notes", role: "note" }, ...notes.map((x) => h("div", {}, x))));
     // Numbers in the reply that no lookup returned (0.75.0): flagged, not trusted.
     if (m.unverified && m.unverified.length) box.append(h("div", { className: "ask-unverified", role: "note" }, `${tr("Not in your data — check these numbers")}: `, m.unverified.join(", ")));
     if (m.steps && m.steps.length) box.append(h("div", { className: "ask-steps x-only" }, `${tr("Looked up")}: `, m.steps.map((s) => `${s.tool}${s.ok ? "" : " ✗"}`).join(", ")));
     if (m.refs && m.refs.length) {
       const refs = h("div", { className: "ask-refs" }, h("span", { className: "ask-refs-l" }, "From these answers"));
-      m.refs.slice(0, 8).forEach((r) => {
-        const a = h("button", { type: "button", className: "ask-ref", title: r.prompt }, `${ENGINE[r.engine] || r.engine} · ${r.prompt}`);
+      // One chip per answer (1.0.6: the same answer was listed up to three times).
+      // The same question on the same engine is one chip, with how many answers.
+      const groups = new Map();
+      for (const r of m.refs) { const k = `${r.engine}|${String(r.prompt || "").trim().toLowerCase()}`; if (groups.has(k)) groups.get(k).n++; else groups.set(k, { r, n: 1 }); }
+      [...groups.values()].slice(0, 8).forEach(({ r, n }) => {
+        const a = h("button", { type: "button", className: "ask-ref", title: r.prompt }, `${ENGINE[r.engine] || r.engine} · ${r.prompt}${n > 1 ? ` (${n})` : ""}`);
         a.onclick = () => hooks.openCapture && hooks.openCapture(r.id);
         refs.append(a);
       });
       box.append(refs);
     }
     // Take this reply, what it looked up and the question to another AI.
-    if (m.lookups || m.steps) {
+    if ((m.lookups || m.steps) && m === msgs[msgs.length - 1]) {
       const at = msgs.indexOf(m);
       const question = at > 0 && msgs[at - 1].role === "user" ? msgs[at - 1].content : "";
       box.append(h("div", { className: "ask-ho" }, handoffButton({ getParts: () => askParts({ question, answer: m.content, steps: m.steps || [], results: (m.lookups || []).map((x) => { try { return JSON.parse(x); } catch (_) { return x; } }) }), question: () => question, task: "custom", file: "citoskeleton-ask.md" })));
@@ -141,6 +143,12 @@ export async function renderAsk(root, hooks = {}) {
     log.replaceChildren(...(msgs.length ? msgs.map(drawMsg) : [empty]), typing);
     log.scrollTop = log.scrollHeight;
   };
+  // Kept at the newest message while the page around it settles (1.0.6: the
+  // AI line above arrives a moment later, the chat got shorter, and the last
+  // reply's bottom row ended up under the box to type in).
+  let pinned = true;
+  log.addEventListener("scroll", () => { pinned = log.scrollHeight - log.scrollTop - log.clientHeight < 24; });
+  try { new ResizeObserver(() => { if (pinned) log.scrollTop = log.scrollHeight; }).observe(log); } catch (_) { /* old browser */ }
   const input = h("textarea", { id: "askInput", className: "ask-input", rows: 1, placeholder: tr("Ask about your campaigns, brands, sites or answers…"), dir: "auto", "aria-label": tr("Your question") });
   // The box grows with what's typed, up to a few lines.
   const grow = () => { input.style.height = "auto"; input.style.height = `${Math.min(160, input.scrollHeight)}px`; };

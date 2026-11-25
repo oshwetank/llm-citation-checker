@@ -107,6 +107,9 @@ try {
     await page.waitForTimeout(400);
     await page.evaluate(() => [...document.querySelectorAll(".ab-nav-btn, .ab-more-row")].find((b) => b.textContent.includes("Settings"))?.click());
     await page.waitForTimeout(800);
+    // The full card is under the folded "More settings" since 1.0.6.
+    await page.evaluate(() => { const m = document.getElementById("setGroupMore"); if (m && !m.open) { m.open = true; m.dispatchEvent(new Event("toggle")); } });
+    await page.waitForTimeout(300);
     // Sizes, folders and engines are under "More options" since 0.84.0.
     await page.evaluate(() => { const d = document.getElementById("aiMore"); if (d && !d.open) { d.open = true; d.dispatchEvent(new Event("toggle")); } });
     await page.waitForTimeout(200);
@@ -205,7 +208,7 @@ try {
     const q = await msg({ type: "ai-check-capture", captureId: res.captureId });
     check("'Check with built-in AI' queues it anyway", q && q.ok, JSON.stringify(q));
     const r1 = await waitFor(async () => { const r = await record(res.captureId); return r && r.aiStatus === "done" ? r : null; }, 120000);
-    check("and it is checked", !!r1);
+    check("and it is checked", !!r1, JSON.stringify(await record(res.captureId).then((r) => r && { s: r.aiStatus, e: r.aiError })));
   }
 
   console.log("\nAnalyze shows the check");

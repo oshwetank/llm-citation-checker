@@ -4,6 +4,10 @@
  * and performs Loader auto-submit (only for navigations the worker vouches for).
  */
 (() => {
+  // Google (1.0.6): only AI Mode's pages (/search?udm=50); an ordinary
+  // results page is left alone.
+  if (/(^|.)google.[a-z.]+$/i.test(location.hostname) && !/(^|.)gemini.google.com$/i.test(location.hostname)
+    && !(location.pathname === "/search" && /[?&]udm=50(?:&|$)/.test(location.search))) return;
   // Shared marker published by the MAIN-world script for this page load. Read it
   // LAZILY: both content scripts run at document_start and their relative order
   // across worlds isn't guaranteed, so reading it eagerly can race and silently

@@ -43,6 +43,12 @@ console.log("\nThe rule plan");
   check("since October: all runs from 1 Oct", p.scope.runs === "all" && new Date(p.scope.dates.from).getMonth() === 9, JSON.stringify(p.scope.dates));
   check("clicks are not recorded", rulePlan("How many clicks did ChatGPT send us?", catalog).plan.intent === "not_recorded");
   check("a definition", rulePlan("What does share of voice mean?", catalog).plan.intent === "define");
+  // Live test of 25 Nov 2026 (1.0.7): both were answered with the own brand's numbers.
+  for (const q of ["Who is our biggest competitor in the Go-live test campaign?", "Who are my main rivals?", "Which brand is our closest competitor?"])
+    check(`a rival is a ranking: "${q}"`, rulePlan(q, catalog).plan.intent === "rank", rulePlan(q, catalog).plan.intent);
+  for (const q of ["Which sites cite Kovo but not Zento?", "Which answers mention Lumora but not us?"])
+    check(`"X but not Y" is a gap: "${q}"`, rulePlan(q, catalog).plan.intent === "gaps", rulePlan(q, catalog).plan.intent);
+  check("a plain comparison is still a comparison", rulePlan("Kovo vs Zento", catalog).plan.intent === "compare");
   check("last 7 days", Math.round((NOW - datesIn("answers from the last 7 days", NOW).from) / DAY) === 7);
   check("by engine", rulePlan("Zento visibility by engine", catalog).plan.by === "engine");
 }
@@ -132,10 +138,24 @@ console.log("\nAsk end to end");
   check("ambiguous: it asks back", back.by === "ask-back" && back.askBack.choices.length >= 2, JSON.stringify(back.askBack));
   const chosen = await askPlanned({ question: "How visible are we?", data, plan: { ...back.plan, scope: { ...back.plan.scope, collections: back.askBack.choices[0].collections } } });
   check("a choice answers with that campaign", chosen.by === "template" && chosen.scope.text.startsWith(back.askBack.choices[0].label), chosen.scope && chosen.scope.text);
-  const model = await askPlanned({ question: "How is Zento India doing?", data, generate: async ({ messages }) => ({ text: /Results: /.test(messages[1].content) ? "Zento was named in 60% of answers, and 87% of the time first." : "" }) });
+  const model = await askPlanned({ question: "How is Zento India doing?", data, reword: true, generate: async ({ messages }) => ({ text: /Results: /.test(messages[1].content) ? "Zento was named in 60% of answers, and 87% of the time first." : "" }) });
   check("with a model, it writes from the results and a made-up number is flagged", model.by === "model" && model.unverified.includes("87") && !model.unverified.includes("60"), JSON.stringify(model.unverified));
+  // 1.0.7: without reword the model never writes the reply; the numbers stand as worked out.
+  const plain = await askPlanned({ question: "How is Zento India doing?", data, generate: async () => ({ text: "Zento was named in 99% of answers." }) });
+  check("by default the model does not reword the reply", plain.by === "template" && !/99%/.test(plain.answer), plain.by + ": " + plain.answer.slice(0, 80));
   const nr = await askPlanned({ question: "How much traffic did Gemini send us?", data });
   check("traffic: not recorded, explained", nr.answer === NOT_RECORDED, nr.answer);
+}
+
+console.log("\na campaign named by part of its name (1.0.7, live test)");
+{
+  const mk = (id, name, brand) => ({ id, name, brand: { name: brand }, competitors: [], engines: ["chatgpt"] });
+  const cat = buildCatalog({ profiles: [mk("r2", "R2 — Small-business CRM", "HubSpot"), mk("gl", "Go-live test — CRM for agencies", "Zoho CRM")] });
+  const col = (q) => lookup(q, cat).filter((m) => m.kind === "collection").map((m) => m.id);
+  check('"in the Go-live test campaign"', col("How visible is Zoho CRM in the Go-live test campaign?").join() === "gl", col("How visible is Zoho CRM in the Go-live test campaign?").join());
+  check('"R2"', col("How is R2 doing?").join() === "r2", col("How is R2 doing?").join());
+  check("the whole name still works", col("How is R2 — Small-business CRM doing?").join() === "r2");
+  check("no campaign named, none matched", col("How visible are we?").length === 0, col("How visible are we?").join());
 }
 
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");

@@ -100,7 +100,10 @@ const DEFAULT_SETTINGS = {
   // URLs let cited domains be attributed to the right brand.
   myBrand: { name: "", url: "" },
   competitors: [], // [{ name, url }]
-  debugCapture: false,
+  // On from install (1.0.6, asked: "why can't we have debugger and all of
+  // these things switched on from the start?"). It keeps the newest 3000
+  // network events as addresses and key names, never prompts or answers.
+  debugCapture: true,
   // The slower, safer pace (lib/pacing.js, 1.0.5): off = every engine fast.
   carefulPace: false,
   // Pause capture (0.66.0): the switch at the top of the popup and the tab.
@@ -140,6 +143,12 @@ async function getSettings() {
   if (settingsCache) return settingsCache;
   const got = await chrome.storage.local.get("lcfcSettings");
   settingsCache = { ...DEFAULT_SETTINGS, ...(got.lcfcSettings || {}) };
+  // 1.0.6: the capture debugger is on for everyone once, whatever was stored
+  // (it has no switch in Settings any more).
+  if (!settingsCache.debugOn106) {
+    settingsCache = { ...settingsCache, debugCapture: true, debugOn106: true };
+    try { await chrome.storage.local.set({ lcfcSettings: settingsCache }); } catch (_) { /* next time */ }
+  }
   return settingsCache;
 }
 async function setSettings(patch) {
@@ -235,22 +244,18 @@ const AIMODE_SCRIPTS = [
   { id: "aimode-iso", matches: AIMODE_MATCHES, js: ["src/content-iso.js"], runAt: "document_start", persistAcrossSessions: true },
 ];
 /** Register or remove AI Mode's page scripts to match the setting and the permission. */
+/* 1.0.6: AI Mode is on from install, its page scripts in manifest.json like
+ * the other engines' (no switch, no permission prompt). The scripts 1.0.5
+ * registered at run time for those who turned it on are removed, so a page
+ * doesn't get both. */
 async function syncAiModeScripts() {
   try {
-    const { aimodeOn } = await chrome.storage.local.get("aimodeOn");
-    const granted = await chrome.permissions.contains({ origins: AIMODE_MATCHES });
     const have = (await chrome.scripting.getRegisteredContentScripts({ ids: AIMODE_SCRIPTS.map((x) => x.id) })).map((x) => x.id);
-    if (aimodeOn && granted) {
-      const missing = AIMODE_SCRIPTS.filter((x) => !have.includes(x.id));
-      if (missing.length) await chrome.scripting.registerContentScripts(missing);
-    } else if (have.length) {
-      await chrome.scripting.unregisterContentScripts({ ids: have });
-    }
-    return { ok: true, on: !!(aimodeOn && granted), granted };
-  } catch (e) { logErr("aimode:scripts", e); return { ok: false, error: String(e && e.message || e) }; }
+    if (have.length) await chrome.scripting.unregisterContentScripts({ ids: have });
+    return { ok: true, on: true, granted: true };
+  } catch (e) { logErr("aimode:scripts", e); return { ok: true, on: true }; }
 }
-chrome.permissions?.onAdded?.addListener(() => { syncAiModeScripts(); });
-chrome.permissions?.onRemoved?.addListener(() => { syncAiModeScripts(); });
+chrome.runtime.onInstalled?.addListener(() => { syncAiModeScripts(); });
 chrome.runtime.onStartup?.addListener(() => { syncAiModeScripts(); });
 
 // Google's robot check: an AI Mode run tab that lands on /sorry/ pauses AI
@@ -1010,20 +1015,28 @@ async function onPageInteraction(p) {
 }
 
 let offscreenReady = null;
+// One opening at a time (1.0.7): the page closes itself when idle, and two
+// callers arriving together (Ask, the labelling queue, a download) each saw
+// it closed during an await and each created it; the second failed with
+// "Only a single offscreen document may be created" (laya-ui.test).
+let offscreenOpening = null;
 async function ensureOffscreen() {
   if (!chrome.offscreen) throw new Error("no offscreen API");
   // The page closes itself when idle (0.74.0, ui/offscreen.js), which frees
   // the AI model's memory; then it is opened again here on demand.
-  if (offscreenReady && chrome.runtime.getContexts) {
-    try { if (!(await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] })).length) offscreenReady = null; } catch (_) { /* keep */ }
-  }
-  if (offscreenReady) return offscreenReady;
-  offscreenReady = (async () => {
-    const has = chrome.runtime.getContexts ? (await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] })).length > 0 : false;
-    if (!has) await chrome.offscreen.createDocument({ url: "ui/offscreen.html", reasons: ["DOM_PARSER"], justification: "Read the text of the pages an answer cited" });
+  if (offscreenOpening) return offscreenOpening;
+  offscreenOpening = (async () => {
+    const has = chrome.runtime.getContexts
+      ? (await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] })).length > 0
+      : !!offscreenReady;
+    if (!has) {
+      try { await chrome.offscreen.createDocument({ url: "ui/offscreen.html", reasons: ["DOM_PARSER"], justification: "Read the text of the pages an answer cited" }); }
+      catch (e) { if (!/single offscreen document/i.test(String(e && e.message))) throw e; }
+    }
+    offscreenReady = true;
   })();
-  try { await offscreenReady; } catch (e) { offscreenReady = null; throw e; }
-  return offscreenReady;
+  try { await offscreenOpening; } catch (e) { offscreenReady = null; throw e; } finally { offscreenOpening = null; }
+  return true;
 }
 // Close and reopen the offscreen document (0.70.0): the AI runtime there
 // can't change from the graphics chip to the processor once it has tried.
@@ -2322,7 +2335,7 @@ async function resumeFromSnapshot(snap) {
   if (Object.values(loader.platforms).every((pd) => pd.legs.every((leg) => leg.idx >= leg.prompts.length))) {
     loader.running = false;
     syncGeoRun("done");
-    startNextQueued();
+    queueAutoRetry().finally(startNextQueued);
     notifyRunComplete();
     closeRunTabs();
   }
@@ -2670,7 +2683,7 @@ async function loaderRunLeg(plat, leg) {
     if (allDone) {
       loader.running = false;
       syncGeoRun("done");
-      startNextQueued();
+      queueAutoRetry().finally(startNextQueued);
       notifyRunComplete();
       closeRunTabs();
     }
@@ -3071,7 +3084,7 @@ async function loaderStart(prompts, options) {
     const pick = only ? (only[plat] || []).filter((i) => Number.isInteger(i) && i >= 0 && i < clean.length) : null;
     if (pick && !pick.length) continue;
     const list = pick ? pick.map((i) => clean[i]) : clean;
-    const shards = shardPrompts(list, tabsForEngine(plat, { careful: !!loader.options.careful })).filter((s) => s.prompts.length > 0);
+    const shards = shardPrompts(list, tabsForEngine(plat, { careful: !!loader.options.careful, deviceMemory: globalThis.navigator && navigator.deviceMemory })).filter((s) => s.prompts.length > 0);
     const legs = [];
     for (const shard of shards) {
       const created = windowId
@@ -3185,6 +3198,25 @@ async function enqueueRun(profileId, runOpts) {
   await chrome.storage.local.set({ [RUN_QUEUE_KEY]: q });
   return { ok: true, queued: true, position: q.findIndex((x) => x.profileId === profileId) + 1 };
 }
+/* The prompts a run couldn't get, asked once more by themselves (1.0.7,
+ * asked: "automatically run the failed prompts after the complete run so
+ * that the user can come to a complete report"). Only after a run that
+ * finished by itself (Stop is a choice), only once (a retry never queues
+ * another), and first in the queue, where "Retry missing" would have put
+ * it: the run's tabs close, then it starts like any queued run. */
+async function queueAutoRetry() {
+  try {
+    const geo = loader.options && loader.options.geo;
+    if (!geo || !geo.runId || geo.retryBase || (loader.options && loader.options.noAutoRetry)) return;
+    const q = await loadRunQueue();
+    if (q.some((x) => x.runOpts && x.runOpts.retryRunId === geo.runId)) return;
+    const profile = await db.get("profiles", geo.profileId);
+    if (!profile) return;
+    q.unshift({ profileId: geo.profileId, runOpts: { retryRunId: geo.runId, skipAuthCheck: true }, name: profile.name || "", queuedAt: Date.now(), autoRetry: true });
+    await chrome.storage.local.set({ [RUN_QUEUE_KEY]: q });
+    logEvent("run:auto-retry", "turn", `queued the missing answers of "${profile.name || geo.profileId}" to be asked once more`, { profileId: geo.profileId, runId: geo.runId });
+  } catch (e) { logErr("run:auto-retry", e); }
+}
 let startingQueued = false;
 function startNextQueued() {
   if (startingQueued) return;
@@ -3204,6 +3236,7 @@ function startNextQueued() {
           logEvent("run:queue-start", "turn", `started the queued campaign "${next.name || next.profileId}"`, { profileId: next.profileId });
           break;
         }
+        if (next.autoRetry && res && /Nothing is missing/.test(res.error || "")) { logEvent("run:auto-retry", "turn", "nothing was missing: no retry needed", { profileId: next.profileId }); continue; }
         logErr("run:queue-start", (res && res.error) || "couldn't start", { profileId: next.profileId });
       }
     } catch (e) {
@@ -5241,7 +5274,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "ai-test-model": {
           const host = String((msg.model || {}).host || "");
           if (!/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/$/.test(host)) { sendResponse({ ok: false, error: "local addresses only" }); break; }
-          await aiSvc.setState({ custom: { repo: String(msg.model.repo), host, dtype: msg.model.dtype || "fp32", label: "Test model", ...(Array.isArray(msg.model.script) ? { script: msg.model.script.map(String) } : {}) }, tier: null, downloadedAt: null });
+          await aiSvc.setState({ custom: { repo: String(msg.model.repo), host, dtype: msg.model.dtype || "fp32", label: "Test model", ...(Array.isArray(msg.model.script) ? { script: msg.model.script.map(String) } : {}) }, tier: null, downloadedAt: null, askReword: !!msg.model.askReword });
           sendResponse({ ok: true });
           break;
         }

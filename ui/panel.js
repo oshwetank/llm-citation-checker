@@ -39,6 +39,7 @@ import { renderCampaignView, CV_SECTIONS, sectionCounts, resetCampaignViewState 
 import { initDisplaySettings } from "./displaySettings.js";
 import { initAiSettings } from "./aiSettings.js";
 import { renderAsk } from "./askView.js";
+import { mountAiSetup } from "./modelSwitches.js";
 import { aggregateSources } from "../src/lib/sources.js";
 import { analyzeFanout, FANOUT_BENCHMARK, titleMatchesQueries } from "../src/lib/fanout.js";
 import { sanitizeText, trimLabel } from "../src/lib/text-sanitize.js";
@@ -425,6 +426,9 @@ window.addEventListener("popstate", () => {
   showTab(to);
 });
 const TAB_LABELS = { dashboard: "Dashboard", loader: "Campaigns", compare: "Compare", about: "About" };
+// The tab in the full view's address (1.0.7, approved mockup): a reload,
+// or Chrome bringing the tab back, opened Analyze whatever you were on.
+const TAB_HASH = { analyze: "analyze", dashboard: "dashboard", loader: "campaigns", ask: "ask", about: "about" };
 // Per-tab scroll position, keyed by panel id. All tabs share one physical
 // scroll container (see withScrollPreserved below), so switching tabs via
 // showTab() used to leave the scroll offset wherever the PREVIOUS tab left
@@ -830,6 +834,9 @@ function showTab(name) {
   if (runStale && (name === "analyze" || name === "dashboard")) setTimeout(refreshStaleRunData, 0);
   const btn = document.querySelector(`[data-tab="${name}"]`);
   if (btn) btn.classList.add("active");
+  if (TAB_HASH[name] && document.body.classList.contains("tab") && location.hash !== "#" + TAB_HASH[name]) {
+    try { history.replaceState(history.state, "", "#" + TAB_HASH[name]); } catch (_) { /* no history here */ }
+  }
   const panel = document.getElementById(name);
   if (panel) {
     panel.classList.add("active");
@@ -853,7 +860,7 @@ function showTab(name) {
   // Where the user is (1.0.5): coming to Ask from a campaign's page, Ask
   // starts on that campaign; from the Dashboard, on My questions.
   if (name === "ask" && current && current !== "ask") askFrom = current === "loader" && geoActiveId ? geoActiveId : current === "dashboard" ? "history" : null;
-  if (name === "ask") renderAsk(document.getElementById("ask"), { openCapture, context: () => ({ collectionId: askFrom }), openSettings: () => { showTab("about"); abGo("settings"); setTimeout(() => document.getElementById("setAi")?.scrollIntoView({ block: "start" }), 50); } });
+  if (name === "ask") renderAsk(document.getElementById("ask"), { openCapture, context: () => ({ collectionId: askFrom }), openSettings: () => { showTab("about"); abGo("settings"); const more = document.getElementById("setGroupMore"); if (more) more.open = true; setTimeout(() => document.getElementById("setAi")?.scrollIntoView({ block: "start" }), 50); } });
   if (name === "analyze") abNoteAnalyzed(ANALYZE_SHOWN);
   syncShareIcon();
 
@@ -5929,7 +5936,9 @@ function dbExportMenu(rows, label) {
   wrap.append(btn);
   if (dbMenu === "export") {
     const recs = rows.flatMap((r) => r.captureIds).map((id) => ALL_RECORDS.find((x) => x.captureId === id)).filter(Boolean);
-    const menu = el("div", { className: "menu-pop db-menu", role: "menu" });
+    // Opens leftward from the button's right edge (1.0.7, approved mockup):
+    // at the right of the list it ran off the window.
+    const menu = el("div", { className: "menu-pop db-menu db-menu-end", role: "menu" });
     [["excel", "Excel", ".xls spreadsheet"], ["csv", "Detailed CSV", "one row per source"], ["html", "Conversations", "readable HTML document"], ["json", "Raw data", "full JSON payloads"]].forEach(([k, l, sub]) => {
       const it = el("button", { className: "menu-item", type: "button", role: "menuitem" }, el("span", { className: "menu-item-label" }, l), el("span", { className: "menu-item-sub muted small" }, sub));
       it.onclick = async () => {
@@ -6956,19 +6965,55 @@ function cpSetupOnScreen() { return !!document.querySelector("#loader .cs-card-d
 let cpFromBroadcast = false; // set while refreshFromBroadcast's load() runs
 function cpHolding(profile) { return !!(profile && cpLive.live && cpLive.profileId === profile.id); }
 
+// The campaign header's menus (⋯, Run's ▾), 1.0.7: one open at a time,
+// closed by Escape or a click outside. Each header used to add its own
+// document listener, never removed, one more every time it was redrawn.
+let cpMenuOpen = null; // { wrap, close, btn }
+function closeCpMenus() { if (cpMenuOpen) { cpMenuOpen.close(); cpMenuOpen = null; } }
+document.addEventListener("click", (ev) => { if (cpMenuOpen && !cpMenuOpen.wrap.contains(ev.target)) closeCpMenus(); });
+document.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Escape" || !cpMenuOpen) return;
+  const btn = cpMenuOpen.btn;
+  closeCpMenus();
+  if (btn && btn.isConnected) btn.focus();
+});
+
 /* ---------- Campaigns tab (setup + prompts + LLMs + run, formerly
    Tracking + Loader) ---------- */
 
 function renderCampaigns() { withScrollPreserved(renderCampaignsImpl); }
+/* No jumping (1.0.6): the page was emptied, then filled in three steps over
+ * a second and a half (the head, then the board's card, then the board),
+ * and everything under each step moved down as it came (layout shift 0.24
+ * per visit, measured). Now it's built off the page and swapped in once,
+ * when the board is ready (1.5 s at most); what was there stays until then. */
+let cpBuild = 0;
+/** An element by id in the page being built (off the page until it's swapped in), else in the page. */
+function cpFind(node, id) { let top = node; while (top.parentNode) top = top.parentNode; return top.querySelector ? top.querySelector("#" + id) : document.getElementById(id); }
+function swapWhenReady(root, stage, sc, y) {
+  const id = ++cpBuild;
+  const pending = [...stage.querySelectorAll("#campaignResults")].map((b) => b.__ready).filter(Boolean);
+  const put = () => {
+    if (id !== cpBuild) return;
+    root.replaceChildren(...stage.childNodes);
+    if (sc && y > 0 && sc.scrollTop !== y) sc.scrollTop = y;
+  };
+  // A first visit has nothing to keep on screen: the head shows at once.
+  if (!pending.length || !root.childNodes.length) { put(); return; }
+  Promise.race([Promise.all(pending), new Promise((res) => setTimeout(res, 1500))]).then(put);
+}
 // Where the reader was, read before the page is emptied: read after, the
 // page is one line tall and the value comes back clamped to the top.
 let cpScrollY = 0;
 function renderCampaignsImpl() {
-  const root = $("#loader");
-  if (!root) return;
+  const live = $("#loader");
+  if (!live) return;
   const sc = activeScroller();
   cpScrollY = sc ? sc.scrollTop : 0;
-  root.textContent = "";
+  const root = document.createElement("div");
+  try { renderCampaignsInto(root); } finally { swapWhenReady(live, root, sc, cpScrollY); }
+}
+function renderCampaignsInto(root) {
   const profile = geoActive();
   cbHeaderNav = null;
   setHeaderPage("loader");
@@ -7034,6 +7079,14 @@ function renderCampaignSwitcher() {
     const imp = el("button", { className: "geo-chip add", type: "button", id: "cpImport", title: "Open a campaign someone shared with you" }, "Import…");
     imp.onclick = () => (inPopup() ? openCampaignInFullView({ importing: true }) : openImportDialog());
     switcher.append(imp);
+  } else {
+    // At the limit (1.0.7, approved mockup): both stay where they are,
+    // greyed, and one line says why: they used to just disappear.
+    const why = `You can keep up to ${MAX_PROFILES} campaigns.`;
+    switcher.append(
+      el("button", { className: "geo-chip add", type: "button", id: "cpNewFull", disabled: true, title: why }, "+ New campaign"),
+      el("button", { className: "geo-chip add", type: "button", id: "cpImport", disabled: true, title: why }, "Import…"),
+      el("p", { className: "geo-limit-note", id: "cpLimitNote" }, `${why} To start another, delete one: it stays under Recently deleted for 7 days, and Export… or Share campaign… keeps a copy first.`));
   }
   return switcher;
 }
@@ -7107,13 +7160,15 @@ function renderCampaignResults(profile) {
   const scroller = activeScroller();
   const y = cpScrollY;
   const running = cpHolding(profile);
-  setTimeout(async () => {
-    if (cbDetail) await renderCampaignBrandDetail(box, profile);
-    else await renderCampaignBoard(box, profile);
-    // A run in progress isn't on the board yet (0.62.2, asked): say so.
-    if (running) box.prepend(el("p", { className: "cb-run-wait", role: "status" }, "A run is in progress. Its answers appear here when it finishes or is stopped; the board below is the runs already finished."));
-    if (scroller && y > 0 && scroller.scrollTop !== y) scroller.scrollTop = y;
-  }, 0);
+  box.__ready = new Promise((done) => setTimeout(async () => {
+    try {
+      if (cbDetail) await renderCampaignBrandDetail(box, profile);
+      else await renderCampaignBoard(box, profile);
+      // A run in progress isn't on the board yet (0.62.2, asked): say so.
+      if (running) box.prepend(el("p", { className: "cb-run-wait", role: "status" }, "A run is in progress. Its answers appear here when it finishes or is stopped; the board below is the runs already finished."));
+      if (box.isConnected && scroller && y > 0 && scroller.scrollTop !== y) scroller.scrollTop = y;
+    } finally { done(); }
+  }, 0));
   return box;
 }
 
@@ -7141,14 +7196,16 @@ async function renderCampaignBoard(box, profile) {
 
   /* --- the filters, under the campaign's header (renderCampaignHead) --- */
   // A campaign that isn't set up has no header card; the filters get one.
-  const slot = document.getElementById("cpFilters");
+  const slot = cpFind(box, "cpFilters");
   const head = slot || el("div", { className: "card cb-head" });
   if (slot) slot.textContent = "";
   const runsWithAnswers = r.runs.filter((x) => x.hasAnswers);
   const runsAsc = [...r.runs].sort((a, c) => (a.startedAt || 0) - (c.startedAt || 0));
   const runNo = (id) => runsAsc.findIndex((x) => x.id === id) + 1;
   const runDate = (t) => new Date(t).toLocaleDateString(dateLocale(), { weekday: "short", day: "numeric", month: "short" });
-  const scope = el("span", { className: "muted small cp-scope", id: "campaignResultsH" }, `${r.answers} answer${r.answers === 1 ? "" : "s"} · ${b.runLabel}${b.previousLabel ? ` · compared with ${b.previousLabel}` : ""}`);
+  // 1.0.6: the answer count is the overview's heading and the run is the Run
+  // picker's own label, so this says only what neither does.
+  const scope = el("span", { className: "muted small cp-scope", id: "campaignResultsH" }, b.previousLabel ? `Compared with ${b.previousLabel}` : "");
   if (!slot) head.append(el("div", { className: "card-header" }, el("h3", {}, "Results"), scope));
   const controls = el("div", { className: "cb-controls" });
   const runSel = el("select", { className: "filter", id: "cbRun", "aria-label": "Run", title: "The newest answer for each prompt on each engine, one run, or every run combined" });
@@ -7180,11 +7237,11 @@ async function renderCampaignBoard(box, profile) {
   groups.forEach(([label, list]) => {
     if (!list.length) return;
     const g = el("optgroup", { label });
-    list.forEach((x) => g.append(el("option", { value: x.name, selected: x.name === view.name }, `${x.isOwn ? fmt("{brand} (you)", { brand: x.name }) : x.name} · ${cbPct(rowOf(x.name) ? rowOf(x.name).visibility : 0)}`)));
+    list.forEach((x) => g.append(el("option", { value: x.name, selected: x.name === view.name }, `${x.isOwn ? fmt("{brand} (you)", { brand: x.name }) : x.name}`)));
     picker.append(g);
   });
   picker.onchange = () => { const x = r.brands.find((y) => y.name === picker.value); cbViewAs = x && x.isOwn ? null : picker.value; rerender(); };
-  const wb = document.getElementById("cbExport") || el("button", { className: "btn sm ghost", type: "button", id: "cbExport", title: "The campaign as an Excel workbook or CSV tables" }, "Export…");
+  const wb = cpFind(box, "cbExport") || el("button", { className: "btn sm ghost", type: "button", id: "cbExport", title: "The campaign as an Excel workbook or CSV tables" }, "Export…");
   wb.disabled = false;
   wb.onclick = () => openExportDialog(profile, {
     engines: b.engines, runs: runsWithAnswers.length, answers: r.answers, latestDate: runsWithAnswers[0] ? runDate(runsWithAnswers[0].startedAt) : "",
@@ -7198,7 +7255,7 @@ async function renderCampaignBoard(box, profile) {
     el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Run"), runSel),
     el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Brand"), picker),
     el("div", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Engines"), engine));
-  if (!wb.isConnected) controls.append(wb);
+  if (!wb.parentNode) controls.append(wb);
   head.append(controls);
   if (geoEngineFilter.length) head.append(el("span", { className: "scope-note muted small" }, `${geoEngineFilter.map((id) => (availableEngines().find((e) => e.id === id) || {}).label || id).join(" and ")} only`));
   if (r.tags.length) {
@@ -8155,7 +8212,6 @@ function renderCampaignSetup(profile, dis) {
       tile.onclick = async () => {
         const on = tile.getAttribute("aria-pressed") !== "true";
         // AI Mode (1.0.5): picking it asks Chrome for google.com, from this click.
-        if (on && e.id === "aimode" && !(await aiModeOn())) { showToast(tr("AI Mode needs access to google.com to read its answers. It wasn't given, so AI Mode stays off.")); return; }
         tile.setAttribute("aria-pressed", String(on));
         changed();
       };
@@ -9065,9 +9121,14 @@ function renderCampaignHead(profile) {
     const close = () => { menu.hidden = true; btn.setAttribute("aria-expanded", "false"); };
     btn.setAttribute("aria-haspopup", "menu");
     btn.setAttribute("aria-expanded", "false");
-    btn.onclick = (ev) => { ev.stopPropagation(); const open = menu.hidden; menu.hidden = !open; btn.setAttribute("aria-expanded", String(open)); };
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      const open = menu.hidden;
+      if (open) closeCpMenus(); // one menu at a time (1.0.7: ⋯ stayed open over Run's)
+      menu.hidden = !open; btn.setAttribute("aria-expanded", String(open));
+      if (open) cpMenuOpen = { wrap, close, btn };
+    };
     menu.addEventListener("click", () => close());
-    document.addEventListener("click", (ev) => { if (!wrap.contains(ev.target)) close(); });
     items.forEach((b) => b.setAttribute("role", "menuitem"));
     return wrap;
   };
@@ -9090,7 +9151,8 @@ function renderCampaignHead(profile) {
     actions));
 
   const notes = [];
-  if (due && vol.submissions) notes.push(el("div", { className: "geo-due" }, `Today's run hasn't happened yet — last run ${profile.lastRunAt ? new Date(profile.lastRunAt).toLocaleDateString(dateLocale()) : "never"}.`));
+  // The last run's date is in the title line (1.0.6: it was said three times).
+  if (due && vol.submissions && !holding) notes.push(el("div", { className: "geo-due" }, "Today's run hasn't happened yet."));
   if (vol.submissions > 60) notes.push(el("div", { className: "warn-box" }, el("span", {}, `${vol.submissions} automated submissions in one run is a lot of activity on one account. Consider splitting your prompts across campaigns or pausing some, and keep an eye on the run rather than leaving it unattended.`)));
   head.append(...notes);
   // Answers missing from the last finished run (0.78.1): asked again on
@@ -9123,6 +9185,7 @@ function renderCampaignHead(profile) {
     });
     missing.replaceChildren(el("span", {}, el("b", {}, stopped ? fmt("The last run was stopped with {n} answers to go", { n: m.count }, "The last run was stopped with {n} answer to go") : fmt("{n} answers are missing from the last run", { n: m.count }, "{n} answer is missing from the last run")), ` · ${parts.join(", ")}`), btn);
     missing.hidden = false;
+    head.querySelector(".geo-due")?.remove();
   });
   // Waiting its turn behind another campaign's run (0.80.0).
   const queued = el("div", { className: "cp-queued", id: "cpQueued", hidden: true });
@@ -9474,6 +9537,16 @@ document.querySelectorAll("[data-tab]").forEach((btn) =>
 $("#openTab").addEventListener("click", () =>
   chrome.tabs.create({ url: chrome.runtime.getURL("ui/panel.html") })
 );
+// Back on the tab the address names, as a click would open it. A link that
+// opens one campaign (?campaign=, ?newCampaign=, ?importCampaign=) wins.
+// After this script has finished loading: About's state is declared further
+// down, and a click before then threw (layout-106.test).
+setTimeout(() => {
+  const want = Object.keys(TAB_HASH).find((k) => "#" + TAB_HASH[k] === location.hash);
+  if (want && want !== "analyze" && document.body.classList.contains("tab") && !/[?&](campaign|newCampaign|importCampaign)=/.test(location.search)) {
+    document.querySelector(`[data-tab="${want}"]`)?.click();
+  }
+}, 0);
 
 // How the answer was asked (0.66.0): from a private window and/or signed
 // out, which is when an engine answers without the account's history or
@@ -9531,6 +9604,17 @@ document.querySelectorAll("#setTheme [data-theme-pick]").forEach((b) => b.addEve
   const next = b.dataset.themePick;
   applyTheme(next);
   try { localStorage.setItem("cito-theme", next); } catch (_) {}
+}));
+// A campaign's sections, left or right of its results (1.0.6), kept in this
+// browser (display-boot.js applies it before the first paint).
+function applyNavSide(side) {
+  document.documentElement.setAttribute("data-nav", side);
+  document.querySelectorAll("#setNav [data-nav-pick]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.navPick === side)));
+}
+applyNavSide(document.documentElement.getAttribute("data-nav") === "right" ? "right" : "left");
+document.querySelectorAll("#setNav [data-nav-pick]").forEach((b) => b.addEventListener("click", () => {
+  applyNavSide(b.dataset.navPick);
+  try { localStorage.setItem("cito-nav-side", b.dataset.navPick); } catch (_) { /* this view */ }
 }));
 // Studio or Classic (0.59.0), the same way: kept in this browser, applied at
 // once, outside Save / Undo. theme-boot.js already set it before the first
@@ -10306,6 +10390,10 @@ function renderLoaderStatus(s) {
           : l.elapsedMs > l.turnTimeoutMs ? `${fmtDuration(l.elapsedMs)}, past its ${fmtDuration(l.turnTimeoutMs)} limit`
           : `${fmtDuration(l.elapsedMs)} of ${fmtDuration(l.turnTimeoutMs)}`;
         const tag = activeLegs.length > 1 ? `tab ${l.tab}: ` : "";
+        // Paused by you (1.0.7, live test): the tab holds its next prompt,
+        // unsent, and the clock read as if it were being asked.
+        const held = s.userPaused !== undefined ? s.userPaused : s.paused;
+        if (held) { sub.push(`${tag}next: "${l.current.slice(0, 28)}${l.current.length > 28 ? "…" : ""}"`); continue; }
         sub.push(`${tag}"${l.current.slice(0, 28)}${l.current.length > 28 ? "…" : ""}"${elapsed ? ` (${elapsed})` : ""}`);
       }
     } else if (ps.done >= ps.total) {
@@ -10594,14 +10682,18 @@ populateDiagExportProfiles();
  * settings, the storage meter, the log's counts, the version check) is in
  * src/lib/aboutView.js; this file only draws it.
  */
-const AB_TAB_SECTIONS = ["overview", "glossary", "settings", "account", "data", "diagnostics"];
+// Four pages in the full tab since 1.0.6 (asked: About "has got so many
+// things … why can't we straighten things out"): Account sits under
+// Settings, Data & tools under Help.
+const AB_TAB_SECTIONS = ["overview", "settings", "glossary", "diagnostics"];
+const AB_WITH = { settings: ["account"], diagnostics: ["data"] };
 const AB_PAGES = {
-  overview: { label: "Overview", glyph: "info" },
+  overview: { label: "Get started", glyph: "info" },
   account: { label: "Account", glyph: "user", sub: "Sign in, your name, campaigns you've shared" },
-  glossary: { label: "Metric glossary", glyph: "book", sub: "What every number means, and how to use it" },
+  glossary: { label: "Glossary", glyph: "book", sub: "What every number means, and how to use it" },
   settings: { label: "Settings", glyph: "sliders", sub: "How much is kept on this device" },
   data: { label: "Data & tools", glyph: "tools", sub: "Reprocess captures, sample data, the tour" },
-  diagnostics: { label: "Diagnostics", glyph: "pulse", sub: "Version check, report a problem" },
+  diagnostics: { label: "Help", glyph: "pulse", sub: "Version check, report a problem" },
   news: { label: "What’s new", glyph: "spark", sub: `Changes in version ${BUILD}` },
 };
 const AB_POPUP_SUB = {
@@ -10669,7 +10761,13 @@ function renderAbout() {
   if (!root) return;
   const sec = abCurrent();
   root.dataset.ab = sec;
-  root.querySelectorAll(".ab-sec").forEach((n) => { n.hidden = n.dataset.sec !== sec; });
+  const shown = [sec, ...(abPopup() ? [] : AB_WITH[sec] || [])];
+  root.querySelectorAll(".ab-sec").forEach((n) => { n.hidden = !shown.includes(n.dataset.sec); });
+  // Data & tools reads after the help on the Help page.
+  const dataSec = root.querySelector('.ab-sec[data-sec="data"]'), diagSec = root.querySelector('.ab-sec[data-sec="diagnostics"]');
+  if (dataSec && diagSec && diagSec.nextElementSibling !== dataSec) diagSec.after(dataSec);
+  if (shown.includes("account") && sec !== "account") renderAccount();
+  if (sec === "settings" && !abPopup()) mountAiSetup(document.getElementById("setAiQuick"), { compact: true, details: false });
   renderAboutNav(sec);
   renderAboutBuild();
   renderAboutSubhead(sec);
@@ -10854,43 +10952,59 @@ function renderAboutHome() {
 function renderAboutOverview() {
   const box = $("#abOverview");
   box.textContent = "";
-  box.append(el("div", { className: "card ab-card ab-hero" },
-    el("div", { className: "ab-hero-row" }, el("img", { src: "../icons/icon128.png", width: 56, height: 56, alt: "", className: "ab-logo lg" }),
+  // 1.0.6 (asked: "a normal user who is new to SEO or GEO may not know what
+  // the hell this tool is"): what it is in one line, then what to do, in
+  // order, each with its button. The rest is folded at the bottom.
+  const real = ALL_RECORDS.filter((r) => !abIsDemo(r)).length;
+  const prog = startProgress({ realCaptures: real, analyzed: abAnalyzed(), campaigns: (GEO_PROFILES || []).length });
+  box.append(el("div", { className: "card ab-card ab-hero ab-hero-simple" },
+    el("div", { className: "ab-hero-row" }, el("img", { src: "../icons/icon128.png", width: 44, height: 44, alt: "", className: "ab-logo" }),
       el("div", { className: "ab-hero-text" },
-        el("h2", { className: "ab-hero-title" }, "CitoSkeleton ", el("span", { className: "version-badge" }, `v${BUILD}`)),
-        el("p", { className: "ab-lead" }, "See what ChatGPT, Gemini, Perplexity and Grok actually read before they answer: the searches they run, the pages they fetch, the sources they cite, and which brands make it into the reply."),
-        el("p", { className: "ab-sub" }, "Formerly listed as ", el("em", {}, "LLM Citation & Fan-Out Checker"), "."))),
-    el("div", { className: "ab-facts" },
-      el("div", { className: "ab-facts-text" }, glyphEl("lock", 18), el("span", {}, el("b", {}, "Everything stays on this device"), el("span", {}, "CitoSkeleton only reads what your browser already received."))),
-      el("div", { className: "ab-facts-chips" }, ...["Captures stay here", "No account needed", "Nothing sent unless you share"].map((t) => el("span", { className: "ab-fact" }, glyphEl("check", 13), t)))),
-    el("div", { className: "ab-works" }, el("span", { className: "ab-label" }, "Works with"), abEngineChips(false))));
+        el("h2", { className: "ab-hero-title" }, prog.allDone ? "You're all set" : "Welcome to CitoSkeleton"),
+        el("p", { className: "ab-lead" }, "See which brands and websites ChatGPT, Gemini, Perplexity, Grok and Google AI Mode recommend, and where yours stands."),
+        el("p", { className: "ab-private" }, glyphEl("lock", 15), "Everything stays on this computer. No account needed.")))));
+
+  const start = el("div", { className: "card ab-card ab-start" },
+    el("div", { className: "ab-start-head" }, el("h3", { className: "ab-h3" }, "Three steps"), el("span", { className: "ab-progress-text" }, prog.text)));
+  const list = el("ol", { className: "ab-steps-list" });
+  prog.steps.forEach((st, i) => {
+    const li = el("li", { className: `ab-step${st.done ? " done" : ""}`, "data-step": st.id },
+      el("span", { className: "ab-step-mark", "aria-hidden": "true" }, st.done ? glyphEl("check", 14) : String(i + 1)),
+      el("div", { className: "ab-step-body" }, el("b", {}, st.title), el("span", {}, st.done ? "Done." : st.text)));
+    const body = li.querySelector(".ab-step-body");
+    if (st.id === "ask") body.append(abEngineChips(true));
+    if (st.id === "analyze" && !st.done) { const bt = el("button", { type: "button", className: "btn sm" }, "Open Analyze"); bt.onclick = () => abGoTab("analyze"); body.append(bt); }
+    if (st.id === "campaign" && !st.done) { const bt = el("button", { type: "button", className: "btn sm primary" }, "Set up a campaign"); bt.onclick = () => abGoTab("loader"); body.append(bt); }
+    list.append(li);
+  });
+  // The built-in AI, optional, as the last step: one button.
+  const ai = el("li", { className: "ab-step ab-step-ai" }, el("span", { className: "ab-step-mark", "aria-hidden": "true" }, glyphEl("spark", 14)),
+    el("div", { className: "ab-step-body" }, el("b", {}, "Optional: the built-in AI"), el("div", { id: "abAiSetup" })));
+  list.append(ai);
+  start.append(list);
+  box.append(start);
+  mountAiSetup(ai.querySelector("#abAiSetup"), { compact: true, details: false });
 
   const steps = el("ol", { className: "ab-how" });
-  ABOUT_STEPS.forEach((s) => {
-    const where = s.tab
-      ? el("button", { type: "button", className: "linkbtn ab-where" }, `${s.where} →`)
-      : el("span", { className: "ab-where muted" }, s.where);
-    if (s.tab) where.onclick = () => abGoTab(s.tab);
-    steps.append(el("li", {}, el("span", { className: "ab-num", "aria-hidden": "true" }, String(s.n)), el("b", {}, s.title), el("span", { className: "ab-how-text" }, s.text), where));
+  ABOUT_STEPS.forEach((x) => {
+    const where = x.tab ? el("button", { type: "button", className: "linkbtn ab-where" }, `${x.where} →`) : el("span", { className: "ab-where muted" }, x.where);
+    if (x.tab) where.onclick = () => abGoTab(x.tab);
+    steps.append(el("li", {}, el("span", { className: "ab-num", "aria-hidden": "true" }, String(x.n)), el("b", {}, x.title), el("span", { className: "ab-how-text" }, x.text), where));
   });
-  box.append(el("div", { className: "card ab-card" },
-    el("div", { className: "ab-head" }, el("div", {}, el("h2", { className: "ab-title" }, "How it works"), el("p", { className: "ab-sub" }, "Four tabs, one job each.")),
-      // Help & FAQ (1.0.0, ui/help.html).
-      el("a", { className: "btn sm ghost ab-help", href: chrome.runtime.getURL("ui/help.html"), target: "_blank", rel: "noopener" }, "Help & FAQ")),
-    steps,
-    el("p", { className: "ab-sub" }, "Brand detection is automatic for every industry. Your brand, competitors, prompts and engines are set per campaign, in Campaigns.")));
-  box.append(abNewsCard(true));
-  // What works in this browser (0.72.0): the same build runs in Chrome,
-  // Edge, Brave, Opera, Firefox and Safari, with a few parts missing in some.
+  const fold = (title, ...kids) => el("details", { className: "card ab-card ab-fold" }, el("summary", {}, el("b", {}, title)), ...kids);
+  box.append(fold("How it works", steps,
+    el("p", { className: "ab-sub" }, "Brands are found automatically, in any industry. Your own brand and your competitors are set per campaign."),
+    el("a", { className: "btn sm ghost ab-help", href: chrome.runtime.getURL("ui/help.html"), target: "_blank", rel: "noopener" }, "Help & FAQ")));
+  const news = abNewsCard(false);
+  news.classList.remove("card", "ab-card");
+  box.append(fold(`What's new in ${BUILD}`, news));
   const sup = browserSupport({
     offscreen: !!(chrome.offscreen), tabGroups: !!(chrome.tabGroups), notifications: !!(chrome.notifications),
     nano: typeof globalThis.LanguageModel !== "undefined", webgpu: !!navigator.gpu, incognito: !!(chrome.windows && chrome.windows.create), ua: navigator.userAgent,
   });
-  const list = el("ul", { className: "ab-support", id: "abSupport" });
-  sup.rows.forEach((r) => list.append(el("li", { className: r.on ? "on" : "off" }, glyphEl(r.on ? "check" : "info", 13), el("span", {}, r.label), r.note ? el("span", { className: "muted" }, ` · ${r.note}`) : "")));
-  box.append(el("div", { className: "card ab-card" },
-    el("div", { className: "ab-head" }, el("div", {}, el("h2", { className: "ab-title" }, `This browser: ${sup.name}`), el("p", { className: "ab-sub" }, "The same extension runs in Chrome, Edge, Brave, Opera, Firefox and Safari; a few parts depend on the browser."))),
-    list));
+  const supList = el("ul", { className: "ab-support", id: "abSupport" });
+  sup.rows.forEach((r) => supList.append(el("li", { className: r.on ? "on" : "off" }, glyphEl(r.on ? "check" : "info", 13), el("span", {}, r.label), r.note ? el("span", { className: "muted" }, ` · ${r.note}`) : "")));
+  box.append(fold(`What works in ${sup.name}`, supList));
 }
 
 /* The glossary: the same entries the hover definitions come from
@@ -10968,6 +11082,7 @@ function abFillSettings(s) {
   if ($("#setPages")) $("#setPages").checked = !!s.readCitedPages;
   if ($("#setHandoffKeep")) $("#setHandoffKeep").checked = !!s.keepHandoffCaptures;
 }
+let abAutoSaveT = null;
 function updateSettingsStatus() {
   const status = $("#setStatus");
   if (!status || !abSaved) return;
@@ -10976,6 +11091,11 @@ function updateSettingsStatus() {
   status.className = `ab-status ${st.tone}`;
   $("#setUndo").disabled = !st.dirty;
   $("#setSave").disabled = !st.dirty;
+  // Changes save themselves (1.0.6), a moment after the last one.
+  clearTimeout(abAutoSaveT);
+  if (st.dirty) { status.textContent = tr("Saving…"); abAutoSaveT = setTimeout(() => $("#setSave")?.click(), 500); }
+  else if (abJustSaved) status.textContent = tr("Saved");
+  else status.textContent = "";
   $("#setDebugText").textContent = tr($("#setDebug").checked ? "On" : "Off");
   if ($("#setCarefulText")) $("#setCarefulText").textContent = tr($("#setCareful").checked ? "On" : "Off");
   if ($("#setPagesText")) $("#setPagesText").textContent = tr($("#setPages").checked ? "On" : "Off");
@@ -10989,7 +11109,7 @@ async function loadSettings() {
   // rejection rather than a visible failure.
   if (!r || !r.ok || !r.settings || !$("#setRetention")) return;
   const s = r.settings;
-  abSaved = { retentionMax: s.retentionMax, maxCaptureMB: s.maxCaptureMB, debugCapture: !!s.debugCapture, readCitedPages: !!s.readCitedPages, keepHandoffCaptures: !!s.keepHandoffCaptures };
+  abSaved = { retentionMax: s.retentionMax, maxCaptureMB: s.maxCaptureMB, debugCapture: !!s.debugCapture, carefulPace: !!s.carefulPace, readCitedPages: !!s.readCitedPages, keepHandoffCaptures: !!s.keepHandoffCaptures };
   abFillSettings(abSaved);
   updateSettingsStatus();
   renderStorageMeter();
@@ -11003,13 +11123,7 @@ async function loadSettings() {
 /* Google AI Mode (1.0.5): turning it on asks Chrome for google.com (from
  * the click: Chrome only asks in answer to one), then registers AI Mode's
  * page scripts. Refused: it stays off and says why. */
-async function aiModeOn() {
-  let ok = false;
-  try { ok = await chrome.permissions.contains({ origins: ["https://www.google.com/*"] }) || await chrome.permissions.request({ origins: ["https://www.google.com/*"] }); } catch (_) { ok = false; }
-  if (!ok) return false;
-  const r = await new Promise((res) => chrome.runtime.sendMessage({ type: "aimode-set", on: true }, (x) => { void chrome.runtime.lastError; res(x); }));
-  return !!(r && r.on);
-}
+async function aiModeOn() { return true; } // on from install (1.0.6)
 $("#setAiMode")?.addEventListener("change", async (e) => {
   const box = e.target, note = $("#setAiModeNote");
   if (note) { note.hidden = true; note.textContent = ""; }
@@ -11928,4 +12042,41 @@ document.addEventListener("mouseover", (e) => {
     if (imp) setTimeout(() => { try { openImportDialog(); } catch (_) { /* not ready */ } }, 600);
   };
   setTimeout(go, 300);
+})();
+
+/* A first look (1.0.6; asked: "the moment a person installs … few things
+ * immediately presented to him in a very simple, straightforward manner"
+ * and "it automatically in a very simple, straightforward pop-up showcases
+ * what they need to do"). Once, in the full tab: the three steps, each with
+ * its button, and the built-in AI in one button. Closed for good with
+ * "Got it"; About → Get started has the same steps any time. */
+(() => {
+  const KEY = "cito-start-106";
+  let seen = false;
+  try { seen = localStorage.getItem(KEY) === "1"; } catch (_) { seen = true; }
+  // Automated browsers (the UI tests) see it only when a test asks for it.
+  let wanted = false;
+  try { wanted = localStorage.getItem("cito-test-first-look") === "1"; } catch (_) { /* no */ }
+  if (navigator.webdriver && !wanted) return;
+  if (seen || !document.body.classList.contains("tab") || /[?&](campaign|newCampaign|importCampaign)=/.test(location.search)) return;
+  const done = () => { try { localStorage.setItem(KEY, "1"); } catch (_) { /* this view */ } back.remove(); };
+  const step = (n, title, text, ...act) => el("li", { className: "fs-step" }, el("span", { className: "fs-num", "aria-hidden": "true" }, String(n)), el("div", {}, el("b", {}, title), el("p", {}, text), ...act));
+  const camp = el("button", { type: "button", className: "btn sm primary" }, "Set up a campaign");
+  camp.onclick = () => { done(); document.querySelector('[data-tab="loader"]')?.click(); };
+  const ok = el("button", { type: "button", className: "btn primary" }, "Got it");
+  ok.onclick = done;
+  const aiSlot = el("div", {});
+  const box = el("div", { className: "fs-box", role: "dialog", "aria-modal": "true", "aria-labelledby": "fsTitle" },
+    el("h2", { id: "fsTitle" }, "Welcome to CitoSkeleton"),
+    el("p", { className: "fs-lead" }, "It shows which brands and websites the AI engines recommend, and where yours stands. Everything stays on this computer."),
+    el("ol", { className: "fs-steps" },
+      step(1, "Ask an AI engine anything", "Use ChatGPT, Gemini, Perplexity, Grok or Google AI Mode as you normally do. Each answer is saved here by itself.", abEngineChips(true)),
+      step(2, "Open it here", "Analyze shows what the engine searched, the sites it cited and the brands it named."),
+      step(3, "Track your brand", "A campaign asks the same questions on every engine and measures your brand against your competitors.", camp),
+      step(4, "Optional: the built-in AI", "", aiSlot)),
+    el("div", { className: "fs-foot" }, ok));
+  const back = el("div", { className: "fs-back" }, box);
+  back.addEventListener("click", (e) => { if (e.target === back) done(); });
+  document.addEventListener("keydown", function esc(e) { if (e.key === "Escape" && back.isConnected) { done(); document.removeEventListener("keydown", esc); } });
+  setTimeout(() => { document.body.append(back); mountAiSetup(aiSlot, { compact: true, details: false }); ok.focus(); }, 800);
 })();

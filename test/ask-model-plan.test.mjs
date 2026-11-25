@@ -53,23 +53,35 @@ console.log("\nAsking the model");
 console.log("\nIn Ask: the model fills only what the rules left open");
 {
   const g = scripted('{"intent":"metric","collections":["pIN"]}', "Zento is doing fine.");
-  const r = await askPlanned({ question: "Are we winning in the Indian campaign?", data, generate: g });
+  const r = await askPlanned({ question: "Are we winning in the Indian campaign?", data, reword: true, generate: g });
   check("\"the Indian campaign\" is Zento India", r.plan.scope.collections.join() === "pIN" && !r.askBack, JSON.stringify(r.plan.scope));
   check("and it says so, so the user can change it", r.notes.some((n) => /Took Zento India from how you put it/.test(n)), JSON.stringify(r.notes));
   const t = scripted('{"intent":"trend","collections":[]}', "Down a little.");
-  const r2 = await askPlanned({ question: "Has Zento been slipping lately in Zento India?", data, generate: t });
+  const r2 = await askPlanned({ question: "Has Zento been slipping lately in Zento India?", data, reword: true, generate: t });
   check("an intent no rule knows (\"slipping\"): the model's, and a trend spans all runs", r2.plan.intent === "trend" && r2.plan.scope.runs === "all" && r2.plan.scope.collections.join() === "pIN", JSON.stringify(r2.plan));
   const bogus = scripted('{"intent":"metric","collections":["nope"]}', "");
-  const r3 = await askPlanned({ question: "How visible are we?", data, generate: bogus });
+  const r3 = await askPlanned({ question: "How visible are we?", data, reword: true, generate: bogus });
   check("a campaign that doesn't exist is ignored: still asks back", !!r3.askBack, JSON.stringify(r3.plan.scope));
   const one = scripted("Zento India: fine.");
-  await askPlanned({ question: "How is Zento India doing?", data, generate: one });
+  await askPlanned({ question: "How is Zento India doing?", data, reword: true, generate: one });
   check("not asked when the rules filled everything (one call: the reply)", one.calls.length === 1, String(one.calls.length));
   const ctx = scripted("Fine.");
-  await askPlanned({ question: "How visible are we?", data, generate: ctx, context: { collectionId: "pUS" } });
+  await askPlanned({ question: "How visible are we?", data, reword: true, generate: ctx, context: { collectionId: "pUS" } });
   check("not asked when the page says which campaign", ctx.calls.length === 1, String(ctx.calls.length));
   const off = await askPlanned({ question: "Are we winning in the Indian campaign?", data });
   check("with no model, the rules' plan: asks back rather than guess", !!off.askBack);
+}
+
+console.log("\na model that never answers (1.0.7: Ask sat over five minutes on 'Working out the numbers…')");
+{
+  let calls = 0; const seen = [];
+  const never = (o) => { calls++; seen.push(o.timeLimitMs); return new Promise(() => {}); };
+  const t0 = Date.now();
+  const r = await askPlanned({ question: "How is Zento India doing?", data, reword: true, generate: never, limits: { understandMs: 200, writeMs: 300 } });
+  const ms = Date.now() - t0;
+  check("the plain reply stands", r.by === "template" && !!r.answer && !/couldn't work/.test(r.answer), `${r.by}: ${r.answer}`);
+  check("within the limits, not minutes", ms < 3000, `${ms} ms`);
+  check("the engine was told the limit, so it can stop", seen.length > 0 && seen.every((x) => x === 200 || x === 300), seen.join(","));
 }
 
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");

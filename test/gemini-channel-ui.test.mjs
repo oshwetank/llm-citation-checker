@@ -91,6 +91,8 @@ try {
   await panel.goto(`chrome-extension://${extId}/ui/panel.html?mode=tab`);
   await panel.evaluate(() => localStorage.setItem("cito-tour-seen", "1"));
   const msg = (m) => panel.evaluate((m) => new Promise((r) => chrome.runtime.sendMessage(m, r)), m);
+  // The capture debugger is on from install since 1.0.6; this test starts with it off.
+  await msg({ type: "settings-set", patch: { debugCapture: false } });
 
   // A Google session cookie, as a signed-in browser has on google.com.
   await context.addCookies([{ name: "__Secure-1PSID", value: "made-up", domain: ".google.com", path: "/", secure: true, httpOnly: true, sameSite: "None" }]);

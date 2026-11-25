@@ -36,8 +36,8 @@
             </button>
             <div class="brand-text">
               <button type="button" class="brand-title" id="brandTitle">CitoSkeleton</button>
-              <span class="version-badge">v1.0.5</span>
-              <span class="brand-sub">ChatGPT, Gemini, Perplexity &amp; Grok</span>
+              <span class="version-badge">v1.0.7</span>
+              <span class="brand-sub">ChatGPT, Gemini, Perplexity, Grok &amp; AI Mode</span>
             </div>
             <!-- Pause capture (0.66.0), in the popup and the tab. -->
             <button id="capToggle" class="cap-toggle" type="button" role="switch" aria-checked="true" title="Capturing your engine chats. Click to pause.">
@@ -183,22 +183,48 @@
                   <div class="ab-head ab-tab-only">
                     <div>
                       <h2 class="ab-title">Settings</h2>
-                      <p class="ab-sub">How CitoSkeleton looks, and how much it keeps on this device.</p>
+                      <p class="ab-sub">Changes save as you make them.</p>
                     </div>
                   </div>
-                  <div class="ab-meter" id="storageInfo"></div>
+                  <!-- Settings in 1.0.6 (asked: "the entire settings section is too
+                       complicated and too cluttered"): three things at the top, the
+                       rest under one closed "More settings". Every change saves
+                       itself. AI Mode is always on and the capture debugger is on
+                       from install, so neither has a switch. -->
                   <div class="ab-rows">
-                    <!-- Settings in groups (0.78.0, asked: "group and hide them under
-                         a thing like display settings"). Display starts closed;
-                         each group remembers whether it was open (cito-settings-open). -->
-                    <details class="ab-group" id="setGroupDisplay" data-group="display">
-                    <summary class="ab-group-h"><b>Display</b><span>Theme, light or dark, typeface, sizes, density and motion</span></summary>
-                    <!-- Appearance (0.56.0): moved here from the top bar, which the
-                         canvas keeps to the logo, the pages and pop-out. It applies
-                         at once, so it sits outside Save / Undo. -->
-                    <!-- Theme (0.59.0): Studio, the new design and the default, or
-                         Classic, the look from 0.47.0 to 0.58.0. Like Light / Dark it
-                         applies at once, outside Save / Undo, in both views. -->
+                    <div class="ab-row">
+                      <div class="ab-row-text" id="setThemeLabel">
+                        <b>Appearance</b>
+                        <span>Light or dark. Applies straight away, in the popup and the full tab.</span>
+                      </div>
+                      <div class="ab-seg" role="radiogroup" aria-labelledby="setThemeLabel" id="setTheme">
+                        <button type="button" role="radio" class="ab-seg-btn" data-theme-pick="light" aria-checked="false">Light</button>
+                        <button type="button" role="radio" class="ab-seg-btn" data-theme-pick="dark" aria-checked="false">Dark</button>
+                      </div>
+                    </div>
+                    <div class="ab-row ab-tab-only">
+                      <div class="ab-row-text" id="setNavLabel">
+                        <b>Campaign sections</b>
+                        <span>Which side of a campaign's results its sections (Overview, Brands, Sources…) are listed on.</span>
+                      </div>
+                      <div class="ab-seg" role="radiogroup" aria-labelledby="setNavLabel" id="setNav">
+                        <button type="button" role="radio" class="ab-seg-btn" data-nav-pick="left" aria-checked="false">Left</button>
+                        <button type="button" role="radio" class="ab-seg-btn" data-nav-pick="right" aria-checked="false">Right</button>
+                      </div>
+                    </div>
+                    <div class="ab-row">
+                      <label class="ab-row-text" for="setLang">
+                        <b>Language <span class="ab-beta">beta</span></b>
+                        <span>The interface's language; English is the reviewed one. Answers in any language are captured, but brand lists are tuned for English: in other languages they may miss names.</span>
+                      </label>
+                      <select id="setLang" class="ab-select" data-reloads="1"></select>
+                    </div>
+                    <div class="ab-row ab-row-ai ab-tab-only">
+                      <div class="ab-row-text"><b>Built-in AI</b><div id="setAiQuick"></div></div>
+                    </div>
+                    <details class="ab-group" id="setGroupMore" data-group="more">
+                    <summary class="ab-group-h"><b>More settings</b><span>The look in detail, what's kept on this computer, how campaigns run, the built-in AI</span></summary>
+                    <h4 class="ab-subgroup">Look</h4>
                     <div class="ab-row ab-row-theme">
                       <div class="ab-row-text" id="setStyleLabel">
                         <b>Theme</b>
@@ -218,20 +244,6 @@
                       </div>
                     </div>
                     <div class="ab-row">
-                      <div class="ab-row-text" id="setThemeLabel">
-                        <b>Appearance</b>
-                        <span>Light or dark. Applies straight away, in the popup and the full tab.</span>
-                      </div>
-                      <div class="ab-seg" role="radiogroup" aria-labelledby="setThemeLabel" id="setTheme">
-                        <button type="button" role="radio" class="ab-seg-btn" data-theme-pick="light" aria-checked="false">Light</button>
-                        <button type="button" role="radio" class="ab-seg-btn" data-theme-pick="dark" aria-checked="false">Dark</button>
-                      </div>
-                    </div>
-                    <!-- Motion (0.78.0): the transitions and the small animations that
-                         make the interface feel alive, on or off. Off also when the
-                         system asks for reduced motion. Applied before paint by
-                         display-boot.js (cito-motion → data-motion on <html>). -->
-                    <div class="ab-row">
                       <div class="ab-row-text" id="setMotionLabel">
                         <b>Motion</b>
                         <span>Smooth transitions and small animations. Off keeps everything still.</span>
@@ -241,13 +253,6 @@
                         <button type="button" role="radio" class="ab-seg-btn" data-motion-pick="off" aria-checked="false">Off</button>
                       </div>
                     </div>
-                    <div class="ds" id="setDisplay" aria-labelledby="setDisplayLabel"></div>
-                    </details>
-                    <details class="ab-group" id="setGroupLang" data-group="lang" open>
-                    <summary class="ab-group-h"><b>Language and detail</b><span>The interface's language, and how much technical detail it shows</span></summary>
-                    <!-- Level of detail (0.60.0): Expert adds the engine's raw ids,
-                         indexes and refs, and a Raw tab in Analyze's Details.
-                         Applies at once, outside Save / Undo, like the theme. -->
                     <div class="ab-row">
                       <div class="ab-row-text" id="setDetailLabel">
                         <b>Level of detail</b>
@@ -258,22 +263,9 @@
                         <button type="button" role="radio" class="ab-seg-btn" data-detail-pick="expert" aria-checked="false">Expert</button>
                       </div>
                     </div>
-                    <!-- Language (0.71.0): the interface's language. "Same as the
-                         browser" follows Chrome's. Applies at once (the page
-                         reloads); translations are drafts for review. -->
-                    <div class="ab-row">
-                      <label class="ab-row-text" for="setLang">
-                        <b>Language</b>
-                        <span>The interface's language. Answers are read in any language, whatever you pick here.</span>
-                      </label>
-                      <select id="setLang" class="ab-select" data-reloads="1"></select>
-                    </div>
-                    <!-- Display (0.63.0): typeface, text size, brightness, contrast,
-                         line spacing and density. Applies at once, outside Save /
-                         Undo, in both views (ui/display-boot.js; drawn by panel.js). -->
-                    </details>
-                    <details class="ab-group" id="setGroupData" data-group="data" open>
-                    <summary class="ab-group-h"><b>Data and capture</b><span>What's kept on this computer, and what's read</span></summary>
+                    <div class="ds" id="setDisplay" aria-labelledby="setDisplayLabel"></div>
+                    <h4 class="ab-subgroup">Kept on this computer</h4>
+                    <div class="ab-meter" id="storageInfo"></div>
                     <div class="ab-row">
                       <label class="ab-row-text" for="setRetention">
                         <b>Captures to keep</b>
@@ -298,8 +290,6 @@
                         <span class="ab-unit">MB</span>
                       </div>
                     </div>
-                    <!-- Email for updates (0.81.0): the one asked for on the welcome
-                         page; changed or removed here. Applies at once. -->
                     <div class="ab-row ab-email-row" id="setEmailRow">
                       <label class="ab-row-text" for="setEmail">
                         <b>Email for updates</b>
@@ -312,16 +302,7 @@
                       </div>
                       <p class="ab-email-msg" id="setEmailMsg" role="status"></p>
                     </div>
-                    <!-- Built-in AI (0.70.0): an open-source model run on this
-                         computer. Applies at once, outside Save / Undo
-                         (ui/aiSettings.js; the model lives in src/aiService.js). -->
-                    </details>
-                    <details class="ab-group" id="setGroupAi" data-group="ai" open>
-                    <summary class="ab-group-h"><b>Built-in AI</b><span>The AI that runs on this computer</span></summary>
-                    <div class="ai-card" id="setAi"></div>
-                    </details>
-                    <details class="ab-group" id="setGroupCapture" data-group="capture" open>
-                    <summary class="ab-group-h"><b>Reading and capture</b><span>Cited pages, Continue in… chats, the capture debugger</span></summary>
+                    <h4 class="ab-subgroup">Reading and runs</h4>
                     <div class="ab-row">
                       <label class="ab-row-text" for="setPages">
                         <b>Read the cited pages</b>
@@ -356,35 +337,15 @@
                         <span class="ab-switch-text" id="setCarefulText">Off</span>
                       </label>
                     </div>
-                    <div class="ab-row">
-                      <label class="ab-row-text" for="setAiMode">
-                        <b>Google AI Mode <span class="beta">beta</span></b>
-                        <span>Capture AI Mode's answers (google.com/search?udm=50) and use it in campaigns, slowly: Google may ask you to confirm you're not a robot, and a run then waits for you. Asks Chrome for google.com; nothing else on Google is read.</span>
-                        <span class="ab-note" id="setAiModeNote" role="status" hidden></span>
-                      </label>
-                      <label class="ab-switch">
-                        <input type="checkbox" id="setAiMode" role="switch" />
-                        <span class="ab-switch-track" aria-hidden="true"><span class="ab-switch-knob"></span></span>
-                        <span class="ab-switch-text" id="setAiModeText">Off</span>
-                      </label>
-                    </div>
-                    <div class="ab-row">
-                      <label class="ab-row-text" for="setDebug">
-                        <b>Capture debugger</b>
-                        <span>Logs every network event the extension sees. Leave it off unless you're asked to turn it on.</span>
-                      </label>
-                      <label class="ab-switch">
-                        <input type="checkbox" id="setDebug" role="switch" />
-                        <span class="ab-switch-track" aria-hidden="true"><span class="ab-switch-knob"></span></span>
-                        <span class="ab-switch-text" id="setDebugText">Off</span>
-                      </label>
-                    </div>
+                    <div hidden><input type="checkbox" id="setDebug" checked /><span id="setDebugText"></span></div>
+                    <h4 class="ab-subgroup">Built-in AI</h4>
+                    <div class="ai-card" id="setAi"></div>
                     </details>
                   </div>
-                  <div class="ab-savebar">
+                  <div class="ab-savebar ab-autosave">
                     <span id="setStatus" class="ab-status" role="status"></span>
-                    <button type="button" id="setUndo" class="btn sm ghost">Undo changes</button>
-                    <button type="button" id="setSave" class="btn sm primary">Save settings</button>
+                    <button type="button" id="setUndo" class="btn sm ghost" hidden>Undo changes</button>
+                    <button type="button" id="setSave" class="btn sm primary" hidden>Save settings</button>
                   </div>
                 </div>
               </div>
@@ -483,12 +444,12 @@
                     </div>
                   </div>
                 </div>
-                <div class="card ab-card">
+                <!-- Folded (1.0.6): the log ran to thousands of lines and made
+                     Help the longest page in the tool. -->
+                <details class="card ab-card ab-fold" id="diagFold">
+                  <summary><b>Activity log</b> <span class="ab-sub">Errors, captures and each prompt's outcome, newest first. Kept on this device only.</span></summary>
                   <div class="ab-head">
-                    <div>
-                      <h2 class="ab-title">Activity log</h2>
-                      <p class="ab-sub">Errors, captures and each prompt's outcome, newest first. Kept on this device only.</p>
-                    </div>
+                    <div></div>
                     <div class="ab-head-actions">
                       <button type="button" id="diagCopy" class="btn sm ghost">Copy log</button>
                       <button type="button" id="diagClear" class="btn sm ghost danger">Clear log</button>
@@ -496,7 +457,7 @@
                   </div>
                   <div class="ab-chips" id="diagChips" role="group" aria-label="Show"></div>
                   <div id="diagLog" class="ab-log"></div>
-                </div>
+                </details>
               </div>
             </div>
           </div>

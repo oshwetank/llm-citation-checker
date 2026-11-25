@@ -154,6 +154,8 @@ try {
   await tab.evaluate(() => { document.querySelector('[data-tab="about"]')?.click(); });
   await tab.waitForTimeout(400);
   await tab.evaluate(() => { [...document.querySelectorAll(".ab-nav-btn")].find((b) => /Settings/.test(b.textContent))?.click(); });
+  // The detailed options are under More settings → Built-in AI (1.0.6).
+  await tab.evaluate(() => { const d = document.getElementById("setGroupMore"); if (d) d.open = true; });
   await tab.waitForSelector("#aiEngineSeg", { timeout: 15000 }).catch(() => {});
   // From 0.84.0 the engine choice and the test sit under More options.
   await tab.evaluate(() => { const d = document.getElementById("aiMore"); if (d) d.open = true; });

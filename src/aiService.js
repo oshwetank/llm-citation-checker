@@ -48,6 +48,8 @@ const MAX_TRIES = 2;
  * running state ({files: Map, pct}); the result never goes backwards.
  */
 const QUEUE_PAUSE_MS = 3000;
+// How long the labelling waits after a question in Ask (1.0.7).
+const ASK_HOLD_MS = 60 * 1000;
 
 export function combineProgress(bar, p, expected) {
   const st = String((p && p.status) || "");
@@ -104,6 +106,12 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
   let downloading = null;
   let progress = null;
   let running = false;
+  // Ask comes first (1.0.7): the labelling shares Ask's model, one reply at
+  // a time, and Ask waited behind a backlog of 43 answers (live test of 25
+  // Nov 2026). While a question is answered, and a minute after for the
+  // next one, the queue holds; the reply it was writing is stopped and its
+  // answer stays first in the queue, not counted as a failed try.
+  let askHoldUntil = 0;
   let current = null; // captureId being checked
 
   async function hardware() {
@@ -424,6 +432,7 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
           // A campaign's tabs come first; the queue waits and the heartbeat
           // alarm starts it again when the run is over.
           if (isBusy()) break;
+          if (Date.now() < askHoldUntil) { setTimeout(kick, askHoldUntil - Date.now() + 200); break; }
           const items = (await db.getAll("aiQueue")).sort((a, b) => a.at - b.at);
           if (!items.length) break;
           const state = await getState();
@@ -463,6 +472,8 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
       if (fresh) { await attach(fresh); await db.put("derived", fresh); }
       broadcast({ type: "capture-updated", captureId: item.captureId });
     } catch (e) {
+      // Stopped for Ask: not a failure; it stays as it was, first in line.
+      if (/interrupted for a question in Ask/.test(String(e && e.message || e))) return;
       logErr("ai-check", e, { captureId: item.captureId });
       const tries = (item.tries || 0) + 1;
       if (tries >= MAX_TRIES) {
@@ -541,16 +552,33 @@ export function createAiService({ db, getSettings, ensureOffscreen, resetOffscre
     // writes the reply; with none, a template does, so Ask works either way.
     const state = await getState();
     const eng = await engine(state).catch(() => null);
-    let generate = null;
+    askHoldUntil = Date.now() + ASK_HOLD_MS;
+    let generate = null, used = false;
     if (eng && state.custom && Array.isArray(state.custom.script)) {
       const script = [...state.custom.script];
-      generate = async () => ({ text: script.length ? script.shift() : "" });
+      generate = async () => { used = true; return { text: script.length ? script.shift() : "" }; };
     } else if (eng) {
-      try { await eng.prepare(); generate = eng.generate; } catch (_) { generate = null; }
+      // Loaded only if the question needs it (1.0.7): most questions are
+      // read by the rules, and loading the model cost ~7 s before each
+      // first one. The labelling's reply is stopped then too, not before.
+      let ready = null;
+      generate = async (o) => {
+        used = true;
+        if (!ready) {
+          if (eng.id === "qwen") await llm("interrupt", {}, 5000).catch(() => false);
+          ready = eng.prepare();
+        }
+        await ready;
+        return eng.generate(o);
+      };
     }
     const t0 = Date.now();
-    const r = await askPlanned({ question, data, generate, context, previous, plan, onStep, meaning: meaningRank });
-    return { ...r, ms: Date.now() - t0, model: generate && eng ? eng.label : null, engine: generate && eng ? eng.id : null };
+    let r;
+    // The model rewords the reply only when switched on (askReword, no switch
+    // on screen yet; see lib/assistant.js for why it is off).
+    try { r = await askPlanned({ question, data, generate, context, previous, plan, onStep, meaning: meaningRank, reword: !!state.askReword }); }
+    finally { askHoldUntil = Date.now() + ASK_HOLD_MS; setTimeout(kick, ASK_HOLD_MS + 200); }
+    return { ...r, ms: Date.now() - t0, model: used && eng ? eng.label : null, engine: used && eng ? eng.id : null };
   }
 
   async function setEngine(choice) {

@@ -173,10 +173,11 @@ try {
   const junk = await B.ask({ type: "campaign-bundle-import", data: Buffer.from("not a campaign").toString("base64") });
   check("anything else is refused, plainly", !junk.ok && /isn't a CitoSkeleton campaign/.test(junk.error));
 
-  console.log("\nAbout → Account");
+  // Account sits under About → Settings since 1.0.6.
+  console.log("\nAbout → Settings → Account");
   await B.page.evaluate(() => document.querySelector('[data-tab="about"]')?.click());
   await B.page.waitForTimeout(300);
-  await B.page.evaluate(() => [...document.querySelectorAll(".ab-nav-btn, .ab-more-row")].find((b) => b.textContent.includes("Account"))?.click());
+  await B.page.evaluate(() => [...document.querySelectorAll(".ab-nav-btn, .ab-more-row")].find((b) => b.textContent.includes("Settings"))?.click());
   await B.page.waitForSelector("#acOff", { timeout: 5000 }).catch(() => {});
   check("says accounts aren't switched on, and how to share anyway", await B.page.evaluate(() => /aren't switched on yet.*Share campaign/.test(document.getElementById("acOff")?.textContent || "")));
   check("nothing left the computer", B.requests.length === 0, B.requests.join(", "));

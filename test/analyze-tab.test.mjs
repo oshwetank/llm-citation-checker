@@ -677,6 +677,12 @@ try {
       segW: Math.round(document.querySelector("#headerPage .at-detail-switch")?.getBoundingClientRect().width || 0),
     }));
     check("Simple by default: no Raw tab, no expert-only detail shown", !simple.raw && simple.xs === 0, JSON.stringify(simple));
+    // A guard for new code (1.0.7): anything that carries an "Expert" badge
+    // is Expert detail, so it must sit inside .x-only (or be built only when
+    // isExpert()); a badge visible in Simple means it was left untagged.
+    const badges = await page.evaluate(() => [...document.querySelectorAll("#analyze .at-chip, #analyze .ap-chip, #analyze [class*=chip]")]
+      .filter((x) => x.offsetParent && x.textContent.trim() === "Expert").map((x) => (x.closest("section, details, div") || x).className));
+    check("no Expert-badged detail visible in Simple (new Expert detail must be tagged .x-only)", badges.length === 0, JSON.stringify(badges));
     check("the switch sits in the top bar, one small Expert switch, off", simple.seg === "Expert:false" && simple.segW > 0 && simple.segW <= 90, JSON.stringify(simple));
     await page.evaluate(() => document.querySelector('#headerPage .at-detail-switch[aria-checked="false"]').click());
     await page.waitForTimeout(700);
