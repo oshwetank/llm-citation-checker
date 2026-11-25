@@ -2327,7 +2327,7 @@ async function resumeFromSnapshot(snap) {
   if (Object.values(loader.platforms).every((pd) => pd.legs.every((leg) => leg.idx >= leg.prompts.length))) {
     loader.running = false;
     syncGeoRun("done");
-    startNextQueued();
+    queueAutoRetry().finally(startNextQueued);
     notifyRunComplete();
     closeRunTabs();
   }
@@ -2675,7 +2675,7 @@ async function loaderRunLeg(plat, leg) {
     if (allDone) {
       loader.running = false;
       syncGeoRun("done");
-      startNextQueued();
+      queueAutoRetry().finally(startNextQueued);
       notifyRunComplete();
       closeRunTabs();
     }
@@ -3190,6 +3190,25 @@ async function enqueueRun(profileId, runOpts) {
   await chrome.storage.local.set({ [RUN_QUEUE_KEY]: q });
   return { ok: true, queued: true, position: q.findIndex((x) => x.profileId === profileId) + 1 };
 }
+/* The prompts a run couldn't get, asked once more by themselves (1.0.7,
+ * asked: "automatically run the failed prompts after the complete run so
+ * that the user can come to a complete report"). Only after a run that
+ * finished by itself (Stop is a choice), only once (a retry never queues
+ * another), and first in the queue, where "Retry missing" would have put
+ * it: the run's tabs close, then it starts like any queued run. */
+async function queueAutoRetry() {
+  try {
+    const geo = loader.options && loader.options.geo;
+    if (!geo || !geo.runId || geo.retryBase || (loader.options && loader.options.noAutoRetry)) return;
+    const q = await loadRunQueue();
+    if (q.some((x) => x.runOpts && x.runOpts.retryRunId === geo.runId)) return;
+    const profile = await db.get("profiles", geo.profileId);
+    if (!profile) return;
+    q.unshift({ profileId: geo.profileId, runOpts: { retryRunId: geo.runId, skipAuthCheck: true }, name: profile.name || "", queuedAt: Date.now(), autoRetry: true });
+    await chrome.storage.local.set({ [RUN_QUEUE_KEY]: q });
+    logEvent("run:auto-retry", "turn", `queued the missing answers of "${profile.name || geo.profileId}" to be asked once more`, { profileId: geo.profileId, runId: geo.runId });
+  } catch (e) { logErr("run:auto-retry", e); }
+}
 let startingQueued = false;
 function startNextQueued() {
   if (startingQueued) return;
@@ -3209,6 +3228,7 @@ function startNextQueued() {
           logEvent("run:queue-start", "turn", `started the queued campaign "${next.name || next.profileId}"`, { profileId: next.profileId });
           break;
         }
+        if (next.autoRetry && res && /Nothing is missing/.test(res.error || "")) { logEvent("run:auto-retry", "turn", "nothing was missing: no retry needed", { profileId: next.profileId }); continue; }
         logErr("run:queue-start", (res && res.error) || "couldn't start", { profileId: next.profileId });
       }
     } catch (e) {

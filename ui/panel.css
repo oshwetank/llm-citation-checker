@@ -7655,3 +7655,6 @@ body.tab .app-content { min-height: calc(100vh - 80px); }
 .fs-num { flex: 0 0 26px; height: 26px; border-radius: 50%; background: var(--accent-subtle); color: var(--accent); display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 13px; }
 .fs-foot { display: flex; justify-content: flex-end; margin-top: 18px; }
 .ask-chat .ask-log > * { flex-shrink: 0; } /* 1.0.6: a reply was squeezed and its last row hidden */
+
+/* "beta" beside a setting's name (1.0.7: Language). */
+.ab-beta { display: inline-block; margin-inline-start: 6px; padding: 1px 6px; border-radius: 999px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; vertical-align: middle; background: var(--accent-subtle); color: var(--accent); }
