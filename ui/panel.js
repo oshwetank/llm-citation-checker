@@ -426,6 +426,9 @@ window.addEventListener("popstate", () => {
   showTab(to);
 });
 const TAB_LABELS = { dashboard: "Dashboard", loader: "Campaigns", compare: "Compare", about: "About" };
+// The tab in the full view's address (1.0.7, approved mockup): a reload,
+// or Chrome bringing the tab back, opened Analyze whatever you were on.
+const TAB_HASH = { analyze: "analyze", dashboard: "dashboard", loader: "campaigns", ask: "ask", about: "about" };
 // Per-tab scroll position, keyed by panel id. All tabs share one physical
 // scroll container (see withScrollPreserved below), so switching tabs via
 // showTab() used to leave the scroll offset wherever the PREVIOUS tab left
@@ -831,6 +834,9 @@ function showTab(name) {
   if (runStale && (name === "analyze" || name === "dashboard")) setTimeout(refreshStaleRunData, 0);
   const btn = document.querySelector(`[data-tab="${name}"]`);
   if (btn) btn.classList.add("active");
+  if (TAB_HASH[name] && document.body.classList.contains("tab") && location.hash !== "#" + TAB_HASH[name]) {
+    try { history.replaceState(history.state, "", "#" + TAB_HASH[name]); } catch (_) { /* no history here */ }
+  }
   const panel = document.getElementById(name);
   if (panel) {
     panel.classList.add("active");
@@ -5930,7 +5936,9 @@ function dbExportMenu(rows, label) {
   wrap.append(btn);
   if (dbMenu === "export") {
     const recs = rows.flatMap((r) => r.captureIds).map((id) => ALL_RECORDS.find((x) => x.captureId === id)).filter(Boolean);
-    const menu = el("div", { className: "menu-pop db-menu", role: "menu" });
+    // Opens leftward from the button's right edge (1.0.7, approved mockup):
+    // at the right of the list it ran off the window.
+    const menu = el("div", { className: "menu-pop db-menu db-menu-end", role: "menu" });
     [["excel", "Excel", ".xls spreadsheet"], ["csv", "Detailed CSV", "one row per source"], ["html", "Conversations", "readable HTML document"], ["json", "Raw data", "full JSON payloads"]].forEach(([k, l, sub]) => {
       const it = el("button", { className: "menu-item", type: "button", role: "menuitem" }, el("span", { className: "menu-item-label" }, l), el("span", { className: "menu-item-sub muted small" }, sub));
       it.onclick = async () => {
@@ -7071,6 +7079,14 @@ function renderCampaignSwitcher() {
     const imp = el("button", { className: "geo-chip add", type: "button", id: "cpImport", title: "Open a campaign someone shared with you" }, "Import…");
     imp.onclick = () => (inPopup() ? openCampaignInFullView({ importing: true }) : openImportDialog());
     switcher.append(imp);
+  } else {
+    // At the limit (1.0.7, approved mockup): both stay where they are,
+    // greyed, and one line says why: they used to just disappear.
+    const why = `You can keep up to ${MAX_PROFILES} campaigns.`;
+    switcher.append(
+      el("button", { className: "geo-chip add", type: "button", id: "cpNewFull", disabled: true, title: why }, "+ New campaign"),
+      el("button", { className: "geo-chip add", type: "button", id: "cpImport", disabled: true, title: why }, "Import…"),
+      el("p", { className: "geo-limit-note", id: "cpLimitNote" }, `${why} To start another, delete one: it stays under Recently deleted for 7 days, and Export… or Share campaign… keeps a copy first.`));
   }
   return switcher;
 }
@@ -9521,6 +9537,16 @@ document.querySelectorAll("[data-tab]").forEach((btn) =>
 $("#openTab").addEventListener("click", () =>
   chrome.tabs.create({ url: chrome.runtime.getURL("ui/panel.html") })
 );
+// Back on the tab the address names, as a click would open it. A link that
+// opens one campaign (?campaign=, ?newCampaign=, ?importCampaign=) wins.
+// After this script has finished loading: About's state is declared further
+// down, and a click before then threw (layout-106.test).
+setTimeout(() => {
+  const want = Object.keys(TAB_HASH).find((k) => "#" + TAB_HASH[k] === location.hash);
+  if (want && want !== "analyze" && document.body.classList.contains("tab") && !/[?&](campaign|newCampaign|importCampaign)=/.test(location.search)) {
+    document.querySelector(`[data-tab="${want}"]`)?.click();
+  }
+}, 0);
 
 // How the answer was asked (0.66.0): from a private window and/or signed
 // out, which is when an engine answers without the account's history or

@@ -91,11 +91,14 @@ const NOISE = new Set([
 // Spec terms that read like names in a table cell or after a bullet label:
 // ratings (IP55, IPX4), feature acronyms (AI, ANC, ENC), "Dual-driver"-style
 // counts. Shapes, not industry nouns, so they hold for any vertical.
-const SPEC_TOKEN = /^(?:ip[x\d]\d|ipx|ai|anc|enc|enx|tws|usb|bt|nfc|hdr|oled|amoled|lcd|led|[2-6]g|wi-?fi|(?:single|dual|triple|quad|multi|hybrid)-[a-z]+)$/i;
+// Units and a generation label too (1.0.7: AI Mode's scooter table, "Ola S1
+// Pro+ (Gen 3) (5.2 kWh)", gave the brand "kWh"). Not "hp": HP. "Gen": isNoise.
+const SPEC_TOKEN = /^(?:ip[x\d]\d|ipx|ai|anc|enc|enx|tws|usb|bt|nfc|hdr|oled|amoled|lcd|led|[2-6]g|wi-?fi|(?:single|dual|triple|quad|multi|hybrid)-[a-z]+|kwh|wh|mah|kw|kmph)$/i;
 
 // A contraction or possessive of a noise word is noise too (1.0.0): "What's"
 // (a follow-up question's label) and "Here's" reached a brand list.
-const isNoise = (w) => !w || NOISE.has(w.toLowerCase()) || NOISE.has(w.toLowerCase().replace(/['’](?:s|re|ll|d|ve)$/, "")) || SPEC_TOKEN.test(w);
+// "Gen" as in "(Gen 3)": not "GEN", which names a product ("GEN CompLaw").
+const isNoise = (w) => !w || w === "Gen" || NOISE.has(w.toLowerCase()) || NOISE.has(w.toLowerCase().replace(/['’](?:s|re|ll|d|ve)$/, "")) || SPEC_TOKEN.test(w);
 
 // entity[] markers come in (at least) two shapes:
 //   ["company","Zerodha","Indian stock broker"]        — category + name + description
@@ -797,7 +800,9 @@ const ATTRIB_AFTER_RE = new RegExp(
 // Possessive attribution: "Gadgets 360's review put it third".
 const ATTRIB_POSSESSIVE_RE = /^['’]s\s+(review|report|test|testing|analysis|round-?up|verdict|listing)\b/i;
 // …and the second of two after "per": "per CNET and The Kitchn".
-const ATTRIB_BEFORE_RE = /\b(?:according to|per|via|source:?)\s+(?:(?:The\s+)?\p{Lu}[\p{L}’'.]*(?:\s+\p{Lu}[\p{L}’'.]*){0,3}\s+(?:and|&)\s+)?$/iu;
+// "Rated highly by RunRepeat" (AI Mode, 1.0.7 live test): a review site
+// quoted after the verb is the source too.
+const ATTRIB_BEFORE_RE = /\b(?:according to|per|via|source:?|(?:rated|reviewed|tested|ranked|scored)(?:\s+\w+){0,2}\s+by)\s+(?:(?:The\s+)?\p{Lu}[\p{L}’'.]*(?:\s+\p{Lu}[\p{L}’'.]*){0,3}\s+(?:and|&)\s+)?$/iu;
 
 // True when EVERY occurrence of this name reads as an attribution.
 function alwaysAttributed(text, hits) {

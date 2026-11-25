@@ -69,5 +69,12 @@ console.log("\nlists of words are not names");
   check("no list as a name", !b.some((x) => /,|&\s*$/.test(x)), b.join("|"));
 }
 
+console.log("\na review site quoted is not a brand (AI Mode, signed in, 1.0.7)");
+{
+  const t = "The top picks are the **ASICS GT-1000 14** and the **adidas Supernova Solution 3**.\n- **Outsole grip:** Rated highly by RunRepeat for wet and dry traction.\n- ASICS GT-2000 13 for longer runs.";
+  const b = detectBrands(t, t, { sources: [{ domain: "runrepeat.com", title: "RunRepeat review", outcome: "cited" }, { domain: "asics.com", outcome: "cited" }] }).brands.map((x) => x.brand);
+  check("ASICS, not RunRepeat", b.includes("ASICS") && !b.includes("RunRepeat"), b.join("|"));
+}
+
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);

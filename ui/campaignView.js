@@ -548,7 +548,7 @@ function promptsSec() {
     // The prompt opens its answer; the arrow beside it, its searches.
     const toggle = h("button", { type: "button", className: "cv-ptoggle", "aria-expanded": open ? "true" : "false", "aria-label": open ? "Hide its searches" : "Show its searches" }, h("span", { className: `cv-chev${open ? " open" : ""}`, "aria-hidden": "true" }, "›"));
     toggle.onclick = () => { S.propen = open ? -1 : p.i; redo(); };
-    t.append(h("div", { className: "cv-tr", role: "row" }, h("span", { role: "cell", className: "cv-ptext" }, toggle, promptLink(p.text)), h("span", { role: "cell" }, h("span", { className: "cv-pill" }, p.topic)), ...cells,
+    t.append(h("div", { className: "cv-tr", role: "row" }, h("span", { role: "cell", className: "cv-ptext" }, toggle, promptLink(p.text)), h("span", { role: "cell", className: "cv-topic-cell" }, h("span", { className: "cv-pill cv-pill-fit", title: p.topic }, p.topic)), ...cells,
       h("span", { role: "cell", className: "cv-num" }, p.visibility == null ? "—" : pct(p.visibility)), h("span", { role: "cell", className: "cv-num" }, num(p.avgPos)),
       h("span", { role: "cell", className: "cv-lgroup" }, ...p.firsts.map((n) => brandMark(n, "s"))), h("span", { role: "cell", className: "cv-ell cv-muted" }, p.topProduct || "—"),
       h("span", { role: "cell", className: "cv-num cv-muted" }, String(p.queries.length))));
