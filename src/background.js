@@ -1015,20 +1015,28 @@ async function onPageInteraction(p) {
 }
 
 let offscreenReady = null;
+// One opening at a time (1.0.7): the page closes itself when idle, and two
+// callers arriving together (Ask, the labelling queue, a download) each saw
+// it closed during an await and each created it; the second failed with
+// "Only a single offscreen document may be created" (laya-ui.test).
+let offscreenOpening = null;
 async function ensureOffscreen() {
   if (!chrome.offscreen) throw new Error("no offscreen API");
   // The page closes itself when idle (0.74.0, ui/offscreen.js), which frees
   // the AI model's memory; then it is opened again here on demand.
-  if (offscreenReady && chrome.runtime.getContexts) {
-    try { if (!(await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] })).length) offscreenReady = null; } catch (_) { /* keep */ }
-  }
-  if (offscreenReady) return offscreenReady;
-  offscreenReady = (async () => {
-    const has = chrome.runtime.getContexts ? (await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] })).length > 0 : false;
-    if (!has) await chrome.offscreen.createDocument({ url: "ui/offscreen.html", reasons: ["DOM_PARSER"], justification: "Read the text of the pages an answer cited" });
+  if (offscreenOpening) return offscreenOpening;
+  offscreenOpening = (async () => {
+    const has = chrome.runtime.getContexts
+      ? (await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] })).length > 0
+      : !!offscreenReady;
+    if (!has) {
+      try { await chrome.offscreen.createDocument({ url: "ui/offscreen.html", reasons: ["DOM_PARSER"], justification: "Read the text of the pages an answer cited" }); }
+      catch (e) { if (!/single offscreen document/i.test(String(e && e.message))) throw e; }
+    }
+    offscreenReady = true;
   })();
-  try { await offscreenReady; } catch (e) { offscreenReady = null; throw e; }
-  return offscreenReady;
+  try { await offscreenOpening; } catch (e) { offscreenReady = null; throw e; } finally { offscreenOpening = null; }
+  return true;
 }
 // Close and reopen the offscreen document (0.70.0): the AI runtime there
 // can't change from the graphics chip to the processor once it has tried.
