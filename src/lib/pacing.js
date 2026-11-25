@@ -208,7 +208,14 @@ export function nextGapMs(plat, sentTimes = [], now = Date.now(), rnd = Math.ran
   }
   return Math.round(wait);
 }
-export function tabsForEngine(plat, { careful = false } = {}) {
+// A computer with little memory runs one tab per engine (1.0.7). Measured
+// in the go-live test: a five-engine run kept ~10 engine tabs open, 7.4 GB
+// between them; on 4 GB or less that is more than the machine has.
+// Chrome reports memory rounded and capped at 8 (navigator.deviceMemory).
+export const LOW_MEMORY_GB = 4;
+export function lowMemory(deviceMemory) { return Number.isFinite(deviceMemory) && deviceMemory > 0 && deviceMemory <= LOW_MEMORY_GB; }
+export function tabsForEngine(plat, { careful = false, deviceMemory = null } = {}) {
+  if (lowMemory(deviceMemory)) return 1;
   return (careful ? CAREFUL_TABS_PER_ENGINE[plat] : TABS_PER_ENGINE[plat]) || CONCURRENT_TABS_PER_ENGINE;
 }
 

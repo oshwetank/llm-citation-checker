@@ -3076,7 +3076,7 @@ async function loaderStart(prompts, options) {
     const pick = only ? (only[plat] || []).filter((i) => Number.isInteger(i) && i >= 0 && i < clean.length) : null;
     if (pick && !pick.length) continue;
     const list = pick ? pick.map((i) => clean[i]) : clean;
-    const shards = shardPrompts(list, tabsForEngine(plat, { careful: !!loader.options.careful })).filter((s) => s.prompts.length > 0);
+    const shards = shardPrompts(list, tabsForEngine(plat, { careful: !!loader.options.careful, deviceMemory: globalThis.navigator && navigator.deviceMemory })).filter((s) => s.prompts.length > 0);
     const legs = [];
     for (const shard of shards) {
       const created = windowId

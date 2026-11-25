@@ -27,6 +27,7 @@ import {
   TURN_TIMEOUT_MS, TURN_TIMEOUT_MIN_MS, TURN_TIMEOUT_MAX_MS,
   INTER_PROMPT_MEAN_MS,
   parseCooldownFromNotice, formatCooldown,
+  tabsForEngine, CONCURRENT_TABS_PER_ENGINE,
 } from "../src/lib/pacing.js";
 
 let failures = 0;
@@ -205,6 +206,12 @@ console.log("\nTime left from the measured pace (0.79.0)");
   check("not before then", !needsFreshTab("chatgpt", 19) && !needsFreshTab("gemini", 39) && !needsFreshTab("chatgpt", undefined));
   check("at the count", needsFreshTab("chatgpt", 20) && needsFreshTab("gemini", 40));
 }
+
+console.log("\ntabs per engine on a computer with little memory (1.0.7)");
+check("4 GB or less: one tab per engine", tabsForEngine("gemini", { deviceMemory: 4 }) === 1 && tabsForEngine("perplexity", { deviceMemory: 2 }) === 1);
+check("8 GB (Chrome's cap): as before", tabsForEngine("gemini", { deviceMemory: 8 }) === CONCURRENT_TABS_PER_ENGINE);
+check("unknown memory: as before", tabsForEngine("gemini", {}) === CONCURRENT_TABS_PER_ENGINE && tabsForEngine("gemini", { deviceMemory: undefined }) === CONCURRENT_TABS_PER_ENGINE);
+check("careful pace still keeps its one tab", tabsForEngine("chatgpt", { careful: true, deviceMemory: 8 }) === 1);
 
 console.log(failures ? `\n${failures} FAILED\n` : "\nALL PASSED\n");
 process.exit(failures ? 1 : 0);
