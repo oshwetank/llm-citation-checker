@@ -11,9 +11,9 @@
  * ISOLATED world over postMessage — see the privacy note on emit().
  */
 (() => {
-  // Google AI Mode (1.0.5, engine 5): this script is registered for Google's
-  // /search pages once AI Mode is turned on, and stays out of every other
-  // search (no udm=50 in the address: an ordinary results page).
+  // Google AI Mode (engine 5): on from install since 1.0.6 (manifest.json),
+  // and out of every other search (no udm=50 in the address: an ordinary
+  // results page).
   const ON_GOOGLE = /(^|\.)google\.[a-z.]+$/i.test(location.hostname) && !/(^|\.)gemini\.google\.com$/i.test(location.hostname);
   const IS_AIMODE = ON_GOOGLE && location.pathname === "/search" && /[?&]udm=50(?:&|$)/.test(location.search);
   if (ON_GOOGLE && !IS_AIMODE) return;

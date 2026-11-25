@@ -20,6 +20,11 @@ export const ABOUT_STEPS = [
 
 /** What's new — the redesign, newest first. */
 export const ABOUT_NEWS = [
+  { head: "A simpler CitoSkeleton.", body: "A campaign's sections (Overview, Brands, Sources…) are listed down the side of its results, left or right as you pick in Settings; About is four pages, Settings shows three things with the rest folded away and saves as you go, and a short welcome shows what to do first." },
+  { head: "The built-in AI in one button.", body: "Ask and every number work with no download. One button sets up the AI for replies in plain words and search by meaning, and says plainly what went wrong if a download can't finish." },
+  { head: "Google AI Mode, always on.", body: "No switch and no permission to give: ask in AI Mode and the answer is saved, like the other four engines." },
+  { head: "Each number once.", body: "A campaign's page no longer repeats the same figures in several places, and it no longer jumps about as it opens." },
+  { head: "Brands read better.", body: "\"Personalised Parker Jotter\" is Parker, and a chooser's field labels such as \"Occasion\" are not brands." },
   { head: "Brands read the way you would.", body: "Ordinary words such as sugar or oats are no longer brands, list items and product headings are, and Chrome's built-in AI can now finish its check on a slow computer and correct the list." },
   { head: "Help to get going.", body: "Get started on the Dashboard, About → Help & FAQ, example prompts when you set up a campaign, and what to do next on each campaign's results." },
   { head: "Every page in your language.", body: "Spanish, Portuguese (Brazil), French, Hindi and Arabic now cover the campaign results too, with dates in your language. About → Settings → Language." },

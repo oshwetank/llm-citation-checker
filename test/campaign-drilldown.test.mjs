@@ -322,7 +322,7 @@ try {
     await tab("cv-signals");
     k.quality = await page.evaluate(() => document.getElementById("cv-signals")?.textContent || "");
     check("share of voice, visibility, position, mentions, responses", k.labels.join("|") === "Share of voice|Visibility|Average position|Mentions|Responses", k.labels.join(" | "));
-    check("each split by engine", k.split.length >= 1 && k.split.every((r) => /\d+%|no answers/.test(r)), k.split.join(" | "));
+    check("one figure per card (1.0.6): no per-engine bars repeating the table", k.split.length === 0, k.split.join(" | "));
     check("with a row per engine below", k.engines >= 1, String(k.engines));
     check("your site as a source has its own place", /Your own site/.test(k.source), k.source.slice(0, 120));
     check("and so does the data the numbers rest on", /Data quality/.test(k.quality) && /Answered/.test(k.quality), k.quality.slice(0, 120));
@@ -493,7 +493,8 @@ try {
     check("source metrics are among them",
       ["domainVisibility", "domainCitations", "readOnly"].every((k) => terms.keys.includes(k)),
       terms.keys.join(", "));
-    check("and they signal that they explain themselves", terms.cursor === "help", terms.cursor);
+    // 1.0.6, asked: no big question-mark cursor; the dotted underline stays.
+    check("with no question-mark cursor", terms.cursor !== "help", terms.cursor);
 
     // The tooltip itself: same four slots, every time.
     const tip = await page.evaluate(async () => {

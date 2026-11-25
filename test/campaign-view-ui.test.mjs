@@ -96,8 +96,10 @@ try {
     check("the app bar no longer carries the section links", await page.evaluate(() => !document.querySelector("#headerPage .cb-nav, #headerPage .cb-nav-btn")));
     const kpis = await page.evaluate(() => [...document.querySelectorAll("#cv-overview .cv-kpi")].map((k) => k.querySelector(".cv-kpi-l").textContent));
     check("the five headline numbers come first", JSON.stringify(kpis) === JSON.stringify(["Share of voice", "Visibility", "Average position", "Mentions", "Responses"]), kpis.join(" | "));
-    const split = await page.evaluate(() => document.querySelectorAll("#cv-overview .cv-kpi:first-child .cv-split-row").length);
-    check("each split by engine", split === 2, String(split));
+    // 1.0.6 (approved review): one headline figure per card; each engine's
+    // numbers are the By engine table, not repeated as bars in the cards.
+    const split = await page.evaluate(() => ({ bars: document.querySelectorAll("#cv-overview .cv-kpi .cv-split-row").length, rows: document.querySelectorAll("#cv-overview .cv-eng-table .cv-tr:not(.cv-th)").length }));
+    check("one figure per card, each engine in the By engine table", split.bars === 0 && split.rows === 2, JSON.stringify(split));
     const overflow = await page.evaluate(() => document.scrollingElement.scrollWidth - document.scrollingElement.clientWidth);
     check("nothing widens the page", overflow <= 0, `${overflow}px`);
     await page.evaluate(() => document.querySelector('.cv-tab[data-section="cv-overview"]').focus());

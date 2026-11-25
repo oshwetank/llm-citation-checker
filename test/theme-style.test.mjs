@@ -144,8 +144,8 @@ try {
     await tab.waitForTimeout(400);
     await tab.evaluate(() => [...document.querySelectorAll(".ab-nav-btn, .ab-more-row")].find((b) => b.textContent.includes("Settings"))?.click());
     await tab.waitForTimeout(400);
-    // Display is a closed group since 0.78.0.
-    await tab.evaluate(() => { const d = document.getElementById("setGroupDisplay"); if (d) d.open = true; });
+    // The themes sit under More settings, closed until opened (1.0.6).
+    await tab.evaluate(() => { const d = document.getElementById("setGroupMore"); if (d) d.open = true; });
     const picks = await tab.evaluate(() => [...document.querySelectorAll("#setStyle [role=radio]")].map((b) => `${b.querySelector(".ab-style-name").textContent}:${b.getAttribute("aria-checked")}`));
     check("two themes to pick from, Studio picked", picks.join("|") === "Studio:true|Classic:false", picks.join("|"));
     await tab.click('#setStyle [data-style-pick="classic"]');

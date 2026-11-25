@@ -23,7 +23,8 @@ device unless you choose to share that campaign: the AI runs on your computer.
 > - **Next (1.0.5, in progress).**
 >   - **Ask knows which data you mean.** It works out the campaign, run, engines and tags from your question, shows them above the answer as chips you can change, asks back when two campaigns fit equally, and answers from the boards' own numbers, even with no AI model turned on.
 >   - **Gemini asked once.** Gemini's new way of sending a question wasn't recognised, so the extension pressed send again and Gemini got each question 2 or 3 times. It now sees Gemini's send and waits for it.
->   - **Google AI Mode, the fifth engine (beta).** Capture its answers and run campaigns on it: turn it on in Settings.
+>   - **Google AI Mode, the fifth engine (beta).** Capture its answers and run campaigns on it, from install: nothing to turn on.
+>   - **Simpler to use (1.0.6).** A campaign's sections listed down the side of its results (left or right), About in four pages, three settings up front with the rest folded away, the built-in AI in one button, and a short welcome that shows what to do first.
 >   - **Faster runs.** Every engine runs two tabs at a few seconds' pace; "Careful pace" in Settings brings back the slower one.
 >   - **Runs that survive the real world.** A dropped connection, a sleeping computer, a closed tab or full storage no longer fail a campaign's questions: the run waits, opens a new tab or asks again.
 >   - **Campaigns are set up in the full view,** where switching tabs can't lose a half-typed setup.

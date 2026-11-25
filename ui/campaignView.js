@@ -182,10 +182,13 @@ function overviewSec() {
       const txt = s.value == null ? "no answers" : k.id === "responses" ? `${s.value}/${s.of}` : k.unit === "%" ? pct(s.value) : num(s.value);
       rows.append(h("span", { className: "cv-split-row" }, engineMark(s.engine, "s"), bar(w, `var(--eng-${s.engine})`), h("span", { className: `cv-num${s.value == null ? " cv-muted" : ""}` }, txt)));
     });
+    // 1.0.6: each engine's figures are the By engine table below, so the
+    // cards show the headline only ("15 / 15" no longer has "of 15" too).
+    void rows;
     kpis.append(card("cv-kpi",
-      h("div", { className: "cv-kpi-top" }, h("span", { className: "cv-kpi-l", ...(TERM[k.id] ? { "data-term": TERM[k.id] } : {}) }, k.label), k.rank ? h("span", { className: "cv-badge", title: fmt("{place} of {n} brands", { place: tr(ord(k.rank)), n: k.of }) }, `${ord(k.rank)} of ${k.of}`) : k.of != null ? h("span", { className: "cv-badge" }, `of ${k.of}`) : ""),
+      h("div", { className: "cv-kpi-top" }, h("span", { className: "cv-kpi-l", ...(TERM[k.id] ? { "data-term": TERM[k.id] } : {}) }, k.label), k.rank ? h("span", { className: "cv-badge", title: fmt("{place} of {n} brands", { place: tr(ord(k.rank)), n: k.of }) }, `${ord(k.rank)} of ${k.of}`) : ""),
       h("div", { className: "cv-kpi-v" }, k.value == null ? "—" : String(k.value), h("span", { className: "cv-kpi-u" }, k.id === "responses" ? ` / ${k.of}` : k.unit)),
-      delta(k.id), rows));
+      delta(k.id)));
   }
   // How sure the headline numbers are (1.0.0, lib/onboarding.js): AI answers
   // vary from run to run, so a share is shown with the answers it rests on
@@ -230,7 +233,7 @@ function overviewSec() {
     rows.forEach((r) => c.append(h("div", { className: `cv-bl${r.isOwn ? " you" : ""}` }, brandMark(r.name, "s"), h("span", { className: "cv-ell" }, r.name), bar(r.sov * 100 / max, r.isOwn ? "var(--you)" : "var(--cv-dim)"), h("span", { className: "cv-num" }, pct(r.sov)))));
     mult.append(c);
   });
-  return section("cv-overview", fmt("{brand} in this run", { brand: V.own }), `${o.answered} answers from ${o.sent} prompts sent`, notes, kpis, sureLine, adviceCard,
+  return section("cv-overview", fmt("{brand} in this run", { brand: V.own }), `${o.answered} answer${o.answered === 1 ? "" : "s"} from ${o.sent} prompt${o.sent === 1 ? "" : "s"} sent`, notes, kpis, sureLine, adviceCard,
     card("", h("h4", { className: "cv-h4" }, "By engine"), h("div", { className: "cv-scroll" }, t)),
     h("h4", { className: "cv-h4" }, "Share of voice, engine by engine"), mult);
 }
@@ -655,7 +658,7 @@ function signalsSec(runHistory) {
   const KL = { shopping: "Shopping", info: "Informational", local: "Local", images: "Image-led", memory: "From memory" };
   const [kb, kl] = mixBar(g.kinds.map((k) => ({ label: KL[k.id] || k.id, n: k.n, c: `var(--ak-${k.id}, var(--kind-other))` })));
   const tiles = h("div", { className: "cv-tiles" },
-    tile(ownSiteLabel(), `${g.ownSite.citations}`, `of ${g.ownSite.of} citations`, brandMark(V.own, "s")),
+    // Your own site is on Sources (1.0.6: it was on both).
     tile("Coverage gaps", String(g.gaps.length), "answers without you that name two or more rivals"),
     tile("First product card", `${g.firstCard.own}`, `of ${g.firstCard.of} answers with cards`));
   const gpp = paged("gaps", g.gaps, 8, () => replace("cv-signals", () => signalsSec(RUN_HISTORY)));
@@ -671,7 +674,7 @@ function signalsSec(runHistory) {
       h("span", { role: "cell" }, bar(x.sent ? x.answered * 100 / x.sent : 0, `var(--eng-${x.engine})`)),
       h("span", { role: "cell" }, h("span", { className: `cv-badge ${notes.length ? (x.answered ? "warn" : "bad") : "good"}` }, notes.length ? notes.join(" · ") : "All answered"))));
   });
-  return section("cv-signals", "Signals and data quality", "", h("div", { className: "cv-grid2" }, ag, h("div", { className: "cv-stack gap" }, br, card("", h("h4", { className: "cv-h4" }, "Kinds of answer"), kb, kl))), tiles, gaps,
+  return section("cv-signals", "Signals and data quality", "", h("div", { className: "cv-grid2" }, ag, h("div", { className: "cv-stack gap" }, /* search breadth: the By engine table on Overview (1.0.6) */ void br || "", card("", h("h4", { className: "cv-h4" }, "Kinds of answer"), kb, kl))), tiles, gaps,
     card("", h("h4", { className: "cv-h4" }, "Data quality"), h("div", { className: "cv-scroll" }, qt)), runHistory ? card("", runHistory) : "");
 }
 
@@ -775,7 +778,7 @@ let SRC_DRILL = null, RUN_HISTORY = null, PANEL = null, TABS = null, restoredTab
 
 function tabBar() {
   const counts = sectionCounts(V);
-  const bar = h("div", { className: "cv-tabs", role: "tablist", "aria-label": "Sections" });
+  const bar = h("div", { className: "cv-tabs", role: "tablist", "aria-label": "Sections", "aria-orientation": document.body.classList.contains("tab") ? "vertical" : "horizontal", });
   CV_SECTIONS.forEach(([id, label]) => {
     const on = id === S.section;
     const b = h("button", { type: "button", role: "tab", className: `cv-tab${on ? " on" : ""}`, id: `${id}-tab`, "aria-selected": on ? "true" : "false", "aria-controls": "cvPanel", tabIndex: on ? 0 : -1, "data-section": id }, label);
@@ -785,10 +788,10 @@ function tabBar() {
   });
   // Arrow keys move between tabs, as a tab list does.
   bar.onkeydown = (e) => {
-    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft" && e.key !== "Home" && e.key !== "End") return;
+    if (!["ArrowRight", "ArrowLeft", "ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
     e.preventDefault();
     const i = CV_SECTIONS.findIndex(([id]) => id === S.section);
-    const n = e.key === "Home" ? 0 : e.key === "End" ? CV_SECTIONS.length - 1 : (i + (e.key === "ArrowRight" ? 1 : -1) + CV_SECTIONS.length) % CV_SECTIONS.length;
+    const n = e.key === "Home" ? 0 : e.key === "End" ? CV_SECTIONS.length - 1 : (i + (e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : -1) + CV_SECTIONS.length) % CV_SECTIONS.length;
     goSection(CV_SECTIONS[n][0]);
     document.getElementById(`${CV_SECTIONS[n][0]}-tab`)?.focus();
   };
@@ -816,8 +819,10 @@ export function goSection(id) {
   TABS = tabs;
   PANEL.replaceChildren(SECTION_FN[id]());
   PANEL.setAttribute("aria-labelledby", `${id}-tab`);
-  // A new section starts at its top, with the tabs still in sight.
-  if (changed) {
+  // A new section starts at its top, with the tabs still in sight (in the
+  // side menu, the page goes back to the section's top).
+  if (changed && TABS.closest(".cv-layout")) { const top = PANEL.getBoundingClientRect().top; if (top < 0) PANEL.scrollIntoView({ block: "start" }); }
+  else if (changed) {
     const top = TABS.getBoundingClientRect().top;
     if (top < 0 || top > window.innerHeight * 0.6) TABS.scrollIntoView({ block: "start" });
   }
@@ -830,5 +835,8 @@ export function renderCampaignView(box, view, deps, { sourcesDrill, runHistory }
   if (!restoredTab) { restoredTab = true; try { const saved = localStorage.getItem("cito-cv-section"); if (saved && SECTION_FN[saved]) S.section = saved; } catch (_) { /* default */ } }
   TABS = tabBar();
   PANEL = h("div", { className: "cv-panel", id: "cvPanel", role: "tabpanel", "aria-labelledby": `${S.section}-tab` }, SECTION_FN[S.section]());
-  box.append(TABS, PANEL);
+  // The full tab lists the sections down the side of the results (1.0.6),
+  // left or right; the popup keeps them in a row above.
+  if (document.body.classList.contains("tab")) box.append(h("div", { className: "cv-layout" }, TABS, PANEL));
+  else box.append(TABS, PANEL);
 }

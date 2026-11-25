@@ -108,6 +108,8 @@ try {
   await tab.waitForTimeout(400);
   await tab.evaluate(() => [...document.querySelectorAll(".ab-nav-btn, .ab-more-row")].find((b) => b.textContent.includes("Settings"))?.click());
   await tab.waitForTimeout(500);
+  // The email is under More settings → Kept on this computer (1.0.6).
+  await tab.evaluate(() => { const d = document.getElementById("setGroupMore"); if (d) d.open = true; });
   check("About → Settings shows the email", await tab.evaluate(() => document.getElementById("setEmail")?.value === "asha.k@zento.example" && !document.getElementById("setEmailRemove").hidden));
   await tab.fill("#setEmail", "x@mailinator.com");
   await tab.click("#setEmailSave");

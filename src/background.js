@@ -100,7 +100,10 @@ const DEFAULT_SETTINGS = {
   // URLs let cited domains be attributed to the right brand.
   myBrand: { name: "", url: "" },
   competitors: [], // [{ name, url }]
-  debugCapture: false,
+  // On from install (1.0.6, asked: "why can't we have debugger and all of
+  // these things switched on from the start?"). It keeps the newest 3000
+  // network events as addresses and key names, never prompts or answers.
+  debugCapture: true,
   // The slower, safer pace (lib/pacing.js, 1.0.5): off = every engine fast.
   carefulPace: false,
   // Pause capture (0.66.0): the switch at the top of the popup and the tab.
@@ -140,6 +143,12 @@ async function getSettings() {
   if (settingsCache) return settingsCache;
   const got = await chrome.storage.local.get("lcfcSettings");
   settingsCache = { ...DEFAULT_SETTINGS, ...(got.lcfcSettings || {}) };
+  // 1.0.6: the capture debugger is on for everyone once, whatever was stored
+  // (it has no switch in Settings any more).
+  if (!settingsCache.debugOn106) {
+    settingsCache = { ...settingsCache, debugCapture: true, debugOn106: true };
+    try { await chrome.storage.local.set({ lcfcSettings: settingsCache }); } catch (_) { /* next time */ }
+  }
   return settingsCache;
 }
 async function setSettings(patch) {
@@ -235,22 +244,18 @@ const AIMODE_SCRIPTS = [
   { id: "aimode-iso", matches: AIMODE_MATCHES, js: ["src/content-iso.js"], runAt: "document_start", persistAcrossSessions: true },
 ];
 /** Register or remove AI Mode's page scripts to match the setting and the permission. */
+/* 1.0.6: AI Mode is on from install, its page scripts in manifest.json like
+ * the other engines' (no switch, no permission prompt). The scripts 1.0.5
+ * registered at run time for those who turned it on are removed, so a page
+ * doesn't get both. */
 async function syncAiModeScripts() {
   try {
-    const { aimodeOn } = await chrome.storage.local.get("aimodeOn");
-    const granted = await chrome.permissions.contains({ origins: AIMODE_MATCHES });
     const have = (await chrome.scripting.getRegisteredContentScripts({ ids: AIMODE_SCRIPTS.map((x) => x.id) })).map((x) => x.id);
-    if (aimodeOn && granted) {
-      const missing = AIMODE_SCRIPTS.filter((x) => !have.includes(x.id));
-      if (missing.length) await chrome.scripting.registerContentScripts(missing);
-    } else if (have.length) {
-      await chrome.scripting.unregisterContentScripts({ ids: have });
-    }
-    return { ok: true, on: !!(aimodeOn && granted), granted };
-  } catch (e) { logErr("aimode:scripts", e); return { ok: false, error: String(e && e.message || e) }; }
+    if (have.length) await chrome.scripting.unregisterContentScripts({ ids: have });
+    return { ok: true, on: true, granted: true };
+  } catch (e) { logErr("aimode:scripts", e); return { ok: true, on: true }; }
 }
-chrome.permissions?.onAdded?.addListener(() => { syncAiModeScripts(); });
-chrome.permissions?.onRemoved?.addListener(() => { syncAiModeScripts(); });
+chrome.runtime.onInstalled?.addListener(() => { syncAiModeScripts(); });
 chrome.runtime.onStartup?.addListener(() => { syncAiModeScripts(); });
 
 // Google's robot check: an AI Mode run tab that lands on /sorry/ pauses AI

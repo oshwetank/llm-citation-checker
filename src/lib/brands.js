@@ -41,6 +41,12 @@ export function escapeRegExp(s) {
 const NOISE = new Set([
   // AI Mode's bullet labels (1.0.5): "**User Sentiment:**", "**Rating:**".
   "user", "sentiment", "rating", "ratings",
+  // A chooser's field labels and how a product is made, not who makes it
+  // (1.0.6, ChatGPT's gift-pen answer: "**Occasion**", "Personalised Parker
+  // Jotter" read as brands).
+  "occasion", "recipient", "gender", "age", "colour", "color", "size", "material",
+  "quantity", "purpose", "preference", "preferences", "personalised", "personalized",
+  "customised", "customized", "custom", "engraved", "monogrammed", "handmade",
   "the", "a", "an", "and", "or", "for", "if", "our", "my", "your", "this", "that",
   "best", "top", "good", "great", "better", "ideal", "overall", "budget", "value",
   "premium", "cheap", "affordable", "recommended", "recommendation", "pick", "picks",
@@ -332,6 +338,16 @@ function parseTableCells(text) {
   return out;
 }
 
+/* A describing word in front of the maker's name ("Personalised Parker
+ * Jotter", "Engraved Cross Bailey") is how the product is made, not who
+ * makes it: dropped, so the name starts at the maker (1.0.6). */
+const LEAD_DESCRIPTOR = /^(?:personali[sz]ed|customi[sz]ed|custom(?:-made)?|engraved|monogrammed|handmade|hand-made|luxury|genuine|authentic|original)\s+(?=[A-Z0-9])/i;
+export function dropLeadDescriptor(name) {
+  const s = String(name || "").trim();
+  const t = s.replace(LEAD_DESCRIPTOR, "");
+  return t && t !== s ? t : s;
+}
+
 /* ---------- 3b. bold/heading candidates ---------- */
 // Cleans one raw candidate string (from either a table cell or a heading)
 // into the name detectBrands() should actually consider. Shared so table and
@@ -370,6 +386,7 @@ function cleanCandidateText(raw) {
   else if (s.includes(":")) s = s.split(":").pop().trim();
   // Strip leading list numbering left over from heading matches ("1. Vivo V70").
   s = s.replace(/^\d+[.)]\s*/, "").trim();
+  s = dropLeadDescriptor(s);
   // A qualifier in brackets after the name ("Britannia NutriChoice Digestive
   // (High Fibre or similar variants)") pushed the whole label over the length
   // cap and the brand was lost (1.0.0). A model's own brackets stay: they
@@ -807,7 +824,7 @@ export function matchCompressedLabel(text, label) {
 // Multi-word brands ("Angel One") arrive via entity markers, which keep their
 // full name, so taking one token here doesn't lose them.
 export function vendorFromProductName(title) {
-  const all = String(title || "").trim().split(/\s+/);
+  const all = dropLeadDescriptor(title).split(/\s+/);
   // "Tots & Moms Millet Cookies", "Marks and Spencer Oat Bars": a maker's
   // name joined by "&" or "and" is one name (1.0.0).
   if (all.length >= 3 && /^(&|and)$/i.test(all[1]) && /^[A-Z]/.test(all[2]) && /^[A-Z]/.test(all[0])) {
@@ -847,6 +864,7 @@ const COMMON_NAME_WORDS = new Set([
 ]);
 const EDITION_WORDS = new Set(["pro", "plus", "max", "ultra", "mini", "lite", "premium", "standard", "basic", "starter", "essentials", "enterprise", "business", "team", "teams", "personal", "home", "edition", "series", "neo", "prime", "elite", "advanced"]);
 export function vendorInAnswer(text, title) {
+  title = dropLeadDescriptor(title);
   const words = String(title || "").trim().split(/\s+/);
   let vendor = vendorFromProductName(title);
   // A noise first word ("New") gives no vendor; it may still begin the name.

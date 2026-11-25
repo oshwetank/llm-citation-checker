@@ -116,10 +116,11 @@ try {
   // it, then wait for its board: fixed sleeps were too short on CI.
   await page.waitForFunction(() => [...document.querySelectorAll(".geo-switcher .geo-chip")].some((b) => /^Combined Test/.test(b.textContent)), null, { timeout: 15000 }).catch(() => {});
   await page.evaluate(() => { const b = [...document.querySelectorAll(".geo-switcher .geo-chip")].find((x) => /^Combined Test/.test(x.textContent)); if (b && !b.classList.contains("active")) b.click(); });
-  await page.waitForFunction(() => document.getElementById("cbRun") && /Latest answer/.test(document.getElementById("campaignResultsH")?.textContent || ""), null, { timeout: 15000 }).catch(() => {});
+  await page.waitForFunction(() => document.getElementById("cbRun")?.value === "latest", null, { timeout: 15000 }).catch(() => {});
   const pick = await page.evaluate(() => ({ value: document.getElementById("cbRun")?.value, first: document.querySelector("#cbRun option")?.textContent, scope: document.getElementById("campaignResultsH")?.textContent || "" }));
   check("the run picker starts on Latest answers · every engine", pick.value === "latest" && /Latest answers/.test(pick.first), JSON.stringify(pick));
-  check("and the board says what it shows", /Latest answer per prompt and engine/.test(pick.scope), pick.scope);
+  // 1.0.6 (approved review): each fact said once; the picker's label says it.
+  check("and the board's header doesn't say it again", !/Latest answer/.test(pick.scope), pick.scope);
 
   console.log("\nrun vs run");
   const runs = (b.runs || []).filter((r) => r.hasAnswers).sort((x, y) => x.startedAt - y.startedAt);

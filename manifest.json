@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "__MSG_appName__",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "minimum_chrome_version": "111",
   "description": "__MSG_appDesc__",
   "default_locale": "en",
@@ -28,7 +28,8 @@
     "https://www.perplexity.ai/*",
     "https://perplexity.ai/*",
     "https://grok.com/*",
-    "https://x.com/*"
+    "https://x.com/*",
+    "https://www.google.com/*"
   ],
   "incognito": "spanning",
   "optional_host_permissions": [
@@ -56,7 +57,8 @@
         "https://www.perplexity.ai/*",
         "https://perplexity.ai/*",
         "https://grok.com/*",
-        "https://x.com/*"
+        "https://x.com/*",
+        "https://www.google.com/search*"
       ],
       "js": [
         "src/content-main.js"
@@ -72,7 +74,8 @@
         "https://www.perplexity.ai/*",
         "https://perplexity.ai/*",
         "https://grok.com/*",
-        "https://x.com/*"
+        "https://x.com/*",
+        "https://www.google.com/search*"
       ],
       "js": [
         "src/content-iso.js"

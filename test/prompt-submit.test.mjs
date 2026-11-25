@@ -57,7 +57,8 @@ async function run(html, { gemini = false, grok = false, aimode = false, qKey = 
   const page = await browser.newPage();
   const host = gemini ? "https://gemini.google.com" : grok ? "https://grok.com" : aimode ? "https://www.google.com" : "https://chatgpt.com";
   await page.route("**/*", (r) => r.fulfill({ status: 200, contentType: "text/html", body: `<body>${html}</body>` }));
-  await page.goto(`${host}/mock?${qKey}=${encodeURIComponent(PROMPT)}&lcfc=1&lcfctok=T1`);
+  // AI Mode's scripts only act on its own address, /search?udm=50 (1.0.6).
+  await page.goto(aimode ? `${host}/search?udm=50&${qKey}=${encodeURIComponent(PROMPT)}&lcfc=1&lcfctok=T1` : `${host}/mock?${qKey}=${encodeURIComponent(PROMPT)}&lcfc=1&lcfctok=T1`);
   const res = await page.evaluate(async ({ iso, waitMs, throttle, throttleMs, workerClock, clockMs }) => {
     const t0 = Date.now();
     window.__t0 = t0;

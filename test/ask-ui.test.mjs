@@ -77,15 +77,25 @@ try {
     const vis = await page.evaluate(() => { const b = document.querySelector('[data-tab="ask"]'); return b && getComputedStyle(b).display !== "none"; });
     check("in the full tab's menu", vis);
     await openAsk();
-    await page.waitForSelector("#swAskModel", { timeout: 10000 }).catch(() => {});
-    const t = await page.evaluate(() => document.getElementById("ask").innerText);
-    check("without a model, Ask offers the switches right there (0.84.0)", /Models on this computer/.test(t) && !!(await page.$("#swAskModel")) && !!(await page.$("#swLaya")), t.slice(0, 300));
-    check("each says its size, and that uninstalling removes it", /download, once/.test(t) && /Uninstalling CitoSkeleton removes them/.test(t));
+    // 1.0.6 (approved review): one line and one button instead of three switches.
+    await page.waitForSelector("#askModels .ai-setup", { timeout: 10000 }).catch(() => {});
+    const m = await page.evaluate(() => {
+      const box = document.getElementById("askModels");
+      return { text: box?.innerText || "", btn: [...(box?.querySelectorAll("button") || [])].map((b) => b.textContent), more: box?.querySelector("details.ai-setup-more")?.open, switches: !!box?.querySelector("#swAskModel") };
+    });
+    check("without a model, Ask says it works now, with one setup button (1.0.6)", /Ask works now, with no download/.test(m.text) && m.btn.includes("Set up the built-in AI"), JSON.stringify(m).slice(0, 300));
+    check("it says how big the one download is", /One download of about/.test(m.text), m.text.slice(0, 300));
+    check("the models one by one are folded inside", m.more === false && !m.switches, JSON.stringify(m).slice(0, 200));
+    await page.evaluate(() => { document.querySelector("#askModels details.ai-setup-more").open = true; });
+    await page.waitForSelector("#askModels #swAskModel", { timeout: 10000 }).catch(() => {});
+    const t = await page.evaluate(() => document.getElementById("askModels").innerText);
+    check("opened, each model says its size, and that uninstalling removes it", !!(await page.$("#askModels #swAskModel")) && !!(await page.$("#askModels #swLaya")) && /download, once/.test(t) && /Uninstalling CitoSkeleton removes them/.test(t), t.slice(0, 300));
+    await page.evaluate(() => { document.querySelector("#askModels details.ai-setup-more").open = false; });
   }
 
   console.log("\nasking with no model (1.0.5): answered from the data, its scope shown");
   {
-    check("the chat is there without a model", !!(await page.$("#askInput")) && !!(await page.$("#askOffNote")));
+    check("the chat is there without a model", !!(await page.$("#askInput")));
     await page.fill("#askInput", "Which brands are named most?");
     await page.click("#askSend");
     await page.waitForFunction(() => document.querySelectorAll(".ask-msg.ai").length > 0, null, { timeout: 20000 }).catch(() => {});

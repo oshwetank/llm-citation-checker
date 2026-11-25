@@ -102,6 +102,8 @@ try {
   await page.evaluate(() => document.querySelector('[data-tab="about"]').click());
   await page.waitForTimeout(400);
   await page.evaluate(() => [...document.querySelectorAll(".ab-nav-btn, .ab-more-row")].find((b) => b.textContent.includes("Settings"))?.click());
+  // The detailed model switches are under More settings → Built-in AI (1.0.6).
+  await page.evaluate(() => { const d = document.getElementById("setGroupMore"); if (d) d.open = true; });
   await page.waitForSelector("#swLaya", { timeout: 15000 }).catch(() => {});
   const flip = (on) => page.evaluate((on) => { const i = document.getElementById("swLaya"); i.checked = on; i.dispatchEvent(new Event("change", { bubbles: true })); }, on);
   const before = await page.evaluate(() => ({ row: document.querySelector('#aiSwitches [data-model="laya"]')?.innerText || "", on: document.getElementById("swLaya")?.checked, about: document.getElementById("aiLaya")?.textContent || "" }));

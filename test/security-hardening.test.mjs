@@ -192,7 +192,11 @@ console.log("\n8. updating from the store version asks for no new site access");
   // one is a decision, not a side effect. 1.0.0 dropped google.com, added in
   // 0.69 only to see that a Google sign-in cookie exists (lib/auth-check.js
   // now reads it by gemini.google.com's address).
-  const LIVE_HOSTS = ["https://chatgpt.com/*", "https://chat.openai.com/*", "https://gemini.google.com/*", "https://www.perplexity.ai/*", "https://perplexity.ai/*", "https://grok.com/*", "https://x.com/*"];
+  // 1.0.6, the owner's decision: Google AI Mode on from install, with no
+  // switch and no prompt ("a person need to switch on for them to use the AI
+  // mode. That's not right"). www.google.com is added knowingly; store users
+  // approve it once on update.
+  const LIVE_HOSTS = ["https://chatgpt.com/*", "https://chat.openai.com/*", "https://gemini.google.com/*", "https://www.perplexity.ai/*", "https://perplexity.ai/*", "https://grok.com/*", "https://x.com/*", "https://www.google.com/*"];
   const m = JSON.parse(readFileSync(path.join(ROOT, "manifest.json"), "utf8"));
   const added = (m.host_permissions || []).filter((h) => !LIVE_HOSTS.includes(h));
   check("no host beyond the live version's", added.length === 0, added.join(", "));

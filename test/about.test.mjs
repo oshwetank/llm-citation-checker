@@ -89,7 +89,8 @@ try {
   console.log("\na side menu, one page at a time");
   {
     const nav = await page.evaluate(() => [...document.querySelectorAll("#abNav .ab-nav-btn")].map((b) => b.querySelector(".ab-nav-label")?.textContent));
-    check("six pages in the side menu, Account among them (0.82.0)", nav.join("|") === "Overview|Metric glossary|Settings|Account|Data & tools|Diagnostics", nav.join(" | "));
+    // 1.0.6 (approved review): four pages; Account sits under Settings, Data & tools under Help.
+    check("four pages in the side menu (1.0.6)", nav.join("|") === "Get started|Settings|Glossary|Help", nav.join(" | "));
     const s = await shown();
     check("it opens on the overview, and only the overview", s.ab === "overview" && s.visible.join() === "overview", JSON.stringify(s));
     const geo = await page.evaluate(() => {
@@ -100,25 +101,30 @@ try {
     const status = await page.evaluate(() => document.getElementById("abBuild").textContent);
     check("under it, whether every part is the same version", status.includes("Up to date") && status.includes(VERSION), status);
     const badge = await page.evaluate(() => document.querySelector("#abNav .ab-nav-badge")?.textContent);
-    check("and the activity log's errors, on Diagnostics", badge === "1", String(badge));
+    check("and the activity log's errors, on Help", badge === "1", String(badge));
   }
 
-  console.log("\nthe overview");
+  console.log("\nGet started");
   {
     const o = await page.evaluate(() => {
       const box = document.getElementById("abOverview");
       return {
-        badge: box.querySelector(".version-badge")?.textContent,
-        facts: [...box.querySelectorAll(".ab-fact")].map((x) => x.textContent),
-        engines: [...box.querySelectorAll(".ab-works .ab-engine")].map((x) => x.textContent),
+        title: box.querySelector(".ab-hero-title")?.textContent,
+        lead: box.querySelector(".ab-hero .ab-lead")?.textContent || "",
+        priv: box.querySelector(".ab-private")?.textContent || "",
+        engines: [...box.querySelectorAll('.ab-steps-list .ab-step[data-step="ask"] .ab-engine')].map((x) => x.textContent),
+        list: [...box.querySelectorAll(".ab-steps-list .ab-step")].map((s) => s.dataset.step || "ai"),
+        aiBtn: !!box.querySelector("#abAiSetup button"),
+        folds: [...box.querySelectorAll("details.ab-fold")].filter((d) => !d.open).map((d) => d.querySelector("summary").textContent),
         steps: [...box.querySelectorAll(".ab-how li")].map((li) => ({ title: li.querySelector("b")?.textContent, where: li.querySelector(".ab-where")?.textContent })),
         news: box.querySelectorAll(".ab-news li").length,
-        text: box.textContent,
       };
     });
-    check("the version comes from the build, so it can't go stale", o.badge === `v${VERSION}`, o.badge);
-    check("what stays private, in three plain facts", o.facts.join("|") === "Captures stay here|No account needed|Nothing sent unless you share", o.facts.join(" | "));
-    check("the five engines it works with", o.engines.join("|") === "ChatGPT|Gemini|Perplexity|Grok|AI Mode", o.engines.join(" | "));
+    check("what the tool is, in one line, naming the five engines", o.title === "Welcome to CitoSkeleton" && /ChatGPT, Gemini, Perplexity, Grok and Google AI Mode/.test(o.lead), JSON.stringify([o.title, o.lead]));
+    check("that everything stays on this computer", /stays on this computer/.test(o.priv) && /No account needed/.test(o.priv), o.priv);
+    check("three steps, then the built-in AI as an optional fourth with one button", o.list.join() === "ask,analyze,campaign,ai" && o.aiBtn, JSON.stringify(o.list));
+    check("the first step links the five engines", o.engines.join("|") === "ChatGPT|Gemini|Perplexity|Grok|AI Mode", o.engines.join(" | "));
+    check("how it works, what's new and the browser are folded underneath", o.folds.length === 3 && o.folds[0] === "How it works" && o.folds[1].startsWith("What's new") && o.folds[2].startsWith("What works in"), JSON.stringify(o.folds));
     check("how it works: four steps, three of them a tab", o.steps.length === 4 && o.steps.slice(1).map((s) => s.where).join("|") === "Analyze →|Dashboard →|Campaigns →", JSON.stringify(o.steps));
     check("and none of them is the Compare tab, which left the menu in 0.47.0", !/Compare/.test(o.steps.map((s) => s.where).join()));
     check("what's new is listed", o.news >= 3, String(o.news));
@@ -132,7 +138,7 @@ try {
 
   console.log("\nthe metric glossary");
   {
-    await go("Metric glossary");
+    await go("Glossary");
     const s = await shown();
     check("its own page", s.visible.join() === "glossary", JSON.stringify(s));
     const all = await page.evaluate(() => ({ count: document.getElementById("abGlossCount").textContent, rows: document.querySelectorAll("#glossaryList .ab-term-row").length, chips: [...document.querySelectorAll("#abGlossChips .ab-chip-btn")].map((c) => c.textContent) }));
@@ -169,45 +175,44 @@ try {
     check("and Clear the search brings them all back", await page.evaluate(() => document.querySelectorAll("#glossaryList .ab-term-row").length === 36 && document.getElementById("abGlossSearch").value === ""));
   }
 
-  console.log("\nsettings, with unsaved changes shown");
+  console.log("\nsettings save themselves (1.0.6)");
   {
     await go("Settings");
     const st = () => page.evaluate(() => ({
       keep: document.getElementById("setRetention").value, mb: document.getElementById("setMaxMB").value,
-      status: document.getElementById("setStatus").textContent, save: !document.getElementById("setSave").disabled, undo: !document.getElementById("setUndo").disabled,
-      meter: document.querySelector("#storageInfo .ab-meter-num")?.textContent || "", debug: document.getElementById("setDebugText").textContent,
+      status: document.getElementById("setStatus").textContent,
+      buttons: [document.getElementById("setSave"), document.getElementById("setUndo")].some((b) => b && !b.hidden && b.offsetParent !== null),
+      meter: document.querySelector("#storageInfo .ab-meter-num")?.textContent || "",
+      debugShown: document.getElementById("setDebug").offsetParent !== null,
     }));
     const a = await st();
     check("the stored values are filled in", a.keep === "2000" && a.mb === "8", JSON.stringify(a));
-    check("nothing to save yet, and it says so", a.status === "All settings saved" && !a.save && !a.undo, JSON.stringify(a));
+    check("no Save or Undo buttons, and nothing to say yet", !a.buttons && a.status === "", JSON.stringify(a));
     check("how full storage is, against the limit", /^\d[\d,]* of 2,000 kept$/.test(a.meter), a.meter);
+    check("no debugger switch", !a.debugShown);
+    // The rest sits under More settings, closed until opened.
+    check("More settings starts closed", await page.evaluate(() => document.getElementById("setGroupMore").open === false));
+    await page.evaluate(() => { document.getElementById("setGroupMore").open = true; });
     await page.evaluate(() => document.querySelector('.ab-stepbtn[data-step="setRetention"][data-dir="1"]').click());
-    await settle(200);
+    await settle(150);
     const b = await st();
-    check("+ adds a step", b.keep === "2050", b.keep);
-    check("a change is marked unsaved, and can be saved or undone", b.status === "Unsaved changes" && b.save && b.undo, JSON.stringify(b));
-    await page.evaluate(() => document.getElementById("setUndo").click());
-    await settle(200);
+    check("+ adds a step, and it says it's saving", b.keep === "2050" && b.status === "Saving…", JSON.stringify(b));
+    await settle(1200);
     const c = await st();
-    check("Undo changes puts it back", c.keep === "2000" && c.status === "All settings saved" && !c.save, JSON.stringify(c));
+    const s1 = await ask({ type: "settings-get" });
+    check("a moment later it's saved, without a Save button", c.status === "Saved" && s1.settings.retentionMax === 2050, JSON.stringify([c, s1.settings.retentionMax]));
     await page.fill("#setMaxMB", "0");
-    // By id: from 0.62.0 "Read the cited pages" is the first switch on the page.
-    await page.evaluate(() => document.getElementById("setDebug").closest(".ab-switch").click());
-    await settle(200);
-    check("the debugger switch says what it's set to", (await st()).debug === "On");
-    await page.evaluate(() => document.getElementById("setSave").click());
-    await settle(600);
+    await settle(1500);
     const e = await st();
-    check("saving says so", e.status === "Settings saved" && !e.save, JSON.stringify(e));
-    check("and a value under the minimum is saved as the minimum", e.mb === "1", e.mb);
+    check("a value under the minimum is saved as the minimum", e.mb === "1", e.mb);
     const stored = await ask({ type: "settings-get" });
-    check("it's really stored", stored && stored.settings && stored.settings.maxCaptureMB === 1 && stored.settings.debugCapture === true, JSON.stringify(stored && stored.settings));
-    await ask({ type: "settings-set", patch: { maxCaptureMB: 8, debugCapture: false } });
+    check("it's really stored, and the debugger is on from install", stored && stored.settings && stored.settings.maxCaptureMB === 1 && stored.settings.debugCapture === true, JSON.stringify(stored && stored.settings));
+    await ask({ type: "settings-set", patch: { maxCaptureMB: 8, retentionMax: 2000, debugCapture: false } });
   }
 
-  console.log("\ndata & tools");
+  console.log("\nHelp: data & tools under it");
   {
-    await go("Data & tools");
+    await go("Help");
     const chip = () => page.evaluate(() => ({ chip: document.getElementById("demoStatus").textContent, btn: document.getElementById("demoToggle").textContent }));
     const a = await chip();
     check("the sample's state is shown", a.chip === "Not loaded" && a.btn === "Load sample", JSON.stringify(a));
@@ -224,9 +229,9 @@ try {
     check("Reprocess says what it did, beside its own button", /^Done\. \d/.test(done), done);
   }
 
-  console.log("\ndiagnostics");
+  console.log("\nHelp: the version, the log (folded), the campaign export");
   {
-    await go("Diagnostics");
+    await go("Help");
     await settle(800);
     const d = await page.evaluate(() => ({
       build: document.getElementById("abBuildFull").textContent,
@@ -263,13 +268,13 @@ try {
     const h = await home();
     check("a first visit is welcomed", h.title === "Welcome to CitoSkeleton", h.title);
     check("with three steps to get started, none done", h.progress === "0 of 3 done" && h.steps.join() === "ask:todo,analyze:todo,campaign:todo", JSON.stringify(h));
-    check("then the pages, as a list", h.more.join("|") === "Metric glossary|Settings|Account|Data & tools|Diagnostics|What’s new", h.more.join(" | "));
+    check("then the pages, as a list", h.more.join("|") === "Glossary|Settings|Account|Data & tools|Help|What’s new", h.more.join(" | "));
     check("no side menu in the popup", h.side === "none", h.side);
     check("and nothing wider than the popup", h.wide <= 0, `${h.wide}px`);
 
-    await go("Metric glossary");
+    await go("Glossary");
     const g = await page.evaluate(() => ({ head: document.getElementById("abSubhead").textContent, rows: document.querySelectorAll("#glossaryList .ab-term-row").length }));
-    check("a page has a way back, and its title", g.head.startsWith("← About") && g.head.includes("Metric glossary") && !/null/.test(g.head), g.head);
+    check("a page has a way back, and its title", g.head.startsWith("← About") && g.head.includes("Glossary") && !/null/.test(g.head), g.head);
     await page.evaluate(() => document.querySelector('#glossaryList .ab-term-row[data-key="citedRate"]')?.click());
     await settle();
     const t = await page.evaluate(() => ({ head: document.getElementById("abSubhead").textContent, body: document.getElementById("abTerm").textContent, ab: document.getElementById("about").dataset.ab }));
@@ -281,7 +286,7 @@ try {
     await settle();
     check("and back again to the home screen", (await shown()).ab === "home");
 
-    for (const p of ["Settings", "Data & tools", "Diagnostics", "What’s new"]) {
+    for (const p of ["Settings", "Data & tools", "Help", "What’s new"]) {
       await go(p);
       const w = await page.evaluate(() => { const c = document.querySelector(".app-content"); return c.scrollWidth - c.clientWidth; });
       check(`${p} fits the popup`, w <= 0, `${w}px`);

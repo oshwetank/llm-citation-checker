@@ -38,7 +38,16 @@ async function getFile(spec, file, onProgress, { asText = false } = {}) {
   const cache = await caches.open(CACHE_NAME);
   let res = await cache.match(url);
   if (!res) {
-    const r = await fetch(url);
+    // A dropped or slow connection is tried again, three times in all, a few
+    // seconds apart (1.0.6: "Failed to fetch" four times in a row, one per
+    // click, on one computer).
+    let r = null;
+    for (let i = 0; ; i++) {
+      try { r = await fetch(url); break; } catch (e) {
+        if (i >= 2) throw e;
+        await new Promise((ok) => setTimeout(ok, (i + 1) * 3000));
+      }
+    }
     if (!r.ok) throw new Error(`${file}: ${r.status} from ${new URL(url).host}`);
     const total = Number(r.headers.get("content-length")) || 0;
     const reader = r.body.getReader();

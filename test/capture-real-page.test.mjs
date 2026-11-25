@@ -133,10 +133,10 @@ try {
   // In the panel.
   await tab.evaluate(() => { document.querySelector('[data-tab="about"]')?.click(); });
   await tab.waitForTimeout(500);
-  await tab.evaluate(() => { [...document.querySelectorAll(".ab-nav-btn")].find((b) => /Diagnostics/.test(b.textContent))?.click(); });
+  await tab.evaluate(() => { [...document.querySelectorAll(".ab-nav-btn")].find((b) => /Help/.test(b.textContent))?.click(); });
   await tab.waitForTimeout(1200);
   const ui = await tab.evaluate(() => [...document.querySelectorAll("#capCheckRows .cap-row")].map((r) => `${r.dataset.engine}:${r.className}:${r.textContent.trim().slice(0, 60)}`));
-  check("About → Diagnostics shows a row per engine, ChatGPT ok", ui.length === 5 && ui.some((x) => /^chatgpt:cap-row ok/.test(x)), ui.join(" | "));
+  check("About → Help shows a row per engine, ChatGPT ok", ui.length === 5 && ui.some((x) => /^chatgpt:cap-row ok/.test(x)), ui.join(" | "));
 
   console.log("\npaused, the check says so");
   await msg({ type: "settings-set", patch: { capturePaused: true } });

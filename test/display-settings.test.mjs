@@ -60,18 +60,24 @@ try {
     await p.waitForTimeout(500);
     await p.evaluate(() => [...document.querySelectorAll(".ab-nav-btn, .ab-more-row")].find((b) => b.textContent.includes("Settings"))?.click());
     await p.waitForTimeout(500);
-    // Display is a group that starts closed (0.78.0).
-    await p.evaluate(() => { const d = document.getElementById("setGroupDisplay"); if (d && !d.open) d.querySelector("summary").click(); });
+    // The look in detail is under More settings, closed until opened (1.0.6).
+    await p.evaluate(() => { const d = document.getElementById("setGroupMore"); if (d && !d.open) d.querySelector("summary").click(); });
     await p.waitForTimeout(200);
   };
   await openSettings(tab);
 
-  // 0.78.0, asked: theme, font and the like grouped under Display settings.
-  console.log("\nsettings in groups");
+  // 1.0.6 (approved review): light/dark, campaign sections and language up
+  // front; everything else under one "More settings", in four short groups.
+  console.log("\nsettings: three up front, the rest under More settings");
   {
-    const g = await tab.evaluate(() => [...document.querySelectorAll("details.ab-group")].map((d) => d.querySelector("summary b").textContent));
-    check("Display, Language and detail, Data and capture, Built-in AI, Reading and capture", g.join("|") === "Display|Language and detail|Data and capture|Built-in AI|Reading and capture", g.join("|"));
-    check("theme, light/dark, motion and the typeface are all in Display", await tab.evaluate(() => ["#setStyle", "#setTheme", "#setMotion", "#setDisplay"].every((q) => document.querySelector(`#setGroupDisplay ${q}`))));
+    const g = await tab.evaluate(() => ({
+      groups: [...document.querySelectorAll("details.ab-group")].map((d) => d.querySelector("summary b").textContent),
+      subs: [...document.querySelectorAll("#setGroupMore h4.ab-subgroup")].map((x) => x.textContent),
+      top: ["#setTheme", "#setNav", "#setLang"].every((q) => { const n = document.querySelector(q); return n && !n.closest("#setGroupMore"); }),
+    }));
+    check("one More settings group: Look, Kept on this computer, Reading and runs, Built-in AI", g.groups.join("|") === "More settings" && g.subs.join("|") === "Look|Kept on this computer|Reading and runs|Built-in AI", JSON.stringify(g));
+    check("light/dark, campaign sections and language are up front", g.top, JSON.stringify(g));
+    check("theme, motion and the typeface are under Look", await tab.evaluate(() => ["#setStyle", "#setMotion", "#setDisplay"].every((q) => document.querySelector(`#setGroupMore ${q}`))));
   }
   console.log("\nmotion on or off");
   {
@@ -96,8 +102,8 @@ try {
     });
     check("On: opening a page fades it in", on === "cito-fade", on);
     await openSettings(tab);
-    const kept = await tab.evaluate(() => document.getElementById("setGroupDisplay").open);
-    check("the Display group stays open once opened", kept);
+    const kept = await tab.evaluate(() => document.getElementById("setGroupMore").open);
+    check("More settings stays open once opened", kept);
   }
 
   console.log("\nthe Display block");
