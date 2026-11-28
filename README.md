@@ -21,6 +21,7 @@ device unless you choose to share that campaign: the AI runs on your computer.
 >
 > **Recent changes:**
 > - **Next (1.0.5, in progress).**
+>   - **A campaign dashboard.** A campaign's results open as a dashboard in the full tab: 21 pages in a side menu that folds away (overview, prompt rankings, gaps, tags, citations, sources, community, products, searches, answer search, head to head, changes, competitive set, stability, funnel, content, surfaces, search intent, social vs web, engine-only sites), with engine logos, filters by run, engine, tag and answer type, and comparison with the run before. Pages that need more runs are greyed out and say how many more runs open them. The classic board is one click away, and the popup keeps it.
 >   - **Ask knows which data you mean.** It works out the campaign, run, engines and tags from your question, shows them above the answer as chips you can change, asks back when two campaigns fit equally, and answers from the boards' own numbers, even with no AI model turned on.
 >   - **Gemini asked once.** Gemini's new way of sending a question wasn't recognised, so the extension pressed send again and Gemini got each question 2 or 3 times. It now sees Gemini's send and waits for it.
 >   - **Google AI Mode, the fifth engine (beta).** Capture its answers and run campaigns on it: turn it on in Settings.

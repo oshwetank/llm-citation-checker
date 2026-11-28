@@ -38,6 +38,14 @@ The store's version was 0.36. 1.0.0 is the first release since; the store pack i
 - **The update test now tests the update.** `test/upgrade-capture.test.mjs` used to load the new build over the old one in the same profile, and Chrome kept running the old service-worker script: every check after the "update" tested the old background. The profile's stored worker scripts are now dropped between the runs (as a store update does) and the test checks that `build-info` answers with this build. CI runs it from v0.80.0 and from v0.36.0 (`--from 4d5a046`).
 - **Help for a first-time user** (`src/lib/onboarding.js`, tested by `getting-started.test` and `onboarding-ui.test`): Get started on the Dashboard (five steps, ticked by what was done; `cito-gs-*` in localStorage), "Based on N answers…" and **What to do next** on a campaign's overview, example prompts in setup (**Fill in examples**), `ui/help.html` (linked from Get started and About), and the welcome guide's **What's changed** step for an update from before 0.80 (`citoUpdatedFrom`, recorded on update by `background.js`). All of it is translated; the language picker marks the five translations beta.
 
+## Campaign dashboard (in progress, after 1.0.5)
+
+The extended layout from the design canvas, live in the full tab. The owner's rules: no "top concepts" or themes, no recommendations, no data-quality page; sections that need more runs are greyed with a hover that says how many.
+- `src/lib/campaignDash.js`: `dashRecords` (background: one small row per answer, skipping no-answer and usage-limited ones; run numbers count only runs with answers), `dashSearch`, and `dashModel` (every page's values, worked out in the panel from those rows; locks at 2, 3 and 5 runs). Numbers use `brandPresence` / `computeMetrics` definitions; `test/campaign-dash.test.mjs` checks them against `computeMetrics`.
+- `ui/campaignDash.js` draws `ui/campaignDashTemplate.js` with `ui/dcRender.js` (text and attributes only, never HTML); styles in `ui/campaignDash.css`, scoped to `.cdash`.
+- Background messages `campaign-dash` and `campaign-dash-search` (`src/background.js`); running runs are left out.
+- `ui/panel.js`: a Dashboard / Classic board switch (`cito-board-mode` in localStorage, default the dashboard); the popup always shows the classic board. Strings are English only for now.
+
 ## Release 1.0.5 (24 Nov 2026)
 
 **Ask on one data foundation, Stage 1** (design: the Ask architecture document, the same as PR #35). The owner's decisions: ask back only when two matches are close, otherwise use the best one and show it as a chip; Dashboard history is its own collection, "My questions"; Stage 3 gets an optional embeddings download; Stage 1 first.

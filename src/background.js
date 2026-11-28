@@ -45,6 +45,7 @@ import { indexFor } from "./lib/passages.js";
 import { answerKey, sameAnswer, mergeAnswers, SAME_ANSWER_WINDOW_MS, SAME_REPLY_WINDOW_MS } from "./lib/sameAnswer.js";
 import { campaignBoard, brandDetail } from "./lib/campaignBoard.js";
 import { campaignView } from "./lib/campaignView.js";
+import { dashRecords, dashSearch } from "./lib/campaignDash.js";
 import { campaignInsights } from "./lib/insights.js";
 import { ENGINES as HANDOFF_ENGINES } from "./lib/contextPack.js";
 import { adapt as adaptChatGpt, cleanPassage } from "./adapters/chatgpt.js";
@@ -4421,6 +4422,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             tags: [...new Set(prompts.flatMap((p) => p.tags || []))],
             answers: recs.length,
           });
+          break;
+        }
+        // The campaign dashboard (1.0.6, lib/campaignDash.js): every answer of
+        // the campaign as a small row, once; the panel filters, sorts and draws
+        // from them without coming back. Runs still going are left out, as on
+        // the board.
+        case "campaign-dash": {
+          const profile = await db.get("profiles", msg.profileId);
+          if (!profile) { sendResponse({ ok: false, error: "Campaign not found." }); break; }
+          const runs = (await db.getAll("geoRuns")).filter((r) => r.profileId === msg.profileId);
+          const live = new Set(runs.filter((r) => r.status === "running").map((r) => r.id));
+          const all = selectTracked(await db.getAll("derived"), { profileId: msg.profileId }).filter((x) => !(x.geo && live.has(x.geo.runId)));
+          const brands = effectiveTrackedBrands(profile, all);
+          const prompts = (await db.getAll("trackedPrompts")).filter((p) => p.profileId === msg.profileId)
+            .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+          sendResponse({ ok: true, data: dashRecords(all, { brands, prompts, runs: runs.filter((r) => !live.has(r.id)), engines: profile.engines || [] }) });
+          break;
+        }
+        // Answer search on the dashboard: the passages that say the phrase.
+        case "campaign-dash-search": {
+          const runs = (await db.getAll("geoRuns")).filter((r) => r.profileId === msg.profileId);
+          const live = new Set(runs.filter((r) => r.status === "running").map((r) => r.id));
+          const all = selectTracked(await db.getAll("derived"), { profileId: msg.profileId }).filter((x) => !(x.geo && live.has(x.geo.runId)));
+          sendResponse({ ok: true, hits: dashSearch(all, String(msg.q || "").slice(0, 200)) });
           break;
         }
         // Two runs of a campaign side by side (0.80.0, lib/runCompare.js).
