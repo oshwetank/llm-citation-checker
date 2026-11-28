@@ -36,6 +36,7 @@ import { checklist, examplePrompts } from "../src/lib/onboarding.js";
 import { extractBrandAspects } from "../src/lib/aspects.js";
 import { siteKindOf } from "../src/lib/siteKind.js";
 import { renderCampaignView, CV_SECTIONS, sectionCounts, resetCampaignViewState } from "./campaignView.js";
+import { renderCampaignDash, resetCampaignDash } from "./campaignDash.js";
 import { initDisplaySettings } from "./displaySettings.js";
 import { initAiSettings } from "./aiSettings.js";
 import { renderAsk } from "./askView.js";
@@ -7059,6 +7060,9 @@ let cbTagMode = "any";       // with several tags: "any" or "all" of them (0.67.
 let cbPromptFilter = "all";
 let cbOpenPrompts = new Set();
 let cbDetail = null;         // brand whose detail is open
+// The campaign dashboard (1.0.6) is the results view in the full tab; the
+// classic board stays one click away and is what the popup shows.
+let cbBoardMode = (() => { try { return localStorage.getItem("cito-board-mode") === "classic" ? "classic" : "dash"; } catch (_) { return "dash"; } })();
 let cbProfileId = null;      // the campaign the state above belongs to
 let cbHeaderNav = null;      // the board's section links, shown in the app bar
 
@@ -7098,6 +7102,7 @@ function renderCampaignResults(profile) {
     cbProfileId = profile.id; cbRun = null; cbViewAs = null; cbTags = []; cbFocus = "mentions";
     cbPromptFilter = "all"; cbOpenPrompts = new Set(); cbDetail = null;
     resetCampaignViewState();
+    resetCampaignDash();
   }
   const box = el("section", { className: "campaign-results", id: "campaignResults", "aria-labelledby": "campaignResultsH" });
   box.append(el("div", { className: "card" }, el("div", { className: "card-header" }, el("h3", { id: "campaignResultsH" }, "Results")), el("div", { className: "muted small" }, "Loading results…")));
@@ -7109,6 +7114,7 @@ function renderCampaignResults(profile) {
   const running = cpHolding(profile);
   setTimeout(async () => {
     if (cbDetail) await renderCampaignBrandDetail(box, profile);
+    else if (cbBoardMode === "dash" && !inPopup()) await renderCampaignDashView(box, profile);
     else await renderCampaignBoard(box, profile);
     // A run in progress isn't on the board yet (0.62.2, asked): say so.
     if (running) box.prepend(el("p", { className: "cb-run-wait", role: "status" }, "A run is in progress. Its answers appear here when it finishes or is stopped; the board below is the runs already finished."));
@@ -7128,6 +7134,44 @@ function cbSourceMix(k) {
   k.sources.forEach((x) => bar.append(el("i", { style: `width:${x.pct.toFixed(1)}%;background:var(${AP_KIND_VAR[x.label] || "--kind-other"})` })));
   cell.append(bar, el("span", { className: "cb-mix-text" }, `${k.citedPages} cited · ` + k.sources.map((x) => `${x.label.toLowerCase()} ${Math.round(x.pct)}%`).join(", ")));
   return cell;
+}
+
+/* Dashboard or classic board (1.0.6): the switch in the campaign header. */
+function boardModeSwitch() {
+  const seg = el("div", { className: "cv-seg cb-mode", role: "group", "aria-label": "Results view" });
+  [["dash", "Dashboard"], ["classic", "Classic board"]].forEach(([v, l]) => {
+    const b = el("button", { type: "button", className: cbBoardMode === v ? "on" : "", "aria-pressed": cbBoardMode === v ? "true" : "false" }, l);
+    b.onclick = () => {
+      if (cbBoardMode === v) return;
+      cbBoardMode = v;
+      try { localStorage.setItem("cito-board-mode", v); } catch (_) { /* private mode: this view only */ }
+      renderCampaigns();
+    };
+    seg.append(b);
+  });
+  return seg;
+}
+
+/* The campaign dashboard (1.0.6): ui/campaignDash.js draws it from the
+   background's "campaign-dash" rows. Run, Export and Edit setup stay in the
+   campaign header above it. */
+async function renderCampaignDashView(box, profile) {
+  const slot = document.getElementById("cpFilters");
+  if (slot) { slot.textContent = ""; slot.append(boardModeSwitch()); }
+  const host = el("div", { className: "cdash-wrap" });
+  box.textContent = "";
+  if (!slot) box.append(el("div", { className: "card cb-head" }, boardModeSwitch()));
+  box.append(host);
+  const r = await renderCampaignDash(host, profile, { send, openCapture, toast: showToast });
+  if (!r || !r.ok) return;
+  if (r.runs.length) gsMark("results"); // Get started (1.0.0)
+  const runDate = (t) => new Date(t).toLocaleDateString(dateLocale(), { weekday: "short", day: "numeric", month: "short" });
+  const runList = r.runs.map((x, i) => ({ id: x.id, no: i + 1, date: runDate(x.startedAt) })).reverse();
+  const wb = document.getElementById("cbExport");
+  if (wb) {
+    wb.disabled = false;
+    wb.onclick = () => openExportDialog(profile, { engines: r.engines.map((id) => ({ id, label: atEngineLabel(id) })), runs: r.runs.length, answers: r.answers, latestDate: runList[0] ? runList[0].date : "", runList });
+  }
 }
 
 async function renderCampaignBoard(box, profile) {
@@ -7199,6 +7243,7 @@ async function renderCampaignBoard(box, profile) {
     el("label", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Brand"), picker),
     el("div", { className: "cb-ctl" }, el("span", { className: "muted small" }, "Engines"), engine));
   if (!wb.isConnected) controls.append(wb);
+  if (!inPopup()) head.append(boardModeSwitch());
   head.append(controls);
   if (geoEngineFilter.length) head.append(el("span", { className: "scope-note muted small" }, `${geoEngineFilter.map((id) => (availableEngines().find((e) => e.id === id) || {}).label || id).join(" and ")} only`));
   if (r.tags.length) {
